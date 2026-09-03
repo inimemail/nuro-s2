@@ -231,6 +231,32 @@ function buildOpenAIOAuthAccount() {
   } as any
 }
 
+function buildKimiResponsesAccount() {
+  return {
+    id: 4,
+    name: 'Kimi Responses',
+    notes: '',
+    platform: 'kimi',
+    type: 'apikey',
+    credentials: {
+      api_key: 'sk-kimi-test',
+      base_url: 'https://api.moonshot.cn/v1'
+    },
+    extra: {
+      cn_billing_mode: 'payg',
+      cn_api_mode: 'responses'
+    },
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function buildAnthropicOAuthAccount() {
   return {
     id: 4,
@@ -333,6 +359,22 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('preserves and submits a saved Kimi Responses protocol', async () => {
+    const account = buildKimiResponsesAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="cn-protocol-responses"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('input[placeholder="https://api.moonshot.cn/v1"]')).toBeTruthy()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ cn_api_mode: 'responses' })
+  })
+
   it('submits OAuth timeout stages with stage-one compatibility scalars', async () => {
     const account = buildOpenAIOAuthAccount()
     updateAccountMock.mockReset().mockResolvedValue(account)

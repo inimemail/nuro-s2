@@ -165,7 +165,7 @@ func (a *Account) HeaderOverrideValue(lowerName string) (string, bool) {
 	return value, ok
 }
 
-// ApplyHeaderOverrides 将账号配置的请求头覆写应用到出站请求头。
+// ApplyHeaderOverrides 将账号配置的请求头覆写和受保护的平台身份头应用到出站请求头。
 // 对每个覆写条目：先删除所有大小写变体（转发链路会以 wire casing 直接写入 map，
 // 可能存在非 canonical key），再按已知 wire casing 写入，避免产生重复头。
 // 账号未启用或不符合条件时为 no-op，可安全地在 OAuth/api_key 共用的构建器中调用。
@@ -173,6 +173,10 @@ func (a *Account) ApplyHeaderOverrides(h http.Header) {
 	if h == nil {
 		return
 	}
+	// Every forwarding/probe builder already converges on this helper. Applying
+	// provider identity last keeps Zhipu team credentials consistent across
+	// Chat, Responses, Messages, Edge, health probes, and model discovery.
+	defer a.ApplyCNProviderHeaders(h)
 	overrides := a.GetHeaderOverrides()
 	if len(overrides) == 0 {
 		return

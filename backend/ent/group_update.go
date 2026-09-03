@@ -1141,6 +1141,20 @@ func (_u *GroupUpdate) AddRpmLimit(v int) *GroupUpdate {
 	return _u
 }
 
+// SetForceOpenaiFast sets the "force_openai_fast" field.
+func (_u *GroupUpdate) SetForceOpenaiFast(v bool) *GroupUpdate {
+	_u.mutation.SetForceOpenaiFast(v)
+	return _u
+}
+
+// SetNillableForceOpenaiFast sets the "force_openai_fast" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableForceOpenaiFast(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetForceOpenaiFast(*v)
+	}
+	return _u
+}
+
 // SetMaxReasoningEffort sets the "max_reasoning_effort" field.
 func (_u *GroupUpdate) SetMaxReasoningEffort(v string) *GroupUpdate {
 	_u.mutation.SetMaxReasoningEffort(v)
@@ -1151,6 +1165,20 @@ func (_u *GroupUpdate) SetMaxReasoningEffort(v string) *GroupUpdate {
 func (_u *GroupUpdate) SetNillableMaxReasoningEffort(v *string) *GroupUpdate {
 	if v != nil {
 		_u.SetMaxReasoningEffort(*v)
+	}
+	return _u
+}
+
+// SetMaxReasoningEffortOverLimit sets the "max_reasoning_effort_over_limit" field.
+func (_u *GroupUpdate) SetMaxReasoningEffortOverLimit(v string) *GroupUpdate {
+	_u.mutation.SetMaxReasoningEffortOverLimit(v)
+	return _u
+}
+
+// SetNillableMaxReasoningEffortOverLimit sets the "max_reasoning_effort_over_limit" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableMaxReasoningEffortOverLimit(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetMaxReasoningEffortOverLimit(*v)
 	}
 	return _u
 }
@@ -1490,6 +1518,11 @@ func (_u *GroupUpdate) check() error {
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
+		if err := group.MaxReasoningEffortOverLimitValidator(v); err != nil {
+			return &ValidationError{Name: "max_reasoning_effort_over_limit", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort_over_limit": %w`, err)}
 		}
 	}
 	return nil
@@ -1841,8 +1874,14 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedRpmLimit(); ok {
 		_spec.AddField(group.FieldRpmLimit, field.TypeInt, value)
 	}
+	if value, ok := _u.mutation.ForceOpenaiFast(); ok {
+		_spec.SetField(group.FieldForceOpenaiFast, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.MaxReasoningEffort(); ok {
 		_spec.SetField(group.FieldMaxReasoningEffort, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
+		_spec.SetField(group.FieldMaxReasoningEffortOverLimit, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.ReasoningEffortMappings(); ok {
 		_spec.SetField(group.FieldReasoningEffortMappings, field.TypeJSON, value)
@@ -3270,6 +3309,20 @@ func (_u *GroupUpdateOne) AddRpmLimit(v int) *GroupUpdateOne {
 	return _u
 }
 
+// SetForceOpenaiFast sets the "force_openai_fast" field.
+func (_u *GroupUpdateOne) SetForceOpenaiFast(v bool) *GroupUpdateOne {
+	_u.mutation.SetForceOpenaiFast(v)
+	return _u
+}
+
+// SetNillableForceOpenaiFast sets the "force_openai_fast" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableForceOpenaiFast(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetForceOpenaiFast(*v)
+	}
+	return _u
+}
+
 // SetMaxReasoningEffort sets the "max_reasoning_effort" field.
 func (_u *GroupUpdateOne) SetMaxReasoningEffort(v string) *GroupUpdateOne {
 	_u.mutation.SetMaxReasoningEffort(v)
@@ -3280,6 +3333,20 @@ func (_u *GroupUpdateOne) SetMaxReasoningEffort(v string) *GroupUpdateOne {
 func (_u *GroupUpdateOne) SetNillableMaxReasoningEffort(v *string) *GroupUpdateOne {
 	if v != nil {
 		_u.SetMaxReasoningEffort(*v)
+	}
+	return _u
+}
+
+// SetMaxReasoningEffortOverLimit sets the "max_reasoning_effort_over_limit" field.
+func (_u *GroupUpdateOne) SetMaxReasoningEffortOverLimit(v string) *GroupUpdateOne {
+	_u.mutation.SetMaxReasoningEffortOverLimit(v)
+	return _u
+}
+
+// SetNillableMaxReasoningEffortOverLimit sets the "max_reasoning_effort_over_limit" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableMaxReasoningEffortOverLimit(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetMaxReasoningEffortOverLimit(*v)
 	}
 	return _u
 }
@@ -3632,6 +3699,11 @@ func (_u *GroupUpdateOne) check() error {
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
+		if err := group.MaxReasoningEffortOverLimitValidator(v); err != nil {
+			return &ValidationError{Name: "max_reasoning_effort_over_limit", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort_over_limit": %w`, err)}
 		}
 	}
 	return nil
@@ -4000,8 +4072,14 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	if value, ok := _u.mutation.AddedRpmLimit(); ok {
 		_spec.AddField(group.FieldRpmLimit, field.TypeInt, value)
 	}
+	if value, ok := _u.mutation.ForceOpenaiFast(); ok {
+		_spec.SetField(group.FieldForceOpenaiFast, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.MaxReasoningEffort(); ok {
 		_spec.SetField(group.FieldMaxReasoningEffort, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.MaxReasoningEffortOverLimit(); ok {
+		_spec.SetField(group.FieldMaxReasoningEffortOverLimit, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.ReasoningEffortMappings(); ok {
 		_spec.SetField(group.FieldReasoningEffortMappings, field.TypeJSON, value)

@@ -7,23 +7,24 @@ import (
 )
 
 type User struct {
-	ID             int64
-	Email          string
-	Username       string
-	Notes          string
-	AvatarURL      string
-	AvatarSource   string
-	AvatarMIME     string
-	AvatarByteSize int
-	AvatarSHA256   string
-	PasswordHash   string
-	Role           string
-	Balance        float64
-	FrozenBalance  float64
-	Concurrency    int
-	Status         string
-	AllowedGroups  []int64
-	TokenVersion   int64 // Incremented on password change to invalidate existing tokens
+	ID                   int64
+	Email                string
+	Username             string
+	Notes                string
+	AvatarURL            string
+	AvatarSource         string
+	AvatarMIME           string
+	AvatarByteSize       int
+	AvatarSHA256         string
+	PasswordHash         string
+	Role                 string
+	Balance              float64
+	FrozenBalance        float64
+	Concurrency          int
+	Status               string
+	AllowedGroups        []int64
+	RestrictPublicGroups bool
+	TokenVersion         int64 // Incremented on password change to invalidate existing tokens
 	// TokenVersionResolved indicates TokenVersion already contains the fingerprint-derived
 	// value expected in JWT claims and refresh-token state.
 	TokenVersionResolved bool
@@ -74,12 +75,14 @@ func (u *User) IsActive() bool {
 
 // CanBindGroup checks whether a user can bind to a given group.
 // For standard groups:
-// - Public groups (non-exclusive): all users can bind
+// - Public groups (non-exclusive): all users can bind unless restricted
 // - Exclusive groups: only users with the group in AllowedGroups can bind
 func (u *User) CanBindGroup(groupID int64, isExclusive bool) bool {
 	// 公开分组（非专属）：所有用户都可以绑定
 	if !isExclusive {
-		return true
+		if !u.RestrictPublicGroups {
+			return true
+		}
 	}
 	// 专属分组：需要在 AllowedGroups 中
 	for _, id := range u.AllowedGroups {

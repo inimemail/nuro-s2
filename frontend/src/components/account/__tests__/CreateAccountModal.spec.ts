@@ -366,6 +366,30 @@ describe('CreateAccountModal', () => {
     })
   })
 
+  it('exposes and persists the Kimi Responses protocol', async () => {
+    const wrapper = mountModal()
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'Kimi')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="cn-protocol-responses"]').trigger('click')
+    expect(wrapper.get('[data-testid="cn-base-url-kimiResponses"]').exists()).toBe(true)
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('Kimi Responses')
+    await wrapper.get('input[placeholder="sk-..."]').setValue('sk-kimi-responses')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      platform: 'kimi',
+      credentials: {
+        base_url: 'https://api.moonshot.cn/v1',
+        api_key: 'sk-kimi-responses'
+      },
+      extra: {
+        cn_api_mode: 'responses'
+      }
+    })
+  })
+
   it('keeps DeepSeek pay-as-you-go only and exposes Responses protocol', async () => {
     const wrapper = mountModal()
     await wrapper.findAll('button').find((button) => button.text().trim() === 'DeepSeek')!.trigger('click')

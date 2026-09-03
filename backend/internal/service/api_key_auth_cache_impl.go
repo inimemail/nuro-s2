@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 20 // v20: detach large group pricing payloads from per-key snapshots
+const apiKeyAuthSnapshotVersion = 21 // v21: include public-group and reasoning/Fast policy fields
 
 var errAPIKeyAuthGroupPricingVersionChanged = errors.New("API key auth group pricing version changed")
 
@@ -449,6 +449,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			Balance:                    apiKey.User.Balance,
 			Concurrency:                apiKey.User.Concurrency,
 			AllowedGroups:              apiKey.User.AllowedGroups,
+			RestrictPublicGroups:       apiKey.User.RestrictPublicGroups,
 			Email:                      apiKey.User.Email,
 			Username:                   apiKey.User.Username,
 			BalanceNotifyEnabled:       apiKey.User.BalanceNotifyEnabled,
@@ -530,7 +531,9 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			ModelsListConfig:                   apiKey.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: apiKey.Group.StrictModelPriorityOnModelMismatch,
 			RPMLimit:                           apiKey.Group.RPMLimit,
+			ForceOpenAIFast:                    apiKey.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 apiKey.Group.MaxReasoningEffort,
+			MaxReasoningEffortOverLimit:        apiKey.Group.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:            apiKey.Group.ReasoningEffortMappings,
 		}
 	}
@@ -563,6 +566,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			Balance:                    snapshot.User.Balance,
 			Concurrency:                snapshot.User.Concurrency,
 			AllowedGroups:              snapshot.User.AllowedGroups,
+			RestrictPublicGroups:       snapshot.User.RestrictPublicGroups,
 			Email:                      snapshot.User.Email,
 			Username:                   snapshot.User.Username,
 			BalanceNotifyEnabled:       snapshot.User.BalanceNotifyEnabled,
@@ -629,7 +633,9 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ModelsListConfig:                   snapshot.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: snapshot.Group.StrictModelPriorityOnModelMismatch,
 			RPMLimit:                           snapshot.Group.RPMLimit,
+			ForceOpenAIFast:                    snapshot.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 snapshot.Group.MaxReasoningEffort,
+			MaxReasoningEffortOverLimit:        snapshot.Group.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:            snapshot.Group.ReasoningEffortMappings,
 		}
 	}

@@ -718,6 +718,13 @@ func TestFilterValidIntervals(t *testing.T) {
 			wantLen: 1,
 		},
 		{
+			name: "interval with only CacheWrite1hPrice kept",
+			intervals: []PricingInterval{
+				{MinTokens: 0, CacheWrite1hPrice: testPtrFloat64(4e-6)},
+			},
+			wantLen: 1,
+		},
+		{
 			name: "interval with only CacheReadPrice kept",
 			intervals: []PricingInterval{
 				{MinTokens: 0, CacheReadPrice: testPtrFloat64(0.5e-6)},

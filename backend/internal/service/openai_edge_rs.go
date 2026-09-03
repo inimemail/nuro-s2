@@ -131,6 +131,7 @@ type OpenAIEdgePlan struct {
 	DownstreamCacheMarkup                  *OpenAIDownstreamCacheMarkupPolicy `json:"downstream_cache_markup,omitempty"`
 	DownstreamCacheMarkupModel             string                             `json:"downstream_cache_markup_model,omitempty"`
 	MaxReasoningEffort                     string                             `json:"max_reasoning_effort,omitempty"`
+	MaxReasoningEffortOverLimit            string                             `json:"max_reasoning_effort_over_limit,omitempty"`
 	ReasoningEffortMappings                []ReasoningEffortMapping           `json:"reasoning_effort_mappings,omitempty"`
 }
 

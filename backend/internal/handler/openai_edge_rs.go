@@ -38,64 +38,65 @@ type openAIEdgeLease struct {
 	// retryMu serializes retry/staged-retry decisions for one lease. It is
 	// deliberately separate from mu so account selection and release callbacks
 	// never hold the lifecycle lock across external service calls.
-	retryMu            sync.Mutex
-	mu                 sync.Mutex
-	settled            bool
-	edgeRequestID      string
-	edgeNodeID         string
-	edgeInstanceID     string
-	leaseID            string
-	createdAt          time.Time
-	expiresAt          time.Time
-	releaseOnce        sync.Once
-	userReleaseFunc    func()
-	accountReleaseFunc func()
-	apiKey             *service.APIKey
-	subject            middleware2.AuthSubject
-	subscription       *service.UserSubscription
-	quotaPlatform      string
-	account            *service.Account
-	cachePolicyEnabled bool
-	cachePolicyApplied bool
-	forwardBody        []byte
-	passthroughSeen    bool
-	crossModeBodyReady bool
-	crossModeBody      []byte
-	lastPlan           service.OpenAIEdgePlan
-	rejectedFieldRetry service.OpenAIResponsesRejectedFieldRetryState
-	rejectedFields     []string
-	sessionHash        string
-	failedAccountIDs   map[int64]struct{}
-	sameAccountRetries map[int64]int
-	sameRuleRetries    sameAccountRetryRuleCounts
-	sameAccountStarted map[int64]time.Time
-	switchCount        int
-	maxAccountSwitches int
-	lockedPriority     int
-	routingModel       string
-	requestModel       string
-	requestPlatform    string
-	healthProbe        bool
-	billingModel       string
-	upstreamModel      string
-	reasoningEffort    *string
-	serviceTier        *string
-	userAgent          string
-	clientIP           string
-	inboundEndpoint    string
-	upstreamEndpoint   string
-	requestPayloadHash string
-	sessionID          string
-	channelUsageFields service.ChannelUsageFields
-	promptAudit        *securityaudit.Collector
-	payloadReleased    bool
-	stallActionPending bool
-	stallActionAccount *service.Account
-	stallActionModel   string
-	stallActionEffort  string
-	stagedRetry        *openAIEdgeStagedRetry
-	activatedRetryID   string
-	currentAttemptID   string
+	retryMu                  sync.Mutex
+	mu                       sync.Mutex
+	settled                  bool
+	edgeRequestID            string
+	edgeNodeID               string
+	edgeInstanceID           string
+	leaseID                  string
+	createdAt                time.Time
+	expiresAt                time.Time
+	releaseOnce              sync.Once
+	userReleaseFunc          func()
+	accountReleaseFunc       func()
+	apiKey                   *service.APIKey
+	subject                  middleware2.AuthSubject
+	subscription             *service.UserSubscription
+	quotaPlatform            string
+	account                  *service.Account
+	cachePolicyEnabled       bool
+	cachePolicyApplied       bool
+	forwardBody              []byte
+	passthroughSeen          bool
+	crossModeBodyReady       bool
+	crossModeBody            []byte
+	lastPlan                 service.OpenAIEdgePlan
+	rejectedFieldRetry       service.OpenAIResponsesRejectedFieldRetryState
+	rejectedFields           []string
+	sessionHash              string
+	failedAccountIDs         map[int64]struct{}
+	sameAccountRetries       map[int64]int
+	sameRuleRetries          sameAccountRetryRuleCounts
+	sameAccountStarted       map[int64]time.Time
+	switchCount              int
+	maxAccountSwitches       int
+	lockedPriority           int
+	routingModel             string
+	requestModel             string
+	requestPlatform          string
+	healthProbe              bool
+	billingModel             string
+	upstreamModel            string
+	reasoningEffort          *string
+	requestedReasoningEffort string
+	serviceTier              *string
+	userAgent                string
+	clientIP                 string
+	inboundEndpoint          string
+	upstreamEndpoint         string
+	requestPayloadHash       string
+	sessionID                string
+	channelUsageFields       service.ChannelUsageFields
+	promptAudit              *securityaudit.Collector
+	payloadReleased          bool
+	stallActionPending       bool
+	stallActionAccount       *service.Account
+	stallActionModel         string
+	stallActionEffort        string
+	stagedRetry              *openAIEdgeStagedRetry
+	activatedRetryID         string
+	currentAttemptID         string
 	// retryReleaseQueue contains slot-release callbacks that must run after the
 	// retry operation drops its locks. Account selection and scheduler callbacks
 	// are external code and must never execute while a lease mutex is held.
@@ -1343,7 +1344,13 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
 	if apiKey.Group != nil {
-		forwardBody, _ = service.ApplyOpenAIReasoningEffortPolicy(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
+		var policyErr error
+		forwardBody, _, policyErr = service.ApplyOpenAIReasoningEffortPolicyWithAction(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		var overLimit *service.ReasoningEffortOverLimitError
+		if errors.As(policyErr, &overLimit) {
+			h.errorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+			return service.OpenAIEdgePlan{}, false
+		}
 	}
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
@@ -1405,6 +1412,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
+		plan.MaxReasoningEffortOverLimit = apiKey.Group.MaxReasoningEffortOverLimit
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
 	plan.EdgeRequestID = edgeRequestID
@@ -1418,46 +1426,47 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		edgeRequestID, "/v1/chat/completions",
 	)
 	lease := &openAIEdgeLease{
-		edgeRequestID:      edgeRequestID,
-		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
-		edgeInstanceID:     strings.TrimSpace(req.EdgeInstanceID),
-		leaseID:            leaseID,
-		currentAttemptID:   uuid.NewString(),
-		createdAt:          createdAt,
-		expiresAt:          createdAt.Add(ttl),
-		userReleaseFunc:    userReleaseFunc,
-		accountReleaseFunc: accountReleaseFunc,
-		apiKey:             apiKey,
-		subject:            subject,
-		subscription:       subscription,
-		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
-		account:            account,
-		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
-		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
-		forwardBody:        append([]byte(nil), forwardBody...),
-		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
-		lastPlan:           plan,
-		sessionHash:        sessionHash,
-		failedAccountIDs:   make(map[int64]struct{}),
-		sameAccountRetries: make(map[int64]int),
-		sameRuleRetries:    make(sameAccountRetryRuleCounts),
-		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
-		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
-		lockedPriority:     -1,
-		routingModel:       reqModel,
-		requestModel:       prepared.Model,
-		billingModel:       prepared.BillingModel,
-		upstreamModel:      prepared.UpstreamModel,
-		reasoningEffort:    prepared.ReasoningEffort,
-		serviceTier:        prepared.ServiceTier,
-		userAgent:          c.GetHeader("User-Agent"),
-		clientIP:           openAIEdgeClientIP(c, req),
-		inboundEndpoint:    "/v1/chat/completions",
-		upstreamEndpoint:   service.OpenAIEdgeRawChatUpstreamEndpoint(account),
-		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
-		sessionID:          service.ExtractClientSessionID(c),
-		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
-		promptAudit:        promptAudit,
+		edgeRequestID:            edgeRequestID,
+		edgeNodeID:               strings.TrimSpace(req.EdgeNodeID),
+		edgeInstanceID:           strings.TrimSpace(req.EdgeInstanceID),
+		leaseID:                  leaseID,
+		currentAttemptID:         uuid.NewString(),
+		createdAt:                createdAt,
+		expiresAt:                createdAt.Add(ttl),
+		userReleaseFunc:          userReleaseFunc,
+		accountReleaseFunc:       accountReleaseFunc,
+		apiKey:                   apiKey,
+		subject:                  subject,
+		subscription:             subscription,
+		quotaPlatform:            service.QuotaPlatform(c.Request.Context(), apiKey),
+		account:                  account,
+		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		forwardBody:              append([]byte(nil), forwardBody...),
+		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
+		lastPlan:                 plan,
+		sessionHash:              sessionHash,
+		failedAccountIDs:         make(map[int64]struct{}),
+		sameAccountRetries:       make(map[int64]int),
+		sameRuleRetries:          make(sameAccountRetryRuleCounts),
+		sameAccountStarted:       initialSameAccountRetryStart(account, createdAt),
+		maxAccountSwitches:       h.nonImageStreamBootstrapSwitchLimit(true),
+		lockedPriority:           -1,
+		routingModel:             reqModel,
+		requestModel:             prepared.Model,
+		billingModel:             prepared.BillingModel,
+		upstreamModel:            prepared.UpstreamModel,
+		reasoningEffort:          prepared.ReasoningEffort,
+		requestedReasoningEffort: service.ExtractOpenAIReasoningEffort(req.Body),
+		serviceTier:              prepared.ServiceTier,
+		userAgent:                c.GetHeader("User-Agent"),
+		clientIP:                 openAIEdgeClientIP(c, req),
+		inboundEndpoint:          "/v1/chat/completions",
+		upstreamEndpoint:         service.OpenAIEdgeRawChatUpstreamEndpoint(account),
+		requestPayloadHash:       service.HashUsageRequestPayload(req.Body),
+		sessionID:                service.ExtractClientSessionID(c),
+		channelUsageFields:       channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:              promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -1553,7 +1562,13 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
 	if apiKey.Group != nil {
-		forwardBody, _ = service.ApplyOpenAIReasoningEffortPolicy(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
+		var policyErr error
+		forwardBody, _, policyErr = service.ApplyOpenAIReasoningEffortPolicyWithAction(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		var overLimit *service.ReasoningEffortOverLimitError
+		if errors.As(policyErr, &overLimit) {
+			h.errorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+			return service.OpenAIEdgePlan{}, false
+		}
 	}
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
@@ -1622,6 +1637,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
+		plan.MaxReasoningEffortOverLimit = apiKey.Group.MaxReasoningEffortOverLimit
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
 	plan.EdgeRequestID = edgeRequestID
@@ -1635,48 +1651,49 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		edgeRequestID, "/v1/responses",
 	)
 	lease := &openAIEdgeLease{
-		edgeRequestID:      edgeRequestID,
-		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
-		edgeInstanceID:     strings.TrimSpace(req.EdgeInstanceID),
-		leaseID:            leaseID,
-		currentAttemptID:   uuid.NewString(),
-		createdAt:          createdAt,
-		expiresAt:          createdAt.Add(ttl),
-		userReleaseFunc:    userReleaseFunc,
-		accountReleaseFunc: accountReleaseFunc,
-		apiKey:             apiKey,
-		subject:            subject,
-		subscription:       subscription,
-		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
-		account:            account,
-		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
-		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
-		forwardBody:        append([]byte(nil), forwardBody...),
-		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
-		lastPlan:           plan,
-		sessionHash:        sessionHash,
-		failedAccountIDs:   make(map[int64]struct{}),
-		sameAccountRetries: make(map[int64]int),
-		sameRuleRetries:    make(sameAccountRetryRuleCounts),
-		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
-		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
-		lockedPriority:     -1,
-		routingModel:       reqModel,
-		requestModel:       prepared.Model,
-		requestPlatform:    requestPlatform,
-		healthProbe:        strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
-		billingModel:       prepared.BillingModel,
-		upstreamModel:      prepared.UpstreamModel,
-		reasoningEffort:    prepared.ReasoningEffort,
-		serviceTier:        prepared.ServiceTier,
-		userAgent:          c.GetHeader("User-Agent"),
-		clientIP:           openAIEdgeClientIP(c, req),
-		inboundEndpoint:    "/v1/responses",
-		upstreamEndpoint:   "/v1/responses",
-		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
-		sessionID:          service.ExtractClientSessionID(c),
-		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
-		promptAudit:        promptAudit,
+		edgeRequestID:            edgeRequestID,
+		edgeNodeID:               strings.TrimSpace(req.EdgeNodeID),
+		edgeInstanceID:           strings.TrimSpace(req.EdgeInstanceID),
+		leaseID:                  leaseID,
+		currentAttemptID:         uuid.NewString(),
+		createdAt:                createdAt,
+		expiresAt:                createdAt.Add(ttl),
+		userReleaseFunc:          userReleaseFunc,
+		accountReleaseFunc:       accountReleaseFunc,
+		apiKey:                   apiKey,
+		subject:                  subject,
+		subscription:             subscription,
+		quotaPlatform:            service.QuotaPlatform(c.Request.Context(), apiKey),
+		account:                  account,
+		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		forwardBody:              append([]byte(nil), forwardBody...),
+		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
+		lastPlan:                 plan,
+		sessionHash:              sessionHash,
+		failedAccountIDs:         make(map[int64]struct{}),
+		sameAccountRetries:       make(map[int64]int),
+		sameRuleRetries:          make(sameAccountRetryRuleCounts),
+		sameAccountStarted:       initialSameAccountRetryStart(account, createdAt),
+		maxAccountSwitches:       h.nonImageStreamBootstrapSwitchLimit(true),
+		lockedPriority:           -1,
+		routingModel:             reqModel,
+		requestModel:             prepared.Model,
+		requestPlatform:          requestPlatform,
+		healthProbe:              strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
+		billingModel:             prepared.BillingModel,
+		upstreamModel:            prepared.UpstreamModel,
+		reasoningEffort:          prepared.ReasoningEffort,
+		requestedReasoningEffort: service.ExtractOpenAIReasoningEffort(req.Body),
+		serviceTier:              prepared.ServiceTier,
+		userAgent:                c.GetHeader("User-Agent"),
+		clientIP:                 openAIEdgeClientIP(c, req),
+		inboundEndpoint:          "/v1/responses",
+		upstreamEndpoint:         "/v1/responses",
+		requestPayloadHash:       service.HashUsageRequestPayload(req.Body),
+		sessionID:                service.ExtractClientSessionID(c),
+		channelUsageFields:       channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:              promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -1721,6 +1738,12 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if reason != "" {
 		return fallback(reason)
 	}
+	// Rust Edge handles subsequent response.create turns without a Go control
+	// plane round-trip. A deny policy must therefore stay on the Go WS relay,
+	// which can reject every turn without weakening the lease/settlement model.
+	if apiKey.Group != nil && service.NormalizeMaxReasoningEffortOverLimit(apiKey.Group.MaxReasoningEffortOverLimit) == service.ReasoningEffortOverLimitDeny {
+		return fallback("reasoning_effort_deny_requires_go_ws")
+	}
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	if reason := openAIEdgeRolloutRejectReason(cfg, apiKey, reqModel, req.EdgeRequestID); reason != "" {
 		return fallback(reason)
@@ -1752,7 +1775,13 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	}
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, req.Body, openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID))
 	if apiKey.Group != nil {
-		forwardBody, _ = service.ApplyOpenAIReasoningEffortPolicy(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
+		var policyErr error
+		forwardBody, _, policyErr = service.ApplyOpenAIReasoningEffortPolicyWithAction(forwardBody, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		var overLimit *service.ReasoningEffortOverLimitError
+		if errors.As(policyErr, &overLimit) {
+			h.errorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+			return service.OpenAIEdgePlan{}, false
+		}
 	}
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
@@ -1823,6 +1852,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
+		plan.MaxReasoningEffortOverLimit = apiKey.Group.MaxReasoningEffortOverLimit
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
 	plan.EdgeRequestID = edgeRequestID
@@ -1836,48 +1866,49 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		edgeRequestID, "/v1/responses",
 	)
 	lease := &openAIEdgeLease{
-		edgeRequestID:      edgeRequestID,
-		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
-		edgeInstanceID:     strings.TrimSpace(req.EdgeInstanceID),
-		leaseID:            leaseID,
-		currentAttemptID:   uuid.NewString(),
-		createdAt:          createdAt,
-		expiresAt:          createdAt.Add(ttl),
-		userReleaseFunc:    userReleaseFunc,
-		accountReleaseFunc: accountReleaseFunc,
-		apiKey:             apiKey,
-		subject:            subject,
-		subscription:       subscription,
-		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
-		account:            account,
-		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
-		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
-		forwardBody:        append([]byte(nil), forwardBody...),
-		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
-		lastPlan:           plan,
-		sessionHash:        sessionHash,
-		failedAccountIDs:   make(map[int64]struct{}),
-		sameAccountRetries: make(map[int64]int),
-		sameRuleRetries:    make(sameAccountRetryRuleCounts),
-		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
-		maxAccountSwitches: h.maxAccountSwitches,
-		lockedPriority:     -1,
-		routingModel:       reqModel,
-		requestModel:       prepared.Model,
-		requestPlatform:    requestPlatform,
-		healthProbe:        strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
-		billingModel:       prepared.BillingModel,
-		upstreamModel:      prepared.UpstreamModel,
-		reasoningEffort:    prepared.ReasoningEffort,
-		serviceTier:        prepared.ServiceTier,
-		userAgent:          c.GetHeader("User-Agent"),
-		clientIP:           openAIEdgeClientIP(c, req),
-		inboundEndpoint:    "/v1/responses:ws",
-		upstreamEndpoint:   "wss:/v1/responses",
-		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
-		sessionID:          service.ExtractClientSessionID(c),
-		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
-		promptAudit:        promptAudit,
+		edgeRequestID:            edgeRequestID,
+		edgeNodeID:               strings.TrimSpace(req.EdgeNodeID),
+		edgeInstanceID:           strings.TrimSpace(req.EdgeInstanceID),
+		leaseID:                  leaseID,
+		currentAttemptID:         uuid.NewString(),
+		createdAt:                createdAt,
+		expiresAt:                createdAt.Add(ttl),
+		userReleaseFunc:          userReleaseFunc,
+		accountReleaseFunc:       accountReleaseFunc,
+		apiKey:                   apiKey,
+		subject:                  subject,
+		subscription:             subscription,
+		quotaPlatform:            service.QuotaPlatform(c.Request.Context(), apiKey),
+		account:                  account,
+		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		forwardBody:              append([]byte(nil), forwardBody...),
+		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
+		lastPlan:                 plan,
+		sessionHash:              sessionHash,
+		failedAccountIDs:         make(map[int64]struct{}),
+		sameAccountRetries:       make(map[int64]int),
+		sameRuleRetries:          make(sameAccountRetryRuleCounts),
+		sameAccountStarted:       initialSameAccountRetryStart(account, createdAt),
+		maxAccountSwitches:       h.maxAccountSwitches,
+		lockedPriority:           -1,
+		routingModel:             reqModel,
+		requestModel:             prepared.Model,
+		requestPlatform:          requestPlatform,
+		healthProbe:              strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
+		billingModel:             prepared.BillingModel,
+		upstreamModel:            prepared.UpstreamModel,
+		reasoningEffort:          prepared.ReasoningEffort,
+		requestedReasoningEffort: service.ExtractOpenAIReasoningEffort(req.Body),
+		serviceTier:              prepared.ServiceTier,
+		userAgent:                c.GetHeader("User-Agent"),
+		clientIP:                 openAIEdgeClientIP(c, req),
+		inboundEndpoint:          "/v1/responses:ws",
+		upstreamEndpoint:         "wss:/v1/responses",
+		requestPayloadHash:       service.HashUsageRequestPayload(req.Body),
+		sessionID:                service.ExtractClientSessionID(c),
+		channelUsageFields:       channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:              promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -3043,7 +3074,8 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		}
 
 		if successfulTerminal || openAIEdgeUsageIsBillable(result.Usage) || req.CyberBlocked {
-			h.submitOpenAIUsageRecordTask(context.Background(), result, func(ctx context.Context) {
+			usageCtx := service.WithRequestedReasoningEffort(context.Background(), lease.requestedReasoningEffort)
+			h.submitOpenAIUsageRecordTask(usageCtx, result, func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 					Result:                  result,
 					APIKey:                  lease.apiKey,

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -56,4 +58,111 @@ func TestApplyOpenAIReasoningEffortPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReasoningEffortMappingsRespectModelScopePrecedence(t *testing.T) {
+	mappings, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{
+		{From: "high", To: "low"},
+		{From: "high", To: "medium", MatchType: domain.ReasoningEffortMatchPrefix, Model: "gpt-5"},
+		{From: "high", To: "xhigh", MatchType: domain.ReasoningEffortMatchSuffix, Model: "-codex"},
+		{From: "high", To: "max", MatchType: domain.ReasoningEffortMatchExact, Model: "gpt-5-codex"},
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		model string
+		want  string
+	}{
+		{model: "gpt-5-codex", want: "max"},
+		{model: "gpt-5-mini", want: "medium"},
+		{model: "other-codex", want: "xhigh"},
+		{model: "other", want: "low"},
+	} {
+		body := []byte(`{"model":"` + tc.model + `","reasoning":{"effort":"high"}}`)
+		got, changed, policyErr := ApplyOpenAIReasoningEffortPolicyWithAction(body, "", mappings, ReasoningEffortOverLimitDowngrade)
+		require.NoError(t, policyErr)
+		require.True(t, changed)
+		require.Equal(t, tc.want, gjson.GetBytes(got, "reasoning.effort").String())
+	}
+}
+
+func TestReasoningEffortOverLimitDenyAndRequestedValueContext(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","reasoning":{"effort":"xhigh"}}`)
+	got, changed, err := ApplyOpenAIReasoningEffortPolicyWithAction(body, "medium", nil, ReasoningEffortOverLimitDeny)
+	require.ErrorAs(t, err, new(*ReasoningEffortOverLimitError))
+	require.False(t, changed)
+	require.Equal(t, body, got)
+
+	ctx := WithRequestedReasoningEffort(context.Background(), ExtractOpenAIReasoningEffort(body))
+	requested := RequestedReasoningEffortFromContext(ctx)
+	require.NotNil(t, requested)
+	require.Equal(t, "xhigh", *requested)
+}
+
+func TestRequestedReasoningEffortContextBoundsUsageLogValue(t *testing.T) {
+	ctx := WithRequestedReasoningEffort(context.Background(), "  abcdefghijklmnopqrstuvwxyz  ")
+	requested := RequestedReasoningEffortFromContext(ctx)
+	require.NotNil(t, requested)
+	require.Equal(t, "abcdefghijklmnopqrst", *requested)
+}
+
+func TestReasoningEffortPolicyHandlesAnthropicOutputConfigEffort(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-5","output_config":{"effort":"high"}}`)
+	require.Equal(t, "high", ExtractOpenAIReasoningEffort(body))
+
+	got, changed, err := ApplyOpenAIReasoningEffortPolicyWithAction(body, "medium", nil, ReasoningEffortOverLimitDowngrade)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "medium", gjson.GetBytes(got, "output_config.effort").String())
+
+	denied, changed, err := ApplyOpenAIReasoningEffortPolicyWithAction(body, "medium", nil, ReasoningEffortOverLimitDeny)
+	require.ErrorAs(t, err, new(*ReasoningEffortOverLimitError))
+	require.False(t, changed)
+	require.Equal(t, body, denied)
+}
+
+func TestReasoningEffortPolicyForWSUsesSessionModelAndKeepsRequestedValue(t *testing.T) {
+	group := &Group{
+		MaxReasoningEffort:          "medium",
+		MaxReasoningEffortOverLimit: ReasoningEffortOverLimitDowngrade,
+		ReasoningEffortMappings: []ReasoningEffortMapping{
+			{From: "high", To: "low", MatchType: domain.ReasoningEffortMatchPrefix, Model: "gpt-5.6"},
+		},
+	}
+	body := []byte(`{"type":"response.create","reasoning":{"effort":"high"}}`)
+
+	got, requested, err := applyOpenAIReasoningEffortPolicyForWS(body, "gpt-5.6-sol", group)
+	require.NoError(t, err)
+	require.Equal(t, "high", requested)
+	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(got, "model").String())
+	require.Equal(t, "low", gjson.GetBytes(got, "reasoning.effort").String())
+}
+
+func TestReasoningEffortPolicyForWSDeniesOverLimit(t *testing.T) {
+	group := &Group{
+		MaxReasoningEffort:          "medium",
+		MaxReasoningEffortOverLimit: ReasoningEffortOverLimitDeny,
+	}
+	body := []byte(`{"type":"response.create","model":"gpt-5.6-sol","reasoning":{"effort":"high"}}`)
+
+	got, requested, err := applyOpenAIReasoningEffortPolicyForWS(body, "gpt-5.6-sol", group)
+	require.Error(t, err)
+	require.Equal(t, "high", requested)
+	require.Equal(t, body, got)
+}
+
+func TestReasoningEffortPolicyForWSMatchesClientModelWithoutReplacingMappedModel(t *testing.T) {
+	group := &Group{
+		MaxReasoningEffortOverLimit: ReasoningEffortOverLimitDowngrade,
+		ReasoningEffortMappings: []ReasoningEffortMapping{
+			{From: "high", To: "low", MatchType: domain.ReasoningEffortMatchExact, Model: "client-alias"},
+		},
+	}
+	body := []byte(`{"type":"response.create","model":"gpt-5.6-sol","reasoning":{"effort":"high"}}`)
+
+	got, requested, err := applyOpenAIReasoningEffortPolicyForWS(body, "client-alias", group)
+	require.NoError(t, err)
+	require.Equal(t, "high", requested)
+	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(got, "model").String())
+	require.Equal(t, "low", gjson.GetBytes(got, "reasoning.effort").String())
 }

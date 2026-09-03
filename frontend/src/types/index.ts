@@ -107,6 +107,8 @@ export interface AdminUser extends User {
   last_used_at?: string | null
   // 用户专属分组倍率配置 (group_id -> rate_multiplier)
   group_rates?: Record<number, number>
+  // When true, public groups must also be explicitly listed in allowed_groups.
+  restrict_public_groups?: boolean
   // 当前并发数（仅管理员列表接口返回）
   current_concurrency?: number
 }
@@ -530,6 +532,8 @@ export interface OpenAIMessagesDispatchModelConfig {
 export interface ReasoningEffortMapping {
   from: string
   to: string
+  match_type?: 'exact' | 'prefix' | 'suffix'
+  model?: string
 }
 
 export interface Group {
@@ -540,7 +544,9 @@ export interface Group {
   rate_multiplier: number
   upstream_billing_guard_max_multiplier?: number | null
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
+  force_openai_fast?: boolean
   max_reasoning_effort?: string
+  max_reasoning_effort_over_limit?: 'downgrade' | 'deny'
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   is_exclusive: boolean
   status: 'active' | 'inactive'
@@ -557,6 +563,7 @@ export interface Group {
     input_price: number | null
     output_price: number | null
     cache_write_price: number | null
+    cache_write_1h_price?: number | null
     cache_read_price: number | null
     image_input_price: number | null
     image_output_price: number | null
@@ -568,6 +575,7 @@ export interface Group {
       input_price: number | null
       output_price: number | null
       cache_write_price: number | null
+      cache_write_1h_price?: number | null
       cache_read_price: number | null
       per_request_price: number | null
       sort_order: number
@@ -758,7 +766,9 @@ export interface CreateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  force_openai_fast?: boolean
   max_reasoning_effort?: string
+  max_reasoning_effort_over_limit?: 'downgrade' | 'deny'
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
@@ -819,7 +829,9 @@ export interface UpdateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  force_openai_fast?: boolean
   max_reasoning_effort?: string
+  max_reasoning_effort_over_limit?: 'downgrade' | 'deny'
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
@@ -1873,6 +1885,7 @@ export interface UpdateUserRequest {
   concurrency?: number
   status?: 'active' | 'disabled'
   allowed_groups?: number[] | null
+  restrict_public_groups?: boolean
   // 用户专属分组倍率配置 (group_id -> rate_multiplier | null)
   // null 表示删除该分组的专属倍率
   group_rates?: Record<number, number | null>

@@ -125,6 +125,11 @@ func TotpEnabled(v bool) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldTotpEnabled, v))
 }
 
+// RestrictPublicGroups applies equality check predicate on the "restrict_public_groups" field. It's identical to RestrictPublicGroupsEQ.
+func RestrictPublicGroups(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldRestrictPublicGroups, v))
+}
+
 // TotpEnabledAt applies equality check predicate on the "totp_enabled_at" field. It's identical to TotpEnabledAtEQ.
 func TotpEnabledAt(v time.Time) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldTotpEnabledAt, v))
@@ -898,6 +903,16 @@ func TotpEnabledEQ(v bool) predicate.User {
 // TotpEnabledNEQ applies the NEQ predicate on the "totp_enabled" field.
 func TotpEnabledNEQ(v bool) predicate.User {
 	return predicate.User(sql.FieldNEQ(FieldTotpEnabled, v))
+}
+
+// RestrictPublicGroupsEQ applies the EQ predicate on the "restrict_public_groups" field.
+func RestrictPublicGroupsEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldRestrictPublicGroups, v))
+}
+
+// RestrictPublicGroupsNEQ applies the NEQ predicate on the "restrict_public_groups" field.
+func RestrictPublicGroupsNEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldNEQ(FieldRestrictPublicGroups, v))
 }
 
 // TotpEnabledAtEQ applies the EQ predicate on the "totp_enabled_at" field.

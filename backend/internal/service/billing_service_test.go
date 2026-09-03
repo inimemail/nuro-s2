@@ -5,6 +5,7 @@ package service
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,22 @@ import (
 
 func newTestBillingService() *BillingService {
 	return NewBillingService(&config.Config{}, nil)
+}
+
+func TestDeepSeekPeakMultiplier(t *testing.T) {
+	weekdayPeak := time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
+	weekdayOffPeak := time.Date(2026, 9, 3, 5, 0, 0, 0, time.UTC)
+	weekendPeakHour := time.Date(2026, 9, 5, 2, 0, 0, 0, time.UTC)
+	require.Equal(t, 2.0, deepseekPeakMultiplierAt(weekdayPeak))
+	require.Equal(t, 1.0, deepseekPeakMultiplierAt(weekdayOffPeak))
+	require.Equal(t, 1.0, deepseekPeakMultiplierAt(weekendPeakHour))
+}
+
+func TestDeepSeekCustomPricingIsNotReplacedByOfficialRate(t *testing.T) {
+	svc := newTestBillingService()
+	custom := &ModelPricing{InputPricePerToken: 9e-7, OutputPricePerToken: 1.7e-6, CacheReadPricePerToken: 2e-7}
+	got := svc.applyModelSpecificPricingPolicyEx("deepseek-v4-pro", custom, false)
+	require.Equal(t, custom, got)
 }
 
 func TestCalculateCost_BasicComputation(t *testing.T) {
@@ -149,7 +166,7 @@ func TestGetModelPricing_ChineseFallbacks(t *testing.T) {
 		input  float64
 		output float64
 	}{
-		{"deepseek-chat", 1.4e-7, 2.8e-7},
+		{"deepseek-chat", 2.2e-7, 6.6e-7},
 		{"glm-5.1", 1.4e-6, 4.4e-6},
 		{"glm-5.2", 1.4e-6, 4.4e-6},
 		{"kimi-k2.6", 0.95e-6, 4e-6},
@@ -166,6 +183,13 @@ func TestGetModelPricing_ChineseFallbacks(t *testing.T) {
 			require.InDelta(t, tt.output, pricing.OutputPricePerToken, 1e-12)
 		})
 	}
+}
+
+func TestGetModelPricing_UnknownDeepSeekModelDoesNotUseV4OfficialFallback(t *testing.T) {
+	svc := newTestBillingService()
+	pricing, err := svc.GetModelPricing("deepseek-future-experimental")
+	require.Error(t, err)
+	require.Nil(t, pricing)
 }
 
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
@@ -463,6 +487,8 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{name: "openai legacy gpt5.1 codex falls back to gpt5.3 codex", model: "gpt-5.1-codex", expectedInput: 1.5e-6},
 		{name: "openai legacy codex mini latest falls back to gpt5.3 codex", model: "codex-mini-latest", expectedInput: 1.5e-6},
 		{name: "openai unknown no fallback", model: "gpt-unknown-model", expectNilPricing: true},
+		{name: "deepseek official flash prefix", model: "deepseek-v4-flash-20260901", expectedInput: deepseekFlashOffPeakInputPrice},
+		{name: "deepseek embedded name no fallback", model: "proxy-deepseek-v4-flash", expectNilPricing: true},
 		{name: "non supported family", model: "qwen-max", expectNilPricing: true},
 	}
 

@@ -692,6 +692,37 @@
         </div>
       </div>
 
+      <!-- Zhipu Coding Plan team credentials -->
+      <div v-if="allZhipuApiKeys" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between gap-4">
+          <div class="min-w-0 flex-1">
+            <label class="input-label mb-0" for="bulk-edit-zhipu-team-enabled">
+              {{ t('admin.accounts.cnProviders.zhipuTeam.title') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}
+            </p>
+          </div>
+          <input
+            v-model="enableZhipuTeam"
+            id="bulk-edit-zhipu-team-enabled"
+            type="checkbox"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div v-if="enableZhipuTeam" class="grid gap-3 rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-800/50 dark:bg-violet-900/10 sm:grid-cols-2">
+          <label class="min-w-0">
+            <span class="input-label">{{ t('admin.accounts.cnProviders.zhipuTeam.organization') }}</span>
+            <input v-model="zhipuOrganization" class="input" type="text" :placeholder="t('admin.accounts.cnProviders.zhipuTeam.organizationPlaceholder')" />
+          </label>
+          <label class="min-w-0">
+            <span class="input-label">{{ t('admin.accounts.cnProviders.zhipuTeam.project') }}</span>
+            <input v-model="zhipuProject" class="input" type="text" :placeholder="t('admin.accounts.cnProviders.zhipuTeam.projectPlaceholder')" />
+          </label>
+          <p class="input-hint sm:col-span-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
+        </div>
+      </div>
+
       <!-- Concurrency & Priority -->
       <div class="grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 dark:border-dark-600 lg:grid-cols-4">
         <div>
@@ -1971,6 +2002,14 @@ const allAnthropicAPIKey = computed(() => {
   )
 })
 
+const allZhipuApiKeys = computed(() =>
+  !targetIncludesShadow.value &&
+  targetSelectedPlatforms.value.length === 1 &&
+  targetSelectedPlatforms.value[0] === 'zhipu' &&
+  targetSelectedTypes.value.length > 0 &&
+  targetSelectedTypes.value.every(t => t === 'apikey')
+)
+
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
   return (
@@ -2033,6 +2072,7 @@ const enableOpenAICompactModelMapping = ref(false)
 const enableAnthropicAPIKeyAuthScheme = ref(false)
 const enableRpmLimit = ref(false)
 const enableCodexImageGenerationBridge = ref(false)
+const enableZhipuTeam = ref(false)
 
 // State - field values
 const submitting = ref(false)
@@ -2126,6 +2166,8 @@ const bulkRpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref<string | null>(null)
 type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled' | 'block'
 const codexImageGenerationBridgeMode = ref<CodexImageGenerationBridgeMode>('disabled')
+const zhipuOrganization = ref('')
+const zhipuProject = ref('')
 const codexImageGenerationBridgeOptions = computed(() => [
   {
     value: 'inherit' as const,
@@ -2404,6 +2446,23 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       credentials.base_url = baseUrlValue
       credentialsChanged = true
     }
+  }
+
+  if (enableZhipuTeam.value && allZhipuApiKeys.value) {
+    const organization = zhipuOrganization.value.trim()
+    const project = zhipuProject.value.trim()
+    if (organization) {
+      credentials.zhipu_organization = organization
+      if (project) credentials.zhipu_project = project
+      else {
+        const removeKeys = (updates.credentials_remove_keys as string[] | undefined) ?? []
+        updates.credentials_remove_keys = [...removeKeys, 'zhipu_project']
+      }
+    } else {
+      const removeKeys = (updates.credentials_remove_keys as string[] | undefined) ?? []
+      updates.credentials_remove_keys = [...removeKeys, 'zhipu_organization', 'zhipu_project']
+    }
+    credentialsChanged = true
   }
 
   if (enableOpenAIPassthrough.value) {
@@ -2750,6 +2809,7 @@ const handleSubmit = async () => {
     enableOpenAICompactModelMapping.value ||
     enableAnthropicAPIKeyAuthScheme.value ||
     enableCodexImageGenerationBridge.value ||
+    enableZhipuTeam.value ||
     enableRpmLimit.value ||
     userMsgQueueMode.value !== null
 
@@ -2892,6 +2952,7 @@ watch(
       enableOpenAICompactModelMapping.value = false
       enableAnthropicAPIKeyAuthScheme.value = false
       enableCodexImageGenerationBridge.value = false
+      enableZhipuTeam.value = false
       enableRpmLimit.value = false
 
       // Reset all values
@@ -2939,6 +3000,8 @@ watch(
       bulkRpmStickyBuffer.value = null
       userMsgQueueMode.value = null
       codexImageGenerationBridgeMode.value = 'disabled'
+      zhipuOrganization.value = ''
+      zhipuProject.value = ''
 
       // Reset mixed channel warning state
       showMixedChannelWarning.value = false

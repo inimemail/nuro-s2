@@ -132,6 +132,11 @@
             </div>
           </div>
         </div>
+        <div v-if="account.platform === 'zhipu' && cnBillingMode === 'coding_plan'" class="rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-800/50 dark:bg-violet-900/10">
+          <div class="flex items-center gap-2"><label class="input-label mb-0">{{ t('admin.accounts.cnProviders.zhipuTeam.title') }}</label><HelpTooltip trigger="click" width-class="w-80"><p class="mb-1 font-medium">{{ t('admin.accounts.cnProviders.zhipuTeam.help.title') }}</p><ol class="list-decimal space-y-1 pl-4"><li>{{ t('admin.accounts.cnProviders.zhipuTeam.help.step1') }}</li><li>{{ t('admin.accounts.cnProviders.zhipuTeam.help.step2') }}</li><li>{{ t('admin.accounts.cnProviders.zhipuTeam.help.step3') }}</li><li>{{ t('admin.accounts.cnProviders.zhipuTeam.help.step4') }}</li></ol><p class="mt-2 break-all rounded bg-black/10 p-1.5 font-mono text-[11px]">{{ t('admin.accounts.cnProviders.zhipuTeam.help.example') }}</p></HelpTooltip></div>
+          <div class="mt-2 grid gap-3 sm:grid-cols-2"><label class="min-w-0"><span class="input-label">{{ t('admin.accounts.cnProviders.zhipuTeam.organization') }}</span><input v-model="editZhipuOrganization" class="input" type="text" :placeholder="t('admin.accounts.cnProviders.zhipuTeam.organizationPlaceholder')" /></label><label class="min-w-0"><span class="input-label">{{ t('admin.accounts.cnProviders.zhipuTeam.project') }}</span><input v-model="editZhipuProject" class="input" type="text" :placeholder="t('admin.accounts.cnProviders.zhipuTeam.projectPlaceholder')" /></label></div>
+          <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
@@ -3739,6 +3744,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -4724,6 +4730,8 @@ type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 const cnBillingMode = ref<CNBillingMode>('payg')
 const cnApiMode = ref<CNApiMode>('adaptive')
 const adaptiveBaseUrls = ref<Record<string, string>>({})
+const editZhipuOrganization = ref('')
+const editZhipuProject = ref('')
 const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account?.platform || ''))
 const cnBillingPlanSupported = computed(() => props.account?.platform === 'kimi' || props.account?.platform === 'zhipu')
 const cnApiProtocolOptions = computed(() => {
@@ -4740,7 +4748,7 @@ const cnApiProtocolOptions = computed(() => {
       description: t('admin.accounts.cnProviders.anthropicDesc')
     }
   ]
-  if (props.account?.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
+  if (props.account?.platform === 'deepseek' || props.account?.platform === 'kimi') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
   return options
 })
 const cnAdaptiveProtocolOptions = computed(() => {
@@ -4749,6 +4757,7 @@ const cnAdaptiveProtocolOptions = computed(() => {
     { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : 'https://api.deepseek.com/anthropic' }
   ]
   if (props.account?.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.deepseek.com' })
+  if (props.account?.platform === 'kimi') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1' })
   return options
 })
 function resetAdaptiveBaseUrls() {
@@ -4756,6 +4765,7 @@ function resetAdaptiveBaseUrls() {
 }
 const cnBaseUrlPresets = computed(() => {
   if (props.account?.platform === 'kimi' && cnApiMode.value === 'anthropic') return [{ label: t('admin.accounts.cnProviders.anthropic'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic' }]
+  if (props.account?.platform === 'kimi' && cnApiMode.value === 'responses') return [{ label: t('admin.accounts.cnProviders.responses'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1' }]
   if (props.account?.platform === 'kimi') return [
     { label: t('admin.accounts.cnProviders.kimiMoonshot'), url: 'https://api.moonshot.cn/v1' },
     { label: t('admin.accounts.cnProviders.kimiCoding'), url: 'https://api.kimi.com/coding/v1' }
@@ -5163,8 +5173,17 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   cnBillingMode.value = accountExtra.cn_billing_mode === 'coding_plan' && (newAccount.platform === 'kimi' || newAccount.platform === 'zhipu')
     ? 'coding_plan'
     : 'payg'
+  editZhipuOrganization.value =
+    newAccount.platform === 'zhipu' && typeof credentials?.zhipu_organization === 'string'
+      ? credentials.zhipu_organization
+      : ''
+  editZhipuProject.value =
+    newAccount.platform === 'zhipu' && typeof credentials?.zhipu_project === 'string'
+      ? credentials.zhipu_project
+      : ''
   const storedCNApiMode = accountExtra.cn_api_mode ?? credentials?.api_protocol
-  cnApiMode.value = storedCNApiMode === 'adaptive' || storedCNApiMode === 'anthropic' || (storedCNApiMode === 'responses' && newAccount.platform === 'deepseek')
+  cnApiMode.value = storedCNApiMode === 'adaptive' || storedCNApiMode === 'anthropic' ||
+    (storedCNApiMode === 'responses' && (newAccount.platform === 'deepseek' || newAccount.platform === 'kimi'))
     ? storedCNApiMode as CNApiMode
     : 'chat_completions'
   const configuredAdaptiveUrls = (accountExtra.cn_api_base_urls ?? credentials?.api_base_urls) as Record<string, unknown> | undefined
@@ -6299,6 +6318,22 @@ const handleSubmit = async () => {
       } else if (isCNProvider.value) {
         newCredentials.base_url = newBaseUrl
         delete newCredentials.api_base_urls
+      }
+
+      if (props.account.platform === 'zhipu' && cnBillingMode.value === 'coding_plan') {
+        const organization = editZhipuOrganization.value.trim()
+        const project = editZhipuProject.value.trim()
+        if (organization) {
+          newCredentials.zhipu_organization = organization
+          if (project) newCredentials.zhipu_project = project
+          else delete newCredentials.zhipu_project
+        } else {
+          delete newCredentials.zhipu_organization
+          delete newCredentials.zhipu_project
+        }
+      } else if (props.account.platform === 'zhipu') {
+        delete newCredentials.zhipu_organization
+        delete newCredentials.zhipu_project
       }
 
       // Handle API key

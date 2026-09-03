@@ -281,6 +281,9 @@ func validatePayGAccount(account *Account) error {
 	if !account.IsCNProvider() {
 		return infraerrors.New(http.StatusBadRequest, "CN_BALANCE_INVALID_PLATFORM", "account is not a CN provider account")
 	}
+	if IsOllamaCloudUsageAccount(account) {
+		return infraerrors.New(http.StatusBadRequest, "CN_BALANCE_OLLAMA_CLOUD", "Ollama Cloud accounts use the Ollama usage endpoint")
+	}
 	// coding 账号走额度探测，余额端点不适用。
 	if account.IsCodingPlan() {
 		return infraerrors.New(http.StatusBadRequest, "CN_BALANCE_CODING_PLAN", "coding plan account has no balance endpoint; use quota probe")

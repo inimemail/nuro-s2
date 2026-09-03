@@ -598,10 +598,15 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input v-model="createForm.force_openai_fast" type="checkbox" class="checkbox" />
+          <span>Force OpenAI Fast</span>
+        </label>
         <GroupReasoningEffortControl
-          v-if="createForm.platform === 'openai'"
+          v-if="createForm.platform === 'openai' || createForm.platform === 'composite'"
           id-prefix="create-group"
           v-model:max-reasoning-effort="createForm.max_reasoning_effort"
+          v-model:max-reasoning-effort-over-limit="createForm.max_reasoning_effort_over_limit"
           v-model:mappings="createForm.reasoning_effort_mappings"
           :values="reasoningEffortValues"
         />
@@ -2203,10 +2208,15 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input v-model="editForm.force_openai_fast" type="checkbox" class="checkbox" />
+          <span>Force OpenAI Fast</span>
+        </label>
         <GroupReasoningEffortControl
-          v-if="editForm.platform === 'openai'"
+          v-if="editForm.platform === 'openai' || editForm.platform === 'composite'"
           id-prefix="edit-group"
           v-model:max-reasoning-effort="editForm.max_reasoning_effort"
+          v-model:max-reasoning-effort-over-limit="editForm.max_reasoning_effort_over_limit"
           v-model:mappings="editForm.reasoning_effort_mappings"
           :values="reasoningEffortValues"
         />
@@ -3819,7 +3829,7 @@ const editCompositeImageCapability = ref(false);
 
 const emptyGroupPricing = (): PricingFormEntry => ({
   models: [], billing_mode: "token", input_price: null, output_price: null,
-  cache_write_price: null, cache_read_price: null, image_input_price: null,
+  cache_write_price: null, cache_write_1h_price: null, cache_read_price: null, image_input_price: null,
   image_output_price: null, per_request_price: null, intervals: [],
 });
 const addGroupPricing = (entries: PricingFormEntry[]) => entries.push(emptyGroupPricing());
@@ -3827,14 +3837,14 @@ const groupPricingFromAPI = (pricing: AdminGroup["model_pricing"]): PricingFormE
   (pricing || []).map((entry) => ({
     models: entry.models || [], billing_mode: entry.billing_mode as PricingFormEntry["billing_mode"],
     input_price: perTokenToMTok(entry.input_price), output_price: perTokenToMTok(entry.output_price),
-    cache_write_price: perTokenToMTok(entry.cache_write_price), cache_read_price: perTokenToMTok(entry.cache_read_price),
+    cache_write_price: perTokenToMTok(entry.cache_write_price), cache_write_1h_price: perTokenToMTok(entry.cache_write_1h_price), cache_read_price: perTokenToMTok(entry.cache_read_price),
     image_input_price: perTokenToMTok(entry.image_input_price), image_output_price: perTokenToMTok(entry.image_output_price),
     per_request_price: entry.per_request_price, intervals: apiIntervalsToForm((entry.intervals || []) as any),
   }));
 const groupPricingToAPI = (pricing: PricingFormEntry[], platform: string) => pricing
   .map((entry) => ({ platform, models: entry.models, billing_mode: entry.billing_mode,
     input_price: mTokToPerToken(entry.input_price), output_price: mTokToPerToken(entry.output_price),
-    cache_write_price: mTokToPerToken(entry.cache_write_price), cache_read_price: mTokToPerToken(entry.cache_read_price),
+    cache_write_price: mTokToPerToken(entry.cache_write_price), cache_write_1h_price: mTokToPerToken(entry.cache_write_1h_price), cache_read_price: mTokToPerToken(entry.cache_read_price),
     image_input_price: mTokToPerToken(entry.image_input_price), image_output_price: mTokToPerToken(entry.image_output_price),
     per_request_price: toNullableNumber(entry.per_request_price),
     intervals: entry.billing_mode === "token" ? [] : formIntervalsToAPI(entry.intervals || []),
@@ -4275,7 +4285,9 @@ const createForm = reactive({
   copy_accounts_from_group_ids: [] as number[],
   // 分组级 RPM 限制（每用户每分钟最大请求数；0 = 不限制）
   rpm_limit: 0 as number,
+  force_openai_fast: false,
   max_reasoning_effort: "",
+  max_reasoning_effort_over_limit: "downgrade" as "downgrade" | "deny",
   reasoning_effort_mappings: [] as ReasoningEffortMapping[],
 });
 
@@ -4633,7 +4645,9 @@ const editForm = reactive({
   copy_accounts_from_group_ids: [] as number[],
   // 分组级 RPM 限制（每用户每分钟最大请求数；0 = 不限制）
   rpm_limit: 0 as number,
+  force_openai_fast: false,
   max_reasoning_effort: "",
+  max_reasoning_effort_over_limit: "downgrade" as "downgrade" | "deny",
   reasoning_effort_mappings: [] as ReasoningEffortMapping[],
 });
 
@@ -5122,7 +5136,7 @@ const handleCreateGroup = async () => {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
-  if (createForm.platform === "openai" && !validateReasoningEffortMappings(createForm.reasoning_effort_mappings, createForm.platform)) {
+  if ((createForm.platform === "openai" || createForm.platform === "composite") && !validateReasoningEffortMappings(createForm.reasoning_effort_mappings, createForm.platform)) {
     appStore.showError(t("admin.groups.form.reasoningEffortMappingInvalid"));
     return;
   }
@@ -5302,7 +5316,9 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.mcp_xml_inject = group.mcp_xml_inject ?? true;
   editForm.copy_accounts_from_group_ids = []; // 复制账号字段每次编辑时重置为空
   editForm.rpm_limit = group.rpm_limit ?? 0;
+  editForm.force_openai_fast = group.force_openai_fast ?? false;
   editForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(group.platform, group.max_reasoning_effort);
+  editForm.max_reasoning_effort_over_limit = group.max_reasoning_effort_over_limit ?? "downgrade";
   editForm.reasoning_effort_mappings = reasoningEffortMappingsToRows(group.reasoning_effort_mappings, group.platform);
   resetModelsListState(editModelsListState, group.models_list_config);
   // 加载模型路由规则（异步加载账号名称）
@@ -5366,7 +5382,7 @@ const handleUpdateGroup = async () => {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
-  if (editForm.platform === "openai" && !validateReasoningEffortMappings(editForm.reasoning_effort_mappings, editForm.platform)) {
+  if ((editForm.platform === "openai" || editForm.platform === "composite") && !validateReasoningEffortMappings(editForm.reasoning_effort_mappings, editForm.platform)) {
     appStore.showError(t("admin.groups.form.reasoningEffortMappingInvalid"));
     return;
   }

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestAPIKeyService_AcceptsV20AuthSnapshotWithoutEdgeProtectionOverride(t *testing.T) {
+func TestAPIKeyService_RejectsV20AuthSnapshotAfterPolicyFieldsAdded(t *testing.T) {
 	const legacy = `{
 		"snapshot": {
 			"version": 20,
@@ -41,11 +41,8 @@ func TestAPIKeyService_AcceptsV20AuthSnapshotWithoutEdgeProtectionOverride(t *te
 	if err != nil {
 		t.Fatalf("apply v20 auth snapshot: %v", err)
 	}
-	if !ok || apiKey == nil || apiKey.Group == nil {
-		t.Fatalf("expected v20 auth snapshot to remain usable, got ok=%v apiKey=%#v", ok, apiKey)
-	}
-	if apiKey.Group.EdgeProtectionEnabled != nil {
-		t.Fatalf("missing v20 override must inherit the global Edge protection setting")
+	if ok || apiKey != nil {
+		t.Fatalf("expected v20 auth snapshot to be rejected after cache schema change, got ok=%v apiKey=%#v", ok, apiKey)
 	}
 }
 

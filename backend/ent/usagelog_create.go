@@ -113,6 +113,34 @@ func (_c *UsageLogCreate) SetNillableUpstreamResponseModel(v *string) *UsageLogC
 	return _c
 }
 
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (_c *UsageLogCreate) SetRequestedReasoningEffort(v string) *UsageLogCreate {
+	_c.mutation.SetRequestedReasoningEffort(v)
+	return _c
+}
+
+// SetNillableRequestedReasoningEffort sets the "requested_reasoning_effort" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableRequestedReasoningEffort(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetRequestedReasoningEffort(*v)
+	}
+	return _c
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (_c *UsageLogCreate) SetNativeCompactionV2(v bool) *UsageLogCreate {
+	_c.mutation.SetNativeCompactionV2(v)
+	return _c
+}
+
+// SetNillableNativeCompactionV2 sets the "native_compaction_v2" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableNativeCompactionV2(v *bool) *UsageLogCreate {
+	if v != nil {
+		_c.SetNativeCompactionV2(*v)
+	}
+	return _c
+}
+
 // SetUpstreamModelMismatch sets the "upstream_model_mismatch" field.
 func (_c *UsageLogCreate) SetUpstreamModelMismatch(v bool) *UsageLogCreate {
 	_c.mutation.SetUpstreamModelMismatch(v)
@@ -767,6 +795,10 @@ func (_c *UsageLogCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *UsageLogCreate) defaults() {
+	if _, ok := _c.mutation.NativeCompactionV2(); !ok {
+		v := usagelog.DefaultNativeCompactionV2
+		_c.mutation.SetNativeCompactionV2(v)
+	}
 	if _, ok := _c.mutation.InputTokens(); !ok {
 		v := usagelog.DefaultInputTokens
 		_c.mutation.SetInputTokens(v)
@@ -895,6 +927,14 @@ func (_c *UsageLogCreate) check() error {
 		if err := usagelog.UpstreamResponseModelValidator(v); err != nil {
 			return &ValidationError{Name: "upstream_response_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_response_model": %w`, err)}
 		}
+	}
+	if v, ok := _c.mutation.RequestedReasoningEffort(); ok {
+		if err := usagelog.RequestedReasoningEffortValidator(v); err != nil {
+			return &ValidationError{Name: "requested_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "UsageLog.requested_reasoning_effort": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.NativeCompactionV2(); !ok {
+		return &ValidationError{Name: "native_compaction_v2", err: errors.New(`ent: missing required field "UsageLog.native_compaction_v2"`)}
 	}
 	if v, ok := _c.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
@@ -1065,6 +1105,14 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.UpstreamResponseModel(); ok {
 		_spec.SetField(usagelog.FieldUpstreamResponseModel, field.TypeString, value)
 		_node.UpstreamResponseModel = &value
+	}
+	if value, ok := _c.mutation.RequestedReasoningEffort(); ok {
+		_spec.SetField(usagelog.FieldRequestedReasoningEffort, field.TypeString, value)
+		_node.RequestedReasoningEffort = &value
+	}
+	if value, ok := _c.mutation.NativeCompactionV2(); ok {
+		_spec.SetField(usagelog.FieldNativeCompactionV2, field.TypeBool, value)
+		_node.NativeCompactionV2 = value
 	}
 	if value, ok := _c.mutation.UpstreamModelMismatch(); ok {
 		_spec.SetField(usagelog.FieldUpstreamModelMismatch, field.TypeBool, value)
@@ -1496,6 +1544,36 @@ func (u *UsageLogUpsert) UpdateUpstreamResponseModel() *UsageLogUpsert {
 // ClearUpstreamResponseModel clears the value of the "upstream_response_model" field.
 func (u *UsageLogUpsert) ClearUpstreamResponseModel() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldUpstreamResponseModel)
+	return u
+}
+
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (u *UsageLogUpsert) SetRequestedReasoningEffort(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldRequestedReasoningEffort, v)
+	return u
+}
+
+// UpdateRequestedReasoningEffort sets the "requested_reasoning_effort" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateRequestedReasoningEffort() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldRequestedReasoningEffort)
+	return u
+}
+
+// ClearRequestedReasoningEffort clears the value of the "requested_reasoning_effort" field.
+func (u *UsageLogUpsert) ClearRequestedReasoningEffort() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldRequestedReasoningEffort)
+	return u
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (u *UsageLogUpsert) SetNativeCompactionV2(v bool) *UsageLogUpsert {
+	u.Set(usagelog.FieldNativeCompactionV2, v)
+	return u
+}
+
+// UpdateNativeCompactionV2 sets the "native_compaction_v2" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateNativeCompactionV2() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldNativeCompactionV2)
 	return u
 }
 
@@ -2487,6 +2565,41 @@ func (u *UsageLogUpsertOne) UpdateUpstreamResponseModel() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearUpstreamResponseModel() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearUpstreamResponseModel()
+	})
+}
+
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (u *UsageLogUpsertOne) SetRequestedReasoningEffort(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestedReasoningEffort(v)
+	})
+}
+
+// UpdateRequestedReasoningEffort sets the "requested_reasoning_effort" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateRequestedReasoningEffort() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestedReasoningEffort()
+	})
+}
+
+// ClearRequestedReasoningEffort clears the value of the "requested_reasoning_effort" field.
+func (u *UsageLogUpsertOne) ClearRequestedReasoningEffort() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearRequestedReasoningEffort()
+	})
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (u *UsageLogUpsertOne) SetNativeCompactionV2(v bool) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetNativeCompactionV2(v)
+	})
+}
+
+// UpdateNativeCompactionV2 sets the "native_compaction_v2" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateNativeCompactionV2() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateNativeCompactionV2()
 	})
 }
 
@@ -3776,6 +3889,41 @@ func (u *UsageLogUpsertBulk) UpdateUpstreamResponseModel() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearUpstreamResponseModel() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearUpstreamResponseModel()
+	})
+}
+
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (u *UsageLogUpsertBulk) SetRequestedReasoningEffort(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestedReasoningEffort(v)
+	})
+}
+
+// UpdateRequestedReasoningEffort sets the "requested_reasoning_effort" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateRequestedReasoningEffort() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestedReasoningEffort()
+	})
+}
+
+// ClearRequestedReasoningEffort clears the value of the "requested_reasoning_effort" field.
+func (u *UsageLogUpsertBulk) ClearRequestedReasoningEffort() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearRequestedReasoningEffort()
+	})
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (u *UsageLogUpsertBulk) SetNativeCompactionV2(v bool) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetNativeCompactionV2(v)
+	})
+}
+
+// UpdateNativeCompactionV2 sets the "native_compaction_v2" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateNativeCompactionV2() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateNativeCompactionV2()
 	})
 }
 

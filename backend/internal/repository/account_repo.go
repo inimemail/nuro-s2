@@ -2893,15 +2893,33 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		args = append(args, *updates.Schedulable)
 		idx++
 	}
-	// JSONB 需要合并而非覆盖，使用 raw SQL 保持旧行为。
-	if len(updates.Credentials) > 0 {
-		payload, err := json.Marshal(updates.Credentials)
-		if err != nil {
-			return 0, err
+	// JSONB 需要合并而非覆盖；删除和写入组合成一个原子表达式。
+	if len(updates.CredentialsRemoveKeys) > 0 || len(updates.Credentials) > 0 {
+		credentialsExpr := "COALESCE(credentials, '{}'::jsonb)"
+		seen := make(map[string]struct{}, len(updates.CredentialsRemoveKeys))
+		for _, key := range updates.CredentialsRemoveKeys {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			credentialsExpr = "(" + credentialsExpr + " - $" + itoa(idx) + ")"
+			args = append(args, key)
+			idx++
 		}
-		setClauses = append(setClauses, "credentials = COALESCE(credentials, '{}'::jsonb) || $"+itoa(idx)+"::jsonb")
-		args = append(args, payload)
-		idx++
+		if len(updates.Credentials) > 0 {
+			payload, err := json.Marshal(updates.Credentials)
+			if err != nil {
+				return 0, err
+			}
+			credentialsExpr += " || $" + itoa(idx) + "::jsonb"
+			args = append(args, payload)
+			idx++
+		}
+		setClauses = append(setClauses, "credentials = "+credentialsExpr)
 	}
 	if len(updates.ExtraRemoveKeys) > 0 || len(updates.Extra) > 0 {
 		extraExpr := "COALESCE(extra, '{}'::jsonb)"

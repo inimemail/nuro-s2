@@ -93,6 +93,7 @@ const isEmpty = computed(() => {
   return (iv.input_price == null || iv.input_price === '') &&
     (iv.output_price == null || iv.output_price === '') &&
     (iv.cache_write_price == null || iv.cache_write_price === '') &&
+    (iv.cache_write_1h_price == null || iv.cache_write_1h_price === '') &&
     (iv.cache_read_price == null || iv.cache_read_price === '') &&
     (iv.input_multiplier == null || iv.input_multiplier === '') &&
     (iv.output_multiplier == null || iv.output_multiplier === '') &&
@@ -112,6 +113,7 @@ const priceFields: Array<{ key: keyof IntervalFormEntry; label: string }> = [
   { key: 'input_price', label: t('admin.channels.form.inputPrice', '输入') },
   { key: 'output_price', label: t('admin.channels.form.outputPrice', '输出') },
   { key: 'cache_write_price', label: t('admin.channels.form.cacheWritePrice', '缓存写入') },
+  { key: 'cache_write_1h_price', label: t('admin.channels.form.cacheWrite1hPrice', '1h 缓存写入') },
   { key: 'cache_read_price', label: t('admin.channels.form.cacheReadPrice', '缓存读取') }
 ]
 
@@ -133,6 +135,7 @@ function setValueMode(mode: 'price' | 'multiplier') {
     next.input_price = null
     next.output_price = null
     next.cache_write_price = null
+    next.cache_write_1h_price = null
     next.cache_read_price = null
   }
   emit('update', next)

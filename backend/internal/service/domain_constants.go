@@ -73,6 +73,8 @@ const (
 	DefaultZhipuCodingBaseURL         = "https://open.bigmodel.cn/api/coding/paas/v4"
 	DefaultDeepSeekChatBaseURL        = "https://api.deepseek.com/v1"
 	DefaultDeepSeekResponsesBaseURL   = "https://api.deepseek.com"
+	DefaultKimiPayGResponsesBaseURL   = "https://api.moonshot.cn/v1"
+	DefaultKimiCodingResponsesBaseURL = "https://api.kimi.com/coding/v1"
 	DefaultKimiPayGAnthropicBaseURL   = "https://api.moonshot.cn/anthropic"
 	DefaultKimiCodingAnthropicBaseURL = "https://api.kimi.com/coding"
 	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"

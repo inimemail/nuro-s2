@@ -1160,6 +1160,8 @@ export default {
       inputPrice: 'Input',
       outputPrice: 'Output',
       cacheWritePrice: 'Cache Write',
+      cacheWrite1hPrice: '1h Cache Write',
+      cacheWrite1hPricePlaceholder: 'Use cache write price',
       cacheReadPrice: 'Cache Read',
       imageOutputPrice: 'Image Output',
       perRequestPrice: 'Per Request',
@@ -2061,6 +2063,9 @@ export default {
       groupConfigHint: 'Configure custom rate multipliers for user {email} (overrides group defaults)',
       exclusiveGroups: 'Exclusive Groups',
       publicGroups: 'Public Groups (Default Available)',
+      restrictPublicGroups: 'Restrict accessible public groups',
+      restrictPublicGroupsHint: 'When enabled, this user can only use the public groups selected below. When disabled, all public groups remain available.',
+      publicGroupsRestricted: 'Public Groups (Restricted)',
       defaultRate: 'Default Rate',
       customRate: 'Custom Rate',
       useDefaultRate: 'Use Default',
@@ -2291,14 +2296,24 @@ export default {
         ,maxReasoningEffort: 'Maximum reasoning effort'
         ,maxReasoningEffortUnlimited: 'Unlimited'
         ,maxReasoningEffortHint: 'Only applies to OpenAI groups; requests above this level are capped.'
+        ,reasoningEffortOverLimit: 'Over-limit action'
+        ,reasoningEffortDowngrade: 'Downgrade automatically'
+        ,reasoningEffortDeny: 'Reject request'
         ,reasoningEffortPolicy: 'Reasoning effort policy'
         ,reasoningEffortMappings: 'Effort mappings'
         ,reasoningEffortMappingsEmpty: 'No effort mappings'
         ,reasoningEffortFrom: 'From'
         ,reasoningEffortTo: 'To'
+        ,reasoningEffortScope: 'Model scope'
+        ,reasoningEffortAllModels: 'All models'
+        ,reasoningEffortExact: 'Exact match'
+        ,reasoningEffortPrefix: 'Prefix match'
+        ,reasoningEffortSuffix: 'Suffix match'
+        ,reasoningEffortModel: 'Model name or pattern'
+        ,reasoningEffortModelPlaceholder: 'For example, gpt-5.4'
         ,addReasoningEffortMapping: 'Add reasoning mapping'
         ,removeReasoningEffortMapping: 'Remove reasoning mapping'
-        ,reasoningEffortMappingInvalid: 'Reasoning mappings must use supported values with unique non-empty source levels.'
+        ,reasoningEffortMappingInvalid: 'Reasoning mappings must use supported values with unique source levels within each model scope.'
       },
       enterGroupName: 'Enter group name',
       optionalDescription: 'Optional description',
@@ -2575,6 +2590,7 @@ export default {
         inputPrice: 'Input',
         outputPrice: 'Output',
         cacheWritePrice: 'Cache Write',
+        cacheWrite1hPrice: '1h Cache Write',
         cacheReadPrice: 'Cache Read',
         imageOutputPrice: 'Image Output',
         perRequestPrice: 'Per Request',
@@ -2643,6 +2659,8 @@ export default {
         inputPrice: 'Input',
         outputPrice: 'Output',
         cacheWritePrice: 'Cache Write',
+        cacheWrite1hPrice: '1h Cache Write',
+        cacheWrite1hPricePlaceholder: 'Use cache write price',
         cacheReadPrice: 'Cache Read',
         imageInputPrice: 'Image Input',
         imageTokenPrice: 'Image Output',
@@ -3735,7 +3753,13 @@ export default {
         kimiMoonshot: 'Moonshot',
         kimiCoding: 'Kimi For Coding',
         zhipu: 'Zhipu GLM',
-        deepseek: 'DeepSeek'
+        deepseek: 'DeepSeek',
+        zhipuTeam: {
+          title: 'Team organization / project IDs', organization: 'Organization ID (optional)', organizationPlaceholder: 'Team Coding Plan organization ID',
+          project: 'Project ID (optional)', projectPlaceholder: 'Team Coding Plan project ID',
+          hint: 'Only needed for GLM team Coding Plans. Leave both empty for personal plans.',
+          help: { title: 'How to find the IDs', step1: 'Open Coding Plan team settings on bigmodel.cn.', step2: 'Open DevTools and switch to Network.', step3: 'Filter /api/biz/v1/organization and open the matching request.', step4: 'The org- segment is the organization ID and proj_ is the project ID.', example: 'Example: .../organization/org-xxx/projects/proj_xxx/api_keys' }
+        }
       },
       apiKeyRequired: 'API Key *',
       apiKeyPlaceholder: 'sk-ant-api03-...',

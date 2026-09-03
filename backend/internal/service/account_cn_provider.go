@@ -2,8 +2,26 @@ package service
 
 import (
 	"maps"
+	"net/http"
 	"strings"
 )
+
+// ApplyCNProviderHeaders adds provider-specific headers required by team plans.
+func (a *Account) ApplyCNProviderHeaders(h http.Header) {
+	if a == nil || h == nil || a.Platform != PlatformZhipu || !a.IsCodingPlan() {
+		return
+	}
+	// Team identity comes only from account credentials. Clear any value that
+	// arrived through client passthrough or a static header override first.
+	h.Del("bigmodel-organization")
+	h.Del("bigmodel-project")
+	if org := strings.TrimSpace(a.GetCredential("zhipu_organization")); org != "" {
+		h.Set("bigmodel-organization", org)
+		if project := strings.TrimSpace(a.GetCredential("zhipu_project")); project != "" {
+			h.Set("bigmodel-project", project)
+		}
+	}
+}
 
 const (
 	cnBillingModeExtraKey = "cn_billing_mode"
@@ -48,7 +66,7 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		protocol = requestedProtocol
 	case APIProtocolResponses:
-		if platform == PlatformDeepSeek {
+		if platform == PlatformDeepSeek || platform == PlatformKimi {
 			protocol = requestedProtocol
 		}
 	}
@@ -69,7 +87,7 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 
 // normalizeCNProviderStoredConfigForAccount applies an incremental Extra edit
 // without treating an omitted protocol as a request to downgrade an existing
-// DeepSeek Responses account. This is important for UpdateAccountExtra, where
+// DeepSeek/Kimi Responses account. This is important for UpdateAccountExtra, where
 // callers commonly edit an unrelated key or only remove legacy base URLs.
 func normalizeCNProviderStoredConfigForAccount(account *Account, extra, credentials map[string]any) (map[string]any, map[string]any) {
 	if account == nil || !account.IsCNProvider() {
@@ -323,7 +341,7 @@ func (a *Account) GetCodingPlanProvider() string {
 }
 
 // GetAPIProtocol returns the selected domestic provider wire protocol.
-// Responses is restricted to DeepSeek; all domestic providers support
+// Responses is supported by DeepSeek and Kimi; all domestic providers support
 // adaptive, Chat Completions, and native Anthropic routing.
 func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsCNProvider() {
@@ -337,7 +355,7 @@ func (a *Account) GetAPIProtocol() string {
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		return protocol
 	case APIProtocolResponses:
-		if a.IsDeepSeek() {
+		if a.IsDeepSeek() || a.IsKimi() {
 			return protocol
 		}
 	}
@@ -405,8 +423,14 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultDeepSeekAnthropicBaseURL
 		}
 	case APIProtocolResponses:
-		if a.IsDeepSeek() {
+		switch a.Platform {
+		case PlatformDeepSeek:
 			return DefaultDeepSeekResponsesBaseURL
+		case PlatformKimi:
+			if a.IsCodingPlan() {
+				return DefaultKimiCodingResponsesBaseURL
+			}
+			return DefaultKimiPayGResponsesBaseURL
 		}
 	case APIProtocolChatCompletions:
 		switch a.Platform {

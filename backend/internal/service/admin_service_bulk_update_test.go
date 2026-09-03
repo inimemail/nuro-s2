@@ -363,6 +363,26 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
 }
 
+func TestAdminServiceBulkUpdateAccounts_ForwardsZhipuCredentialChanges(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Credentials: map[string]any{
+			"zhipu_organization": "org-updated",
+			"zhipu_project":      "project-updated",
+		},
+		CredentialsRemoveKeys: []string{"zhipu_project"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Equal(t, "org-updated", repo.bulkUpdatePayload.Credentials["zhipu_organization"])
+	require.Equal(t, "project-updated", repo.bulkUpdatePayload.Credentials["zhipu_project"])
+	require.Equal(t, []string{"zhipu_project"}, repo.bulkUpdatePayload.CredentialsRemoveKeys)
+}
+
 func TestAdminServiceBulkUpdateAccounts_NormalizesCNProtocolPerPlatform(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{
 		{ID: 1, Platform: PlatformKimi, Type: AccountTypeAPIKey},
@@ -391,7 +411,7 @@ func TestAdminServiceBulkUpdateAccounts_NormalizesCNProtocolPerPlatform(t *testi
 
 	kimi := repo.bulkUpdateCalls[0]
 	require.Equal(t, []int64{1}, kimi.IDs)
-	require.Equal(t, APIProtocolChatCompletions, kimi.Updates.Extra[cnAPIProtocolExtraKey])
+	require.Equal(t, APIProtocolResponses, kimi.Updates.Extra[cnAPIProtocolExtraKey])
 	require.Equal(t, map[string]any{"responses": "https://legacy.example"}, kimi.Updates.Extra[cnAPIBaseURLsExtraKey])
 	require.NotContains(t, kimi.Updates.Credentials, "api_protocol")
 	require.NotContains(t, kimi.Updates.Credentials, "api_base_urls")

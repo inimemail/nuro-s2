@@ -80,6 +80,7 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 	}
 	var allowed map[int64]struct{}
 	var rates map[int64]float64
+	var restrictPublicGroups bool
 	if authenticated {
 		user, userErr := h.users.GetByID(c.Request.Context(), subject.UserID)
 		if userErr != nil || user == nil || !user.IsActive() {
@@ -90,6 +91,7 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 		for _, groupID := range user.AllowedGroups {
 			allowed[groupID] = struct{}{}
 		}
+		restrictPublicGroups = user.RestrictPublicGroups
 		if h.userRates != nil {
 			rates, err = h.userRates.GetByUserID(c.Request.Context(), subject.UserID)
 			if err != nil {
@@ -98,7 +100,7 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 			}
 		}
 	}
-	visible := filterModelPlazaGroups(groups, allowed, authenticated)
+	visible := filterModelPlazaGroups(groups, allowed, authenticated, restrictPublicGroups)
 	result := make([]modelPlazaGroup, 0, len(visible))
 	for i := range visible {
 		result = append(result, modelPlazaGroupDTO(&visible[i], rates))
@@ -106,11 +108,15 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 	response.Success(c, modelPlazaResponse{Description: runtime.Description, Groups: result})
 }
 
-func filterModelPlazaGroups(groups []service.ModelPlazaGroup, allowed map[int64]struct{}, authenticated bool) []service.ModelPlazaGroup {
+func filterModelPlazaGroups(groups []service.ModelPlazaGroup, allowed map[int64]struct{}, authenticated, restrictPublicGroups bool) []service.ModelPlazaGroup {
 	result := make([]service.ModelPlazaGroup, 0, len(groups))
 	for i := range groups {
 		group := groups[i]
-		if group.IsExclusive {
+		// restrict_public_groups only narrows standard public groups. Subscription
+		// entitlements are resolved separately and must not be hidden by this flag.
+		isRestrictedPublic := authenticated && restrictPublicGroups &&
+			!group.IsExclusive && group.SubscriptionType == service.SubscriptionTypeStandard
+		if group.IsExclusive || isRestrictedPublic {
 			if !authenticated {
 				continue
 			}

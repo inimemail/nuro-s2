@@ -247,6 +247,20 @@ func (_u *UserUpdate) SetNillableTotpEnabled(v *bool) *UserUpdate {
 	return _u
 }
 
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (_u *UserUpdate) SetRestrictPublicGroups(v bool) *UserUpdate {
+	_u.mutation.SetRestrictPublicGroups(v)
+	return _u
+}
+
+// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
+func (_u *UserUpdate) SetNillableRestrictPublicGroups(v *bool) *UserUpdate {
+	if v != nil {
+		_u.SetRestrictPublicGroups(*v)
+	}
+	return _u
+}
+
 // SetTotpEnabledAt sets the "totp_enabled_at" field.
 func (_u *UserUpdate) SetTotpEnabledAt(v time.Time) *UserUpdate {
 	_u.mutation.SetTotpEnabledAt(v)
@@ -1047,6 +1061,9 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.TotpEnabled(); ok {
 		_spec.SetField(user.FieldTotpEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.RestrictPublicGroups(); ok {
+		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.TotpEnabledAt(); ok {
 		_spec.SetField(user.FieldTotpEnabledAt, field.TypeTime, value)
@@ -1923,6 +1940,20 @@ func (_u *UserUpdateOne) SetNillableTotpEnabled(v *bool) *UserUpdateOne {
 	return _u
 }
 
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (_u *UserUpdateOne) SetRestrictPublicGroups(v bool) *UserUpdateOne {
+	_u.mutation.SetRestrictPublicGroups(v)
+	return _u
+}
+
+// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
+func (_u *UserUpdateOne) SetNillableRestrictPublicGroups(v *bool) *UserUpdateOne {
+	if v != nil {
+		_u.SetRestrictPublicGroups(*v)
+	}
+	return _u
+}
+
 // SetTotpEnabledAt sets the "totp_enabled_at" field.
 func (_u *UserUpdateOne) SetTotpEnabledAt(v time.Time) *UserUpdateOne {
 	_u.mutation.SetTotpEnabledAt(v)
@@ -2753,6 +2784,9 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 	}
 	if value, ok := _u.mutation.TotpEnabled(); ok {
 		_spec.SetField(user.FieldTotpEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.RestrictPublicGroups(); ok {
+		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.TotpEnabledAt(); ok {
 		_spec.SetField(user.FieldTotpEnabledAt, field.TypeTime, value)

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { validateChannelTimePricing, validateIntervals, type IntervalFormEntry } from '../types'
+import {
+  apiIntervalsToForm,
+  formIntervalsToAPI,
+  validateChannelTimePricing,
+  validateIntervals,
+  type IntervalFormEntry,
+} from '../types'
 
 function makeInterval(over: Partial<IntervalFormEntry>): IntervalFormEntry {
   return {
@@ -9,7 +15,12 @@ function makeInterval(over: Partial<IntervalFormEntry>): IntervalFormEntry {
     input_price: null,
     output_price: null,
     cache_write_price: null,
+    cache_write_1h_price: null,
     cache_read_price: null,
+    input_multiplier: null,
+    output_multiplier: null,
+    cache_write_multiplier: null,
+    cache_read_multiplier: null,
     per_request_price: null,
     sort_order: 0,
     ...over,
@@ -17,6 +28,29 @@ function makeInterval(over: Partial<IntervalFormEntry>): IntervalFormEntry {
 }
 
 describe('validateIntervals', () => {
+  it('round-trips the 1h cache write price between per-token and per-MTok units', () => {
+    const apiInterval = {
+      min_tokens: 0,
+      max_tokens: 200_000,
+      tier_label: 'long context',
+      input_price: 2.5e-6,
+      output_price: 10e-6,
+      cache_write_price: 3.125e-6,
+      cache_write_1h_price: 5e-6,
+      cache_read_price: 0.25e-6,
+      input_multiplier: null,
+      output_multiplier: null,
+      cache_write_multiplier: null,
+      cache_read_multiplier: null,
+      per_request_price: null,
+      sort_order: 0,
+    }
+
+    const [formInterval] = apiIntervalsToForm([apiInterval])
+    expect(formInterval.cache_write_1h_price).toBe(5)
+    expect(formIntervalsToAPI([formInterval])).toEqual([apiInterval])
+  })
+
   describe('token mode', () => {
     it('rejects unbounded interval that is not last', () => {
       const intervals: IntervalFormEntry[] = [

@@ -71,6 +71,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	if effort := service.ExtractOpenAIReasoningEffort(body); effort != "" {
+		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), effort))
+	}
 
 	modelResult := gjson.GetBytes(body, "model")
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
@@ -143,7 +146,15 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	if apiKey.Group != nil {
-		body, _ = service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
+		var policyErr error
+		body, _, policyErr = service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		if policyErr != nil {
+			var overLimit *service.ReasoningEffortOverLimitError
+			if errors.As(policyErr, &overLimit) {
+				h.errorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+				return
+			}
+		}
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 

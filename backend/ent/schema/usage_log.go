@@ -64,6 +64,14 @@ func (UsageLog) Fields() []ent.Field {
 			MaxLen(200).
 			Optional().
 			Nillable(),
+		field.String("requested_reasoning_effort").
+			MaxLen(20).
+			Optional().
+			Nillable().
+			Comment("Client-requested effort before policy rewriting"),
+		field.Bool("native_compaction_v2").
+			Default(false).
+			Comment("Whether this was a native OpenAI remote compaction v2 request"),
 		field.Bool("upstream_model_mismatch").
 			Optional().
 			Nillable(),

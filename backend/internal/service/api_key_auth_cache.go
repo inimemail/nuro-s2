@@ -30,12 +30,13 @@ type APIKeyAuthSnapshot struct {
 
 // APIKeyAuthUserSnapshot 用户快照
 type APIKeyAuthUserSnapshot struct {
-	ID            int64   `json:"id"`
-	Status        string  `json:"status"`
-	Role          string  `json:"role"`
-	Balance       float64 `json:"balance"`
-	Concurrency   int     `json:"concurrency"`
-	AllowedGroups []int64 `json:"allowed_groups,omitempty"`
+	ID                   int64   `json:"id"`
+	Status               string  `json:"status"`
+	Role                 string  `json:"role"`
+	Balance              float64 `json:"balance"`
+	Concurrency          int     `json:"concurrency"`
+	AllowedGroups        []int64 `json:"allowed_groups,omitempty"`
+	RestrictPublicGroups bool    `json:"restrict_public_groups,omitempty"`
 
 	// Balance notification fields (required for CheckBalanceAfterDeduction)
 	Email                      string             `json:"email"`
@@ -119,9 +120,11 @@ type APIKeyAuthGroupSnapshot struct {
 	StrictModelPriorityOnModelMismatch bool                              `json:"strict_model_priority_on_model_mismatch"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 级联判断。
-	RPMLimit                int                      `json:"rpm_limit"`
-	MaxReasoningEffort      string                   `json:"max_reasoning_effort,omitempty"`
-	ReasoningEffortMappings []ReasoningEffortMapping `json:"reasoning_effort_mappings,omitempty"`
+	RPMLimit                    int                      `json:"rpm_limit"`
+	ForceOpenAIFast             bool                     `json:"force_openai_fast"`
+	MaxReasoningEffort          string                   `json:"max_reasoning_effort,omitempty"`
+	MaxReasoningEffortOverLimit string                   `json:"max_reasoning_effort_over_limit,omitempty"`
+	ReasoningEffortMappings     []ReasoningEffortMapping `json:"reasoning_effort_mappings,omitempty"`
 }
 
 // APIKeyAuthCacheEntry 缓存条目，支持负缓存

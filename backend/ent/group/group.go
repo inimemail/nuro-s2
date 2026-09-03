@@ -136,8 +136,12 @@ const (
 	FieldStrictModelPriorityOnModelMismatch = "strict_model_priority_on_model_mismatch"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
+	// FieldForceOpenaiFast holds the string denoting the force_openai_fast field in the database.
+	FieldForceOpenaiFast = "force_openai_fast"
 	// FieldMaxReasoningEffort holds the string denoting the max_reasoning_effort field in the database.
 	FieldMaxReasoningEffort = "max_reasoning_effort"
+	// FieldMaxReasoningEffortOverLimit holds the string denoting the max_reasoning_effort_over_limit field in the database.
+	FieldMaxReasoningEffortOverLimit = "max_reasoning_effort_over_limit"
 	// FieldReasoningEffortMappings holds the string denoting the reasoning_effort_mappings field in the database.
 	FieldReasoningEffortMappings = "reasoning_effort_mappings"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
@@ -275,7 +279,9 @@ var Columns = []string{
 	FieldModelsListConfig,
 	FieldStrictModelPriorityOnModelMismatch,
 	FieldRpmLimit,
+	FieldForceOpenaiFast,
 	FieldMaxReasoningEffort,
+	FieldMaxReasoningEffortOverLimit,
 	FieldReasoningEffortMappings,
 }
 
@@ -402,10 +408,16 @@ var (
 	DefaultStrictModelPriorityOnModelMismatch bool
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
+	// DefaultForceOpenaiFast holds the default value on creation for the "force_openai_fast" field.
+	DefaultForceOpenaiFast bool
 	// DefaultMaxReasoningEffort holds the default value on creation for the "max_reasoning_effort" field.
 	DefaultMaxReasoningEffort string
 	// MaxReasoningEffortValidator is a validator for the "max_reasoning_effort" field. It is called by the builders before save.
 	MaxReasoningEffortValidator func(string) error
+	// DefaultMaxReasoningEffortOverLimit holds the default value on creation for the "max_reasoning_effort_over_limit" field.
+	DefaultMaxReasoningEffortOverLimit string
+	// MaxReasoningEffortOverLimitValidator is a validator for the "max_reasoning_effort_over_limit" field. It is called by the builders before save.
+	MaxReasoningEffortOverLimitValidator func(string) error
 	// DefaultReasoningEffortMappings holds the default value on creation for the "reasoning_effort_mappings" field.
 	DefaultReasoningEffortMappings []domain.ReasoningEffortMapping
 )
@@ -688,9 +700,19 @@ func ByRpmLimit(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRpmLimit, opts...).ToFunc()
 }
 
+// ByForceOpenaiFast orders the results by the force_openai_fast field.
+func ByForceOpenaiFast(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldForceOpenaiFast, opts...).ToFunc()
+}
+
 // ByMaxReasoningEffort orders the results by the max_reasoning_effort field.
 func ByMaxReasoningEffort(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldMaxReasoningEffort, opts...).ToFunc()
+}
+
+// ByMaxReasoningEffortOverLimit orders the results by the max_reasoning_effort_over_limit field.
+func ByMaxReasoningEffortOverLimit(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMaxReasoningEffortOverLimit, opts...).ToFunc()
 }
 
 // ByAPIKeysCount orders the results by api_keys count.

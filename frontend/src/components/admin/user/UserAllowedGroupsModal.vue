@@ -95,11 +95,32 @@
 
         <!-- 公开分组区域 -->
         <div v-if="publicGroups.length > 0">
-          <div class="mb-3 flex items-center gap-2">
+          <div class="mb-3 flex flex-wrap items-center gap-2">
             <div class="h-1.5 w-1.5 rounded-full bg-green-500"></div>
-            <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300">{{ t('admin.users.publicGroups') }}</h4>
+            <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300">
+              {{ restrictPublicGroups ? t('admin.users.publicGroupsRestricted') : t('admin.users.publicGroups') }}
+            </h4>
             <span class="text-xs text-gray-400">({{ publicGroupConfigs.length }})</span>
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="restrictPublicGroups"
+              class="ml-auto inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"
+              @click="toggleRestrictPublicGroups"
+            >
+              <span
+                class="relative inline-flex h-6 w-11 shrink-0 rounded-full border transition-colors"
+                :class="restrictPublicGroups ? 'border-primary-600 bg-primary-600' : 'border-gray-300 bg-gray-200 dark:border-dark-500 dark:bg-dark-600'"
+              >
+                <span
+                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform"
+                  :class="restrictPublicGroups ? 'translate-x-5' : 'translate-x-1'"
+                ></span>
+              </span>
+              <span>{{ t('admin.users.restrictPublicGroups') }}</span>
+            </button>
           </div>
+          <p class="mb-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.users.restrictPublicGroupsHint') }}</p>
           <div class="grid gap-3">
             <div
               v-for="config in publicGroupConfigs"
@@ -107,9 +128,16 @@
               class="relative overflow-hidden rounded-xl border-2 border-green-200 bg-green-50/50 p-4 dark:border-green-800/50 dark:bg-green-900/10"
             >
               <div class="flex items-center gap-4">
-                <!-- 复选框（禁用状态） -->
+                <!-- 关闭限制时公开分组恒可用；开启后允许逐项选择。 -->
                 <div class="flex-shrink-0">
-                  <div class="flex h-5 w-5 items-center justify-center rounded-md border-2 border-green-400 bg-green-500 dark:border-green-600 dark:bg-green-600">
+                  <input
+                    v-if="restrictPublicGroups"
+                    type="checkbox"
+                    :checked="config.isSelected"
+                    class="h-5 w-5 cursor-pointer rounded border-gray-300 text-green-600 focus:ring-green-500 dark:border-dark-500"
+                    @change="togglePublicGroup(config.groupId)"
+                  />
+                  <div v-else class="flex h-5 w-5 items-center justify-center rounded-md border-2 border-green-400 bg-green-500 dark:border-green-600 dark:bg-green-600">
                     <svg class="h-full w-full text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
@@ -207,6 +235,7 @@ const groupConfigs = ref<GroupRateConfig[]>([])
 const originalGroupRates = ref<Record<number, number>>({}) // 记录原始专属倍率，用于检测删除
 const loading = ref(false)
 const submitting = ref(false)
+const restrictPublicGroups = ref(false)
 
 // 分离专属分组和公开分组
 const exclusiveGroups = computed(() => groups.value.filter((g) => g.is_exclusive))
@@ -234,6 +263,7 @@ const load = async () => {
     // 初始化配置
     const userAllowedGroups = props.user?.allowed_groups || []
     const userGroupRates = props.user?.group_rates || {}
+    restrictPublicGroups.value = props.user?.restrict_public_groups ?? false
 
     // 保存原始专属倍率，用于检测删除操作
     originalGroupRates.value = { ...userGroupRates }
@@ -245,9 +275,7 @@ const load = async () => {
       isExclusive: g.is_exclusive,
       defaultRate: g.rate_multiplier,
       customRate: userGroupRates[g.id] ?? null,
-      // 专属分组：检查是否在 allowed_groups 中
-      // 公开分组：始终选中
-      isSelected: g.is_exclusive ? userAllowedGroups.includes(g.id) : true,
+      isSelected: g.is_exclusive || restrictPublicGroups.value ? userAllowedGroups.includes(g.id) : true,
     }))
   } catch (error) {
     console.error('Failed to load groups:', error)
@@ -260,6 +288,20 @@ const toggleExclusiveGroup = (groupId: number) => {
   const config = groupConfigs.value.find((c) => c.groupId === groupId)
   if (config && config.isExclusive) {
     config.isSelected = !config.isSelected
+  }
+}
+
+const togglePublicGroup = (groupId: number) => {
+  const config = groupConfigs.value.find((c) => c.groupId === groupId)
+  if (config && !config.isExclusive) config.isSelected = !config.isSelected
+}
+
+const toggleRestrictPublicGroups = () => {
+  restrictPublicGroups.value = !restrictPublicGroups.value
+  if (!restrictPublicGroups.value) {
+    for (const config of groupConfigs.value) {
+      if (!config.isExclusive) config.isSelected = true
+    }
   }
 }
 
@@ -280,8 +322,9 @@ const handleSave = async () => {
   submitting.value = true
 
   try {
-    // 构建 allowed_groups（仅包含专属分组中被勾选的）
-    const allowedGroups = groupConfigs.value.filter((c) => c.isExclusive && c.isSelected).map((c) => c.groupId)
+    const allowedGroups = groupConfigs.value
+      .filter((c) => c.isSelected && (c.isExclusive || restrictPublicGroups.value))
+      .map((c) => c.groupId)
 
     // 构建 group_rates
     // - 有新专属倍率: 设置为该值
@@ -301,6 +344,7 @@ const handleSave = async () => {
 
     await adminAPI.users.update(props.user.id, {
       allowed_groups: allowedGroups,
+      restrict_public_groups: restrictPublicGroups.value,
       group_rates: Object.keys(groupRates).length > 0 ? groupRates : undefined,
     })
 

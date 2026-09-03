@@ -290,6 +290,7 @@ func cloneChannelModelPricing(source *ChannelModelPricing) *ChannelModelPricing 
 	clone.InputPrice = cloneFloat64Pointer(source.InputPrice)
 	clone.OutputPrice = cloneFloat64Pointer(source.OutputPrice)
 	clone.CacheWritePrice = cloneFloat64Pointer(source.CacheWritePrice)
+	clone.CacheWrite1hPrice = cloneFloat64Pointer(source.CacheWrite1hPrice)
 	clone.CacheReadPrice = cloneFloat64Pointer(source.CacheReadPrice)
 	clone.ImageInputPrice = cloneFloat64Pointer(source.ImageInputPrice)
 	clone.ImageOutputPrice = cloneFloat64Pointer(source.ImageOutputPrice)
@@ -299,6 +300,7 @@ func cloneChannelModelPricing(source *ChannelModelPricing) *ChannelModelPricing 
 		clone.Intervals[i].InputPrice = cloneFloat64Pointer(source.Intervals[i].InputPrice)
 		clone.Intervals[i].OutputPrice = cloneFloat64Pointer(source.Intervals[i].OutputPrice)
 		clone.Intervals[i].CacheWritePrice = cloneFloat64Pointer(source.Intervals[i].CacheWritePrice)
+		clone.Intervals[i].CacheWrite1hPrice = cloneFloat64Pointer(source.Intervals[i].CacheWrite1hPrice)
 		clone.Intervals[i].CacheReadPrice = cloneFloat64Pointer(source.Intervals[i].CacheReadPrice)
 		clone.Intervals[i].PerRequestPrice = cloneFloat64Pointer(source.Intervals[i].PerRequestPrice)
 	}

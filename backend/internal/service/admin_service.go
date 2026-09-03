@@ -134,29 +134,31 @@ type AdminUserLimitsService interface {
 
 // CreateUserInput represents input for creating a new user via admin operations.
 type CreateUserInput struct {
-	Email         string
-	Password      string
-	Username      string
-	Notes         string
-	Role          string
-	Balance       float64
-	Concurrency   int
-	RPMLimit      int
-	AllowedGroups []int64
-	ActorAdminID  int64
+	Email                string
+	Password             string
+	Username             string
+	Notes                string
+	Role                 string
+	Balance              float64
+	Concurrency          int
+	RPMLimit             int
+	AllowedGroups        []int64
+	RestrictPublicGroups bool
+	ActorAdminID         int64
 }
 
 type UpdateUserInput struct {
-	Email         string
-	Password      string
-	Username      *string
-	Notes         *string
-	Role          string
-	Balance       *float64 // 使用指针区分"未提供"和"设置为0"
-	Concurrency   *int     // 使用指针区分"未提供"和"设置为0"
-	RPMLimit      *int     // 使用指针区分"未提供"和"设置为0"
-	Status        string
-	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
+	Email                string
+	Password             string
+	Username             *string
+	Notes                *string
+	Role                 string
+	Balance              *float64 // 使用指针区分"未提供"和"设置为0"
+	Concurrency          *int     // 使用指针区分"未提供"和"设置为0"
+	RPMLimit             *int     // 使用指针区分"未提供"和"设置为0"
+	Status               string
+	AllowedGroups        *[]int64 // 使用指针区分"未提供"和"设置为空数组"
+	RestrictPublicGroups *bool
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates   map[int64]*float64
@@ -260,9 +262,11 @@ type CreateGroupInput struct {
 	ModelsListConfig                   GroupModelsListConfig
 	StrictModelPriorityOnModelMismatch bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
-	RPMLimit                int
-	MaxReasoningEffort      string
-	ReasoningEffortMappings []ReasoningEffortMapping
+	RPMLimit                    int
+	ForceOpenAIFast             bool
+	MaxReasoningEffort          string
+	MaxReasoningEffortOverLimit string
+	ReasoningEffortMappings     []ReasoningEffortMapping
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -328,9 +332,11 @@ type UpdateGroupInput struct {
 	ModelsListConfig                   *GroupModelsListConfig
 	StrictModelPriorityOnModelMismatch *bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
-	RPMLimit                *int
-	MaxReasoningEffort      *string
-	ReasoningEffortMappings *[]ReasoningEffortMapping
+	RPMLimit                    *int
+	ForceOpenAIFast             *bool
+	MaxReasoningEffort          *string
+	MaxReasoningEffortOverLimit *string
+	ReasoningEffortMappings     *[]ReasoningEffortMapping
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -392,21 +398,22 @@ type UpdateAccountInput struct {
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
 type BulkUpdateAccountsInput struct {
-	AccountIDs      []int64
-	Filters         *BulkUpdateAccountFilters
-	Name            string
-	ProxyID         *int64
-	Concurrency     *int
-	Priority        *int
-	RateMultiplier  *float64 // 账号计费倍率（>=0，允许 0）
-	LoadFactor      *int
-	Status          string
-	Schedulable     *bool
-	GroupIDs        *[]int64
-	Credentials     map[string]any
-	Extra           map[string]any
-	ExtraRemoveKeys []string
-	ProbeEnabled    *bool
+	AccountIDs            []int64
+	Filters               *BulkUpdateAccountFilters
+	Name                  string
+	ProxyID               *int64
+	Concurrency           *int
+	Priority              *int
+	RateMultiplier        *float64 // 账号计费倍率（>=0，允许 0）
+	LoadFactor            *int
+	Status                string
+	Schedulable           *bool
+	GroupIDs              *[]int64
+	Credentials           map[string]any
+	CredentialsRemoveKeys []string
+	Extra                 map[string]any
+	ExtraRemoveKeys       []string
+	ProbeEnabled          *bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
@@ -622,6 +629,13 @@ const (
 )
 
 var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_STATUS_UNAVAILABLE", "RPM cache not available")
+
+func normalizeReasoningOverLimit(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "deny") {
+		return "deny"
+	}
+	return "downgrade"
+}
 
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
@@ -882,15 +896,16 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 	}
 
 	user := &User{
-		Email:         input.Email,
-		Username:      input.Username,
-		Notes:         input.Notes,
-		Role:          role,
-		Balance:       input.Balance,
-		Concurrency:   input.Concurrency,
-		RPMLimit:      input.RPMLimit,
-		Status:        StatusActive,
-		AllowedGroups: input.AllowedGroups,
+		Email:                input.Email,
+		Username:             input.Username,
+		Notes:                input.Notes,
+		Role:                 role,
+		Balance:              input.Balance,
+		Concurrency:          input.Concurrency,
+		RPMLimit:             input.RPMLimit,
+		Status:               StatusActive,
+		AllowedGroups:        input.AllowedGroups,
+		RestrictPublicGroups: input.RestrictPublicGroups,
 	}
 	if err := user.SetPassword(input.Password); err != nil {
 		return nil, err
@@ -962,6 +977,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	oldStatus := user.Status
 	oldRole := user.Role
 	oldRPMLimit := user.RPMLimit
+	oldRestrictPublicGroups := user.RestrictPublicGroups
 	oldAllowedGroups := append([]int64(nil), user.AllowedGroups...)
 	var fields UserUpdateFields
 
@@ -1021,6 +1037,10 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		user.AllowedGroups = *input.AllowedGroups
 		fields.AllowedGroups = true
 	}
+	if input.RestrictPublicGroups != nil {
+		user.RestrictPublicGroups = *input.RestrictPublicGroups
+		fields.RestrictPublicGroups = true
+	}
 
 	if err := s.userRepo.Update(ctx, user, fields); err != nil {
 		return nil, err
@@ -1041,7 +1061,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	if s.authCacheInvalidator != nil {
 		// RPMLimit 直接参与 billing_cache_service.checkRPM 的三级级联，
 		// allowed_groups 参与 API Key 专属分组授权判断；不失效缓存会让修改在一个 L2 TTL 内失去效果。
-		if user.Concurrency != oldConcurrency || user.Status != oldStatus || user.Role != oldRole || user.RPMLimit != oldRPMLimit || !sameInt64Set(user.AllowedGroups, oldAllowedGroups) {
+		if user.Concurrency != oldConcurrency || user.Status != oldStatus || user.Role != oldRole || user.RPMLimit != oldRPMLimit || user.RestrictPublicGroups != oldRestrictPublicGroups || !sameInt64Set(user.AllowedGroups, oldAllowedGroups) {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
 		}
 	}
@@ -2288,7 +2308,9 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		ModelsListConfig:                   normalizeGroupModelsListConfig(input.ModelsListConfig),
 		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
 		RPMLimit:                           input.RPMLimit,
+		ForceOpenAIFast:                    input.ForceOpenAIFast,
 		MaxReasoningEffort:                 maxReasoningEffort,
+		MaxReasoningEffortOverLimit:        normalizeReasoningOverLimit(input.MaxReasoningEffortOverLimit),
 		ReasoningEffortMappings:            reasoningEffortMappings,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
@@ -2705,6 +2727,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit
+	}
+	if input.ForceOpenAIFast != nil {
+		group.ForceOpenAIFast = *input.ForceOpenAIFast
+	}
+	if input.MaxReasoningEffortOverLimit != nil {
+		group.MaxReasoningEffortOverLimit = normalizeReasoningOverLimit(*input.MaxReasoningEffortOverLimit)
 	}
 	if input.MaxReasoningEffort != nil {
 		maxReasoningEffort, err := normalizeMaxReasoningEffortForPlatform(group.Platform, *input.MaxReasoningEffort)
@@ -4491,9 +4519,10 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// Prepare bulk updates for columns and JSONB fields.
 	repoUpdates := AccountBulkUpdate{
-		Credentials:     input.Credentials,
-		Extra:           input.Extra,
-		ExtraRemoveKeys: input.ExtraRemoveKeys,
+		Credentials:           input.Credentials,
+		CredentialsRemoveKeys: input.CredentialsRemoveKeys,
+		Extra:                 input.Extra,
+		ExtraRemoveKeys:       input.ExtraRemoveKeys,
 	}
 	if input.ProbeEnabled != nil {
 		if repoUpdates.Extra == nil {
@@ -4664,6 +4693,7 @@ func shouldSplitShadowBulkUpdate(input *BulkUpdateAccountsInput) bool {
 	}
 	return input.ProxyID != nil ||
 		len(input.Credentials) > 0 ||
+		len(input.CredentialsRemoveKeys) > 0 ||
 		len(input.Extra) > 0 ||
 		len(input.ExtraRemoveKeys) > 0
 }
@@ -4674,6 +4704,7 @@ func sanitizeShadowBulkUpdate(updates AccountBulkUpdate) AccountBulkUpdate {
 	out.Extra = nil
 	out.ExtraRemoveKeys = nil
 	out.Credentials = nil
+	out.CredentialsRemoveKeys = nil
 	if updates.Credentials != nil {
 		if _, ok := updates.Credentials["model_mapping"]; ok {
 			out.Credentials = sanitizeSparkShadowCredentials(updates.Credentials)

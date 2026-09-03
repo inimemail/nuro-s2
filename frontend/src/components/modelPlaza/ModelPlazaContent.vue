@@ -121,6 +121,7 @@
                     <td class="px-3 py-3 text-right font-mono text-xs">
                       <template v-if="hasCachePricing(model)">
                         <div>{{ cacheLine(t('modelPlaza.table.cacheWrite'), model.pricing?.cache_write_price, group) }}</div>
+                        <div v-if="model.pricing?.cache_write_1h_price != null" class="text-[11px] text-gray-400">1h {{ paid(model.pricing.cache_write_1h_price, group) }}</div>
                         <div>{{ cacheLine(t('modelPlaza.table.cacheRead'), model.pricing?.cache_read_price, group) }}</div>
                       </template>
                       <span v-else>-</span>
@@ -237,7 +238,7 @@ function paidRequest(model: PlazaModel, value: number | null | undefined, group:
 }
 function tokenIntervals(model: PlazaModel): UserPricingInterval[] { return model.pricing?.intervals ?? [] }
 function requestIntervals(model: PlazaModel): UserPricingInterval[] { return (model.pricing?.intervals ?? []).filter(interval => interval.per_request_price != null) }
-function hasCachePricing(model: PlazaModel): boolean { return model.pricing?.cache_write_price != null || model.pricing?.cache_read_price != null }
+function hasCachePricing(model: PlazaModel): boolean { return model.pricing?.cache_write_price != null || model.pricing?.cache_write_1h_price != null || model.pricing?.cache_read_price != null }
 function hasOfficialCachePricing(model: PlazaModel): boolean {
   const pricing = model.official_pricing
   return pricing?.cache_write_price != null || pricing?.cache_write_1h_price != null || pricing?.cache_read_price != null

@@ -2949,6 +2949,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	type openAIWSClientPayload struct {
 		payloadRaw                       []byte
 		rawForHash                       []byte
+		requestedReasoningEffort         string
 		promptCacheKey                   string
 		previousResponseID               string
 		originalModel                    string
@@ -3039,6 +3040,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					nil,
 				)
 			}
+		}
+		policyRequestModel := originalModel
+		if turn == 1 && hooks != nil && strings.TrimSpace(hooks.InitialRequestModel) != "" {
+			policyRequestModel = strings.TrimSpace(hooks.InitialRequestModel)
+		}
+		group := apiKeyGroup(getAPIKeyFromContext(c))
+		var requestedReasoningEffort string
+		var reasoningPolicyErr error
+		normalized, requestedReasoningEffort, reasoningPolicyErr = applyOpenAIReasoningEffortPolicyForWS(normalized, policyRequestModel, group)
+		if reasoningPolicyErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, reasoningPolicyErr.Error(), reasoningPolicyErr)
 		}
 		promptCacheKey := strings.TrimSpace(values[2].String())
 		previousResponseID := strings.TrimSpace(values[3].String())
@@ -3156,6 +3168,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return openAIWSClientPayload{
 			payloadRaw:                       normalized,
 			rawForHash:                       trimmed,
+			requestedReasoningEffort:         requestedReasoningEffort,
 			promptCacheKey:                   promptCacheKey,
 			previousResponseID:               previousResponseID,
 			originalModel:                    originalModel,
@@ -3340,6 +3353,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				turn,
 				writeClientMessage,
 			)
+			if result != nil {
+				if requested := normalizeRequestedReasoningEffortLogValue(currentBridgePayload.requestedReasoningEffort); requested != "" {
+					result.RequestedReasoningEffort = &requested
+				}
+			}
 			if hooks != nil && hooks.AfterTurn != nil {
 				hooks.AfterTurn(turn, result, bridgeErr)
 			}
@@ -3870,6 +3888,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return fmt.Errorf("apply cached ingress WS Responses field compatibility: %w", err)
 	}
 	currentOriginalModel := firstPayload.originalModel
+	currentRequestedReasoningEffort := firstPayload.requestedReasoningEffort
 	currentImageBillingModel := firstPayload.imageBillingModel
 	currentImageSizeTier := firstPayload.imageSizeTier
 	currentImageInputSize := firstPayload.imageInputSize
@@ -4398,6 +4417,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentCacheCreationOptimizationApplied, currentDownstreamCacheUsageMode, currentDownstreamCacheMarkup)
+		if result != nil {
+			if requested := normalizeRequestedReasoningEffortLogValue(currentRequestedReasoningEffort); requested != "" {
+				result.RequestedReasoningEffort = &requested
+			}
+		}
 		if relayErr != nil {
 			lastTurnClean = false
 			if recoverIngressRejectedField(relayErr, turn, connID) {
@@ -4545,6 +4569,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return fmt.Errorf("apply cached next-turn WS Responses field compatibility: %w", err)
 		}
 		currentOriginalModel = nextPayload.originalModel
+		currentRequestedReasoningEffort = nextPayload.requestedReasoningEffort
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier
 		currentImageInputSize = nextPayload.imageInputSize

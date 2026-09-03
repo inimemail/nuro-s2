@@ -9,7 +9,7 @@ export function normalizeReasoningEffortForPlatform(
   value: string | null | undefined,
 ): string {
   const normalized = value?.trim().toLowerCase() ?? "";
-  return platform === "openai" && (OPENAI_REASONING_EFFORT_VALUES as readonly string[]).includes(normalized)
+  return (platform === "openai" || platform === "composite") && (OPENAI_REASONING_EFFORT_VALUES as readonly string[]).includes(normalized)
     ? normalized
     : "";
 }
@@ -18,7 +18,14 @@ export function reasoningEffortMappingsToAPI(
   mappings: ReasoningEffortMapping[],
 ): ReasoningEffortMapping[] {
   return mappings
-    .map((item) => ({ from: item.from.trim().toLowerCase(), to: item.to.trim().toLowerCase() }))
+    .map((item) => {
+      const model = item.model?.trim() ?? "";
+      return {
+        from: item.from.trim().toLowerCase(),
+        to: item.to.trim().toLowerCase(),
+        ...(model ? { match_type: item.match_type || "exact", model } : {}),
+      } as ReasoningEffortMapping;
+    })
     .filter((item) => item.from && item.to);
 }
 
@@ -39,8 +46,12 @@ export function validateReasoningEffortMappings(
   return mappings.every((item) => {
     const from = normalizeReasoningEffortForPlatform(platform, item.from);
     const to = normalizeReasoningEffortForPlatform(platform, item.to);
-    if (!from || !to || seen.has(from)) return false;
-    seen.add(from);
+    const model = item.model?.trim() ?? "";
+    const matchType = model ? (item.match_type || "exact") : "";
+    if (!from || !to || (model && !["exact", "prefix", "suffix"].includes(matchType))) return false;
+    const key = `${from}\u0000${matchType}\u0000${model.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }

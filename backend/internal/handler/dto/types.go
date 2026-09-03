@@ -10,18 +10,19 @@ import (
 )
 
 type User struct {
-	ID            int64      `json:"id"`
-	Email         string     `json:"email"`
-	Username      string     `json:"username"`
-	Role          string     `json:"role"`
-	Balance       float64    `json:"balance"`
-	FrozenBalance float64    `json:"frozen_balance"`
-	Concurrency   int        `json:"concurrency"`
-	Status        string     `json:"status"`
-	AllowedGroups []int64    `json:"allowed_groups"`
-	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID                   int64      `json:"id"`
+	Email                string     `json:"email"`
+	Username             string     `json:"username"`
+	Role                 string     `json:"role"`
+	Balance              float64    `json:"balance"`
+	FrozenBalance        float64    `json:"frozen_balance"`
+	Concurrency          int        `json:"concurrency"`
+	Status               string     `json:"status"`
+	AllowedGroups        []int64    `json:"allowed_groups"`
+	RestrictPublicGroups bool       `json:"restrict_public_groups"`
+	LastActiveAt         *time.Time `json:"last_active_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 
 	// 余额不足通知
 	BalanceNotifyEnabled       bool               `json:"balance_notify_enabled"`
@@ -145,9 +146,11 @@ type Group struct {
 	StrictModelPriorityOnModelMismatch bool `json:"strict_model_priority_on_model_mismatch"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
-	RPMLimit                int                              `json:"rpm_limit"`
-	MaxReasoningEffort      string                           `json:"max_reasoning_effort"`
-	ReasoningEffortMappings []service.ReasoningEffortMapping `json:"reasoning_effort_mappings"`
+	RPMLimit                    int                              `json:"rpm_limit"`
+	ForceOpenAIFast             bool                             `json:"force_openai_fast"`
+	MaxReasoningEffort          string                           `json:"max_reasoning_effort"`
+	MaxReasoningEffortOverLimit string                           `json:"max_reasoning_effort_over_limit"`
+	ReasoningEffortMappings     []service.ReasoningEffortMapping `json:"reasoning_effort_mappings"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -512,7 +515,9 @@ type UsageLog struct {
 	ServiceTier *string `json:"service_tier,omitempty"`
 	// ReasoningEffort is the request's reasoning effort level.
 	// OpenAI: "low"/"medium"/"high"/"xhigh"; Claude: "low"/"medium"/"high"/"max".
-	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	ReasoningEffort          *string `json:"reasoning_effort,omitempty"`
+	RequestedReasoningEffort *string `json:"requested_reasoning_effort,omitempty"`
+	NativeCompactionV2       bool    `json:"native_compaction_v2,omitempty"`
 	// InboundEndpoint is the client-facing API endpoint path, e.g. /v1/chat/completions.
 	InboundEndpoint *string `json:"inbound_endpoint,omitempty"`
 	// UpstreamEndpoint is the normalized upstream endpoint path, e.g. /v1/responses.

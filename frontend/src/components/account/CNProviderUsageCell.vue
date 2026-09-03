@@ -38,7 +38,11 @@ const quotaTiers = ref<CNProviderQuotaTier[]>([])
 const balance = ref<CNProviderBalanceResult | null>(null)
 const loading = ref(false)
 const probeError = ref('')
-const eligible = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account.platform) && props.account.type === 'apikey')
+const isOllamaCloud = computed(() => {
+  const baseURL = String((props.account.credentials as Record<string, unknown> | undefined)?.base_url || '').replace(/\/$/, '').toLowerCase()
+  return ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
+})
+const eligible = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account.platform) && props.account.type === 'apikey' && !isOllamaCloud.value)
 const isCodingPlan = computed(() => {
   if (!['kimi', 'zhipu'].includes(props.account.platform)) return false
   const extraMode = props.account.extra?.cn_billing_mode

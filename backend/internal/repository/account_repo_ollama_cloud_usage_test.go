@@ -36,7 +36,7 @@ func TestListDueOllamaCloudUsageAccountsFiltersBeforeLimit(t *testing.T) {
 
 func TestOllamaCloudDueQueryNeverScansWholeAccountPool(t *testing.T) {
 	query := strings.ToLower(ollamaCloudUsageEligibleSQL)
-	require.Contains(t, query, "platform in ('openai', 'anthropic')")
+	require.Contains(t, query, "platform in ('openai', 'anthropic', 'kimi', 'zhipu', 'deepseek')")
 	require.Contains(t, query, "type = 'apikey'")
 	require.NotContains(t, query, "scan")
 }

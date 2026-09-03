@@ -182,6 +182,40 @@ func (_u *UsageLogUpdate) ClearUpstreamResponseModel() *UsageLogUpdate {
 	return _u
 }
 
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (_u *UsageLogUpdate) SetRequestedReasoningEffort(v string) *UsageLogUpdate {
+	_u.mutation.SetRequestedReasoningEffort(v)
+	return _u
+}
+
+// SetNillableRequestedReasoningEffort sets the "requested_reasoning_effort" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableRequestedReasoningEffort(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetRequestedReasoningEffort(*v)
+	}
+	return _u
+}
+
+// ClearRequestedReasoningEffort clears the value of the "requested_reasoning_effort" field.
+func (_u *UsageLogUpdate) ClearRequestedReasoningEffort() *UsageLogUpdate {
+	_u.mutation.ClearRequestedReasoningEffort()
+	return _u
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (_u *UsageLogUpdate) SetNativeCompactionV2(v bool) *UsageLogUpdate {
+	_u.mutation.SetNativeCompactionV2(v)
+	return _u
+}
+
+// SetNillableNativeCompactionV2 sets the "native_compaction_v2" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableNativeCompactionV2(v *bool) *UsageLogUpdate {
+	if v != nil {
+		_u.SetNativeCompactionV2(*v)
+	}
+	return _u
+}
+
 // SetUpstreamModelMismatch sets the "upstream_model_mismatch" field.
 func (_u *UsageLogUpdate) SetUpstreamModelMismatch(v bool) *UsageLogUpdate {
 	_u.mutation.SetUpstreamModelMismatch(v)
@@ -1194,6 +1228,11 @@ func (_u *UsageLogUpdate) check() error {
 			return &ValidationError{Name: "upstream_response_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_response_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RequestedReasoningEffort(); ok {
+		if err := usagelog.RequestedReasoningEffortValidator(v); err != nil {
+			return &ValidationError{Name: "requested_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "UsageLog.requested_reasoning_effort": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
 			return &ValidationError{Name: "model_mapping_chain", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model_mapping_chain": %w`, err)}
@@ -1297,6 +1336,15 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.UpstreamResponseModelCleared() {
 		_spec.ClearField(usagelog.FieldUpstreamResponseModel, field.TypeString)
+	}
+	if value, ok := _u.mutation.RequestedReasoningEffort(); ok {
+		_spec.SetField(usagelog.FieldRequestedReasoningEffort, field.TypeString, value)
+	}
+	if _u.mutation.RequestedReasoningEffortCleared() {
+		_spec.ClearField(usagelog.FieldRequestedReasoningEffort, field.TypeString)
+	}
+	if value, ok := _u.mutation.NativeCompactionV2(); ok {
+		_spec.SetField(usagelog.FieldNativeCompactionV2, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.UpstreamModelMismatch(); ok {
 		_spec.SetField(usagelog.FieldUpstreamModelMismatch, field.TypeBool, value)
@@ -1868,6 +1916,40 @@ func (_u *UsageLogUpdateOne) SetNillableUpstreamResponseModel(v *string) *UsageL
 // ClearUpstreamResponseModel clears the value of the "upstream_response_model" field.
 func (_u *UsageLogUpdateOne) ClearUpstreamResponseModel() *UsageLogUpdateOne {
 	_u.mutation.ClearUpstreamResponseModel()
+	return _u
+}
+
+// SetRequestedReasoningEffort sets the "requested_reasoning_effort" field.
+func (_u *UsageLogUpdateOne) SetRequestedReasoningEffort(v string) *UsageLogUpdateOne {
+	_u.mutation.SetRequestedReasoningEffort(v)
+	return _u
+}
+
+// SetNillableRequestedReasoningEffort sets the "requested_reasoning_effort" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableRequestedReasoningEffort(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetRequestedReasoningEffort(*v)
+	}
+	return _u
+}
+
+// ClearRequestedReasoningEffort clears the value of the "requested_reasoning_effort" field.
+func (_u *UsageLogUpdateOne) ClearRequestedReasoningEffort() *UsageLogUpdateOne {
+	_u.mutation.ClearRequestedReasoningEffort()
+	return _u
+}
+
+// SetNativeCompactionV2 sets the "native_compaction_v2" field.
+func (_u *UsageLogUpdateOne) SetNativeCompactionV2(v bool) *UsageLogUpdateOne {
+	_u.mutation.SetNativeCompactionV2(v)
+	return _u
+}
+
+// SetNillableNativeCompactionV2 sets the "native_compaction_v2" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableNativeCompactionV2(v *bool) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetNativeCompactionV2(*v)
+	}
 	return _u
 }
 
@@ -2896,6 +2978,11 @@ func (_u *UsageLogUpdateOne) check() error {
 			return &ValidationError{Name: "upstream_response_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_response_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RequestedReasoningEffort(); ok {
+		if err := usagelog.RequestedReasoningEffortValidator(v); err != nil {
+			return &ValidationError{Name: "requested_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "UsageLog.requested_reasoning_effort": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
 			return &ValidationError{Name: "model_mapping_chain", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model_mapping_chain": %w`, err)}
@@ -3016,6 +3103,15 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if _u.mutation.UpstreamResponseModelCleared() {
 		_spec.ClearField(usagelog.FieldUpstreamResponseModel, field.TypeString)
+	}
+	if value, ok := _u.mutation.RequestedReasoningEffort(); ok {
+		_spec.SetField(usagelog.FieldRequestedReasoningEffort, field.TypeString, value)
+	}
+	if _u.mutation.RequestedReasoningEffortCleared() {
+		_spec.ClearField(usagelog.FieldRequestedReasoningEffort, field.TypeString)
+	}
+	if value, ok := _u.mutation.NativeCompactionV2(); ok {
+		_spec.SetField(usagelog.FieldNativeCompactionV2, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.UpstreamModelMismatch(); ok {
 		_spec.SetField(usagelog.FieldUpstreamModelMismatch, field.TypeBool, value)

@@ -25,17 +25,29 @@
           {{ t("admin.groups.form.maxReasoningEffort") }}
         </label>
       </div>
-      <select
-        :id="`${idPrefix}-max-reasoning-effort`"
-        :value="maxReasoningEffort"
-        class="input"
-        @change="updateMaxReasoningEffort"
-      >
-        <option value="">{{ t("admin.groups.form.maxReasoningEffortUnlimited") }}</option>
-        <option v-for="value in values" :key="value" :value="value">
-          {{ value }}
-        </option>
-      </select>
+      <div class="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <select
+          :id="`${idPrefix}-max-reasoning-effort`"
+          :value="maxReasoningEffort"
+          class="input"
+          @change="updateMaxReasoningEffort"
+        >
+          <option value="">{{ t("admin.groups.form.maxReasoningEffortUnlimited") }}</option>
+          <option v-for="value in values" :key="value" :value="value">
+            {{ value }}
+          </option>
+        </select>
+        <select
+          :id="`${idPrefix}-reasoning-over-limit`"
+          :value="maxReasoningEffortOverLimit"
+          class="input"
+          :aria-label="t('admin.groups.form.reasoningEffortOverLimit')"
+          @change="updateOverLimit"
+        >
+          <option value="downgrade">{{ t("admin.groups.form.reasoningEffortDowngrade") }}</option>
+          <option value="deny">{{ t("admin.groups.form.reasoningEffortDeny") }}</option>
+        </select>
+      </div>
     </div>
 
     <div class="mt-5 flex items-center justify-between gap-3">
@@ -107,6 +119,33 @@
             </select>
           </label>
         </div>
+        <div class="mt-3 grid grid-cols-1 gap-2 border-t border-gray-100 pt-3 dark:border-dark-500 sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <label class="block text-xs font-medium text-gray-500 dark:text-gray-400">
+            <span class="mb-1 block">{{ t("admin.groups.form.reasoningEffortScope") }}</span>
+            <select
+              :value="mapping.model ? (mapping.match_type || 'exact') : ''"
+              class="input"
+              :data-testid="`${idPrefix}-reasoning-match-${index}`"
+              @change="updateMatchType(index, $event)"
+            >
+              <option value="">{{ t("admin.groups.form.reasoningEffortAllModels") }}</option>
+              <option value="exact">{{ t("admin.groups.form.reasoningEffortExact") }}</option>
+              <option value="prefix">{{ t("admin.groups.form.reasoningEffortPrefix") }}</option>
+              <option value="suffix">{{ t("admin.groups.form.reasoningEffortSuffix") }}</option>
+            </select>
+          </label>
+          <label class="block min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400">
+            <span class="mb-1 block">{{ t("admin.groups.form.reasoningEffortModel") }}</span>
+            <input
+              :value="mapping.model || ''"
+              :disabled="!mapping.match_type && !mapping.model"
+              class="input disabled:cursor-not-allowed disabled:bg-gray-100 dark:disabled:bg-dark-600"
+              :placeholder="t('admin.groups.form.reasoningEffortModelPlaceholder')"
+              :data-testid="`${idPrefix}-reasoning-model-${index}`"
+              @input="updateMappingValue(index, 'model', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+        </div>
       </div>
     </div>
 
@@ -137,12 +176,14 @@ import type { ReasoningEffortMapping } from "@/types";
 const props = defineProps<{
   idPrefix: string;
   maxReasoningEffort: string;
+  maxReasoningEffortOverLimit: "downgrade" | "deny";
   mappings: ReasoningEffortMapping[];
   values: readonly string[];
 }>();
 
 const emit = defineEmits<{
   "update:maxReasoningEffort": [value: string];
+  "update:maxReasoningEffortOverLimit": [value: "downgrade" | "deny"];
   "update:mappings": [value: ReasoningEffortMapping[]];
 }>();
 
@@ -156,15 +197,33 @@ function updateMaxReasoningEffort(event: Event): void {
   emit("update:maxReasoningEffort", selectValue(event));
 }
 
-function updateMapping(index: number, field: keyof ReasoningEffortMapping, event: Event): void {
+function updateOverLimit(event: Event): void {
+  emit("update:maxReasoningEffortOverLimit", selectValue(event) as "downgrade" | "deny");
+}
+
+function updateMappingValue(index: number, field: keyof ReasoningEffortMapping, value: string): void {
   const next = props.mappings.map((mapping, mappingIndex) =>
-    mappingIndex === index ? { ...mapping, [field]: selectValue(event) } : mapping,
+    mappingIndex === index ? { ...mapping, [field]: value } : mapping,
   );
   emit("update:mappings", next);
 }
 
+function updateMapping(index: number, field: keyof ReasoningEffortMapping, event: Event): void {
+  updateMappingValue(index, field, selectValue(event));
+}
+
+function updateMatchType(index: number, event: Event): void {
+  const matchType = selectValue(event) as ReasoningEffortMapping["match_type"] | "";
+  const next = props.mappings.map((mapping, mappingIndex) => {
+    if (mappingIndex !== index) return mapping;
+    if (!matchType) return { ...mapping, match_type: undefined, model: undefined };
+    return { ...mapping, match_type: matchType };
+  });
+  emit("update:mappings", next);
+}
+
 function addMapping(): void {
-  emit("update:mappings", [...props.mappings, { from: "", to: "" }]);
+  emit("update:mappings", [...props.mappings, { from: "", to: "", match_type: undefined, model: undefined }]);
 }
 
 function removeMapping(index: number): void {

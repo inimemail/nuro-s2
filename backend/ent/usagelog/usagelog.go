@@ -32,6 +32,10 @@ const (
 	FieldUpstreamModel = "upstream_model"
 	// FieldUpstreamResponseModel holds the string denoting the upstream_response_model field in the database.
 	FieldUpstreamResponseModel = "upstream_response_model"
+	// FieldRequestedReasoningEffort holds the string denoting the requested_reasoning_effort field in the database.
+	FieldRequestedReasoningEffort = "requested_reasoning_effort"
+	// FieldNativeCompactionV2 holds the string denoting the native_compaction_v2 field in the database.
+	FieldNativeCompactionV2 = "native_compaction_v2"
 	// FieldUpstreamModelMismatch holds the string denoting the upstream_model_mismatch field in the database.
 	FieldUpstreamModelMismatch = "upstream_model_mismatch"
 	// FieldChannelID holds the string denoting the channel_id field in the database.
@@ -179,6 +183,8 @@ var Columns = []string{
 	FieldRequestedModel,
 	FieldUpstreamModel,
 	FieldUpstreamResponseModel,
+	FieldRequestedReasoningEffort,
+	FieldNativeCompactionV2,
 	FieldUpstreamModelMismatch,
 	FieldChannelID,
 	FieldModelMappingChain,
@@ -247,6 +253,10 @@ var (
 	UpstreamModelValidator func(string) error
 	// UpstreamResponseModelValidator is a validator for the "upstream_response_model" field. It is called by the builders before save.
 	UpstreamResponseModelValidator func(string) error
+	// RequestedReasoningEffortValidator is a validator for the "requested_reasoning_effort" field. It is called by the builders before save.
+	RequestedReasoningEffortValidator func(string) error
+	// DefaultNativeCompactionV2 holds the default value on creation for the "native_compaction_v2" field.
+	DefaultNativeCompactionV2 bool
 	// ModelMappingChainValidator is a validator for the "model_mapping_chain" field. It is called by the builders before save.
 	ModelMappingChainValidator func(string) error
 	// BillingTierValidator is a validator for the "billing_tier" field. It is called by the builders before save.
@@ -360,6 +370,16 @@ func ByUpstreamModel(opts ...sql.OrderTermOption) OrderOption {
 // ByUpstreamResponseModel orders the results by the upstream_response_model field.
 func ByUpstreamResponseModel(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUpstreamResponseModel, opts...).ToFunc()
+}
+
+// ByRequestedReasoningEffort orders the results by the requested_reasoning_effort field.
+func ByRequestedReasoningEffort(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRequestedReasoningEffort, opts...).ToFunc()
+}
+
+// ByNativeCompactionV2 orders the results by the native_compaction_v2 field.
+func ByNativeCompactionV2(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldNativeCompactionV2, opts...).ToFunc()
 }
 
 // ByUpstreamModelMismatch orders the results by the upstream_model_mismatch field.

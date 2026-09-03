@@ -24,7 +24,7 @@ const state = ref<OllamaCloudUsageState | null>(null)
 const loading = ref(false)
 const eligible = computed(() => {
   const baseURL = String((props.account.credentials as Record<string, unknown> | undefined)?.base_url || '').replace(/\/$/, '').toLowerCase()
-  return props.account.type === 'apikey' && ['openai', 'anthropic'].includes(props.account.platform) && ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
+  return props.account.type === 'apikey' && ['openai', 'anthropic', 'kimi', 'zhipu', 'deepseek'].includes(props.account.platform) && ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
 })
 const UsageBar = defineComponent({
   props: { label: { type: String, required: true }, value: { type: Number, default: undefined } },

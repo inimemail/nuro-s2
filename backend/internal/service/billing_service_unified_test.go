@@ -60,6 +60,82 @@ func TestCalculateCostUnified_TokenMode(t *testing.T) {
 	require.Equal(t, string(BillingModeToken), cost.BillingMode)
 }
 
+func TestCalculateCostUnified_UsesExplicitOneHourCacheWritePrice(t *testing.T) {
+	cacheWrite1hPrice := 9e-6
+	cs := newTestChannelServiceWithCache(t, &channelCache{
+		pricingByGroupModel: map[channelModelKey]*ChannelModelPricing{
+			{groupID: 7, model: "claude-sonnet-4"}: {
+				BillingMode: BillingModeToken,
+				Intervals: []PricingInterval{{
+					MinTokens:         0,
+					CacheWrite1hPrice: &cacheWrite1hPrice,
+				}},
+			},
+		},
+		channelByGroupID:        map[int64]*Channel{7: {ID: 7, Status: StatusActive}},
+		groupPlatform:           map[int64]string{7: ""},
+		wildcardByGroupPlatform: map[channelGroupPlatformKey][]*wildcardPricingEntry{},
+		mappingByGroupModel:     map[channelModelKey]string{},
+		wildcardMappingByGP:     map[channelGroupPlatformKey][]*wildcardMappingEntry{},
+		byID:                    map[int64]*Channel{},
+	})
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(cs, bs)
+	groupID := int64(7)
+
+	cost, err := bs.CalculateCostUnified(CostInput{
+		Ctx:            context.Background(),
+		Model:          "claude-sonnet-4",
+		GroupID:        &groupID,
+		Tokens:         UsageTokens{CacheCreationTokens: 100, CacheCreation1hTokens: 100},
+		RateMultiplier: 1,
+		Resolver:       resolver,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, 100*cacheWrite1hPrice, cost.CacheCreationCost, 1e-12)
+}
+
+func TestCalculateCostUnified_DeepSeekPricingAtAndChannelOverride(t *testing.T) {
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(nil, bs)
+	tokens := UsageTokens{InputTokens: 1000, OutputTokens: 100}
+
+	offPeak, err := bs.CalculateCostUnified(CostInput{
+		Ctx: context.Background(), Model: "deepseek-v4-pro", Tokens: tokens,
+		RateMultiplier: 1, PricingAt: time.Date(2026, 9, 3, 5, 0, 0, 0, time.UTC), Resolver: resolver,
+	})
+	require.NoError(t, err)
+	peak, err := bs.CalculateCostUnified(CostInput{
+		Ctx: context.Background(), Model: "deepseek-v4-pro", Tokens: tokens,
+		RateMultiplier: 1, PricingAt: time.Date(2026, 9, 3, 6, 0, 0, 0, time.UTC), Resolver: resolver,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, offPeak.TotalCost*2, peak.TotalCost, 1e-12)
+
+	customInput, customOutput := 9e-7, 1.7e-6
+	cs := newTestChannelServiceWithCache(t, &channelCache{
+		pricingByGroupModel: map[channelModelKey]*ChannelModelPricing{
+			{groupID: 8, model: "deepseek-v4-pro"}: {
+				BillingMode: BillingModeToken,
+				InputPrice:  &customInput, OutputPrice: &customOutput,
+			},
+		},
+		channelByGroupID:        map[int64]*Channel{8: {ID: 8, Status: StatusActive}},
+		groupPlatform:           map[int64]string{8: ""},
+		wildcardByGroupPlatform: map[channelGroupPlatformKey][]*wildcardPricingEntry{},
+		mappingByGroupModel:     map[channelModelKey]string{},
+		wildcardMappingByGP:     map[channelGroupPlatformKey][]*wildcardMappingEntry{},
+		byID:                    map[int64]*Channel{},
+	})
+	groupID := int64(8)
+	custom, err := bs.CalculateCostUnified(CostInput{
+		Ctx: context.Background(), Model: "deepseek-v4-pro", GroupID: &groupID, Tokens: tokens,
+		RateMultiplier: 1, PricingAt: time.Date(2026, 9, 3, 6, 0, 0, 0, time.UTC), Resolver: NewModelPricingResolver(cs, bs),
+	})
+	require.NoError(t, err)
+	require.InDelta(t, float64(tokens.InputTokens)*customInput+float64(tokens.OutputTokens)*customOutput, custom.TotalCost, 1e-12)
+}
+
 func TestCalculateCostUnified_PerRequestMode(t *testing.T) {
 	// Set up a ChannelService with a per-request pricing channel
 	cs := newTestChannelServiceWithCache(t, &channelCache{

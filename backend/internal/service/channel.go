@@ -82,24 +82,25 @@ type AccountStatsPricingRule struct {
 
 // ChannelModelPricing 渠道模型定价条目
 type ChannelModelPricing struct {
-	ID               int64
-	ChannelID        int64
-	Platform         string              // 所属平台（anthropic/openai/gemini/...）
-	Models           []string            // 绑定的模型列表
-	BillingMode      BillingMode         // 计费模式
-	InputPrice       *float64            // 每 token 输入价格（USD）— 向后兼容 flat 定价
-	OutputPrice      *float64            // 每 token 输出价格（USD）
-	CacheWritePrice  *float64            // 缓存写入价格
-	CacheReadPrice   *float64            // 缓存读取价格
-	FastMultiplier   *float64            // Fast/priority 服务层级倍率
-	FlexMultiplier   *float64            // Flex 服务层级倍率
-	ImageInputPrice  *float64            // 图片输入 token 价格
-	ImageOutputPrice *float64            // 图片输出价格（向后兼容）
-	PerRequestPrice  *float64            // 默认按次计费价格（USD）
-	Intervals        []PricingInterval   // 区间定价列表
-	TimePricing      *ChannelTimePricing `json:"time_pricing,omitempty"`
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                int64
+	ChannelID         int64
+	Platform          string              // 所属平台（anthropic/openai/gemini/...）
+	Models            []string            // 绑定的模型列表
+	BillingMode       BillingMode         // 计费模式
+	InputPrice        *float64            // 每 token 输入价格（USD）— 向后兼容 flat 定价
+	OutputPrice       *float64            // 每 token 输出价格（USD）
+	CacheWritePrice   *float64            // 缓存写入价格
+	CacheWrite1hPrice *float64            // 1h 缓存写入价格；为空时沿用 CacheWritePrice
+	CacheReadPrice    *float64            // 缓存读取价格
+	FastMultiplier    *float64            // Fast/priority 服务层级倍率
+	FlexMultiplier    *float64            // Flex 服务层级倍率
+	ImageInputPrice   *float64            // 图片输入 token 价格
+	ImageOutputPrice  *float64            // 图片输出价格（向后兼容）
+	PerRequestPrice   *float64            // 默认按次计费价格（USD）
+	Intervals         []PricingInterval   // 区间定价列表
+	TimePricing       *ChannelTimePricing `json:"time_pricing,omitempty"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // ChannelTimePricing defines optional timezone-aware multiplier windows.
@@ -125,6 +126,7 @@ type PricingInterval struct {
 	InputPrice           *float64 // token 模式：每 token 输入价
 	OutputPrice          *float64 // token 模式：每 token 输出价
 	CacheWritePrice      *float64 // token 模式：缓存写入价
+	CacheWrite1hPrice    *float64 // token 模式：1h 缓存写入价
 	CacheReadPrice       *float64 // token 模式：缓存读取价
 	InputMultiplier      *float64 // 未设区间价时乘渠道基础输入价
 	OutputMultiplier     *float64
@@ -206,6 +208,7 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp.InputPrice = cloneGroupPointer(p.InputPrice)
 	cp.OutputPrice = cloneGroupPointer(p.OutputPrice)
 	cp.CacheWritePrice = cloneGroupPointer(p.CacheWritePrice)
+	cp.CacheWrite1hPrice = cloneGroupPointer(p.CacheWrite1hPrice)
 	cp.CacheReadPrice = cloneGroupPointer(p.CacheReadPrice)
 	cp.FastMultiplier = cloneGroupPointer(p.FastMultiplier)
 	cp.FlexMultiplier = cloneGroupPointer(p.FlexMultiplier)
@@ -224,6 +227,7 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 			cp.Intervals[i].InputPrice = cloneGroupPointer(p.Intervals[i].InputPrice)
 			cp.Intervals[i].OutputPrice = cloneGroupPointer(p.Intervals[i].OutputPrice)
 			cp.Intervals[i].CacheWritePrice = cloneGroupPointer(p.Intervals[i].CacheWritePrice)
+			cp.Intervals[i].CacheWrite1hPrice = cloneGroupPointer(p.Intervals[i].CacheWrite1hPrice)
 			cp.Intervals[i].CacheReadPrice = cloneGroupPointer(p.Intervals[i].CacheReadPrice)
 			cp.Intervals[i].InputMultiplier = cloneGroupPointer(p.Intervals[i].InputMultiplier)
 			cp.Intervals[i].OutputMultiplier = cloneGroupPointer(p.Intervals[i].OutputMultiplier)

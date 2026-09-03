@@ -1,11 +1,53 @@
 package service
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestApplyHeaderOverridesAppliesAuthoritativeZhipuTeamHeaders(t *testing.T) {
+	account := &Account{
+		Platform: PlatformZhipu,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"account_mode":       AccountModeCoding,
+			"zhipu_organization": " org-team ",
+			"zhipu_project":      " proj-team ",
+		},
+	}
+	header := http.Header{
+		"Bigmodel-Organization": []string{"client-org"},
+		"Bigmodel-Project":      []string{"client-project"},
+	}
+
+	account.ApplyHeaderOverrides(header)
+
+	require.Equal(t, "org-team", header.Get("bigmodel-organization"))
+	require.Equal(t, "proj-team", header.Get("bigmodel-project"))
+}
+
+func TestApplyHeaderOverridesClearsZhipuTeamHeadersWithoutOrganization(t *testing.T) {
+	account := &Account{
+		Platform: PlatformZhipu,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"account_mode":  AccountModeCoding,
+			"zhipu_project": "stale-project",
+		},
+	}
+	header := http.Header{
+		"Bigmodel-Organization": []string{"client-org"},
+		"Bigmodel-Project":      []string{"client-project"},
+	}
+
+	account.ApplyHeaderOverrides(header)
+
+	require.Empty(t, header.Get("bigmodel-organization"))
+	require.Empty(t, header.Get("bigmodel-project"))
+}
 
 func TestCNProviderLocalExtraTakesPrecedence(t *testing.T) {
 	account := &Account{
@@ -81,11 +123,13 @@ func TestCNProviderAnthropicDoesNotReuseAnthropicBaseURLForOpenAIFormat(t *testi
 	require.Equal(t, DefaultKimiPayGBaseURL, account.GetOpenAIFormatBaseURL())
 }
 
-func TestCNProviderResponsesRestrictedToDeepSeek(t *testing.T) {
-	for _, platform := range []string{PlatformKimi, PlatformZhipu} {
+func TestCNProviderResponsesSupportedByKimiAndDeepSeek(t *testing.T) {
+	for _, platform := range []string{PlatformZhipu} {
 		account := &Account{Platform: platform, Extra: map[string]any{"cn_api_mode": "responses"}}
 		require.Equal(t, APIProtocolChatCompletions, account.GetAPIProtocol())
 	}
+	kimi := &Account{Platform: PlatformKimi, Extra: map[string]any{"cn_api_mode": "responses"}}
+	require.Equal(t, APIProtocolResponses, kimi.GetAPIProtocol())
 	account := &Account{Platform: PlatformDeepSeek, Extra: map[string]any{"cn_api_mode": "responses"}}
 	require.Equal(t, APIProtocolResponses, account.GetAPIProtocol())
 	require.Equal(t, DefaultDeepSeekResponsesBaseURL, account.GetCNProtocolBaseURL(APIProtocolResponses))
@@ -111,8 +155,8 @@ func TestCNProtocolControlsChatCompletionsResponsesBridge(t *testing.T) {
 	require.False(t, shouldForwardAPIKeyChatViaResponses(kimi))
 }
 
-func TestNormalizeCNProviderStoredConfigPreservesOnlyExplicitDeepSeekResponses(t *testing.T) {
-	for _, platform := range []string{PlatformKimi, PlatformZhipu} {
+func TestNormalizeCNProviderStoredConfigPreservesOnlySupportedResponses(t *testing.T) {
+	for _, platform := range []string{PlatformZhipu} {
 		extra, credentials := normalizeCNProviderStoredConfig(platform,
 			map[string]any{cnAPIProtocolExtraKey: APIProtocolResponses, cnAPIBaseURLsExtraKey: map[string]any{"responses": "https://old.example"}},
 			map[string]any{"api_key": "secret", "api_protocol": APIProtocolAnthropic, "api_base_urls": map[string]any{"anthropic": "https://old.example"}},
@@ -124,13 +168,15 @@ func TestNormalizeCNProviderStoredConfigPreservesOnlyExplicitDeepSeekResponses(t
 		require.NotContains(t, credentials, "api_base_urls")
 	}
 
-	extra, credentials := normalizeCNProviderStoredConfig(PlatformDeepSeek, nil, map[string]any{
-		"api_key":      "secret",
-		"api_protocol": APIProtocolResponses,
-	})
-	require.Equal(t, APIProtocolResponses, extra[cnAPIProtocolExtraKey])
-	require.Equal(t, "secret", credentials["api_key"])
-	require.NotContains(t, credentials, "api_protocol")
+	for _, platform := range []string{PlatformKimi, PlatformDeepSeek} {
+		extra, credentials := normalizeCNProviderStoredConfig(platform, nil, map[string]any{
+			"api_key":      "secret",
+			"api_protocol": APIProtocolResponses,
+		})
+		require.Equal(t, APIProtocolResponses, extra[cnAPIProtocolExtraKey])
+		require.Equal(t, "secret", credentials["api_key"])
+		require.NotContains(t, credentials, "api_protocol")
+	}
 }
 
 func TestLegacyAdaptiveCNProviderValuesRemainSupported(t *testing.T) {

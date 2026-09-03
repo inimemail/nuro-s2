@@ -406,7 +406,7 @@ gateway:
     queue_buffer_size: 8192
     queue_max_bytes: 2147483648
     # 1-999999999 per Edge replica; restart Edge after changing the environment value.
-    global_workers: 131072
+    global_workers: 9999
     # 0 disables the per-account relay semaphore.
     per_account_workers: 0
     max_relay_domains: 4096
@@ -1216,6 +1216,10 @@ pricing:
   # Fallback pricing file
   # 备用定价文件
   fallback_file: "./resources/model-pricing/model_prices_and_context_window.json"
+  # Optional sparse JSON patch applied field-by-field after catalog/fallback loading.
+  # Invalid field types or negative prices reject the complete override file.
+  # 可选稀疏 JSON 覆盖文件；按字段合并。字段类型错误或负价格会拒绝整个覆盖文件。
+  # override_file: "./data/model_pricing_overrides.json"
   # Update interval in hours
   # 更新间隔（小时）
   update_interval_hours: 24

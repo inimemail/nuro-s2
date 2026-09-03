@@ -92,9 +92,18 @@ type ollamaCloudUsageDueRepository interface {
 	ListDueOllamaCloudUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int) ([]Account, error)
 }
 
+func isOllamaCloudUsagePlatform(platform string) bool {
+	switch platform {
+	case PlatformOpenAI, PlatformAnthropic, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsOllamaCloudUsageAccount is intentionally strict: it never changes gateway routing eligibility.
 func IsOllamaCloudUsageAccount(a *Account) bool {
-	if a == nil || a.Type != AccountTypeAPIKey || (a.Platform != PlatformOpenAI && a.Platform != PlatformAnthropic) {
+	if a == nil || a.Type != AccountTypeAPIKey || !isOllamaCloudUsagePlatform(a.Platform) {
 		return false
 	}
 	base, _ := a.Credentials["base_url"].(string)

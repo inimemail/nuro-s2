@@ -178,6 +178,59 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-openai-ws-mode-enabled').exists()).toBe(false)
   })
 
+  it('智谱团队批量编辑提交 organization 和 project', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['zhipu'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-zhipu-team-enabled').setValue(true)
+    await wrapper.get('input[placeholder="admin.accounts.cnProviders.zhipuTeam.organizationPlaceholder"]').setValue(' org-team ')
+    await wrapper.get('input[placeholder="admin.accounts.cnProviders.zhipuTeam.projectPlaceholder"]').setValue(' project-a ')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      credentials: {
+        zhipu_organization: 'org-team',
+        zhipu_project: 'project-a'
+      }
+    })
+  })
+
+  it('智谱团队批量编辑保留 organization 且清空 project', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['zhipu'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-zhipu-team-enabled').setValue(true)
+    await wrapper.get('input[placeholder="admin.accounts.cnProviders.zhipuTeam.organizationPlaceholder"]').setValue('org-team')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      credentials: { zhipu_organization: 'org-team' },
+      credentials_remove_keys: ['zhipu_project']
+    })
+  })
+
+  it('智谱团队批量编辑清空 organization 时同时清理 project', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['zhipu'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-zhipu-team-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      credentials: {},
+      credentials_remove_keys: ['zhipu_organization', 'zhipu_project']
+    })
+  })
+
   it('OpenAI shadow 账号不显示仅适用于独立文本账号的首 Token 配置', () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

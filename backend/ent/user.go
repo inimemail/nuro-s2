@@ -45,6 +45,8 @@ type User struct {
 	TotpSecretEncrypted *string `json:"totp_secret_encrypted,omitempty"`
 	// TotpEnabled holds the value of the "totp_enabled" field.
 	TotpEnabled bool `json:"totp_enabled,omitempty"`
+	// 是否将可访问的公共分组限制为 user_allowed_groups 中的显式授权
+	RestrictPublicGroups bool `json:"restrict_public_groups,omitempty"`
 	// TotpEnabledAt holds the value of the "totp_enabled_at" field.
 	TotpEnabledAt *time.Time `json:"totp_enabled_at,omitempty"`
 	// SignupSource holds the value of the "signup_source" field.
@@ -237,7 +239,7 @@ func (*User) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case user.FieldTotpEnabled, user.FieldBalanceNotifyEnabled:
+		case user.FieldTotpEnabled, user.FieldRestrictPublicGroups, user.FieldBalanceNotifyEnabled:
 			values[i] = new(sql.NullBool)
 		case user.FieldBalance, user.FieldFrozenBalance, user.FieldBalanceNotifyThreshold, user.FieldTotalRecharged:
 			values[i] = new(sql.NullFloat64)
@@ -353,6 +355,12 @@ func (_m *User) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field totp_enabled", values[i])
 			} else if value.Valid {
 				_m.TotpEnabled = value.Bool
+			}
+		case user.FieldRestrictPublicGroups:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field restrict_public_groups", values[i])
+			} else if value.Valid {
+				_m.RestrictPublicGroups = value.Bool
 			}
 		case user.FieldTotpEnabledAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -569,6 +577,9 @@ func (_m *User) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("totp_enabled=")
 	builder.WriteString(fmt.Sprintf("%v", _m.TotpEnabled))
+	builder.WriteString(", ")
+	builder.WriteString("restrict_public_groups=")
+	builder.WriteString(fmt.Sprintf("%v", _m.RestrictPublicGroups))
 	builder.WriteString(", ")
 	if v := _m.TotpEnabledAt; v != nil {
 		builder.WriteString("totp_enabled_at=")

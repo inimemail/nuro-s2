@@ -100,6 +100,16 @@ func UpstreamResponseModel(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldUpstreamResponseModel, v))
 }
 
+// RequestedReasoningEffort applies equality check predicate on the "requested_reasoning_effort" field. It's identical to RequestedReasoningEffortEQ.
+func RequestedReasoningEffort(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldRequestedReasoningEffort, v))
+}
+
+// NativeCompactionV2 applies equality check predicate on the "native_compaction_v2" field. It's identical to NativeCompactionV2EQ.
+func NativeCompactionV2(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldNativeCompactionV2, v))
+}
+
 // UpstreamModelMismatch applies equality check predicate on the "upstream_model_mismatch" field. It's identical to UpstreamModelMismatchEQ.
 func UpstreamModelMismatch(v bool) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldUpstreamModelMismatch, v))
@@ -798,6 +808,91 @@ func UpstreamResponseModelEqualFold(v string) predicate.UsageLog {
 // UpstreamResponseModelContainsFold applies the ContainsFold predicate on the "upstream_response_model" field.
 func UpstreamResponseModelContainsFold(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldContainsFold(FieldUpstreamResponseModel, v))
+}
+
+// RequestedReasoningEffortEQ applies the EQ predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortNEQ applies the NEQ predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortIn applies the In predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldRequestedReasoningEffort, vs...))
+}
+
+// RequestedReasoningEffortNotIn applies the NotIn predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldRequestedReasoningEffort, vs...))
+}
+
+// RequestedReasoningEffortGT applies the GT predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortGTE applies the GTE predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortLT applies the LT predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortLTE applies the LTE predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortContains applies the Contains predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortHasPrefix applies the HasPrefix predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortHasSuffix applies the HasSuffix predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortIsNil applies the IsNil predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldRequestedReasoningEffort))
+}
+
+// RequestedReasoningEffortNotNil applies the NotNil predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldRequestedReasoningEffort))
+}
+
+// RequestedReasoningEffortEqualFold applies the EqualFold predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldRequestedReasoningEffort, v))
+}
+
+// RequestedReasoningEffortContainsFold applies the ContainsFold predicate on the "requested_reasoning_effort" field.
+func RequestedReasoningEffortContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldRequestedReasoningEffort, v))
+}
+
+// NativeCompactionV2EQ applies the EQ predicate on the "native_compaction_v2" field.
+func NativeCompactionV2EQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldNativeCompactionV2, v))
+}
+
+// NativeCompactionV2NEQ applies the NEQ predicate on the "native_compaction_v2" field.
+func NativeCompactionV2NEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldNativeCompactionV2, v))
 }
 
 // UpstreamModelMismatchEQ applies the EQ predicate on the "upstream_model_mismatch" field.

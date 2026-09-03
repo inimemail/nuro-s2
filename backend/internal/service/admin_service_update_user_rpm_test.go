@@ -67,3 +67,22 @@ func TestAdminService_UpdateUser_NoInvalidateWhenRPMLimitUnchanged(t *testing.T)
 	require.NoError(t, err)
 	require.Empty(t, invalidator.userIDs, "只改 username 不应触发认证缓存失效")
 }
+
+func TestAdminService_UpdateUser_InvalidatesAuthCacheOnPublicGroupRestrictionChange(t *testing.T) {
+	base := &userRepoStub{user: &User{ID: 42, Email: "u@example.com", RestrictPublicGroups: false}}
+	repo := &rpmUserRepoStub{userRepoStub: base}
+	invalidator := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{
+		userRepo:             repo,
+		redeemCodeRepo:       &redeemRepoStub{},
+		authCacheInvalidator: invalidator,
+	}
+
+	restrict := true
+	updated, err := svc.UpdateUser(context.Background(), 42, &UpdateUserInput{
+		RestrictPublicGroups: &restrict,
+	})
+	require.NoError(t, err)
+	require.True(t, updated.RestrictPublicGroups)
+	require.Equal(t, []int64{42}, invalidator.userIDs)
+}

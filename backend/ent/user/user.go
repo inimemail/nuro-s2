@@ -43,6 +43,8 @@ const (
 	FieldTotpSecretEncrypted = "totp_secret_encrypted"
 	// FieldTotpEnabled holds the string denoting the totp_enabled field in the database.
 	FieldTotpEnabled = "totp_enabled"
+	// FieldRestrictPublicGroups holds the string denoting the restrict_public_groups field in the database.
+	FieldRestrictPublicGroups = "restrict_public_groups"
 	// FieldTotpEnabledAt holds the string denoting the totp_enabled_at field in the database.
 	FieldTotpEnabledAt = "totp_enabled_at"
 	// FieldSignupSource holds the string denoting the signup_source field in the database.
@@ -208,6 +210,7 @@ var Columns = []string{
 	FieldNotes,
 	FieldTotpSecretEncrypted,
 	FieldTotpEnabled,
+	FieldRestrictPublicGroups,
 	FieldTotpEnabledAt,
 	FieldSignupSource,
 	FieldLastLoginAt,
@@ -276,6 +279,8 @@ var (
 	DefaultNotes string
 	// DefaultTotpEnabled holds the default value on creation for the "totp_enabled" field.
 	DefaultTotpEnabled bool
+	// DefaultRestrictPublicGroups holds the default value on creation for the "restrict_public_groups" field.
+	DefaultRestrictPublicGroups bool
 	// DefaultSignupSource holds the default value on creation for the "signup_source" field.
 	DefaultSignupSource string
 	// SignupSourceValidator is a validator for the "signup_source" field. It is called by the builders before save.
@@ -368,6 +373,11 @@ func ByTotpSecretEncrypted(opts ...sql.OrderTermOption) OrderOption {
 // ByTotpEnabled orders the results by the totp_enabled field.
 func ByTotpEnabled(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldTotpEnabled, opts...).ToFunc()
+}
+
+// ByRestrictPublicGroups orders the results by the restrict_public_groups field.
+func ByRestrictPublicGroups(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRestrictPublicGroups, opts...).ToFunc()
 }
 
 // ByTotpEnabledAt orders the results by the totp_enabled_at field.

@@ -206,6 +206,7 @@ type BulkUpdateAccountsRequest struct {
 	Schedulable             *bool                     `json:"schedulable"`
 	GroupIDs                *[]int64                  `json:"group_ids"`
 	Credentials             map[string]any            `json:"credentials"`
+	CredentialsRemoveKeys   []string                  `json:"credentials_remove_keys"`
 	Extra                   map[string]any            `json:"extra"`
 	ExtraRemoveKeys         []string                  `json:"extra_remove_keys"`
 	ProbeEnabled            *bool                     `json:"upstream_billing_probe_enabled"`
@@ -228,6 +229,11 @@ var allowedBulkExtraRemoveKeys = map[string]struct{}{
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms":        {},
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_stages":              {},
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default": {},
+}
+
+var allowedBulkCredentialsRemoveKeys = map[string]struct{}{
+	"zhipu_organization": {},
+	"zhipu_project":      {},
 }
 
 type UpdateCodexAutoResetModeRequest struct {
@@ -1861,6 +1867,12 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 			return
 		}
 	}
+	for _, key := range req.CredentialsRemoveKeys {
+		if _, ok := allowedBulkCredentialsRemoveKeys[strings.TrimSpace(key)]; !ok {
+			response.BadRequest(c, "unsupported credentials_remove_keys: "+strings.TrimSpace(key))
+			return
+		}
+	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -1877,6 +1889,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.Schedulable != nil ||
 		req.GroupIDs != nil ||
 		len(req.Credentials) > 0 ||
+		len(req.CredentialsRemoveKeys) > 0 ||
 		len(req.Extra) > 0 ||
 		len(req.ExtraRemoveKeys) > 0
 	hasUpdates = hasUpdates || req.ProbeEnabled != nil
@@ -1899,6 +1912,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		Schedulable:           req.Schedulable,
 		GroupIDs:              req.GroupIDs,
 		Credentials:           req.Credentials,
+		CredentialsRemoveKeys: req.CredentialsRemoveKeys,
 		Extra:                 req.Extra,
 		ExtraRemoveKeys:       req.ExtraRemoveKeys,
 		ProbeEnabled:          req.ProbeEnabled,

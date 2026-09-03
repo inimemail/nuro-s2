@@ -214,6 +214,20 @@ func (_c *UserCreate) SetNillableTotpEnabled(v *bool) *UserCreate {
 	return _c
 }
 
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (_c *UserCreate) SetRestrictPublicGroups(v bool) *UserCreate {
+	_c.mutation.SetRestrictPublicGroups(v)
+	return _c
+}
+
+// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
+func (_c *UserCreate) SetNillableRestrictPublicGroups(v *bool) *UserCreate {
+	if v != nil {
+		_c.SetRestrictPublicGroups(*v)
+	}
+	return _c
+}
+
 // SetTotpEnabledAt sets the "totp_enabled_at" field.
 func (_c *UserCreate) SetTotpEnabledAt(v time.Time) *UserCreate {
 	_c.mutation.SetTotpEnabledAt(v)
@@ -632,6 +646,10 @@ func (_c *UserCreate) defaults() error {
 		v := user.DefaultTotpEnabled
 		_c.mutation.SetTotpEnabled(v)
 	}
+	if _, ok := _c.mutation.RestrictPublicGroups(); !ok {
+		v := user.DefaultRestrictPublicGroups
+		_c.mutation.SetRestrictPublicGroups(v)
+	}
 	if _, ok := _c.mutation.SignupSource(); !ok {
 		v := user.DefaultSignupSource
 		_c.mutation.SetSignupSource(v)
@@ -721,6 +739,9 @@ func (_c *UserCreate) check() error {
 	}
 	if _, ok := _c.mutation.TotpEnabled(); !ok {
 		return &ValidationError{Name: "totp_enabled", err: errors.New(`ent: missing required field "User.totp_enabled"`)}
+	}
+	if _, ok := _c.mutation.RestrictPublicGroups(); !ok {
+		return &ValidationError{Name: "restrict_public_groups", err: errors.New(`ent: missing required field "User.restrict_public_groups"`)}
 	}
 	if _, ok := _c.mutation.SignupSource(); !ok {
 		return &ValidationError{Name: "signup_source", err: errors.New(`ent: missing required field "User.signup_source"`)}
@@ -827,6 +848,10 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.TotpEnabled(); ok {
 		_spec.SetField(user.FieldTotpEnabled, field.TypeBool, value)
 		_node.TotpEnabled = value
+	}
+	if value, ok := _c.mutation.RestrictPublicGroups(); ok {
+		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
+		_node.RestrictPublicGroups = value
 	}
 	if value, ok := _c.mutation.TotpEnabledAt(); ok {
 		_spec.SetField(user.FieldTotpEnabledAt, field.TypeTime, value)
@@ -1318,6 +1343,18 @@ func (u *UserUpsert) UpdateTotpEnabled() *UserUpsert {
 	return u
 }
 
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (u *UserUpsert) SetRestrictPublicGroups(v bool) *UserUpsert {
+	u.Set(user.FieldRestrictPublicGroups, v)
+	return u
+}
+
+// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
+func (u *UserUpsert) UpdateRestrictPublicGroups() *UserUpsert {
+	u.SetExcluded(user.FieldRestrictPublicGroups)
+	return u
+}
+
 // SetTotpEnabledAt sets the "totp_enabled_at" field.
 func (u *UserUpsert) SetTotpEnabledAt(v time.Time) *UserUpsert {
 	u.Set(user.FieldTotpEnabledAt, v)
@@ -1739,6 +1776,20 @@ func (u *UserUpsertOne) SetTotpEnabled(v bool) *UserUpsertOne {
 func (u *UserUpsertOne) UpdateTotpEnabled() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateTotpEnabled()
+	})
+}
+
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (u *UserUpsertOne) SetRestrictPublicGroups(v bool) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.SetRestrictPublicGroups(v)
+	})
+}
+
+// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
+func (u *UserUpsertOne) UpdateRestrictPublicGroups() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateRestrictPublicGroups()
 	})
 }
 
@@ -2356,6 +2407,20 @@ func (u *UserUpsertBulk) SetTotpEnabled(v bool) *UserUpsertBulk {
 func (u *UserUpsertBulk) UpdateTotpEnabled() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateTotpEnabled()
+	})
+}
+
+// SetRestrictPublicGroups sets the "restrict_public_groups" field.
+func (u *UserUpsertBulk) SetRestrictPublicGroups(v bool) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.SetRestrictPublicGroups(v)
+	})
+}
+
+// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
+func (u *UserUpsertBulk) UpdateRestrictPublicGroups() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateRestrictPublicGroups()
 	})
 }
 

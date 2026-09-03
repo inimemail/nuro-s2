@@ -85,6 +85,7 @@ type UserUpdateFields struct {
 	SignupSource, LastLoginAt, LastActiveAt         bool
 	BalanceNotifySettings, BalanceNotifyExtraEmails bool
 	AllowedGroups                                   bool
+	RestrictPublicGroups                            bool
 }
 
 func (f UserUpdateFields) IsEmpty() bool { return f == UserUpdateFields{} }

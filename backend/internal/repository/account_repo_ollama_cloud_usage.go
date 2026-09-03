@@ -8,8 +8,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
+const ollamaCloudUsagePlatformsSQL = "'openai', 'anthropic', 'kimi', 'zhipu', 'deepseek'"
+
 const ollamaCloudUsageEligibleSQL = `
-	platform IN ('openai', 'anthropic')
+		platform IN (` + ollamaCloudUsagePlatformsSQL + `)
 	AND type = 'apikey'
 	AND LOWER(RTRIM(BTRIM(credentials ->> 'base_url'), '/')) IN ('https://ollama.com', 'https://ollama.com/v1')
 	AND jsonb_typeof(credentials -> 'api_key') = 'string'

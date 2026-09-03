@@ -55,6 +55,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	repo, client := newAPIKeyRepoSQLite(t)
 	ctx := context.Background()
 	user := mustCreateAPIKeyRepoUser(t, ctx, client, "getbykey-auth-dispatch-unit@test.com")
+	_, err := client.User.UpdateOneID(user.ID).SetRestrictPublicGroups(true).Save(ctx)
+	require.NoError(t, err)
 
 	guardMultiplier := 2.25
 	videoPrice480P := 0.12
@@ -87,6 +89,10 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 		SetRequireOauthOnly(true).
 		SetRequirePrivacySet(true).
 		SetDefaultMappedModel("gpt-5.4").
+		SetForceOpenaiFast(true).
+		SetMaxReasoningEffort("medium").
+		SetMaxReasoningEffortOverLimit("deny").
+		SetReasoningEffortMappings([]service.ReasoningEffortMapping{{From: "max", To: "high", MatchType: "prefix", Model: "gpt-5"}}).
 		SetMessagesDispatchModelConfig(service.OpenAIMessagesDispatchModelConfig{
 			OpusMappedModel:   "gpt-5.4-nano",
 			SonnetMappedModel: "gpt-5.3-codex",
@@ -115,6 +121,7 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.NotNil(t, got.Group)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.Group.MessagesDispatchModelConfig)
 	require.Contains(t, got.User.AllowedGroups, group.ID)
+	require.True(t, got.User.RestrictPublicGroups)
 	require.True(t, got.Group.IsExclusive)
 	require.Equal(t, guardMultiplier, *got.Group.UpstreamBillingGuardMaxMultiplier)
 	require.True(t, got.Group.PeakRateEnabled)
@@ -130,4 +137,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.False(t, *got.Group.EdgeProtectionEnabled)
 	require.True(t, got.Group.RequireOAuthOnly)
 	require.True(t, got.Group.RequirePrivacySet)
+	require.True(t, got.Group.ForceOpenAIFast)
+	require.Equal(t, "medium", got.Group.MaxReasoningEffort)
+	require.Equal(t, "deny", got.Group.MaxReasoningEffortOverLimit)
+	require.Equal(t, "gpt-5", got.Group.ReasoningEffortMappings[0].Model)
 }

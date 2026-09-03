@@ -15,19 +15,30 @@ import (
 
 func TestFilterModelPlazaGroupsProtectsExclusiveVisibility(t *testing.T) {
 	groups := []service.ModelPlazaGroup{
-		{ID: 1, Name: "public"},
-		{ID: 2, Name: "exclusive-allowed", IsExclusive: true},
-		{ID: 3, Name: "exclusive-denied", IsExclusive: true},
+		{ID: 1, Name: "public", SubscriptionType: service.SubscriptionTypeStandard},
+		{ID: 2, Name: "exclusive-allowed", IsExclusive: true, SubscriptionType: service.SubscriptionTypeStandard},
+		{ID: 3, Name: "exclusive-denied", IsExclusive: true, SubscriptionType: service.SubscriptionTypeStandard},
 	}
 
-	anonymous := filterModelPlazaGroups(groups, nil, false)
+	anonymous := filterModelPlazaGroups(groups, nil, false, false)
 	require.Equal(t, []int64{1}, modelPlazaGroupIDs(anonymous))
 
-	authenticated := filterModelPlazaGroups(groups, map[int64]struct{}{2: {}}, true)
+	authenticated := filterModelPlazaGroups(groups, map[int64]struct{}{2: {}}, true, false)
 	require.Equal(t, []int64{1, 2}, modelPlazaGroupIDs(authenticated))
 
-	withoutGrants := filterModelPlazaGroups(groups, map[int64]struct{}{}, true)
+	withoutGrants := filterModelPlazaGroups(groups, map[int64]struct{}{}, true, false)
 	require.Equal(t, []int64{1}, modelPlazaGroupIDs(withoutGrants))
+
+	restricted := filterModelPlazaGroups(groups, map[int64]struct{}{1: {}, 2: {}}, true, true)
+	require.Equal(t, []int64{1, 2}, modelPlazaGroupIDs(restricted))
+
+	restrictedWithoutPublicGrant := filterModelPlazaGroups(groups, map[int64]struct{}{2: {}}, true, true)
+	require.Equal(t, []int64{2}, modelPlazaGroupIDs(restrictedWithoutPublicGrant))
+
+	subscription := []service.ModelPlazaGroup{
+		{ID: 4, Name: "subscription", SubscriptionType: service.SubscriptionTypeSubscription},
+	}
+	require.Equal(t, []int64{4}, modelPlazaGroupIDs(filterModelPlazaGroups(subscription, nil, true, true)))
 }
 
 func TestModelPlazaGroupDTOIncludesUserRateAndWhitelistedPricing(t *testing.T) {

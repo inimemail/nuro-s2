@@ -74,6 +74,9 @@ func (User) Fields() []ent.Field {
 			Nillable(),
 		field.Bool("totp_enabled").
 			Default(false),
+		field.Bool("restrict_public_groups").
+			Default(false).
+			Comment("是否将可访问的公共分组限制为 user_allowed_groups 中的显式授权"),
 		field.Time("totp_enabled_at").
 			Optional().
 			Nillable(),

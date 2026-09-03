@@ -107,17 +107,18 @@ type AccountGroupBillingSettingsRepository interface {
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {
-	Name            *string
-	ProxyID         *int64
-	Concurrency     *int
-	Priority        *int
-	RateMultiplier  *float64
-	LoadFactor      *int
-	Status          *string
-	Schedulable     *bool
-	Credentials     map[string]any
-	Extra           map[string]any
-	ExtraRemoveKeys []string
+	Name                  *string
+	ProxyID               *int64
+	Concurrency           *int
+	Priority              *int
+	RateMultiplier        *float64
+	LoadFactor            *int
+	Status                *string
+	Schedulable           *bool
+	Credentials           map[string]any
+	CredentialsRemoveKeys []string
+	Extra                 map[string]any
+	ExtraRemoveKeys       []string
 }
 
 func (u AccountBulkUpdate) IsZero() bool {
@@ -130,6 +131,7 @@ func (u AccountBulkUpdate) IsZero() bool {
 		u.Status == nil &&
 		u.Schedulable == nil &&
 		len(u.Credentials) == 0 &&
+		len(u.CredentialsRemoveKeys) == 0 &&
 		len(u.Extra) == 0 &&
 		len(u.ExtraRemoveKeys) == 0
 }

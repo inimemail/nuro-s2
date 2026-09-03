@@ -41,6 +41,10 @@ type UsageLog struct {
 	UpstreamModel *string `json:"upstream_model,omitempty"`
 	// UpstreamResponseModel holds the value of the "upstream_response_model" field.
 	UpstreamResponseModel *string `json:"upstream_response_model,omitempty"`
+	// Client-requested effort before policy rewriting
+	RequestedReasoningEffort *string `json:"requested_reasoning_effort,omitempty"`
+	// Whether this was a native OpenAI remote compaction v2 request
+	NativeCompactionV2 bool `json:"native_compaction_v2,omitempty"`
 	// UpstreamModelMismatch holds the value of the "upstream_model_mismatch" field.
 	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
 	// 渠道 ID
@@ -212,13 +216,13 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case usagelog.FieldImageSizeBreakdown:
 			values[i] = new([]byte)
-		case usagelog.FieldUpstreamModelMismatch, usagelog.FieldLongContextBillingApplied, usagelog.FieldStream, usagelog.FieldCacheTTLOverridden:
+		case usagelog.FieldNativeCompactionV2, usagelog.FieldUpstreamModelMismatch, usagelog.FieldLongContextBillingApplied, usagelog.FieldStream, usagelog.FieldCacheTTLOverridden:
 			values[i] = new(sql.NullBool)
 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldRateMultiplier, usagelog.FieldAccountRateMultiplier:
 			values[i] = new(sql.NullFloat64)
 		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldSlotWaitMs, usagelog.FieldUpstreamHeaderMs, usagelog.FieldUpstreamFirstByteMs, usagelog.FieldFirstClientFlushMs, usagelog.FieldImageCount, usagelog.FieldVideoCount, usagelog.FieldVideoDurationSeconds:
 			values[i] = new(sql.NullInt64)
-		case usagelog.FieldRequestID, usagelog.FieldSessionID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution:
+		case usagelog.FieldRequestID, usagelog.FieldSessionID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldRequestedReasoningEffort, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution:
 			values[i] = new(sql.NullString)
 		case usagelog.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
@@ -300,6 +304,19 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.UpstreamResponseModel = new(string)
 				*_m.UpstreamResponseModel = value.String
+			}
+		case usagelog.FieldRequestedReasoningEffort:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field requested_reasoning_effort", values[i])
+			} else if value.Valid {
+				_m.RequestedReasoningEffort = new(string)
+				*_m.RequestedReasoningEffort = value.String
+			}
+		case usagelog.FieldNativeCompactionV2:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field native_compaction_v2", values[i])
+			} else if value.Valid {
+				_m.NativeCompactionV2 = value.Bool
 			}
 		case usagelog.FieldUpstreamModelMismatch:
 			if value, ok := values[i].(*sql.NullBool); !ok {
@@ -678,6 +695,14 @@ func (_m *UsageLog) String() string {
 		builder.WriteString("upstream_response_model=")
 		builder.WriteString(*v)
 	}
+	builder.WriteString(", ")
+	if v := _m.RequestedReasoningEffort; v != nil {
+		builder.WriteString("requested_reasoning_effort=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	builder.WriteString("native_compaction_v2=")
+	builder.WriteString(fmt.Sprintf("%v", _m.NativeCompactionV2))
 	builder.WriteString(", ")
 	if v := _m.UpstreamModelMismatch; v != nil {
 		builder.WriteString("upstream_model_mismatch=")

@@ -1911,6 +1911,29 @@ func (s *AccountRepoSuite) TestBulkUpdate_MergeCredentials() {
 	s.Require().Equal("new_value", got.Credentials["new_key"])
 }
 
+func (s *AccountRepoSuite) TestBulkUpdate_RemoveAndReplaceCredentialsAtomically() {
+	a1 := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "bulk-credential-removal",
+		Credentials: map[string]any{
+			"api_key":            "keep-secret",
+			"zhipu_organization": "old-org",
+			"zhipu_project":      "old-project",
+		},
+	})
+
+	_, err := s.repo.BulkUpdate(s.ctx, []int64{a1.ID}, service.AccountBulkUpdate{
+		CredentialsRemoveKeys: []string{"zhipu_organization", "zhipu_project", "zhipu_project"},
+		Credentials:           map[string]any{"zhipu_organization": "new-org"},
+	})
+	s.Require().NoError(err)
+
+	got, err := s.repo.GetByID(s.ctx, a1.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("keep-secret", got.Credentials["api_key"])
+	s.Require().Equal("new-org", got.Credentials["zhipu_organization"])
+	s.Require().NotContains(got.Credentials, "zhipu_project")
+}
+
 func (s *AccountRepoSuite) TestBulkUpdate_MergeExtra() {
 	a1 := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:  "bulk-extra",

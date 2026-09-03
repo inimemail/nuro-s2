@@ -227,6 +227,35 @@ func TestCalculateStatsCost_TokenBilling_WithCache(t *testing.T) {
 	require.InDelta(t, 0.95, *result, 1e-12)
 }
 
+func TestCalculateStatsCost_TokenBilling_UsesOneHourCacheWritePrice(t *testing.T) {
+	pricing := &ChannelModelPricing{
+		BillingMode:       BillingModeToken,
+		CacheWritePrice:   testPtrFloat64(0.003),
+		CacheWrite1hPrice: testPtrFloat64(0.009),
+	}
+	result := calculateStatsCost(pricing, UsageTokens{
+		CacheCreationTokens:   300,
+		CacheCreation5mTokens: 100,
+		CacheCreation1hTokens: 200,
+	}, 1)
+	require.NotNil(t, result)
+	require.InDelta(t, 100*0.003+200*0.009, *result, 1e-12)
+}
+
+func TestCalculateStatsCost_TokenBilling_OneHourFallsBackToCacheWritePrice(t *testing.T) {
+	pricing := &ChannelModelPricing{
+		BillingMode:     BillingModeToken,
+		CacheWritePrice: testPtrFloat64(0.003),
+	}
+	result := calculateStatsCost(pricing, UsageTokens{
+		CacheCreationTokens:   300,
+		CacheCreation5mTokens: 100,
+		CacheCreation1hTokens: 200,
+	}, 1)
+	require.NotNil(t, result)
+	require.InDelta(t, 300*0.003, *result, 1e-12)
+}
+
 func TestCalculateStatsCost_TokenBilling_WithImageOutput(t *testing.T) {
 	pricing := &ChannelModelPricing{
 		BillingMode:      BillingModeToken,
@@ -506,6 +535,26 @@ func TestTryModelFilePricingWithPolicy_CanDisableLongContextPricing(t *testing.T
 
 	require.NotNil(t, result)
 	require.InDelta(t, 0.1265, *result, 1e-12)
+}
+
+func TestTryModelFilePricing_UsesOneHourCacheBreakdown(t *testing.T) {
+	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
+		"claude-sonnet-4": {
+			InputPricePerToken:         0.001,
+			CacheCreationPricePerToken: 0.003,
+			CacheCreation5mPrice:       0.003,
+			CacheCreation1hPrice:       0.009,
+			SupportsCacheBreakdown:     true,
+		},
+	})
+	result := tryModelFilePricing(bs, "claude-sonnet-4", UsageTokens{
+		InputTokens:           10,
+		CacheCreationTokens:   300,
+		CacheCreation5mTokens: 100,
+		CacheCreation1hTokens: 200,
+	})
+	require.NotNil(t, result)
+	require.InDelta(t, 10*0.001+100*0.003+200*0.009, *result, 1e-12)
 }
 
 func TestApplyAccountStatsCostWithPolicy_RespectsOpenAILongContextToggle(t *testing.T) {

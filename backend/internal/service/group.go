@@ -105,8 +105,10 @@ type Group struct {
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。
 	RPMLimit int
 	// Empty values leave request reasoning untouched.
-	MaxReasoningEffort      string
-	ReasoningEffortMappings []ReasoningEffortMapping
+	MaxReasoningEffort          string
+	MaxReasoningEffortOverLimit string
+	ReasoningEffortMappings     []ReasoningEffortMapping
+	ForceOpenAIFast             bool
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

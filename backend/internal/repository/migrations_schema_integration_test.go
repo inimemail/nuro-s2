@@ -24,6 +24,7 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
+	requireColumn(t, tx, "users", "restrict_public_groups", "boolean", 0, false)
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)
@@ -44,6 +45,8 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "billing_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "request_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "openai_ws_mode", "boolean", 0, false)
+	requireColumn(t, tx, "usage_logs", "requested_reasoning_effort", "character varying", 20, true)
+	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, false)
 	requireColumn(t, tx, "usage_logs", "image_input_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_output_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_size_source", "character varying", 16, true)
@@ -111,6 +114,12 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 
 	// account_groups: created_at should be timestamptz
 	requireColumn(t, tx, "account_groups", "created_at", "timestamp with time zone", 0, false)
+	requireColumn(t, tx, "groups", "force_openai_fast", "boolean", 0, false)
+	requireColumn(t, tx, "groups", "max_reasoning_effort_over_limit", "character varying", 20, false)
+	requireColumn(t, tx, "channel_model_pricing", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_pricing_intervals", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_account_stats_model_pricing", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_account_stats_pricing_intervals", "cache_write_1h_price", "numeric", 0, true)
 
 	// user_allowed_groups: created_at should be timestamptz
 	requireColumn(t, tx, "user_allowed_groups", "created_at", "timestamp with time zone", 0, false)

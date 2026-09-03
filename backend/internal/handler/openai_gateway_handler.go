@@ -407,6 +407,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
+	nativeCompactionV2 := isBareOpenAIResponsesPath(c) && isOpenAIRemoteCompactionV2Request(c, body)
+	if nativeCompactionV2 {
+		service.MarkOpenAINativeCompactionV2(c)
+	}
 	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
 	defer stopCompactKeepalive()
 
@@ -415,6 +419,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		logRequestBodyParseFailure(reqLog, body, nil)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
+	}
+	if effort := service.ExtractOpenAIReasoningEffort(body); effort != "" {
+		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), effort))
 	}
 
 	// 使用 gjson 只读提取字段做校验，避免完整 Unmarshal
@@ -556,7 +563,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 	}
 	if apiKey.Group != nil {
-		if policyBody, changed := service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings); changed {
+		if policyBody, changed, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit); policyErr != nil {
+			var overLimit *service.ReasoningEffortOverLimitError
+			if errors.As(policyErr, &overLimit) {
+				h.errorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+				return
+			}
+		} else if changed {
 			body = policyBody
 			forwardBodyForResponses = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 		}
@@ -1052,6 +1065,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				APIKeyService:           h.apiKeyService,
 				ChannelUsageFields:      channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 				CyberBlocked:            cyberBlocked,
+				NativeCompactionV2:      nativeCompactionV2,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
@@ -1327,6 +1341,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	if effort := service.ExtractOpenAIReasoningEffort(body); effort != "" {
+		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), effort))
+	}
 
 	modelResult := gjson.GetBytes(body, "model")
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
@@ -1392,7 +1409,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	if apiKey.Group != nil {
-		body, _ = service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
+		policyBody, changed, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		if policyErr != nil {
+			var overLimit *service.ReasoningEffortOverLimitError
+			if errors.As(policyErr, &overLimit) {
+				h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error", overLimit.Error())
+				return
+			}
+		} else if changed {
+			body = policyBody
+			mappedBodyForMessages = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
+		}
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
@@ -3009,6 +3036,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(
 	userAgent := ""
 	clientIP := ""
 	sessionID := service.ExtractClientSessionID(c)
+	nativeCompactionV2 := service.IsOpenAINativeCompactionV2(c)
 	if c != nil {
 		userAgent = c.GetHeader("User-Agent")
 		clientIP = ip.GetClientIP(c)
@@ -3030,6 +3058,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(
 			SessionID:          sessionID,
 			RequestPayloadHash: requestPayloadHash,
 			APIKeyService:      h.apiKeyService,
+			NativeCompactionV2: nativeCompactionV2,
 			ChannelUsageFields: channelFields,
 		})
 	})

@@ -154,6 +154,10 @@ type LiteLLMModelPricing struct {
 	OutputCostPerImageToken             float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
 	InputCostPerImageToken              float64 `json:"input_cost_per_image_token"`  // 图片输入 token 价格
 	TokenPricingAbsent                  bool    `json:"-"`
+	PricingOverride                     bool    `json:"-"`
+	PricingOverrideInput                bool    `json:"-"`
+	PricingOverrideOutput               bool    `json:"-"`
+	PricingOverrideCacheRead            bool    `json:"-"`
 }
 
 // PricingRemoteClient 远程价格数据获取接口
@@ -410,6 +414,7 @@ func (s *PricingService) downloadPricingData() error {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
 	data = s.mergeFallbackPricingData(data)
+	data = s.mergeOverrideOnlyModels(data)
 
 	// 保存到本地文件
 	pricingFile := s.getPricingFilePath()
@@ -446,6 +451,8 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	if err := json.Unmarshal(body, &rawData); err != nil {
 		return nil, fmt.Errorf("parse raw JSON: %w", err)
 	}
+	overrides := s.loadPricingOverrideEntries()
+	rawData = applyPricingOverrides(rawData, overrides)
 
 	result := make(map[string]*LiteLLMModelPricing)
 	skipped := 0
@@ -468,12 +475,17 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 			continue
 		}
 
+		overrideFields := pricingOverrideFields(overrides[modelName])
 		pricing := &LiteLLMModelPricing{
-			LiteLLMProvider:       entry.LiteLLMProvider,
-			Mode:                  entry.Mode,
-			SupportsPromptCaching: entry.SupportsPromptCaching,
-			SupportsServiceTier:   entry.SupportsServiceTier,
-			TokenPricingAbsent:    entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
+			LiteLLMProvider:          entry.LiteLLMProvider,
+			Mode:                     entry.Mode,
+			SupportsPromptCaching:    entry.SupportsPromptCaching,
+			SupportsServiceTier:      entry.SupportsServiceTier,
+			TokenPricingAbsent:       entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
+			PricingOverride:          overrideFields.input || overrideFields.output || overrideFields.cacheRead,
+			PricingOverrideInput:     overrideFields.input,
+			PricingOverrideOutput:    overrideFields.output,
+			PricingOverrideCacheRead: overrideFields.cacheRead,
 		}
 
 		if entry.InputCostPerToken != nil {
@@ -536,6 +548,167 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	return result, nil
 }
 
+type pricingOverrideFieldSet struct {
+	input     bool
+	output    bool
+	cacheRead bool
+}
+
+func pricingOverrideFields(entry json.RawMessage) pricingOverrideFieldSet {
+	var fields map[string]json.RawMessage
+	if len(entry) == 0 || json.Unmarshal(entry, &fields) != nil {
+		return pricingOverrideFieldSet{}
+	}
+	isSet := func(name string) bool {
+		value, ok := fields[name]
+		return ok && string(value) != "null"
+	}
+	return pricingOverrideFieldSet{
+		input:     isSet("input_cost_per_token"),
+		output:    isSet("output_cost_per_token"),
+		cacheRead: isSet("cache_read_input_token_cost"),
+	}
+}
+
+// applyPricingOverrides shallow-merges configured model patches into existing entries.
+// Invalid override files are ignored as a whole so the last valid catalog remains usable.
+func applyPricingOverrides(rawData map[string]json.RawMessage, overrides map[string]json.RawMessage) map[string]json.RawMessage {
+	for name, patch := range overrides {
+		base, ok := rawData[name]
+		if !ok {
+			continue
+		}
+		merged, ok := mergePricingOverrideEntry(base, patch)
+		if ok {
+			rawData[name] = merged
+		}
+	}
+	return rawData
+}
+
+func (s *PricingService) loadPricingOverrideEntries() map[string]json.RawMessage {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	path := strings.TrimSpace(s.cfg.Pricing.OverrideFile)
+	if path == "" {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Warning: override merge skipped: %v", err)
+		return nil
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(body, &entries); err != nil || entries == nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Warning: override merge skipped: invalid JSON object")
+		return nil
+	}
+	for name, entry := range entries {
+		if err := validatePricingOverrideEntry(entry); err != nil {
+			logger.LegacyPrintf("service.pricing", "[Pricing] Warning: override merge skipped: model %q: %v", name, err)
+			return nil
+		}
+	}
+	return entries
+}
+
+func validatePricingOverrideEntry(entry json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(entry, &fields); err != nil || fields == nil {
+		return fmt.Errorf("entry must be a JSON object")
+	}
+	stringFields := map[string]bool{"litellm_provider": true, "mode": true}
+	boolFields := map[string]bool{"supports_service_tier": true, "supports_prompt_caching": true}
+	intFields := map[string]bool{"long_context_input_token_threshold": true}
+	for name, raw := range fields {
+		if string(raw) == "null" {
+			continue
+		}
+		switch {
+		case stringFields[name]:
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return fmt.Errorf("field %s must be a string", name)
+			}
+		case boolFields[name]:
+			var value bool
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return fmt.Errorf("field %s must be a boolean", name)
+			}
+		case intFields[name]:
+			var value int
+			if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+				return fmt.Errorf("field %s must be a non-negative integer", name)
+			}
+		case strings.Contains(name, "cost") || strings.Contains(name, "price") || strings.Contains(name, "multiplier"):
+			var value float64
+			if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+				return fmt.Errorf("field %s must be a non-negative number", name)
+			}
+		}
+	}
+	return nil
+}
+
+func mergePricingOverrideEntry(base, patch json.RawMessage) (json.RawMessage, bool) {
+	var patchFields map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &patchFields); err != nil || patchFields == nil {
+		return nil, false
+	}
+	merged := make(map[string]json.RawMessage, len(patchFields))
+	if err := json.Unmarshal(base, &merged); err != nil || merged == nil {
+		merged = make(map[string]json.RawMessage, len(patchFields))
+	}
+	for name, value := range patchFields {
+		if string(value) == "null" {
+			delete(merged, name)
+			continue
+		}
+		merged[name] = value
+	}
+	out, err := json.Marshal(merged)
+	return out, err == nil
+}
+
+func (s *PricingService) mergeOverrideOnlyModels(data map[string]*LiteLLMModelPricing) map[string]*LiteLLMModelPricing {
+	overrides := s.loadPricingOverrideEntries()
+	if len(overrides) == 0 {
+		return data
+	}
+	if data == nil {
+		data = make(map[string]*LiteLLMModelPricing)
+	}
+	leftover := make(map[string]json.RawMessage)
+	for name, patch := range overrides {
+		if _, exists := data[name]; !exists {
+			leftover[name] = patch
+		}
+	}
+	if len(leftover) == 0 {
+		return data
+	}
+	body, err := json.Marshal(leftover)
+	if err == nil {
+		if parsed, parseErr := s.parsePricingData(body); parseErr == nil {
+			for name, pricing := range parsed {
+				data[name] = pricing
+			}
+		}
+	}
+	missing := make([]string, 0)
+	for name := range leftover {
+		if _, exists := data[name]; !exists {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		logger.LegacyPrintf("service.pricing", "[Pricing] Warning: override had no effect for %d model(s): %s", len(missing), strings.Join(missing, ", "))
+	}
+	return data
+}
+
 // loadPricingData 从本地文件加载价格数据
 func (s *PricingService) loadPricingData(filePath string) error {
 	data, err := os.ReadFile(filePath)
@@ -549,6 +722,7 @@ func (s *PricingService) loadPricingData(filePath string) error {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
 	pricingData = s.mergeFallbackPricingData(pricingData)
+	pricingData = s.mergeOverrideOnlyModels(pricingData)
 
 	// 计算哈希
 	hash := sha256.Sum256(data)

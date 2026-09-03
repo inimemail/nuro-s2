@@ -251,14 +251,21 @@ func (Group) Fields() []ent.Field {
 		field.Int("rpm_limit").
 			Default(0).
 			Comment("分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流"),
+		field.Bool("force_openai_fast").
+			Default(false).
+			Comment("是否强制此 OpenAI/Composite 分组请求使用 service_tier=priority"),
 		field.String("max_reasoning_effort").
 			MaxLen(20).
 			Default("").
 			Comment("OpenAI reasoning effort 上限；空字符串表示不限制"),
+		field.String("max_reasoning_effort_over_limit").
+			MaxLen(20).
+			Default("downgrade").
+			Comment("超过推理强度上限时的访问控制：downgrade 自动降档，deny 拒绝访问"),
 		field.JSON("reasoning_effort_mappings", []domain.ReasoningEffortMapping{}).
 			Default([]domain.ReasoningEffortMapping{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
-			Comment("OpenAI reasoning effort 精确映射；先映射再应用上限"),
+			Comment("OpenAI reasoning effort 映射；可按模型精确、前缀或后缀匹配，先映射再应用上限"),
 	}
 }
 

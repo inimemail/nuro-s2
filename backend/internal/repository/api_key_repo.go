@@ -159,6 +159,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				user.FieldLastLoginAt,
 				user.FieldLastActiveAt,
 				user.FieldRpmLimit,
+				user.FieldRestrictPublicGroups,
 			)
 			q.WithAllowedGroups(func(gq *dbent.GroupQuery) {
 				gq.Select(group.FieldID)
@@ -218,7 +219,9 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldModelsListConfig,
 				group.FieldStrictModelPriorityOnModelMismatch,
 				group.FieldRpmLimit,
+				group.FieldForceOpenaiFast,
 				group.FieldMaxReasoningEffort,
+				group.FieldMaxReasoningEffortOverLimit,
 				group.FieldReasoningEffortMappings,
 				group.FieldUpdatedAt,
 			)
@@ -912,6 +915,7 @@ func userEntityToService(u *dbent.User) *service.User {
 		FrozenBalance:              u.FrozenBalance,
 		Concurrency:                u.Concurrency,
 		Status:                     u.Status,
+		RestrictPublicGroups:       u.RestrictPublicGroups,
 		SignupSource:               u.SignupSource,
 		LastLoginAt:                u.LastLoginAt,
 		LastActiveAt:               u.LastActiveAt,
@@ -1016,7 +1020,9 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		ModelsListConfig:                   g.ModelsListConfig,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
 		RPMLimit:                           g.RpmLimit,
+		ForceOpenAIFast:                    g.ForceOpenaiFast,
 		MaxReasoningEffort:                 g.MaxReasoningEffort,
+		MaxReasoningEffortOverLimit:        g.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:            g.ReasoningEffortMappings,
 		CreatedAt:                          g.CreatedAt,
 		UpdatedAt:                          g.UpdatedAt,

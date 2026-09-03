@@ -266,23 +266,24 @@ type OpenAIForwardResult struct {
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
-	ReasoningEffort     *string
-	Stream              bool
-	OpenAIWSMode        bool
-	TerminalEventType   string
-	ResponseHeaders     http.Header
-	Duration            time.Duration
-	FirstTokenMs        *int
-	UpstreamHeaderMs    *int
-	UpstreamFirstByteMs *int
-	FirstClientFlushMs  *int
-	EdgePrepareMs       *int
-	EdgeQueueWaitMs     *int
-	EdgeRelayStartMs    *int
-	EdgeFallbackReason  *string
-	EdgeRetryCount      *int
-	ClientDisconnect    bool
-	CyberBlocked        bool
+	ReasoningEffort          *string
+	RequestedReasoningEffort *string
+	Stream                   bool
+	OpenAIWSMode             bool
+	TerminalEventType        string
+	ResponseHeaders          http.Header
+	Duration                 time.Duration
+	FirstTokenMs             *int
+	UpstreamHeaderMs         *int
+	UpstreamFirstByteMs      *int
+	FirstClientFlushMs       *int
+	EdgePrepareMs            *int
+	EdgeQueueWaitMs          *int
+	EdgeRelayStartMs         *int
+	EdgeFallbackReason       *string
+	EdgeRetryCount           *int
+	ClientDisconnect         bool
+	CyberBlocked             bool
 	// AccountHealthNeutral marks failures caused by optional gateway policy
 	// compatibility after the response has already been committed.
 	AccountHealthNeutral bool
@@ -10808,7 +10809,8 @@ type OpenAIRecordUsageInput struct {
 	SkipSuccessSideEffects bool
 	APIKeyService          APIKeyQuotaUpdater
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
-	CyberBlocked bool
+	CyberBlocked       bool
+	NativeCompactionV2 bool
 	ChannelUsageFields
 }
 
@@ -10828,6 +10830,7 @@ type CyberPolicyUsageInput struct {
 	SessionID          string
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
+	NativeCompactionV2 bool
 	ChannelUsageFields
 }
 
@@ -10860,6 +10863,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		ChannelUsageFields:     in.ChannelUsageFields,
 		SkipSuccessSideEffects: true,
 		CyberBlocked:           true,
+		NativeCompactionV2:     in.NativeCompactionV2,
 	}); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", in.RequestID, err)
 	}
@@ -11052,6 +11056,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		VideoCount:            result.VideoCount,
 		VideoResolution:       optionalTrimmedStringPtr(result.VideoResolution),
 		VideoDurationSeconds:  optionalPositiveIntPtr(result.VideoDurationSeconds),
+		NativeCompactionV2:    input.NativeCompactionV2,
 	}
 	if cost != nil {
 		usageLog.InputCost = cost.InputCost
@@ -11116,6 +11121,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		usageLog.EdgeRetryCount = usageLogLatencyIntFromContext(ctx, ctxkey.EdgeRetryCount)
 	}
 	usageLog.CreatedAt = time.Now()
+	if requested := RequestedReasoningEffortFromContext(ctx); requested != nil {
+		usageLog.RequestedReasoningEffort = requested
+	} else if result.RequestedReasoningEffort != nil {
+		if requested := normalizeRequestedReasoningEffortLogValue(*result.RequestedReasoningEffort); requested != "" {
+			usageLog.RequestedReasoningEffort = &requested
+		}
+	}
 	// 设置渠道信息
 	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)
 	usageLog.ModelMappingChain = optionalTrimmedStringPtr(input.ModelMappingChain)
@@ -12151,6 +12163,14 @@ func openAIFastPolicySettingsFromContext(ctx context.Context) *OpenAIFastPolicyS
 	return nil
 }
 
+func openAIGroupForcesFast(ctx context.Context, account *Account) bool {
+	if ctx == nil || account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
+	group, _ := ctx.Value(ctxkey.Group).(*Group)
+	return IsGroupContextValid(group) && group.ForceOpenAIFast
+}
+
 // applyOpenAIFastPolicyToBody applies the OpenAI fast policy to a raw request
 // body. When action=filter it removes the service_tier field; when
 // action=block it returns (body, *OpenAIFastBlockedError). On pass it
@@ -12165,6 +12185,13 @@ func openAIFastPolicySettingsFromContext(ctx context.Context) *OpenAIFastPolicyS
 func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, account *Account, model string, body []byte) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
+	}
+	if openAIGroupForcesFast(ctx, account) {
+		updated, err := sjson.SetBytes(body, "service_tier", OpenAIFastTierPriority)
+		if err != nil {
+			return body, fmt.Errorf("force group service_tier priority on body: %w", err)
+		}
+		body = updated
 	}
 	rawTier := gjson.GetBytes(body, "service_tier").String()
 	if rawTier == "" {
@@ -12269,6 +12296,13 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 	// upstream reject it rather than guessing at our layer.
 	if frameType != "response.create" {
 		return frame, nil, nil
+	}
+	if openAIGroupForcesFast(ctx, account) {
+		updated, err := sjson.SetBytes(frame, "service_tier", OpenAIFastTierPriority)
+		if err != nil {
+			return frame, nil, fmt.Errorf("force group service_tier priority in ws frame: %w", err)
+		}
+		frame = updated
 	}
 	rawTier := gjson.GetBytes(frame, "service_tier").String()
 	if rawTier == "" {

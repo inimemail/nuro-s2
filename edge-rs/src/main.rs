@@ -1192,6 +1192,10 @@ fn downstream_usage_policy_for_plan(
 struct ReasoningEffortMapping {
     from: String,
     to: String,
+    #[serde(default)]
+    match_type: String,
+    #[serde(default)]
+    model: String,
 }
 
 fn default_preamble_flush() -> bool {
@@ -4842,10 +4846,11 @@ fn apply_openai_ws_request_policies_tracked(
         .get("model")
         .and_then(Value::as_str)
         .or(session_model.as_deref())
-        .unwrap_or_default();
-    let turn_model = (!model.is_empty()).then(|| model.to_string());
+        .unwrap_or_default()
+        .to_string();
+    let turn_model = (!model.is_empty()).then(|| model.clone());
     let turn_usage_eligible =
-        is_openai_gpt56_model(model) && !is_openai_ws_image_generation_intent(&value);
+        is_openai_gpt56_model(&model) && !is_openai_ws_image_generation_intent(&value);
     // A reasoning-only policy still needs to clear the previous turn's cache
     // flag; otherwise a later settlement can inherit stale cache billing state.
     let mut cache_policy_applied = if cache_policy_enabled {
@@ -4862,10 +4867,11 @@ fn apply_openai_ws_request_policies_tracked(
             changed = true;
         }
     }
-    changed |= apply_openai_reasoning_effort_policy_value(
+    changed |= apply_openai_reasoning_effort_policy_value_for_model(
         &mut value,
         max_reasoning_effort,
         reasoning_effort_mappings,
+        Some(model),
     );
     if !changed {
         return (
@@ -4986,35 +4992,58 @@ fn openai_reasoning_effort_rank(value: &str) -> Option<u8> {
     }
 }
 
+#[cfg(test)]
 fn apply_openai_reasoning_effort_policy_value(
     value: &mut Value,
     max_effort: Option<&str>,
     mappings: &[ReasoningEffortMapping],
 ) -> bool {
+    apply_openai_reasoning_effort_policy_value_for_model(value, max_effort, mappings, None)
+}
+
+fn apply_openai_reasoning_effort_policy_value_for_model(
+    value: &mut Value,
+    max_effort: Option<&str>,
+    mappings: &[ReasoningEffortMapping],
+    fallback_model: Option<String>,
+) -> bool {
     let max_rank = max_effort.and_then(openai_reasoning_effort_rank);
     let Some(request) = value.as_object_mut() else {
         return false;
     };
+    let request_model = request
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(fallback_model)
+        .unwrap_or_default();
     let mut changed = false;
-    for path in [["reasoning", "effort"], ["reasoning_effort", ""]] {
-        let field = if path[1].is_empty() {
-            request.get_mut(path[0])
-        } else {
-            request
-                .get_mut(path[0])
-                .and_then(Value::as_object_mut)
-                .and_then(|nested| nested.get_mut(path[1]))
-        };
-        let Some(field) = field else { continue };
+    let mut apply_field = |field: Option<&mut Value>| {
+        let Some(field) = field else { return };
         let Some(original) = field.as_str().map(str::trim) else {
-            continue;
+            return;
         };
         let Some(canonical) = normalize_openai_reasoning_effort(original) else {
-            continue;
+            return;
         };
         let mut effective = mappings
             .iter()
-            .find(|mapping| normalize_openai_reasoning_effort(&mapping.from) == Some(canonical))
+            .filter(|mapping| normalize_openai_reasoning_effort(&mapping.from) == Some(canonical))
+            .filter(|mapping| reasoning_effort_mapping_matches(mapping, &request_model))
+            .min_by_key(|mapping| {
+                let match_type = mapping.match_type.trim().to_ascii_lowercase();
+                let model = mapping.model.trim();
+                let strength = if model.is_empty() {
+                    1u8
+                } else if match_type == "exact" || match_type.is_empty() {
+                    3u8
+                } else {
+                    2u8
+                };
+                // Reverse the strength so min_by_key prefers the most specific
+                // rule, then prefer longer prefix/suffix scopes.
+                (u8::MAX - strength, usize::MAX - model.len())
+            })
             .and_then(|mapping| normalize_openai_reasoning_effort(&mapping.to))
             .unwrap_or(canonical);
         if let (Some(limit), Some(rank)) = (max_rank, openai_reasoning_effort_rank(effective)) {
@@ -5027,8 +5056,40 @@ fn apply_openai_reasoning_effort_policy_value(
             *field = Value::String(effective.to_string());
             changed = true;
         }
-    }
+    };
+    apply_field(request.get_mut("reasoning_effort"));
+    apply_field(
+        request
+            .get_mut("reasoning")
+            .and_then(Value::as_object_mut)
+            .and_then(|nested| nested.get_mut("effort")),
+    );
+    apply_field(
+        request
+            .get_mut("output_config")
+            .and_then(Value::as_object_mut)
+            .and_then(|nested| nested.get_mut("effort")),
+    );
     changed
+}
+
+fn reasoning_effort_mapping_matches(mapping: &ReasoningEffortMapping, request_model: &str) -> bool {
+    let scope = mapping.model.trim();
+    if scope.is_empty() {
+        return true;
+    }
+    let request_model = request_model.trim();
+    if request_model.is_empty() {
+        return false;
+    }
+    let scope = scope.to_ascii_lowercase();
+    let request_model = request_model.to_ascii_lowercase();
+    match mapping.match_type.trim().to_ascii_lowercase().as_str() {
+        "" | "exact" => request_model == scope,
+        "prefix" => request_model.starts_with(&scope),
+        "suffix" => request_model.ends_with(&scope),
+        _ => false,
+    }
 }
 
 fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode: &str) {
@@ -12261,7 +12322,7 @@ impl EdgeConfig {
                 2 * 1024 * 1024 * 1024,
             )
             .min(u32::MAX as usize),
-            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 131_072).clamp(1, 999_999_999),
+            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 9_999).clamp(1, 999_999_999),
             per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 0),
             max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
             relay_domain_idle_secs: env_u64("SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS", 300),
@@ -12273,7 +12334,7 @@ impl EdgeConfig {
             ),
             transient_proxy_max_active: env_usize("SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE", 32)
                 .clamp(1, 4096),
-            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 100),
+            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 50),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
             large_payload_threshold_bytes: env_usize(
                 "SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES",
@@ -15172,6 +15233,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         let mappings = vec![ReasoningEffortMapping {
             from: "max".to_string(),
             to: "xhigh".to_string(),
+            match_type: String::new(),
+            model: String::new(),
         }];
         let mut value = serde_json::json!({"reasoning": {"effort": "max"}});
         assert!(apply_openai_reasoning_effort_policy_value(
@@ -15191,6 +15254,43 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             &[],
         ));
         assert!(omitted.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn reasoning_policy_matches_model_scope_and_output_config() {
+        let mappings = vec![
+            ReasoningEffortMapping {
+                from: "max".to_string(),
+                to: "low".to_string(),
+                match_type: String::new(),
+                model: String::new(),
+            },
+            ReasoningEffortMapping {
+                from: "max".to_string(),
+                to: "medium".to_string(),
+                match_type: "prefix".to_string(),
+                model: "gpt-5".to_string(),
+            },
+            ReasoningEffortMapping {
+                from: "max".to_string(),
+                to: "high".to_string(),
+                match_type: "exact".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            },
+        ];
+        let mut value = serde_json::json!({
+            "model": "GPT-5.6-TERRA",
+            "output_config": {"effort": "max"}
+        });
+        assert!(apply_openai_reasoning_effort_policy_value(
+            &mut value, None, &mappings,
+        ));
+        assert_eq!(
+            value
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str),
+            Some("high")
+        );
     }
 
     #[test]
@@ -15226,6 +15326,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         let mappings = vec![ReasoningEffortMapping {
             from: "max".to_string(),
             to: "high".to_string(),
+            match_type: String::new(),
+            model: String::new(),
         }];
         let payload = br#"{"type":"response.create","model":"gpt-5.6","reasoning_effort":"max"}"#;
 

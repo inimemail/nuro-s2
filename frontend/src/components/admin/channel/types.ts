@@ -8,6 +8,7 @@ export interface IntervalFormEntry {
   input_price: number | string | null
   output_price: number | string | null
   cache_write_price: number | string | null
+  cache_write_1h_price: number | string | null
   cache_read_price: number | string | null
   input_multiplier: number | string | null
   output_multiplier: number | string | null
@@ -23,6 +24,7 @@ export interface PricingFormEntry {
   input_price: number | string | null
   output_price: number | string | null
   cache_write_price: number | string | null
+  cache_write_1h_price: number | string | null
   cache_read_price: number | string | null
   fast_multiplier?: number | string | null
   flex_multiplier?: number | string | null
@@ -63,6 +65,7 @@ export function apiIntervalsToForm(intervals: PricingInterval[]): IntervalFormEn
     input_price: perTokenToMTok(iv.input_price),
     output_price: perTokenToMTok(iv.output_price),
     cache_write_price: perTokenToMTok(iv.cache_write_price),
+    cache_write_1h_price: perTokenToMTok(iv.cache_write_1h_price),
     cache_read_price: perTokenToMTok(iv.cache_read_price),
     input_multiplier: iv.input_multiplier,
     output_multiplier: iv.output_multiplier,
@@ -81,6 +84,7 @@ export function formIntervalsToAPI(intervals: IntervalFormEntry[]): PricingInter
     input_price: mTokToPerToken(iv.input_price),
     output_price: mTokToPerToken(iv.output_price),
     cache_write_price: mTokToPerToken(iv.cache_write_price),
+    cache_write_1h_price: mTokToPerToken(iv.cache_write_1h_price),
     cache_read_price: mTokToPerToken(iv.cache_read_price),
     input_multiplier: toNullableNumber(iv.input_multiplier),
     output_multiplier: toNullableNumber(iv.output_multiplier),
@@ -218,6 +222,7 @@ function validateIntervalPrices(iv: IntervalFormEntry, idx: number): string | nu
     ['输入价格', iv.input_price],
     ['输出价格', iv.output_price],
     ['缓存写入价格', iv.cache_write_price],
+    ['1h 缓存写入价格', iv.cache_write_1h_price],
     ['缓存读取价格', iv.cache_read_price],
     ['输入倍率', iv.input_multiplier],
     ['输出倍率', iv.output_multiplier],
