@@ -28,6 +28,20 @@ func TestOpenAIWSStateStore_BindGetDeleteResponseAccount(t *testing.T) {
 	require.Zero(t, accountID)
 }
 
+func TestOpenAIWSStateStore_ResponseAccountLocalCacheIsGroupScoped(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	ctx := context.Background()
+
+	require.NoError(t, store.BindResponseAccount(ctx, 7, "resp_same_id", 101, time.Minute))
+	accountID, err := store.GetResponseAccount(ctx, 8, "resp_same_id")
+	require.NoError(t, err)
+	require.Zero(t, accountID, "本地 response 绑定不能跨分组命中")
+
+	accountID, err = store.GetResponseAccount(ctx, 7, "resp_same_id")
+	require.NoError(t, err)
+	require.Equal(t, int64(101), accountID)
+}
+
 func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
 	store := NewOpenAIWSStateStore(nil)
 	store.BindResponseConn("resp_conn", "conn_1", 30*time.Millisecond)
@@ -211,10 +225,10 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.True(t, probe.setHasDeadline, "SetSessionAccountID 应携带独立超时上下文")
 	require.True(t, probe.deleteHasDeadline, "DeleteSessionAccountID 应携带独立超时上下文")
 	require.False(t, probe.getHasDeadline, "GetSessionAccountID 本用例应由本地缓存命中，不触发 Redis 读取")
-	require.Greater(t, probe.setDeadlineDelta, 2*time.Second)
-	require.LessOrEqual(t, probe.setDeadlineDelta, 3*time.Second)
-	require.Greater(t, probe.delDeadlineDelta, 2*time.Second)
-	require.LessOrEqual(t, probe.delDeadlineDelta, 3*time.Second)
+	require.Greater(t, probe.setDeadlineDelta, 500*time.Millisecond)
+	require.LessOrEqual(t, probe.setDeadlineDelta, time.Second)
+	require.Greater(t, probe.delDeadlineDelta, 500*time.Millisecond)
+	require.LessOrEqual(t, probe.delDeadlineDelta, time.Second)
 
 	probe2 := &openAIWSStateStoreTimeoutProbeCache{}
 	store2 := NewOpenAIWSStateStore(probe2)
@@ -222,8 +236,8 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.NoError(t, err2)
 	require.Equal(t, int64(123), accountID2)
 	require.True(t, probe2.getHasDeadline, "GetSessionAccountID 在缓存未命中时应携带独立超时上下文")
-	require.Greater(t, probe2.getDeadlineDelta, 2*time.Second)
-	require.LessOrEqual(t, probe2.getDeadlineDelta, 3*time.Second)
+	require.Greater(t, probe2.getDeadlineDelta, 500*time.Millisecond)
+	require.LessOrEqual(t, probe2.getDeadlineDelta, time.Second)
 }
 
 func TestWithOpenAIWSStateStoreRedisTimeout_WithParentContext(t *testing.T) {

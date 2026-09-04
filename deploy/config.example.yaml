@@ -286,6 +286,10 @@ gateway:
     ingress_mode_default: ctx_pool
     # 两个已完成 turn 之间允许的最大空闲秒数；0 表示关闭
     ingress_inter_turn_idle_timeout_seconds: 300
+    # ingress 下一轮写入前，连接空闲超过此秒数才执行 preflight ping；0 使用服务默认值
+    ingress_preflight_ping_idle_seconds: 45
+    # preflight ping 最大等待毫秒数；0 使用服务默认值
+    ingress_preflight_ping_timeout_ms: 700
     # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
     enabled: true
     # 按账号类型细分开关

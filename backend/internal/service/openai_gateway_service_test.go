@@ -29,6 +29,30 @@ import (
 var _ AccountRepository = (*stubOpenAIAccountRepo)(nil)
 var _ GatewayCache = (*stubGatewayCache)(nil)
 
+func TestOpenAIWaitFallbackStrategyKeepsStrictPriorityAndOptInHealthFirst(t *testing.T) {
+	groupID := int64(8801)
+	primary := &Account{ID: 88011, Platform: PlatformOpenAI, Priority: 1}
+	healthySecondary := &Account{ID: 88012, Platform: PlatformOpenAI, Priority: 5}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < 5; i++ {
+		slow := 5000
+		stats.reportForRoute(primary.ID, false, &slow, "gpt-5.1", OpenAIUpstreamTransportHTTPSSE)
+		fast := 100
+		stats.reportForRoute(healthySecondary.ID, true, &fast, "gpt-5.1", OpenAIUpstreamTransportHTTPSSE)
+	}
+	service := &OpenAIGatewayService{
+		cfg:                &config.Config{},
+		openaiAccountStats: stats,
+	}
+	candidates := []*Account{primary, healthySecondary}
+
+	strict := service.orderOpenAIWaitCandidatesForStrategy(candidates, "gpt-5.1", false, config.GatewaySchedulingConfig{}, false, &groupID, 0)
+	require.Equal(t, primary.ID, strict[0].ID, "strict_priority must remain priority-first")
+
+	healthFirst := service.orderOpenAIWaitCandidatesForStrategy(candidates, "gpt-5.1", false, config.GatewaySchedulingConfig{}, true, &groupID, 0)
+	require.Equal(t, healthySecondary.ID, healthFirst[0].ID, "health_first may cross priority for a materially healthier account")
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account

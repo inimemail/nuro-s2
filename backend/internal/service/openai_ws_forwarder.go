@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -66,7 +67,30 @@ var openAIWSLogValueReplacer = strings.NewReplacer(
 	"failed", "fail",
 )
 
-var openAIWSIngressPreflightPingIdle = 20 * time.Second
+var openAIWSIngressPreflightPingIdle = 45 * time.Second
+
+const openAIWSIngressPreflightPingTimeout = 700 * time.Millisecond
+
+var (
+	openAIWSPreflightPingTotal     atomic.Int64
+	openAIWSPreflightPingFailure   atomic.Int64
+	openAIWSPreflightPingLatencyMs atomic.Int64
+	openAIWSPreflightRecoveryTotal atomic.Int64
+)
+
+func (s *OpenAIGatewayService) openAIWSIngressPreflightPingIdleDuration() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.IngressPreflightPingIdleSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.IngressPreflightPingIdleSeconds) * time.Second
+	}
+	return openAIWSIngressPreflightPingIdle
+}
+
+func (s *OpenAIGatewayService) openAIWSIngressPreflightPingTimeoutDuration() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.IngressPreflightPingTimeoutMS > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.IngressPreflightPingTimeoutMS) * time.Millisecond
+	}
+	return openAIWSIngressPreflightPingTimeout
+}
 
 // openAIWSFallbackError 表示可安全回退到 HTTP 的 WS 错误（尚未写下游）。
 type openAIWSFallbackError struct {
@@ -1073,12 +1097,30 @@ type OpenAIWSPerformanceMetricsSnapshot struct {
 	Pool      OpenAIWSPoolMetricsSnapshot      `json:"pool"`
 	Retry     OpenAIWSRetryMetricsSnapshot     `json:"retry"`
 	Transport OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Preflight OpenAIWSPreflightMetricsSnapshot `json:"preflight"`
+}
+
+type OpenAIWSPreflightMetricsSnapshot struct {
+	PingTotal      int64   `json:"ping_total"`
+	PingFailure    int64   `json:"ping_failure_total"`
+	PingLatencyMs  int64   `json:"ping_latency_ms_total"`
+	PingLatencyAvg float64 `json:"ping_latency_ms_avg"`
+	RecoveryTotal  int64   `json:"recovery_total"`
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIWSPerformanceMetrics() OpenAIWSPerformanceMetricsSnapshot {
 	pool := s.getOpenAIWSConnPool()
 	snapshot := OpenAIWSPerformanceMetricsSnapshot{
 		Retry: s.SnapshotOpenAIWSRetryMetrics(),
+		Preflight: OpenAIWSPreflightMetricsSnapshot{
+			PingTotal:     openAIWSPreflightPingTotal.Load(),
+			PingFailure:   openAIWSPreflightPingFailure.Load(),
+			PingLatencyMs: openAIWSPreflightPingLatencyMs.Load(),
+			RecoveryTotal: openAIWSPreflightRecoveryTotal.Load(),
+		},
+	}
+	if snapshot.Preflight.PingTotal > 0 {
+		snapshot.Preflight.PingLatencyAvg = float64(snapshot.Preflight.PingLatencyMs) / float64(snapshot.Preflight.PingTotal)
 	}
 	if pool == nil {
 		return snapshot
@@ -4287,13 +4329,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		shouldPreflightPing := turn > 1 && sessionLease != nil && turnRetry == 0
-		if shouldPreflightPing && openAIWSIngressPreflightPingIdle > 0 && !lastTurnFinishedAt.IsZero() {
-			if time.Since(lastTurnFinishedAt) < openAIWSIngressPreflightPingIdle {
+		preflightPingIdle := s.openAIWSIngressPreflightPingIdleDuration()
+		if shouldPreflightPing && preflightPingIdle > 0 && !lastTurnFinishedAt.IsZero() {
+			if time.Since(lastTurnFinishedAt) < preflightPingIdle {
 				shouldPreflightPing = false
 			}
 		}
 		if shouldPreflightPing {
-			if pingErr := sessionLease.PingWithTimeout(openAIWSConnHealthCheckTO); pingErr != nil {
+			pingStartedAt := time.Now()
+			pingErr := sessionLease.PingWithTimeout(s.openAIWSIngressPreflightPingTimeoutDuration())
+			openAIWSPreflightPingTotal.Add(1)
+			openAIWSPreflightPingLatencyMs.Add(time.Since(pingStartedAt).Milliseconds())
+			if pingErr != nil {
+				openAIWSPreflightPingFailure.Add(1)
 				logOpenAIWSModeInfo(
 					"ingress_ws_upstream_preflight_ping_fail account_id=%d turn=%d conn_id=%s cause=%s",
 					account.ID,
@@ -4380,6 +4428,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						pingErr,
 					)
 				}
+				openAIWSPreflightRecoveryTotal.Add(1)
 				resetSessionLease(true)
 
 				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
@@ -4952,7 +5001,18 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil, nil
 	}
-	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
+	// Snapshot-backed accounts are checked against the repository once below.
+	// Avoid doing the same group-membership query before that fresh lookup.
+	needsFreshAccountLookup := s.schedulerSnapshot != nil && s.accountRepo != nil
+	accountLoadedDirectlyFromRepo := s.schedulerSnapshot == nil
+	groupMatches := true
+	if accountLoadedDirectlyFromRepo {
+		groupMatches = openAIStickyAccountMatchesGroup(account, groupID)
+	} else if !needsFreshAccountLookup {
+		groupMatches = s.latestOpenAIAccountMatchesGroup(ctx, account, groupID)
+	}
+	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() ||
+		!groupMatches {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
@@ -4969,7 +5029,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
 		return nil, nil
 	}
-	if s.schedulerSnapshot != nil && s.accountRepo != nil {
+	if needsFreshAccountLookup {
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
 		if latestErr != nil || latest == nil {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
@@ -4978,7 +5038,9 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		if latest.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 			return nil, nil
 		}
-		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, latest, groupID) {
+		// latest was just read from the repository; validate its group metadata
+		// locally instead of issuing the same repository lookup a second time.
+		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() || !openAIStickyAccountMatchesGroup(latest, groupID) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return nil, nil
 		}

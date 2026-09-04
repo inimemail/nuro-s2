@@ -1865,6 +1865,16 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			wantErr: "gateway.openai_ws.retry_total_budget_ms",
 		},
 		{
+			name:    "ingress_preflight_ping_idle_seconds 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressPreflightPingIdleSeconds = -1 },
+			wantErr: "gateway.openai_ws.ingress_preflight_ping_idle_seconds",
+		},
+		{
+			name:    "ingress_preflight_ping_timeout_ms 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressPreflightPingTimeoutMS = -1 },
+			wantErr: "gateway.openai_ws.ingress_preflight_ping_timeout_ms",
+		},
+		{
 			name:    "lb_top_k 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.LBTopK = 0 },
 			wantErr: "gateway.openai_ws.lb_top_k",

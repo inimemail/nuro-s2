@@ -3,11 +3,22 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
+
+type stickyWriteTimeoutProbeCache struct {
+	GatewayCache
+	setDeadline time.Time
+}
+
+func (c *stickyWriteTimeoutProbeCache) SetSessionAccountID(ctx context.Context, _ int64, _ string, _ int64, _ time.Duration) error {
+	c.setDeadline, _ = ctx.Deadline()
+	return nil
+}
 
 func TestGetStickySessionAccountID_FallbackToLegacyKey(t *testing.T) {
 	beforeFallbackTotal, beforeFallbackHit, _ := openAIStickyCompatStats()
@@ -93,4 +104,25 @@ func TestSnapshotOpenAICompatibilityFallbackMetrics(t *testing.T) {
 	after := SnapshotOpenAICompatibilityFallbackMetrics()
 	require.GreaterOrEqual(t, after.MetadataLegacyFallbackTotal, before.MetadataLegacyFallbackTotal+1)
 	require.GreaterOrEqual(t, after.MetadataLegacyFallbackThinkingEnabledTotal, before.MetadataLegacyFallbackThinkingEnabledTotal+1)
+}
+
+func TestSetStickySessionAccountID_UsesShortCacheDeadline(t *testing.T) {
+	probe := &stickyWriteTimeoutProbeCache{}
+	svc := &OpenAIGatewayService{cache: probe, cfg: &config.Config{}}
+
+	err := svc.setStickySessionAccountID(context.Background(), nil, "deadline_probe", 7, time.Minute)
+	require.NoError(t, err)
+	require.False(t, probe.setDeadline.IsZero())
+	require.Greater(t, probe.setDeadline.Sub(time.Now().Add(-stickySessionCacheTimeout)), 0*time.Millisecond)
+	require.LessOrEqual(t, time.Until(probe.setDeadline), stickySessionCacheTimeout)
+}
+
+func TestOpenAIWSIngressPreflightConfigOverridesDefaults(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIWS: config.GatewayOpenAIWSConfig{
+		IngressPreflightPingIdleSeconds: 12,
+		IngressPreflightPingTimeoutMS:   321,
+	}}}}
+
+	require.Equal(t, 12*time.Second, svc.openAIWSIngressPreflightPingIdleDuration())
+	require.Equal(t, 321*time.Millisecond, svc.openAIWSIngressPreflightPingTimeoutDuration())
 }

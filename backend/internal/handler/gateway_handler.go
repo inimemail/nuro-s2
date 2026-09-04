@@ -2384,6 +2384,9 @@ func (h *GatewayHandler) maybeLogCompatibilityFallbackMetrics(reqLog *zap.Logger
 		zap.Int64("session_hash_legacy_read_fallback_hit", metrics.SessionHashLegacyReadFallbackHit),
 		zap.Int64("session_hash_legacy_dual_write_total", metrics.SessionHashLegacyDualWriteTotal),
 		zap.Float64("session_hash_legacy_read_hit_rate", metrics.SessionHashLegacyReadHitRate),
+		zap.Int64("sticky_cache_write_timeout_total", metrics.StickyCacheWriteTimeoutTotal),
+		zap.Int64("sticky_cache_write_error_total", metrics.StickyCacheWriteErrorTotal),
+		zap.Int64("sticky_cache_write_latency_ms_total", metrics.StickyCacheWriteLatencyMsTotal),
 		zap.Int64("metadata_legacy_fallback_total", metrics.MetadataLegacyFallbackTotal),
 	)
 }

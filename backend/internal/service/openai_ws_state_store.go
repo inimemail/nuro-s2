@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -16,7 +18,9 @@ const (
 	openAIWSStateStoreCleanupInterval  = time.Minute
 	openAIWSStateStoreCleanupMaxPerMap = 512
 	openAIWSStateStoreMaxEntriesPerMap = 65536
-	openAIWSStateStoreRedisTimeout     = 3 * time.Second
+	// Response state is cached locally first; Redis is cross-replica recovery
+	// state and must not hold the next WS turn for seconds when degraded.
+	openAIWSStateStoreRedisTimeout = 750 * time.Millisecond
 )
 
 type openAIWSAccountBinding struct {
@@ -68,6 +72,7 @@ type defaultOpenAIWSStateStore struct {
 
 	responseToAccountMu  sync.RWMutex
 	responseToAccount    map[string]openAIWSAccountBinding
+	responseAccountSF    singleflight.Group
 	responseToConnMu     sync.RWMutex
 	responseToConn       map[string]openAIWSConnBinding
 	sessionToTurnStateMu sync.RWMutex
@@ -98,11 +103,12 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
+	localKey := openAIWSResponseAccountLocalKey(groupID, id)
 
 	expiresAt := time.Now().Add(ttl)
 	s.responseToAccountMu.Lock()
-	ensureBindingCapacity(s.responseToAccount, id, openAIWSStateStoreMaxEntriesPerMap)
-	s.responseToAccount[id] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
+	ensureBindingCapacity(s.responseToAccount, localKey, openAIWSStateStoreMaxEntriesPerMap)
+	s.responseToAccount[localKey] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
 	s.responseToAccountMu.Unlock()
 
 	if s.cache == nil {
@@ -122,8 +128,9 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 	s.maybeCleanup()
 
 	now := time.Now()
+	localKey := openAIWSResponseAccountLocalKey(groupID, id)
 	s.responseToAccountMu.RLock()
-	if binding, ok := s.responseToAccount[id]; ok {
+	if binding, ok := s.responseToAccount[localKey]; ok {
 		if now.Before(binding.expiresAt) {
 			accountID := binding.accountID
 			s.responseToAccountMu.RUnlock()
@@ -136,14 +143,22 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 		return 0, nil
 	}
 
-	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-	defer cancel()
-	accountID, err := s.cache.GetSessionAccountID(cacheCtx, groupID, cacheKey)
-	if err != nil || accountID <= 0 {
-		// 缓存读取失败不阻断主流程，按未命中降级。
-		return 0, nil
-	}
+	// Include the group in the singleflight key. Response IDs are normally
+	// globally unique, but group isolation is part of the routing contract and
+	// should remain true even for malformed/replayed IDs.
+	flightKey := fmt.Sprintf("%d:%s", groupID, id)
+	value, _, _ := s.responseAccountSF.Do(flightKey, func() (any, error) {
+		cacheKey := openAIWSResponseAccountCacheKey(id)
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+		defer cancel()
+		accountID, err := s.cache.GetSessionAccountID(cacheCtx, groupID, cacheKey)
+		if err != nil || accountID <= 0 {
+			// 缓存读取失败不阻断主流程，按未命中降级。
+			return int64(0), nil
+		}
+		return accountID, nil
+	})
+	accountID, _ := value.(int64)
 	return accountID, nil
 }
 
@@ -153,7 +168,7 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseAccount(ctx context.Context, g
 		return nil
 	}
 	s.responseToAccountMu.Lock()
-	delete(s.responseToAccount, id)
+	delete(s.responseToAccount, openAIWSResponseAccountLocalKey(groupID, id))
 	s.responseToAccountMu.Unlock()
 
 	if s.cache == nil {
@@ -415,6 +430,10 @@ func normalizeOpenAIWSResponseID(responseID string) string {
 func openAIWSResponseAccountCacheKey(responseID string) string {
 	sum := sha256.Sum256([]byte(responseID))
 	return openAIWSResponseAccountCachePrefix + hex.EncodeToString(sum[:])
+}
+
+func openAIWSResponseAccountLocalKey(groupID int64, responseID string) string {
+	return fmt.Sprintf("%d:%s", groupID, responseID)
 }
 
 func normalizeOpenAIWSTTL(ttl time.Duration) time.Duration {

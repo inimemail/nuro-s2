@@ -50,7 +50,10 @@ const (
 	claudeAPIURL            = "https://api.anthropic.com/v1/messages?beta=true"
 	claudeAPICountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens?beta=true"
 	stickySessionTTL        = time.Hour // 粘性会话TTL
-	defaultMaxLineSize      = 500 * 1024 * 1024
+	// Sticky bindings are an affinity hint, not a request prerequisite. Keep
+	// cache operations bounded so a degraded Redis cannot stall upstream I/O.
+	stickySessionCacheTimeout = 750 * time.Millisecond
+	defaultMaxLineSize        = 500 * 1024 * 1024
 	// Canonical Claude Code banner. Keep it EXACT (no trailing whitespace/newlines)
 	// to match real Claude CLI traffic as closely as possible. When we need a visual
 	// separator between system blocks, we add "\n\n" at concatenation time.
@@ -76,6 +79,69 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 	claudeCodeNoopDeltaKeepaliveMinVersion = "2.1.193"
 	debugGatewayBodyEnv                    = "SUB2API_DEBUG_GATEWAY_BODY"
 )
+
+var (
+	stickySessionCacheWriteTimeoutTotal atomic.Int64
+	stickySessionCacheWriteErrorTotal   atomic.Int64
+	stickySessionCacheWriteLatencyMs    atomic.Int64
+)
+
+func withStickySessionCacheTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), stickySessionCacheTimeout)
+}
+
+func recordStickySessionCacheWrite(start time.Time, err error) {
+	stickySessionCacheWriteLatencyMs.Add(time.Since(start).Milliseconds())
+	if err == nil {
+		return
+	}
+	stickySessionCacheWriteErrorTotal.Add(1)
+	if errors.Is(err, context.DeadlineExceeded) {
+		stickySessionCacheWriteTimeoutTotal.Add(1)
+	}
+}
+
+func getStickySessionAccountID(ctx context.Context, cache GatewayCache, groupID int64, sessionHash string) (int64, error) {
+	if cache == nil || sessionHash == "" {
+		return 0, nil
+	}
+	cacheCtx, cancel := withStickySessionCacheTimeout(ctx)
+	defer cancel()
+	return cache.GetSessionAccountID(cacheCtx, groupID, sessionHash)
+}
+
+func setStickySessionAccountID(ctx context.Context, cache GatewayCache, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
+	if cache == nil || sessionHash == "" || accountID <= 0 {
+		return nil
+	}
+	cacheCtx, cancel := withStickySessionCacheTimeout(ctx)
+	defer cancel()
+	start := time.Now()
+	err := cache.SetSessionAccountID(cacheCtx, groupID, sessionHash, accountID, ttl)
+	recordStickySessionCacheWrite(start, err)
+	return err
+}
+
+func deleteStickySessionAccountID(ctx context.Context, cache GatewayCache, groupID int64, sessionHash string) error {
+	if cache == nil || sessionHash == "" {
+		return nil
+	}
+	cacheCtx, cancel := withStickySessionCacheTimeout(ctx)
+	defer cancel()
+	return cache.DeleteSessionAccountID(cacheCtx, groupID, sessionHash)
+}
+
+func refreshStickySessionTTL(ctx context.Context, cache GatewayCache, groupID int64, sessionHash string, ttl time.Duration) error {
+	if cache == nil || sessionHash == "" {
+		return nil
+	}
+	cacheCtx, cancel := withStickySessionCacheTimeout(ctx)
+	defer cancel()
+	return cache.RefreshSessionTTL(cacheCtx, groupID, sessionHash, ttl)
+}
 
 const (
 	claudeMimicDebugInfoKey = "claude_mimic_debug_info"
@@ -1026,7 +1092,8 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 	if sessionHash == "" || accountID <= 0 || s.cache == nil {
 		return nil
 	}
-	if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL); err != nil {
+	err := setStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+	if err != nil {
 		return err
 	}
 	s.bindAnthropicCacheAffinitySessionForAccountID(ctx, groupID, accountID)
@@ -1039,11 +1106,25 @@ func (s *GatewayService) GetCachedSessionAccountID(ctx context.Context, groupID 
 	if sessionHash == "" || s.cache == nil {
 		return 0, nil
 	}
-	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+	accountID, err := getStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash)
 	if err != nil {
 		return 0, err
 	}
 	return accountID, nil
+}
+
+func (s *GatewayService) deleteCachedSessionAccountID(ctx context.Context, groupID *int64, sessionHash string) error {
+	if sessionHash == "" || s.cache == nil {
+		return nil
+	}
+	return deleteStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash)
+}
+
+func (s *GatewayService) refreshCachedSessionTTL(ctx context.Context, groupID *int64, sessionHash string, ttl time.Duration) error {
+	if sessionHash == "" || s.cache == nil {
+		return nil
+	}
+	return refreshStickySessionTTL(ctx, s.cache, derefGroupID(groupID), sessionHash, ttl)
 }
 
 // FindGeminiSession 查找 Gemini 会话（基于内容摘要链的 Fallback 匹配）
@@ -1750,7 +1831,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		stickyAccountID = prefetch
 		stickySource = "prefetch"
 	} else if sessionHash != "" && s.cache != nil {
-		if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); err == nil {
+		if accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash); err == nil {
 			stickyAccountID = accountID
 			stickySource = "cache"
 		}
@@ -2009,7 +2090,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						if !groupOK {
 							stickyCacheMissReason = "group_membership"
 							if s.cache != nil {
-								_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+								_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 							}
 						}
 
@@ -2026,7 +2107,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						if rpmPass && s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, routingCandidates, groupID, stickyAccount, requestedModel, excludedIDs, platform, useMixed) {
 							stickyCacheMissReason = "same_priority_non_pool_available"
 							if s.cache != nil {
-								_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+								_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 							}
 						} else if rpmPass { // 粘性会话窗口费用+RPM 检查
 							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, stickyAccount.Concurrency, stickyAccount.Platform)
@@ -2087,7 +2168,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								stickyCacheMissReason, stickyAccountID, shortSessionHash(sessionHash), currentRPM, baseRPM)
 						}
 					} else {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 						logger.LegacyPrintf("service.gateway", "[StickyCacheMiss] reason=account_cleared account_id=%d session=%s current_rpm=0 base_rpm=0",
 							stickyAccountID, shortSessionHash(sessionHash))
 					}
@@ -2207,7 +2288,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						"reason", "should_clear_sticky_session",
 						"session", shortSessionHash(sessionHash),
 					)
-					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 				}
 
 				// 注意：不再检查 isAccountInGroup，因为 accountByID 已经从按分组过滤的
@@ -2238,7 +2319,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 				if !groupOK {
 					if s.cache != nil {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
@@ -2251,7 +2332,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, accountPtrs, groupID, account, requestedModel, excludedIDs, platform, useMixed)
 				if samePriorityNonPoolAvailable {
 					if s.cache != nil {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
@@ -2276,7 +2357,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								"result", "slot_acquired",
 							)
 							if s.cache != nil {
-								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
+								_ = s.refreshCachedSessionTTL(ctx, groupID, sessionHash, stickySessionTTL)
 							}
 							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 							return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
@@ -2316,7 +2397,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 			} else {
 				if s.cache != nil {
-					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 				}
 				slog.Debug("sticky.layer1_5_no_routing_miss",
 					"account_id", accountID,
@@ -2576,7 +2657,15 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 	}
 
 	for len(ordered) > 0 {
-		acc := selectLayeredAccountWithAnthropicAffinity(ordered, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, anthropicAffinityActive)
+		var acc *Account
+		if healthFirst {
+			items := accountPointersToNeutralLoads(ordered)
+			if selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), anthropicAffinityAccountID, anthropicAffinityActive); selected != nil {
+				acc = selected.account
+			}
+		} else {
+			acc = selectLayeredAccountWithAnthropicAffinity(ordered, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, anthropicAffinityActive)
+		}
 		if acc == nil {
 			break
 		}
@@ -2660,7 +2749,7 @@ func (s *GatewayService) bindSelectedStickySession(ctx context.Context, groupID 
 	if sessionHash == "" || s.cache == nil {
 		return nil
 	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+	return setStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
 }
 
 func (s *GatewayService) resolveGroupByID(ctx context.Context, groupID int64) (*Group, error) {
@@ -4376,7 +4465,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	selectionAffinityAccountID := anthropicAffinityAccountID
 	selectionAffinityActive := anthropicAffinityActive
 	if groupUsesHealthFirst(schedGroup) && !selectionAffinityActive && sessionHash != "" && s.cache != nil {
-		if cachedID, cacheErr := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); cacheErr == nil && cachedID > 0 {
+		if cachedID, cacheErr := s.GetCachedSessionAccountID(ctx, groupID, sessionHash); cacheErr == nil && cachedID > 0 {
 			selectionAffinityAccountID, selectionAffinityActive = cachedID, true
 		}
 	}
@@ -4408,7 +4497,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
 		if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
-			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
@@ -4416,11 +4505,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					if err == nil {
 						clearSticky := shouldClearStickySession(account, requestedModel)
 						if clearSticky {
-							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 						}
 						groupOK := s.latestAccountInGroup(ctx, account, groupID)
 						if !clearSticky && !groupOK {
-							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 						}
 						if !clearSticky && groupOK && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 							if s.debugModelRoutingEnabled() {
@@ -4524,7 +4613,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	// 1. 查询粘性会话
 	if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
-		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+		accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
@@ -4532,11 +4621,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				if err == nil {
 					clearSticky := shouldClearStickySession(account, requestedModel)
 					if clearSticky {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					groupOK := s.latestAccountInGroup(ctx, account, groupID)
 					if !clearSticky && !groupOK {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					if !clearSticky && groupOK && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 						s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
@@ -4659,7 +4748,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	selectionAffinityAccountID := anthropicAffinityAccountID
 	selectionAffinityActive := anthropicAffinityActive
 	if groupUsesHealthFirst(schedGroup) && !selectionAffinityActive && sessionHash != "" && s.cache != nil {
-		if cachedID, cacheErr := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); cacheErr == nil && cachedID > 0 {
+		if cachedID, cacheErr := s.GetCachedSessionAccountID(ctx, groupID, sessionHash); cacheErr == nil && cachedID > 0 {
 			selectionAffinityAccountID, selectionAffinityActive = cachedID, true
 		}
 	}
@@ -4689,7 +4778,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
 		if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
-			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
 					account, err := s.getSchedulableAccount(ctx, accountID)
@@ -4697,11 +4786,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					if err == nil {
 						clearSticky := shouldClearStickySession(account, requestedModel)
 						if clearSticky {
-							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 						}
 						groupOK := s.latestAccountInGroup(ctx, account, groupID)
 						if !clearSticky && !groupOK {
-							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 						}
 						if !clearSticky && groupOK && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
@@ -4807,7 +4896,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	// 1. 查询粘性会话
 	if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
-		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+		accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
 				account, err := s.getSchedulableAccount(ctx, accountID)
@@ -4815,11 +4904,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				if err == nil {
 					clearSticky := shouldClearStickySession(account, requestedModel)
 					if clearSticky {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					groupOK := s.latestAccountInGroup(ctx, account, groupID)
 					if !clearSticky && !groupOK {
-						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						_ = s.deleteCachedSessionAccountID(ctx, groupID, sessionHash)
 					}
 					if !clearSticky && groupOK && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {

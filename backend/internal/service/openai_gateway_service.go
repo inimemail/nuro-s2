@@ -319,6 +319,9 @@ type OpenAICompatibilityFallbackMetricsSnapshot struct {
 	SessionHashLegacyReadFallbackHit   int64   `json:"session_hash_legacy_read_fallback_hit"`
 	SessionHashLegacyDualWriteTotal    int64   `json:"session_hash_legacy_dual_write_total"`
 	SessionHashLegacyReadHitRate       float64 `json:"session_hash_legacy_read_hit_rate"`
+	StickyCacheWriteTimeoutTotal       int64   `json:"sticky_cache_write_timeout_total"`
+	StickyCacheWriteErrorTotal         int64   `json:"sticky_cache_write_error_total"`
+	StickyCacheWriteLatencyMsTotal     int64   `json:"sticky_cache_write_latency_ms_total"`
 
 	MetadataLegacyFallbackIsMaxTokensOneHaikuTotal int64 `json:"metadata_legacy_fallback_is_max_tokens_one_haiku_total"`
 	MetadataLegacyFallbackThinkingEnabledTotal     int64 `json:"metadata_legacy_fallback_thinking_enabled_total"`
@@ -1116,6 +1119,9 @@ func SnapshotOpenAICompatibilityFallbackMetrics() OpenAICompatibilityFallbackMet
 		SessionHashLegacyReadFallbackHit:   legacyReadFallbackHit,
 		SessionHashLegacyDualWriteTotal:    legacyDualWriteTotal,
 		SessionHashLegacyReadHitRate:       readHitRate,
+		StickyCacheWriteTimeoutTotal:       stickySessionCacheWriteTimeoutTotal.Load(),
+		StickyCacheWriteErrorTotal:         stickySessionCacheWriteErrorTotal.Load(),
+		StickyCacheWriteLatencyMsTotal:     stickySessionCacheWriteLatencyMs.Load(),
 
 		MetadataLegacyFallbackIsMaxTokensOneHaikuTotal: isMaxTokensOneHaiku,
 		MetadataLegacyFallbackThinkingEnabledTotal:     thinkingEnabled,
@@ -2609,6 +2615,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	cfg := s.schedulingConfig()
+	healthFirst := s.openAIGroupUsesHealthFirst(ctx, groupID)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	stickyBusyPreserve := false
 	if stickyAccountID <= 0 && sessionHash != "" && s.cache != nil {
@@ -2869,44 +2876,15 @@ openAIGroupGuardFallback:
 			return nil, false, nil
 		}
 
+		available = s.orderOpenAIAvailableCandidatesForStrategy(
+			available,
+			requestedModel,
+			cfg,
+			healthFirst,
+			groupID,
+			stickyAccountID,
+		)
 		preferSoonestReset := cfg.PreferSoonestReset
-		now := time.Now()
-		healthCandidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
-		healthScores := buildOpenAIAccountCandidateHealthScores(healthCandidates)
-		for i := range available {
-			if available[i].account == nil {
-				continue
-			}
-			available[i].healthScore = healthScores[available[i].account.ID]
-			available[i].hasHealthScore = true
-		}
-		sort.SliceStable(available, func(i, j int) bool {
-			a, b := available[i], available[j]
-			if a.account.Priority != b.account.Priority {
-				return a.account.Priority < b.account.Priority
-			}
-			if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
-				return less
-			}
-			if less, ok := openAIHealthScoreLess(healthScores[a.account.ID], healthScores[b.account.ID]); ok {
-				return less
-			}
-			if preferSoonestReset {
-				if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
-					return less
-				}
-			}
-			switch {
-			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-				return true
-			case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-				return false
-			case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-				return false
-			default:
-				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-			}
-		})
 		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
 		prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
@@ -2972,13 +2950,10 @@ openAIGroupGuardFallback:
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		ordered := append([]*Account(nil), candidates...)
-		sortAccountsByPriorityPoolAndLastUsed(ordered, false)
-		ordered = s.orderOpenAIPoolCoolingAccountsLast(ordered, requestedModel)
-		if requireCompact {
-			ordered = prioritizeOpenAICompactAccounts(ordered)
-			ordered = s.orderOpenAIPoolCoolingAccountsLast(ordered, requestedModel)
-		}
+		// Load data is optional. Preserve the same strategy-aware ordering
+		// used by the normal path instead of silently reverting to an older
+		// priority-only sorter when the batch query is unavailable.
+		ordered := s.orderOpenAIWaitCandidatesForStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, groupID, stickyAccountID)
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
@@ -3032,7 +3007,7 @@ openAIGroupGuardFallback:
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	candidates = s.orderOpenAIWaitCandidates(candidates, requestedModel, requireCompact, cfg)
+	candidates = s.orderOpenAIWaitCandidatesForStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, groupID, stickyAccountID)
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
@@ -3083,6 +3058,131 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
 	return accounts, nil
+}
+
+// openAIGroupUsesHealthFirst resolves the opt-in strategy for legacy OpenAI
+// scheduling paths. The advanced scheduler normally resolves this itself, but
+// load-batch fallback must make the same decision when that scheduler is off.
+func (s *OpenAIGatewayService) openAIGroupUsesHealthFirst(ctx context.Context, groupID *int64) bool {
+	if groupID == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
+		return groupUsesHealthFirst(group)
+	}
+	if s != nil && s.schedulerSnapshot != nil {
+		if group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); err == nil {
+			return groupUsesHealthFirst(group)
+		}
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
+	available []accountWithLoad,
+	requestedModel string,
+	cfg config.GatewaySchedulingConfig,
+	healthFirst bool,
+	groupID *int64,
+	stickyAccountID int64,
+) []accountWithLoad {
+	if len(available) <= 1 {
+		return available
+	}
+
+	if healthFirst {
+		candidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
+		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
+		ordered := scheduler.buildHealthFirstSelectionOrder(candidates, OpenAIAccountScheduleRequest{
+			GroupID:         groupID,
+			StickyAccountID: stickyAccountID,
+			RequestedModel:  requestedModel,
+		})
+		byID := make(map[int64]accountWithLoad, len(available))
+		for _, item := range available {
+			if item.account != nil {
+				byID[item.account.ID] = item
+			}
+		}
+		result := make([]accountWithLoad, 0, len(ordered))
+		for _, candidate := range ordered {
+			if candidate.account == nil {
+				continue
+			}
+			item, ok := byID[candidate.account.ID]
+			if !ok {
+				continue
+			}
+			item.healthScore = candidate.healthScore
+			item.hasHealthScore = candidate.hasHealthScore
+			result = append(result, item)
+		}
+		return result
+	}
+
+	preferSoonestReset := cfg.PreferSoonestReset
+	now := time.Now()
+	healthCandidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
+	healthScores := buildOpenAIAccountCandidateHealthScores(healthCandidates)
+	for i := range available {
+		if available[i].account == nil {
+			continue
+		}
+		available[i].healthScore = healthScores[available[i].account.ID]
+		available[i].hasHealthScore = true
+	}
+	sort.SliceStable(available, func(i, j int) bool {
+		a, b := available[i], available[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
+		}
+		if less, ok := openAIHealthScoreLess(healthScores[a.account.ID], healthScores[b.account.ID]); ok {
+			return less
+		}
+		if preferSoonestReset {
+			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
+				return less
+			}
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+			return false
+		default:
+			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+		}
+	})
+	return available
+}
+
+func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategy(candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, groupID *int64, stickyAccountID int64) []*Account {
+	if healthFirst && len(candidates) > 1 {
+		items := make([]accountWithLoad, 0, len(candidates))
+		for _, account := range candidates {
+			if account != nil {
+				items = append(items, accountWithLoad{account: account, loadInfo: &AccountLoadInfo{AccountID: account.ID}})
+			}
+		}
+		orderedItems := s.orderOpenAIAvailableCandidatesForStrategy(items, requestedModel, cfg, true, groupID, stickyAccountID)
+		ordered := make([]*Account, 0, len(orderedItems))
+		for _, item := range orderedItems {
+			ordered = append(ordered, item.account)
+		}
+		if requireCompact {
+			ordered = prioritizeOpenAICompactAccounts(ordered)
+		}
+		return s.orderOpenAIPoolCoolingAccountsLast(ordered, requestedModel)
+	}
+	return s.orderOpenAIWaitCandidates(candidates, requestedModel, requireCompact, cfg)
 }
 
 func (s *OpenAIGatewayService) orderOpenAIWaitCandidates(candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig) []*Account {

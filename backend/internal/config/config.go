@@ -1480,6 +1480,12 @@ type GatewayOpenAIWSConfig struct {
 	// IngressInterTurnIdleTimeoutSeconds bounds client idle time between
 	// completed turns. Zero disables the timeout.
 	IngressInterTurnIdleTimeoutSeconds int `mapstructure:"ingress_inter_turn_idle_timeout_seconds"`
+	// IngressPreflightPingIdleSeconds controls when an already-held ingress
+	// connection is probed before the next turn. Zero uses the service default.
+	IngressPreflightPingIdleSeconds int `mapstructure:"ingress_preflight_ping_idle_seconds"`
+	// IngressPreflightPingTimeoutMS bounds the synchronous preflight probe.
+	// Zero uses the service default.
+	IngressPreflightPingTimeoutMS int `mapstructure:"ingress_preflight_ping_timeout_ms"`
 	// Enabled: 全局总开关（默认 true）
 	Enabled bool `mapstructure:"enabled"`
 	// OAuthEnabled: 是否允许 OpenAI OAuth 账号使用 WS
@@ -2644,6 +2650,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
 	viper.SetDefault("gateway.openai_ws.ingress_mode_default", "ctx_pool")
 	viper.SetDefault("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds", 300)
+	viper.SetDefault("gateway.openai_ws.ingress_preflight_ping_idle_seconds", 45)
+	viper.SetDefault("gateway.openai_ws.ingress_preflight_ping_timeout_ms", 700)
 	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
@@ -3599,6 +3607,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.IngressPreflightPingIdleSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.ingress_preflight_ping_idle_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.IngressPreflightPingTimeoutMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.ingress_preflight_ping_timeout_ms must be non-negative")
 	}
 	if c.Gateway.OpenAIWS.MinIdlePerAccount < 0 {
 		return fmt.Errorf("gateway.openai_ws.min_idle_per_account must be non-negative")

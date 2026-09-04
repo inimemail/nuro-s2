@@ -266,7 +266,7 @@ func (s *GatewayService) anthropicCacheAffinityAccountIDFromContext(ctx context.
 	if sessionHash == "" || s == nil || s.cache == nil {
 		return 0
 	}
-	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+	accountID, err := getStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash)
 	if err != nil {
 		return 0
 	}
@@ -287,7 +287,7 @@ func (s *GatewayService) bindAnthropicCacheAffinitySessionForAccount(ctx context
 	if ttl <= 0 {
 		ttl = anthropicCacheAffinityStickyTTLDefault
 	}
-	_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, account.ID, ttl)
+	_ = setStickySessionAccountID(ctx, s.cache, derefGroupID(groupID), sessionHash, account.ID, ttl)
 }
 
 func (s *GatewayService) bindAnthropicCacheAffinitySessionForAccountID(ctx context.Context, groupID *int64, accountID int64) {
