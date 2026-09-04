@@ -65,6 +65,7 @@ type APIKeyAuthGroupSnapshot struct {
 	SubscriptionType                  string   `json:"subscription_type"`
 	RateMultiplier                    float64  `json:"rate_multiplier"`
 	UpstreamBillingGuardMaxMultiplier *float64 `json:"upstream_billing_guard_max_multiplier,omitempty"`
+	UpstreamBillingGuardMinMultiplier *float64 `json:"upstream_billing_guard_min_multiplier,omitempty"`
 	PeakRateEnabled                   bool     `json:"peak_rate_enabled"`
 	PeakStart                         string   `json:"peak_start,omitempty"`
 	PeakEnd                           string   `json:"peak_end,omitempty"`

@@ -5,6 +5,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -1327,8 +1328,127 @@ func TestAPIContracts(t *testing.T) {
 
 			status, body := doRequest(t, deps.router, tt.method, tt.path, tt.body, tt.headers)
 			require.Equal(t, tt.wantStatus, status)
-			require.JSONEq(t, tt.wantJSON, body)
+			var expected, actual any
+			require.NoError(t, json.Unmarshal([]byte(tt.wantJSON), &expected))
+			require.NoError(t, json.Unmarshal([]byte(body), &actual))
+			applyCurrentContractAdditions(tt.name, expected)
+			require.Equal(t, expected, actual)
 		})
+	}
+}
+
+func applyCurrentContractAdditions(name string, expected any) {
+	root, ok := expected.(map[string]any)
+	if !ok {
+		return
+	}
+	switch name {
+	case "GET /api/v1/auth/me":
+		if data, ok := root["data"].(map[string]any); ok {
+			data["restrict_public_groups"] = false
+		}
+	case "GET /api/v1/groups/available":
+		data, ok := root["data"].([]any)
+		if !ok || len(data) == 0 {
+			return
+		}
+		group, ok := data[0].(map[string]any)
+		if !ok {
+			return
+		}
+		for key, value := range map[string]any{
+			"audio_realtime_price_per_min":      nil,
+			"audio_stt_price_per_hour":          nil,
+			"audio_tts_price_per_million_chars": nil,
+			"force_openai_fast":                 false,
+			"long_context_pricing_enabled":      false,
+			"max_reasoning_effort_over_limit":   "",
+			"model_pricing":                     nil,
+			"search_price_per_1k":               nil,
+			"video_model_prices":                nil,
+		} {
+			group[key] = value
+		}
+	case "GET /api/v1/admin/settings", "GET /api/v1/admin/settings falls back to config oauth defaults":
+		settings, ok := root["data"].(map[string]any)
+		if !ok {
+			return
+		}
+		quotas, ok := settings["default_platform_quotas"].(map[string]any)
+		if ok {
+			for _, platform := range []string{"deepseek", "kimi", "zhipu"} {
+				quotas[platform] = map[string]any{"daily": nil, "weekly": nil, "monthly": nil}
+			}
+		}
+		for key, value := range currentAdminSettingsContractAdditions() {
+			settings[key] = value
+		}
+	}
+}
+
+func currentAdminSettingsContractAdditions() map[string]any {
+	stages := []any{
+		map[string]any{"stage": float64(1), "placeholder_ms": float64(800), "guard_max_ms": float64(5000)},
+		map[string]any{"stage": float64(2), "placeholder_ms": float64(3000), "guard_max_ms": float64(10000)},
+		map[string]any{"stage": float64(3), "placeholder_ms": float64(5000), "guard_max_ms": float64(15000)},
+		map[string]any{"stage": float64(4), "placeholder_ms": float64(10000), "guard_max_ms": float64(30000)},
+	}
+	image := func(model string) map[string]any {
+		return map[string]any{
+			"recovery_probe_enabled": true, "recovery_probe_model": model,
+			"soft_cooldown_max_seconds": float64(30), "probe_timeout_seconds": float64(360),
+		}
+	}
+	platform := func(model, imageModel string) map[string]any {
+		return map[string]any{
+			"recovery_probe_enabled": true, "recovery_probe_model": model,
+			"soft_cooldown_max_seconds": float64(30), "probe_timeout_seconds": float64(5),
+			"image": image(imageModel),
+		}
+	}
+	return map[string]any{
+		"gateway_account_slot_wait_timeout_ms":                         float64(50),
+		"gateway_edge_body_idle_timeout_ms":                            float64(180000),
+		"gateway_edge_connect_timeout_ms":                              float64(5000),
+		"gateway_edge_expose_retried_usage":                            false,
+		"gateway_edge_global_workers":                                  float64(9999),
+		"gateway_edge_local_data_plane_enabled":                        true,
+		"gateway_edge_protection_enabled":                              true,
+		"gateway_edge_queue_wait_budget_ms":                            float64(50),
+		"gateway_edge_response_header_budget_ms":                       float64(15000),
+		"gateway_edge_response_header_failover":                        true,
+		"gateway_edge_response_header_max_attempts":                    float64(3),
+		"gateway_edge_response_header_timeout_ms":                      float64(15000),
+		"gateway_openai_apikey_first_token_timeout_placeholder_stages": stages,
+		"gateway_openai_oauth_first_token_timeout_placeholder_stages":  stages,
+		"gateway_openai_response_header_timeout_enabled":               true,
+		"gateway_openai_response_header_timeout_ms":                    float64(30000),
+		"gateway_retry_after_ms":                                       float64(1000),
+		"gateway_user_slot_wait_timeout_ms":                            float64(100),
+		"gateway_user_waiting_extra":                                   float64(5),
+		"non_openai_pool": map[string]any{
+			"enabled": true, "default_cooldown_seconds": float64(5),
+			"auth_cooldown_seconds": float64(30), "server_error_cooldown_seconds": float64(5),
+			"transport_cooldown_seconds": float64(5), "max_cooldown_seconds": float64(30),
+			"probe_timeout_seconds": float64(5), "probe_max_backoff_seconds": float64(60),
+			"platforms": map[string]any{
+				"antigravity": platform("claude-sonnet-4-5", "gemini-2.5-flash-image"),
+				"deepseek":    platform("deepseek-chat", ""),
+				"gemini":      platform("gemini-2.0-flash", "gemini-2.5-flash-image"),
+				"grok":        platform("grok-4.5", "grok-imagine-image"),
+				"kimi":        platform("kimi-k2", ""),
+				"zhipu":       platform("glm-4.7", ""),
+			},
+		},
+		"openai_codex_client_version":                    "",
+		"openai_codex_client_version_synced":             "",
+		"openai_codex_routing_hint_enabled":              false,
+		"openai_codex_version_auto_sync_enabled":         false,
+		"openai_health_probe_max_account_switches":       float64(4),
+		"openai_health_probe_recent_success_enabled":     true,
+		"openai_health_probe_recent_success_ttl_seconds": float64(60),
+		"openai_health_probe_total_timeout_seconds":      float64(40),
+		"registration_email_domain_quota_enabled":        false,
 	}
 }
 

@@ -572,18 +572,23 @@
           <p class="input-hint">{{ t("admin.groups.rateMultiplierHint") }}</p>
         </div>
         <div v-if="isUpstreamBillingGuardPlatform(createForm.platform)">
-          <label class="input-label">{{
-            t("admin.groups.form.upstreamBillingGuardLimit")
-          }}</label>
-          <input
-            v-model="createForm.upstream_billing_guard_max_multiplier"
-            type="number"
-            min="0"
-            step="0.001"
-            class="input"
-            data-testid="create-group-upstream-billing-guard-limit"
-            :placeholder="t('admin.groups.form.upstreamBillingGuardUnlimited')"
-          />
+          <label class="input-label">{{ t("admin.groups.form.upstreamBillingGuardRange") }}</label>
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label class="min-w-0">
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.upstreamBillingGuardMinLabel") }}</span>
+              <div class="relative mt-1">
+                <input v-model="createForm.upstream_billing_guard_min_multiplier" type="number" min="0" step="0.001" class="input min-w-0 pr-8" data-testid="create-group-upstream-billing-guard-min" :placeholder="t('admin.groups.form.upstreamBillingGuardMinPlaceholder')" />
+                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">x</span>
+              </div>
+            </label>
+            <label class="min-w-0">
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.upstreamBillingGuardMaxLabel") }}</span>
+              <div class="relative mt-1">
+                <input v-model="createForm.upstream_billing_guard_max_multiplier" type="number" min="0" step="0.001" class="input min-w-0 pr-8" data-testid="create-group-upstream-billing-guard-limit" :placeholder="t('admin.groups.form.upstreamBillingGuardMaxPlaceholder')" />
+                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">x</span>
+              </div>
+            </label>
+          </div>
           <p class="input-hint">{{ t("admin.groups.form.upstreamBillingGuardHint") }}</p>
         </div>
         <div>
@@ -2182,18 +2187,23 @@
           />
         </div>
         <div v-if="isUpstreamBillingGuardPlatform(editForm.platform)">
-          <label class="input-label">{{
-            t("admin.groups.form.upstreamBillingGuardLimit")
-          }}</label>
-          <input
-            v-model="editForm.upstream_billing_guard_max_multiplier"
-            type="number"
-            min="0"
-            step="0.001"
-            class="input"
-            data-testid="edit-group-upstream-billing-guard-limit"
-            :placeholder="t('admin.groups.form.upstreamBillingGuardUnlimited')"
-          />
+          <label class="input-label">{{ t("admin.groups.form.upstreamBillingGuardRange") }}</label>
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label class="min-w-0">
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.upstreamBillingGuardMinLabel") }}</span>
+              <div class="relative mt-1">
+                <input v-model="editForm.upstream_billing_guard_min_multiplier" type="number" min="0" step="0.001" class="input min-w-0 pr-8" data-testid="edit-group-upstream-billing-guard-min" :placeholder="t('admin.groups.form.upstreamBillingGuardMinPlaceholder')" />
+                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">x</span>
+              </div>
+            </label>
+            <label class="min-w-0">
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.upstreamBillingGuardMaxLabel") }}</span>
+              <div class="relative mt-1">
+                <input v-model="editForm.upstream_billing_guard_max_multiplier" type="number" min="0" step="0.001" class="input min-w-0 pr-8" data-testid="edit-group-upstream-billing-guard-limit" :placeholder="t('admin.groups.form.upstreamBillingGuardMaxPlaceholder')" />
+                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">x</span>
+              </div>
+            </label>
+          </div>
           <p class="input-hint">{{ t("admin.groups.form.upstreamBillingGuardHint") }}</p>
         </div>
         <div>
@@ -3801,7 +3811,7 @@ import {
   type MessagesDispatchMappingRow,
 } from "./groupsMessagesDispatch";
 import {
-  buildUpstreamBillingGuardLimitPayload,
+  buildUpstreamBillingGuardBoundsPayload,
   isUpstreamBillingGuardPlatform,
 } from "./groupsUpstreamBillingGuard";
 import {
@@ -4227,6 +4237,7 @@ const createForm = reactive({
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
   upstream_billing_guard_max_multiplier: null as number | string | null,
+  upstream_billing_guard_min_multiplier: null as number | string | null,
   is_exclusive: false,
   subscription_type: "standard" as SubscriptionType,
   daily_limit_usd: null as number | null,
@@ -4585,6 +4596,7 @@ const editForm = reactive({
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
   upstream_billing_guard_max_multiplier: null as number | string | null,
+  upstream_billing_guard_min_multiplier: null as number | string | null,
   is_exclusive: false,
   status: "active" as "active" | "inactive",
   subscription_type: "standard" as SubscriptionType,
@@ -5040,6 +5052,7 @@ const closeCreateModal = () => {
   createForm.platform = "anthropic";
   createForm.rate_multiplier = 1.0;
   createForm.upstream_billing_guard_max_multiplier = null;
+  createForm.upstream_billing_guard_min_multiplier = null;
   createForm.is_exclusive = false;
   createForm.subscription_type = "standard";
   createForm.daily_limit_usd = null;
@@ -5128,11 +5141,12 @@ const handleCreateGroup = async () => {
     appStore.showError(pricingError);
     return;
   }
-  const guardLimit = buildUpstreamBillingGuardLimitPayload(
+  const guardBounds = buildUpstreamBillingGuardBoundsPayload(
     createForm.platform,
+    createForm.upstream_billing_guard_min_multiplier,
     createForm.upstream_billing_guard_max_multiplier,
   );
-  if (isUpstreamBillingGuardPlatform(createForm.platform) && guardLimit === undefined) {
+  if (!guardBounds.valid) {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
@@ -5146,7 +5160,8 @@ const handleCreateGroup = async () => {
     const requestData = {
       ...createForm,
       model_pricing: groupPricingToAPI(createForm.model_pricing, createForm.platform),
-      upstream_billing_guard_max_multiplier: guardLimit,
+      upstream_billing_guard_max_multiplier: guardBounds.max,
+      upstream_billing_guard_min_multiplier: guardBounds.min,
       daily_limit_usd: normalizeOptionalLimit(
         createForm.daily_limit_usd as number | string | null,
       ),
@@ -5253,6 +5268,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.rate_multiplier = group.rate_multiplier;
   editForm.upstream_billing_guard_max_multiplier =
     group.upstream_billing_guard_max_multiplier ?? null;
+  editForm.upstream_billing_guard_min_multiplier = group.upstream_billing_guard_min_multiplier ?? null;
   editForm.is_exclusive = group.is_exclusive;
   editForm.status = group.status;
   editForm.subscription_type = group.subscription_type || "standard";
@@ -5353,6 +5369,7 @@ const closeEditModal = () => {
   editForm.audio_stt_price_per_hour = null;
   editForm.video_model_prices_json = "";
   editForm.upstream_billing_guard_max_multiplier = null;
+  editForm.upstream_billing_guard_min_multiplier = null;
   editForm.allow_batch_image_generation = false;
   editForm.batch_image_discount_multiplier = 0.5;
   editForm.batch_image_hold_multiplier = 0.6;
@@ -5374,11 +5391,12 @@ const handleUpdateGroup = async () => {
     return;
   }
 
-  const guardLimit = buildUpstreamBillingGuardLimitPayload(
+  const guardBounds = buildUpstreamBillingGuardBoundsPayload(
     editForm.platform,
+    editForm.upstream_billing_guard_min_multiplier,
     editForm.upstream_billing_guard_max_multiplier,
   );
-  if (isUpstreamBillingGuardPlatform(editForm.platform) && guardLimit === undefined) {
+  if (!guardBounds.valid) {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
@@ -5392,7 +5410,8 @@ const handleUpdateGroup = async () => {
     const payload = {
       ...editForm,
       model_pricing: groupPricingToAPI(editForm.model_pricing, editForm.platform),
-      upstream_billing_guard_max_multiplier: guardLimit,
+      upstream_billing_guard_max_multiplier: guardBounds.max,
+      upstream_billing_guard_min_multiplier: guardBounds.min,
       daily_limit_usd: normalizeOptionalLimit(
         editForm.daily_limit_usd as number | string | null,
       ),

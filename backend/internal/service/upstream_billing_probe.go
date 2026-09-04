@@ -68,7 +68,7 @@ var (
 		"UPSTREAM_BILLING_GUARD_REQUIRES_GROUP_LIMIT", "upstream billing guard requires at least one bound supported-platform group with a configured limit",
 	)
 	ErrInvalidUpstreamBillingGuardGroupLimits = infraerrors.BadRequest(
-		"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMITS", "billing guard overrides must target bound supported-platform groups and be finite, non-negative, and no greater than the group limit",
+		"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMITS", "billing guard overrides must target bound supported-platform groups, tighten configured bounds, and keep the effective minimum below the maximum",
 	)
 	ErrUpstreamBillingProbeRequiredByGuard = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_REQUIRED_BY_GUARD", "disable the upstream billing guard before disabling automatic probe",

@@ -120,6 +120,20 @@ func (_c *GroupCreate) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) 
 	return _c
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_c *GroupCreate) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupCreate {
+	_c.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _c
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *GroupCreate {
+	if v != nil {
+		_c.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _c
+}
+
 // SetPeakRateEnabled sets the "peak_rate_enabled" field.
 func (_c *GroupCreate) SetPeakRateEnabled(v bool) *GroupCreate {
 	_c.mutation.SetPeakRateEnabled(v)
@@ -1417,6 +1431,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
 		_node.UpstreamBillingGuardMaxMultiplier = &value
 	}
+	if value, ok := _c.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+		_node.UpstreamBillingGuardMinMultiplier = &value
+	}
 	if value, ok := _c.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
 		_node.PeakRateEnabled = value
@@ -1900,6 +1918,30 @@ func (u *GroupUpsert) AddUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpse
 // ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
 func (u *GroupUpsert) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsert {
 	u.SetNull(group.FieldUpstreamBillingGuardMaxMultiplier)
+	return u
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsert) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsert {
+	u.Set(group.FieldUpstreamBillingGuardMinMultiplier, v)
+	return u
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateUpstreamBillingGuardMinMultiplier() *GroupUpsert {
+	u.SetExcluded(group.FieldUpstreamBillingGuardMinMultiplier)
+	return u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsert) AddUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsert {
+	u.Add(group.FieldUpstreamBillingGuardMinMultiplier, v)
+	return u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsert) ClearUpstreamBillingGuardMinMultiplier() *GroupUpsert {
+	u.SetNull(group.FieldUpstreamBillingGuardMinMultiplier)
 	return u
 }
 
@@ -3003,6 +3045,34 @@ func (u *GroupUpsertOne) UpdateUpstreamBillingGuardMaxMultiplier() *GroupUpsertO
 func (u *GroupUpsertOne) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertOne) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertOne) AddUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateUpstreamBillingGuardMinMultiplier() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUpstreamBillingGuardMinMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertOne) ClearUpstreamBillingGuardMinMultiplier() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearUpstreamBillingGuardMinMultiplier()
 	})
 }
 
@@ -4428,6 +4498,34 @@ func (u *GroupUpsertBulk) UpdateUpstreamBillingGuardMaxMultiplier() *GroupUpsert
 func (u *GroupUpsertBulk) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertBulk) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertBulk) AddUpstreamBillingGuardMinMultiplier(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateUpstreamBillingGuardMinMultiplier() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUpstreamBillingGuardMinMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *GroupUpsertBulk) ClearUpstreamBillingGuardMinMultiplier() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearUpstreamBillingGuardMinMultiplier()
 	})
 }
 

@@ -534,6 +534,23 @@ func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, b
 	return nil, false
 }
 
+func (a *Account) UpstreamBillingGuardBoundsForGroup(groupID *int64) (min, max *float64, configured bool) {
+	if a == nil || groupID == nil || *groupID <= 0 || !IsUpstreamBillingProbeIdentity(a.Platform, a.Type) {
+		return nil, nil, false
+	}
+	for i := range a.AccountGroups {
+		binding := &a.AccountGroups[i]
+		if binding.GroupID != *groupID {
+			continue
+		}
+		if binding.Group != nil && binding.Group.Platform != a.Platform {
+			return nil, nil, false
+		}
+		return binding.EffectiveUpstreamBillingGuardBounds()
+	}
+	return nil, nil, false
+}
+
 func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
 	if a == nil || !IsUpstreamBillingProbeIdentity(a.Platform, a.Type) {
 		return false
@@ -542,7 +559,7 @@ func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
 		if a.AccountGroups[i].Group != nil && a.AccountGroups[i].Group.Platform != a.Platform {
 			continue
 		}
-		if _, configured := a.AccountGroups[i].EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
+		if _, _, configured := a.AccountGroups[i].EffectiveUpstreamBillingGuardBounds(); configured {
 			return true
 		}
 	}
@@ -550,21 +567,30 @@ func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
 }
 
 // IsUpstreamBillingGuardBlockedForGroup makes an account x group decision.
-// Missing limit means unrestricted. A configured guard requires automatic
+// Missing bounds mean unrestricted. A configured guard requires automatic
 // probing; an enabled probe with no first successful observation is allowed
-// while waiting. A successful value <= the limit restores scheduling.
+// while waiting. A successful value inside the interval restores scheduling.
 func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
 	if a == nil || !a.UpstreamBillingGuardEnabled {
 		return false
 	}
-	limit, configured := a.UpstreamBillingGuardLimitForGroup(groupID)
-	if !configured || limit == nil {
+	min, max, configured := a.UpstreamBillingGuardBoundsForGroup(groupID)
+	if !configured {
 		return false
+	}
+	// Group policy edits can invalidate an older account override. Treat that
+	// effective interval as blocked even before the first successful probe.
+	if min != nil && max != nil && *min >= *max {
+		return true
 	}
 	if !a.IsUpstreamBillingProbeEnabled() {
 		return true
 	}
-	return a.UpstreamBillingGuardObservedMultiplier != nil && *a.UpstreamBillingGuardObservedMultiplier > *limit
+	if a.UpstreamBillingGuardObservedMultiplier == nil {
+		return false
+	}
+	observed := *a.UpstreamBillingGuardObservedMultiplier
+	return (min != nil && observed < *min) || (max != nil && observed > *max)
 }
 
 // IsCredentialUsableForShadow reports whether this parent account can provide

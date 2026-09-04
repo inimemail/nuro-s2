@@ -161,6 +161,7 @@ type Group struct {
 type AdminGroup struct {
 	Group
 	UpstreamBillingGuardMaxMultiplier *float64 `json:"upstream_billing_guard_max_multiplier"`
+	UpstreamBillingGuardMinMultiplier *float64 `json:"upstream_billing_guard_min_multiplier"`
 	// nil inherits the global Edge protection switch; false disables it for this group.
 	EdgeProtectionEnabled *bool `json:"edge_protection_enabled,omitempty"`
 
@@ -345,6 +346,8 @@ type AccountGroup struct {
 	Priority                                  int       `json:"priority"`
 	UpstreamBillingGuardMaxMultiplier         *float64  `json:"upstream_billing_guard_max_multiplier"`
 	UpstreamBillingGuardOverrideMaxMultiplier *float64  `json:"upstream_billing_guard_override_max_multiplier"`
+	UpstreamBillingGuardMinMultiplier         *float64  `json:"upstream_billing_guard_min_multiplier"`
+	UpstreamBillingGuardOverrideMinMultiplier *float64  `json:"upstream_billing_guard_override_min_multiplier"`
 	CreatedAt                                 time.Time `json:"created_at"`
 
 	Account *Account `json:"account,omitempty"`

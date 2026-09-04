@@ -178,6 +178,53 @@ func TestAdminServiceAllowsUpstreamGuardLimitForAnthropicGroup(t *testing.T) {
 	require.Equal(t, limit, *group.UpstreamBillingGuardMaxMultiplier)
 }
 
+func TestAdminServiceAllowsMinimumOnlyGuardForDeepSeekGroup(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	minimum := 0.75
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "deepseek",
+		Platform:                          PlatformDeepSeek,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMinMultiplier: &minimum,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, minimum, *group.UpstreamBillingGuardMinMultiplier)
+	require.Nil(t, group.UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestAdminServiceRejectsCrossedGroupGuardBounds(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	minimum, maximum := 1.5, 1.25
+
+	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "crossed",
+		Platform:                          PlatformOpenAI,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMinMultiplier: &minimum,
+		UpstreamBillingGuardMaxMultiplier: &maximum,
+	})
+
+	statusCode, status := infraerrors.ToHTTP(err)
+	require.Equal(t, http.StatusBadRequest, statusCode)
+	require.Equal(t, "INVALID_UPSTREAM_BILLING_GUARD_GROUP_MULTIPLIER", status.Reason)
+	require.Nil(t, repo.created)
+
+	maximum = minimum
+	_, err = svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "equal",
+		Platform:                          PlatformOpenAI,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMinMultiplier: &minimum,
+		UpstreamBillingGuardMaxMultiplier: &maximum,
+	})
+	require.Error(t, err, "equal lower and upper bounds must be rejected")
+	require.Nil(t, repo.created)
+}
+
 func TestAdminServiceRejectsUpstreamGuardLimitForUnsupportedGroup(t *testing.T) {
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
@@ -242,6 +289,34 @@ func TestAdminServiceUpdateGroupSetsAndClearsUpstreamGuardLimit(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Nil(t, updated.UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestAdminServiceUpdateGroupSetsAndClearsUpstreamGuardMinimum(t *testing.T) {
+	group := &Group{
+		ID:               7,
+		Name:             "openai",
+		Platform:         PlatformOpenAI,
+		RateMultiplier:   1,
+		Status:           StatusActive,
+		SubscriptionType: SubscriptionTypeStandard,
+	}
+	repo := &groupRepoStubForAdmin{getByID: group}
+	svc := &adminServiceImpl{groupRepo: repo}
+	minimum := 0.75
+	setMinimum := &minimum
+
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{
+		UpstreamBillingGuardMinMultiplier: &setMinimum,
+	})
+	require.NoError(t, err)
+	require.Equal(t, minimum, *updated.UpstreamBillingGuardMinMultiplier)
+
+	var cleared *float64
+	updated, err = svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{
+		UpstreamBillingGuardMinMultiplier: &cleared,
+	})
+	require.NoError(t, err)
+	require.Nil(t, updated.UpstreamBillingGuardMinMultiplier)
 }
 
 func TestAdminServiceUpdateGroupPreservesAndClearsEdgeProtection(t *testing.T) {

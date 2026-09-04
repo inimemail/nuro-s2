@@ -543,6 +543,7 @@ export interface Group {
   platform: GroupPlatform
   rate_multiplier: number
   upstream_billing_guard_max_multiplier?: number | null
+  upstream_billing_guard_min_multiplier?: number | null
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
   force_openai_fast?: boolean
   max_reasoning_effort?: string
@@ -721,6 +722,7 @@ export interface CreateGroupRequest {
   platform?: GroupPlatform
   rate_multiplier?: number
   upstream_billing_guard_max_multiplier?: number | null
+  upstream_billing_guard_min_multiplier?: number | null
   is_exclusive?: boolean
   subscription_type?: SubscriptionType
   daily_limit_usd?: number | null
@@ -783,6 +785,7 @@ export interface UpdateGroupRequest {
   platform?: GroupPlatform
   rate_multiplier?: number
   upstream_billing_guard_max_multiplier?: number | null
+  upstream_billing_guard_min_multiplier?: number | null
   is_exclusive?: boolean
   status?: 'active' | 'inactive'
   subscription_type?: SubscriptionType
@@ -1171,6 +1174,8 @@ export interface AccountGroupBinding {
   priority: number
   upstream_billing_guard_max_multiplier: number | null
   upstream_billing_guard_override_max_multiplier?: number | null
+  upstream_billing_guard_min_multiplier?: number | null
+  upstream_billing_guard_override_min_multiplier?: number | null
   created_at: string
   group?: Group
 }
@@ -1385,6 +1390,7 @@ export interface UpdateAccountRequest {
   group_ids?: number[]
   upstream_billing_guard_enabled?: boolean
   upstream_billing_guard_group_limits?: Record<string, number>
+  upstream_billing_guard_group_min_limits?: Record<string, number>
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean

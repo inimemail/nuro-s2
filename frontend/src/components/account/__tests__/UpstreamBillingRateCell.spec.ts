@@ -18,6 +18,7 @@ const now = Date.parse('2026-07-17T08:00:10Z')
 
 function makeAccount(options: {
   observed?: number
+  min?: number | null
   limit?: number
   autoProbe?: boolean
   guardEnabled?: boolean
@@ -26,6 +27,7 @@ function makeAccount(options: {
 } = {}): Account {
   const {
     observed,
+    min = null,
     limit = 1,
     autoProbe = true,
     guardEnabled = true,
@@ -35,6 +37,7 @@ function makeAccount(options: {
   const groups = Array.from({ length: groupCount }, (_, index) => ({
     id: index + 10,
     name: `Group ${index + 1}`,
+    upstream_billing_guard_min_multiplier: min,
     upstream_billing_guard_max_multiplier: limit
   }))
 
@@ -104,7 +107,7 @@ describe('UpstreamBillingRateCell', () => {
   })
 
   it('uses the compact rate display for every supported API-key platform', () => {
-    for (const platform of ['openai', 'anthropic', 'gemini', 'grok', 'antigravity'] as const) {
+    for (const platform of ['openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek'] as const) {
       const account = makeAccount({ observed: 0.07 })
       account.platform = platform
       const wrapper = mountCell(account)
@@ -137,6 +140,69 @@ describe('UpstreamBillingRateCell', () => {
     expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
       'admin.accounts.upstreamBilling.guardPaused'
     )
+  })
+
+  it('blocks below the lower bound but allows equality', () => {
+    const blocked = mountCell(makeAccount({ observed: 0.79, min: 0.8, limit: 1.2 }))
+    expect(blocked.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('blocked')
+    expect(blocked.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
+      'admin.accounts.upstreamBilling.guardBelowMin'
+    )
+    expect(blocked.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
+      'admin.accounts.upstreamBilling.guardLimitDetail:{"rate":"0.8x ~ 1.2x"}'
+    )
+
+    const equal = mountCell(makeAccount({ observed: 0.8, min: 0.8, limit: 1.2 }))
+    expect(equal.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('available')
+  })
+
+  it('fails closed for equal or crossed effective bounds before the first probe', () => {
+    const equal = mountCell(makeAccount({ min: 1, limit: 1 }))
+    expect(equal.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('blocked')
+
+    const wrapper = mountCell(makeAccount({ min: 1.2, limit: 1 }))
+
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('blocked')
+  })
+
+  it('supports a lower-bound-only policy without changing maximum-only labels', () => {
+    const account = makeAccount({ observed: 0.9, min: 1, limit: 2 })
+    account.groups = [{
+      ...(account.groups?.[0] as any),
+      upstream_billing_guard_min_multiplier: 1,
+      upstream_billing_guard_max_multiplier: null
+    }]
+    account.account_groups = [{
+      ...(account.account_groups?.[0] as any),
+      upstream_billing_guard_min_multiplier: 1,
+      upstream_billing_guard_max_multiplier: null,
+      group: account.groups[0]
+    }]
+
+    const wrapper = mountCell(account)
+    const details = wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('blocked')
+    expect(details).toContain('admin.accounts.upstreamBilling.guardLimitDetail:{"rate":"admin.accounts.upstreamBilling.minimumOnlyRange:{\\"rate\\":\\"1x\\"}"}')
+  })
+
+  it('applies raw overrides when a rolling-upgrade response embeds group defaults', () => {
+    const account = makeAccount({ observed: 0.7, min: 0.5, limit: 2 })
+    account.groups = []
+    account.account_groups = [{
+      ...(account.account_groups?.[0] as any),
+      upstream_billing_guard_override_min_multiplier: 0.8,
+      upstream_billing_guard_override_max_multiplier: 1.5,
+      group: {
+        ...(account.account_groups?.[0]?.group as any),
+        upstream_billing_guard_min_multiplier: 0.5,
+        upstream_billing_guard_max_multiplier: 2
+      }
+    }]
+
+    const wrapper = mountCell(account)
+    const item = wrapper.get('[data-testid="upstream-billing-guard-group-10"]')
+    expect(item.attributes('data-guard-state')).toBe('blocked')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain('0.8x ~ 1.5x')
   })
 
   it('marks configured groups yellow when account automatic probing is disabled', () => {

@@ -145,6 +145,33 @@ func (_u *GroupUpdate) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpdate {
 	return _u
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdate) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupUpdate {
+	_u.mutation.ResetUpstreamBillingGuardMinMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *GroupUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds value to the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdate) AddUpstreamBillingGuardMinMultiplier(v float64) *GroupUpdate {
+	_u.mutation.AddUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdate) ClearUpstreamBillingGuardMinMultiplier() *GroupUpdate {
+	_u.mutation.ClearUpstreamBillingGuardMinMultiplier()
+	return _u
+}
+
 // SetPeakRateEnabled sets the "peak_rate_enabled" field.
 func (_u *GroupUpdate) SetPeakRateEnabled(v bool) *GroupUpdate {
 	_u.mutation.SetPeakRateEnabled(v)
@@ -1573,6 +1600,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
 		_spec.ClearField(group.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
 	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMinMultiplier(); ok {
+		_spec.AddField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMinMultiplierCleared() {
+		_spec.ClearField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64)
+	}
 	if value, ok := _u.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
 	}
@@ -2310,6 +2346,33 @@ func (_u *GroupUpdateOne) AddUpstreamBillingGuardMaxMultiplier(v float64) *Group
 // ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
 func (_u *GroupUpdateOne) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpdateOne {
 	_u.mutation.ClearUpstreamBillingGuardMaxMultiplier()
+	return _u
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdateOne) SetUpstreamBillingGuardMinMultiplier(v float64) *GroupUpdateOne {
+	_u.mutation.ResetUpstreamBillingGuardMinMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *GroupUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds value to the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdateOne) AddUpstreamBillingGuardMinMultiplier(v float64) *GroupUpdateOne {
+	_u.mutation.AddUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (_u *GroupUpdateOne) ClearUpstreamBillingGuardMinMultiplier() *GroupUpdateOne {
+	_u.mutation.ClearUpstreamBillingGuardMinMultiplier()
 	return _u
 }
 
@@ -3770,6 +3833,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
 		_spec.ClearField(group.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMinMultiplier(); ok {
+		_spec.AddField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMinMultiplierCleared() {
+		_spec.ClearField(group.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64)
 	}
 	if value, ok := _u.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)

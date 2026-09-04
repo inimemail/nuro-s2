@@ -64,3 +64,18 @@ func TestGroupAccountAvailableSQLAppliesGuardToEveryProbePlatform(t *testing.T) 
 	require.Contains(t, groupAccountAvailableSQL, "g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')")
 	require.False(t, strings.Contains(groupAccountAvailableSQL, "a.platform = 'openai'"))
 }
+
+func TestGuardAvailabilitySQLIgnoresOverridesForClearedGroupBounds(t *testing.T) {
+	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL,
+		"g.upstream_billing_guard_min_multiplier IS NOT NULL")
+	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL,
+		"g.upstream_billing_guard_max_multiplier IS NOT NULL")
+	require.Contains(t, groupAccountAvailableSQL, upstreamBillingGuardObservedOutOfBoundsSQL)
+}
+
+func TestGuardAvailabilitySQLFailsClosedForCrossedEffectiveBounds(t *testing.T) {
+	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL,
+		"GREATEST(\n\t\t\t\tCOALESCE(ag.upstream_billing_guard_min_multiplier")
+	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL,
+		") >= LEAST(\n\t\t\t\tCOALESCE(ag.upstream_billing_guard_max_multiplier")
+}

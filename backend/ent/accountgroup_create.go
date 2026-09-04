@@ -64,6 +64,20 @@ func (_c *AccountGroupCreate) SetNillableUpstreamBillingGuardMaxMultiplier(v *fl
 	return _c
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_c *AccountGroupCreate) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupCreate {
+	_c.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _c
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_c *AccountGroupCreate) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *AccountGroupCreate {
+	if v != nil {
+		_c.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *AccountGroupCreate) SetCreatedAt(v time.Time) *AccountGroupCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -183,6 +197,10 @@ func (_c *AccountGroupCreate) createSpec() (*AccountGroup, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
 		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
 		_node.UpstreamBillingGuardMaxMultiplier = &value
+	}
+	if value, ok := _c.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+		_node.UpstreamBillingGuardMinMultiplier = &value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(accountgroup.FieldCreatedAt, field.TypeTime, value)
@@ -340,6 +358,30 @@ func (u *AccountGroupUpsert) ClearUpstreamBillingGuardMaxMultiplier() *AccountGr
 	return u
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsert) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsert {
+	u.Set(accountgroup.FieldUpstreamBillingGuardMinMultiplier, v)
+	return u
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsert) UpdateUpstreamBillingGuardMinMultiplier() *AccountGroupUpsert {
+	u.SetExcluded(accountgroup.FieldUpstreamBillingGuardMinMultiplier)
+	return u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsert) AddUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsert {
+	u.Add(accountgroup.FieldUpstreamBillingGuardMinMultiplier, v)
+	return u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsert) ClearUpstreamBillingGuardMinMultiplier() *AccountGroupUpsert {
+	u.SetNull(accountgroup.FieldUpstreamBillingGuardMinMultiplier)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -459,6 +501,34 @@ func (u *AccountGroupUpsertOne) UpdateUpstreamBillingGuardMaxMultiplier() *Accou
 func (u *AccountGroupUpsertOne) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertOne {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.ClearUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertOne) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertOne) AddUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.AddUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsertOne) UpdateUpstreamBillingGuardMinMultiplier() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateUpstreamBillingGuardMinMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertOne) ClearUpstreamBillingGuardMinMultiplier() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearUpstreamBillingGuardMinMultiplier()
 	})
 }
 
@@ -724,6 +794,34 @@ func (u *AccountGroupUpsertBulk) UpdateUpstreamBillingGuardMaxMultiplier() *Acco
 func (u *AccountGroupUpsertBulk) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertBulk {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.ClearUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertBulk) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds v to the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertBulk) AddUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.AddUpstreamBillingGuardMinMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsertBulk) UpdateUpstreamBillingGuardMinMultiplier() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateUpstreamBillingGuardMinMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (u *AccountGroupUpsertBulk) ClearUpstreamBillingGuardMinMultiplier() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearUpstreamBillingGuardMinMultiplier()
 	})
 }
 

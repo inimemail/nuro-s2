@@ -209,6 +209,7 @@ type CreateGroupInput struct {
 	Platform                          string
 	RateMultiplier                    float64
 	UpstreamBillingGuardMaxMultiplier *float64
+	UpstreamBillingGuardMinMultiplier *float64
 	IsExclusive                       bool
 	SubscriptionType                  string   // standard/subscription
 	DailyLimitUSD                     *float64 // 日限额 (USD)
@@ -278,6 +279,8 @@ type UpdateGroupInput struct {
 	RateMultiplier *float64 // 使用指针以支持设置为0
 	// nil means omitted; a non-nil pointer containing nil clears the threshold.
 	UpstreamBillingGuardMaxMultiplier **float64
+	// nil means omitted; a non-nil pointer containing nil clears the threshold.
+	UpstreamBillingGuardMinMultiplier **float64
 	IsExclusive                       *bool
 	Status                            string
 	SubscriptionType                  string   // standard/subscription
@@ -388,12 +391,13 @@ type UpdateAccountInput struct {
 	UpstreamBillingGuardEnabled *bool
 	// UpstreamBillingGuardGroupLimits contains account x group overrides.
 	// Omitted means unchanged; an empty map clears every override (inherit all).
-	UpstreamBillingGuardGroupLimits *map[int64]float64
-	ExpiresAt                       *int64
-	AutoPauseOnExpired              *bool
-	ProbeEnabled                    *bool
-	RateSyncEnabled                 *bool
-	SkipMixedChannelCheck           bool // 跳过混合渠道检查（用户已确认风险）
+	UpstreamBillingGuardGroupLimits    *map[int64]float64
+	UpstreamBillingGuardGroupMinLimits *map[int64]float64
+	ExpiresAt                          *int64
+	AutoPauseOnExpired                 *bool
+	ProbeEnabled                       *bool
+	RateSyncEnabled                    *bool
+	SkipMixedChannelCheck              bool // 跳过混合渠道检查（用户已确认风险）
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
@@ -2093,6 +2097,14 @@ func defaultModelsListCandidateIDs(platform string) []string {
 	}
 }
 
+func validOptionalGuardBound(value *float64) bool {
+	return value == nil || (*value >= 0 && !math.IsNaN(*value) && !math.IsInf(*value, 0))
+}
+
+func guardBoundsInvalid(min, max *float64) bool {
+	return min != nil && max != nil && *min >= *max
+}
+
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
 	if input.RateMultiplier <= 0 {
 		return nil, errors.New("rate_multiplier must be > 0")
@@ -2107,17 +2119,18 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		return nil, err
 	}
 	guardLimit := input.UpstreamBillingGuardMaxMultiplier
-	if guardLimit != nil {
+	guardMin := input.UpstreamBillingGuardMinMultiplier
+	if guardLimit != nil || guardMin != nil {
 		if !IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey) {
 			return nil, infraerrors.BadRequest(
 				"UPSTREAM_BILLING_GUARD_GROUP_PLATFORM_UNSUPPORTED",
 				"upstream billing guard is only supported for API-key billing probe platforms",
 			)
 		}
-		if *guardLimit < 0 || math.IsNaN(*guardLimit) || math.IsInf(*guardLimit, 0) {
+		if !validOptionalGuardBound(guardMin) || !validOptionalGuardBound(guardLimit) || guardBoundsInvalid(guardMin, guardLimit) {
 			return nil, infraerrors.BadRequest(
 				"INVALID_UPSTREAM_BILLING_GUARD_GROUP_MULTIPLIER",
-				"upstream_billing_guard_max_multiplier must be a finite number >= 0",
+				"upstream billing guard bounds must be finite numbers >= 0 with min < max",
 			)
 		}
 	}
@@ -2260,6 +2273,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		Platform:                           platform,
 		RateMultiplier:                     input.RateMultiplier,
 		UpstreamBillingGuardMaxMultiplier:  guardLimit,
+		UpstreamBillingGuardMinMultiplier:  guardMin,
 		IsExclusive:                        input.IsExclusive,
 		Status:                             StatusActive,
 		SubscriptionType:                   subscriptionType,
@@ -2500,26 +2514,35 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		}
 		group.ModelPricing = modelPricing
 	}
-	if input.UpstreamBillingGuardMaxMultiplier != nil {
-		guardLimit := *input.UpstreamBillingGuardMaxMultiplier
-		if guardLimit != nil {
+	if input.UpstreamBillingGuardMaxMultiplier != nil || input.UpstreamBillingGuardMinMultiplier != nil {
+		guardLimit := group.UpstreamBillingGuardMaxMultiplier
+		guardMin := group.UpstreamBillingGuardMinMultiplier
+		if input.UpstreamBillingGuardMaxMultiplier != nil {
+			guardLimit = *input.UpstreamBillingGuardMaxMultiplier
+		}
+		if input.UpstreamBillingGuardMinMultiplier != nil {
+			guardMin = *input.UpstreamBillingGuardMinMultiplier
+		}
+		if guardLimit != nil || guardMin != nil {
 			if !IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
 				return nil, infraerrors.BadRequest(
 					"UPSTREAM_BILLING_GUARD_GROUP_PLATFORM_UNSUPPORTED",
 					"upstream billing guard is only supported for API-key billing probe platforms",
 				)
 			}
-			if *guardLimit < 0 || math.IsNaN(*guardLimit) || math.IsInf(*guardLimit, 0) {
+			if !validOptionalGuardBound(guardMin) || !validOptionalGuardBound(guardLimit) || guardBoundsInvalid(guardMin, guardLimit) {
 				return nil, infraerrors.BadRequest(
 					"INVALID_UPSTREAM_BILLING_GUARD_GROUP_MULTIPLIER",
-					"upstream_billing_guard_max_multiplier must be a finite number >= 0",
+					"upstream billing guard bounds must be finite numbers >= 0 with min < max",
 				)
 			}
 		}
 		group.UpstreamBillingGuardMaxMultiplier = guardLimit
+		group.UpstreamBillingGuardMinMultiplier = guardMin
 	}
 	if !IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
 		group.UpstreamBillingGuardMaxMultiplier = nil
+		group.UpstreamBillingGuardMinMultiplier = nil
 	}
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier <= 0 {
@@ -3755,7 +3778,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				if loadErr != nil {
 					return false, loadErr
 				}
-				if group != nil && group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) && group.UpstreamBillingGuardMaxMultiplier != nil {
+				if group != nil && group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) && (group.UpstreamBillingGuardMaxMultiplier != nil || group.UpstreamBillingGuardMinMultiplier != nil) {
 					return true, nil
 				}
 			}
@@ -3763,7 +3786,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		for _, binding := range account.AccountGroups {
 			if _, ok := selected[binding.GroupID]; ok {
-				if _, configured := binding.EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
+				if _, _, configured := binding.EffectiveUpstreamBillingGuardBounds(); configured {
 					return true, nil
 				}
 			}
@@ -4047,8 +4070,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 		}
 	}
-	if input.UpstreamBillingGuardGroupLimits != nil {
-		if len(*input.UpstreamBillingGuardGroupLimits) > 0 && !guardCapableAccount {
+	if input.UpstreamBillingGuardGroupLimits != nil || input.UpstreamBillingGuardGroupMinLimits != nil {
+		if (input.UpstreamBillingGuardGroupLimits != nil && len(*input.UpstreamBillingGuardGroupLimits) > 0 || input.UpstreamBillingGuardGroupMinLimits != nil && len(*input.UpstreamBillingGuardGroupMinLimits) > 0) && !guardCapableAccount {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
 		selectedGroupIDs := account.GroupIDs
@@ -4066,24 +4089,18 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				selected[groupID] = struct{}{}
 			}
 		}
-		for groupID, override := range *input.UpstreamBillingGuardGroupLimits {
-			if groupID <= 0 || override < 0 || math.IsNaN(override) || math.IsInf(override, 0) {
-				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
-			}
-			if _, bound := selected[groupID]; !bound {
-				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
-			}
-
-			var groupLimit *float64
+		groupBounds := func(groupID int64) (*float64, *float64, bool, error) {
+			var groupLimit, groupMin *float64
 			validPlatformGroup := false
 			if s.groupRepo != nil {
 				group, loadErr := s.groupRepo.GetByIDLite(ctx, groupID)
 				if loadErr != nil {
-					return nil, loadErr
+					return nil, nil, false, loadErr
 				}
 				if group != nil && group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
 					validPlatformGroup = true
 					groupLimit = group.UpstreamBillingGuardMaxMultiplier
+					groupMin = group.UpstreamBillingGuardMinMultiplier
 				}
 			} else {
 				for i := range account.AccountGroups {
@@ -4098,19 +4115,107 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 						if binding.Group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(binding.Group.Platform, AccountTypeAPIKey) {
 							validPlatformGroup = true
 							groupLimit = binding.Group.UpstreamBillingGuardMaxMultiplier
+							groupMin = binding.Group.UpstreamBillingGuardMinMultiplier
 						}
 					} else if binding.GroupPolicyLoaded {
 						validPlatformGroup = true
 						groupLimit = binding.GroupUpstreamBillingGuardMaxMultiplier
-					} else if binding.UpstreamBillingGuardMaxMultiplier != nil {
+						groupMin = binding.GroupUpstreamBillingGuardMinMultiplier
+					} else if binding.UpstreamBillingGuardMaxMultiplier != nil || binding.UpstreamBillingGuardMinMultiplier != nil {
 						// Compatibility for unit stubs and pre-upgrade snapshots.
 						validPlatformGroup = true
 						groupLimit = binding.UpstreamBillingGuardMaxMultiplier
+						groupMin = binding.UpstreamBillingGuardMinMultiplier
 					}
 					break
 				}
 			}
-			if !validPlatformGroup || groupLimit == nil || override > *groupLimit {
+			return groupMin, groupLimit, validPlatformGroup, nil
+		}
+		validateOverride := func(groupID int64, override float64, lower bool) error {
+			if groupID <= 0 || override < 0 || math.IsNaN(override) || math.IsInf(override, 0) {
+				return ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+			if _, bound := selected[groupID]; !bound {
+				return ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+			groupMin, groupLimit, validPlatformGroup, loadErr := groupBounds(groupID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if !validPlatformGroup || (lower && groupMin == nil) || (!lower && groupLimit == nil) || (!lower && override > *groupLimit) || (lower && override < *groupMin) {
+				return ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+			return nil
+		}
+		if input.UpstreamBillingGuardGroupLimits != nil {
+			for groupID, override := range *input.UpstreamBillingGuardGroupLimits {
+				if err := validateOverride(groupID, override, false); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if input.UpstreamBillingGuardGroupMinLimits != nil {
+			for groupID, override := range *input.UpstreamBillingGuardGroupMinLimits {
+				if err := validateOverride(groupID, override, true); err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		// Each override can tighten its own side while still crossing the other
+		// effective bound. Validate the proposed pair before the atomic write so
+		// malformed intervals cannot silently disable group protection.
+		touched := make(map[int64]struct{})
+		if input.UpstreamBillingGuardGroupLimits != nil {
+			for groupID := range *input.UpstreamBillingGuardGroupLimits {
+				touched[groupID] = struct{}{}
+			}
+		}
+		if input.UpstreamBillingGuardGroupMinLimits != nil {
+			for groupID := range *input.UpstreamBillingGuardGroupMinLimits {
+				touched[groupID] = struct{}{}
+			}
+		}
+		for groupID := range touched {
+			groupMin, groupMax, validPlatformGroup, loadErr := groupBounds(groupID)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			if !validPlatformGroup {
+				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+			var currentMinOverride, currentMaxOverride *float64
+			for i := range account.AccountGroups {
+				if account.AccountGroups[i].GroupID == groupID {
+					currentMinOverride = account.AccountGroups[i].UpstreamBillingGuardOverrideMinMultiplier
+					currentMaxOverride = account.AccountGroups[i].UpstreamBillingGuardOverrideMaxMultiplier
+					break
+				}
+			}
+			minOverride, maxOverride := currentMinOverride, currentMaxOverride
+			if input.UpstreamBillingGuardGroupMinLimits != nil {
+				minOverride = nil
+				if value, ok := (*input.UpstreamBillingGuardGroupMinLimits)[groupID]; ok {
+					valueCopy := value
+					minOverride = &valueCopy
+				}
+			}
+			if input.UpstreamBillingGuardGroupLimits != nil {
+				maxOverride = nil
+				if value, ok := (*input.UpstreamBillingGuardGroupLimits)[groupID]; ok {
+					valueCopy := value
+					maxOverride = &valueCopy
+				}
+			}
+			effectiveMin, effectiveMax := groupMin, groupMax
+			if minOverride != nil && effectiveMin != nil && *minOverride >= *effectiveMin {
+				effectiveMin = minOverride
+			}
+			if maxOverride != nil && effectiveMax != nil && *maxOverride <= *effectiveMax {
+				effectiveMax = maxOverride
+			}
+			if guardBoundsInvalid(effectiveMin, effectiveMax) {
 				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
 			}
 		}
@@ -4141,9 +4246,20 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 	propagateProxyAtomically := input.ProxyID != nil && !account.IsCredentialShadow()
-	needsAtomicGroupConfig := input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || propagateProxyAtomically
+	needsAtomicGroupConfig := input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || input.UpstreamBillingGuardGroupMinLimits != nil || propagateProxyAtomically
 	usedAtomicGroupConfig := false
 	if needsAtomicGroupConfig {
+		if updater, ok := s.accountRepo.(AccountGroupBillingBoundsRepository); ok {
+			if err := updater.UpdateAccountWithGroupConfigAndBillingSettingsWithBounds(ctx, account, input.GroupIDs, input.UpstreamBillingGuardGroupLimits, input.UpstreamBillingGuardGroupMinLimits, propagateProxyAtomically, requestedProbeEnabledUpdate, requestedRateSyncEnabledUpdate, input.RateMultiplier); err != nil {
+				return nil, fmt.Errorf("update account %d group billing configuration: %w", account.ID, err)
+			}
+			usedAtomicGroupConfig = true
+		}
+	}
+	// The legacy atomic interfaces cannot persist minimum overrides. When a
+	// minimum map is present, fall through to the explicit compatibility path
+	// below unless the bounds-aware repository handled the whole update.
+	if needsAtomicGroupConfig && !usedAtomicGroupConfig && input.UpstreamBillingGuardGroupMinLimits == nil {
 		if updater, ok := s.accountRepo.(AccountGroupBillingSettingsRepository); ok {
 			if err := updater.UpdateAccountWithGroupConfigAndBillingSettings(
 				ctx,
@@ -4201,6 +4317,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		if err := guardUpdater.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, *input.UpstreamBillingGuardGroupLimits); err != nil {
 			return nil, fmt.Errorf("update account %d billing guard group overrides: %w", account.ID, err)
+		}
+	}
+	if !usedAtomicGroupConfig && input.UpstreamBillingGuardGroupMinLimits != nil {
+		guardUpdater, ok := s.accountRepo.(interface {
+			UpdateUpstreamBillingGuardGroupMinLimits(context.Context, int64, map[int64]float64) error
+		})
+		if !ok {
+			return nil, errors.New("account repository does not support billing guard group minimum overrides")
+		}
+		if err := guardUpdater.UpdateUpstreamBillingGuardGroupMinLimits(ctx, account.ID, *input.UpstreamBillingGuardGroupMinLimits); err != nil {
+			return nil, fmt.Errorf("update account %d billing guard group minimum overrides: %w", account.ID, err)
 		}
 	}
 	if clearRuntimeBlock {

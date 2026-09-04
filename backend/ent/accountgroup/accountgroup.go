@@ -20,6 +20,8 @@ const (
 	FieldPriority = "priority"
 	// FieldUpstreamBillingGuardMaxMultiplier holds the string denoting the upstream_billing_guard_max_multiplier field in the database.
 	FieldUpstreamBillingGuardMaxMultiplier = "upstream_billing_guard_max_multiplier"
+	// FieldUpstreamBillingGuardMinMultiplier holds the string denoting the upstream_billing_guard_min_multiplier field in the database.
+	FieldUpstreamBillingGuardMinMultiplier = "upstream_billing_guard_min_multiplier"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// EdgeAccount holds the string denoting the account edge name in mutations.
@@ -54,6 +56,7 @@ var Columns = []string{
 	FieldGroupID,
 	FieldPriority,
 	FieldUpstreamBillingGuardMaxMultiplier,
+	FieldUpstreamBillingGuardMinMultiplier,
 	FieldCreatedAt,
 }
 
@@ -95,6 +98,11 @@ func ByPriority(opts ...sql.OrderTermOption) OrderOption {
 // ByUpstreamBillingGuardMaxMultiplier orders the results by the upstream_billing_guard_max_multiplier field.
 func ByUpstreamBillingGuardMaxMultiplier(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUpstreamBillingGuardMaxMultiplier, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardMinMultiplier orders the results by the upstream_billing_guard_min_multiplier field.
+func ByUpstreamBillingGuardMinMultiplier(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardMinMultiplier, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

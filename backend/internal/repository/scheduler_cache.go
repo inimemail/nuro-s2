@@ -586,14 +586,14 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		SessionWindowStatus:                    account.SessionWindowStatus,
 		ParentAccountID:                        account.ParentAccountID,
 		QuotaDimension:                         account.QuotaDimension,
-		AccountGroups:                          filterSchedulerAccountGroups(account.AccountGroups),
+		AccountGroups:                          filterSchedulerAccountGroups(account.Platform, account.AccountGroups),
 		GroupIDs:                               filterSchedulerGroupIDs(account.GroupIDs, account.AccountGroups),
 		Credentials:                            filterSchedulerCredentials(account.Credentials),
 		Extra:                                  filterSchedulerExtra(account.Extra),
 	}
 }
 
-func filterSchedulerAccountGroups(accountGroups []service.AccountGroup) []service.AccountGroup {
+func filterSchedulerAccountGroups(accountPlatform string, accountGroups []service.AccountGroup) []service.AccountGroup {
 	if len(accountGroups) == 0 {
 		return nil
 	}
@@ -603,16 +603,27 @@ func filterSchedulerAccountGroups(accountGroups []service.AccountGroup) []servic
 		if ag.GroupID <= 0 {
 			continue
 		}
-		filtered = append(filtered, service.AccountGroup{
-			AccountID:                         ag.AccountID,
-			GroupID:                           ag.GroupID,
-			Priority:                          ag.Priority,
-			UpstreamBillingGuardMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier),
-			UpstreamBillingGuardOverrideMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardOverrideMaxMultiplier),
-			GroupUpstreamBillingGuardMaxMultiplier:    cloneFloat64Ptr(ag.GroupUpstreamBillingGuardMaxMultiplier),
-			GroupPolicyLoaded:                         ag.GroupPolicyLoaded,
-			CreatedAt:                                 ag.CreatedAt,
-		})
+		filteredGroup := service.AccountGroup{
+			AccountID: ag.AccountID,
+			GroupID:   ag.GroupID,
+			Priority:  ag.Priority,
+			CreatedAt: ag.CreatedAt,
+		}
+		policyMatchesAccount := ag.Group == nil || ag.Group.Platform == "" || ag.Group.Platform == accountPlatform
+		if policyMatchesAccount {
+			filteredGroup.UpstreamBillingGuardMaxMultiplier = cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier)
+			filteredGroup.UpstreamBillingGuardMinMultiplier = cloneFloat64Ptr(ag.UpstreamBillingGuardMinMultiplier)
+			filteredGroup.UpstreamBillingGuardOverrideMaxMultiplier = cloneFloat64Ptr(ag.UpstreamBillingGuardOverrideMaxMultiplier)
+			filteredGroup.UpstreamBillingGuardOverrideMinMultiplier = cloneFloat64Ptr(ag.UpstreamBillingGuardOverrideMinMultiplier)
+			filteredGroup.GroupUpstreamBillingGuardMaxMultiplier = cloneFloat64Ptr(ag.GroupUpstreamBillingGuardMaxMultiplier)
+			filteredGroup.GroupUpstreamBillingGuardMinMultiplier = cloneFloat64Ptr(ag.GroupUpstreamBillingGuardMinMultiplier)
+			filteredGroup.GroupPolicyLoaded = ag.GroupPolicyLoaded
+		} else {
+			// Preserve the membership while making the explicit absence of an
+			// applicable policy survive removal of the hydrated Group object.
+			filteredGroup.GroupPolicyLoaded = true
+		}
+		filtered = append(filtered, filteredGroup)
 	}
 	if len(filtered) == 0 {
 		return nil

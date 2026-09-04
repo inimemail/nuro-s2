@@ -61,6 +61,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetPlatform(groupIn.Platform).
 		SetRateMultiplier(groupIn.RateMultiplier).
 		SetNillableUpstreamBillingGuardMaxMultiplier(groupIn.UpstreamBillingGuardMaxMultiplier).
+		SetNillableUpstreamBillingGuardMinMultiplier(groupIn.UpstreamBillingGuardMinMultiplier).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).
@@ -180,8 +181,8 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 		return err
 	}
 	result, err := txClient.ExecContext(ctx, `
-		INSERT INTO account_groups (account_id, group_id, priority, upstream_billing_guard_max_multiplier, created_at)
-		SELECT ag.account_id, $2, ag.priority, ag.upstream_billing_guard_max_multiplier, NOW()
+		INSERT INTO account_groups (account_id, group_id, priority, upstream_billing_guard_max_multiplier, upstream_billing_guard_min_multiplier, created_at)
+		SELECT ag.account_id, $2, ag.priority, ag.upstream_billing_guard_max_multiplier, ag.upstream_billing_guard_min_multiplier, NOW()
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
 		WHERE ag.group_id = $1
@@ -243,6 +244,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetPlatform(groupIn.Platform).
 		SetRateMultiplier(groupIn.RateMultiplier).
 		SetNillableUpstreamBillingGuardMaxMultiplier(groupIn.UpstreamBillingGuardMaxMultiplier).
+		SetNillableUpstreamBillingGuardMinMultiplier(groupIn.UpstreamBillingGuardMinMultiplier).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).
@@ -365,6 +367,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	} else {
 		builder = builder.ClearUpstreamBillingGuardMaxMultiplier()
 	}
+	if groupIn.UpstreamBillingGuardMinMultiplier != nil {
+		builder = builder.SetUpstreamBillingGuardMinMultiplier(*groupIn.UpstreamBillingGuardMinMultiplier)
+	} else {
+		builder = builder.ClearUpstreamBillingGuardMinMultiplier()
+	}
 	if groupIn.EdgeProtectionEnabled != nil {
 		builder = builder.SetEdgeProtectionEnabled(*groupIn.EdgeProtectionEnabled)
 	} else {
@@ -436,7 +443,7 @@ func (r *groupRepository) reconcileUpstreamBillingGuardAccounts(ctx context.Cont
 					WHERE ag2.account_id = a.id
 					  AND g2.platform = a.platform
 					  AND g2.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
-					  AND g2.upstream_billing_guard_max_multiplier IS NOT NULL
+						  AND (g2.upstream_billing_guard_max_multiplier IS NOT NULL OR g2.upstream_billing_guard_min_multiplier IS NOT NULL)
 			  )
 			  AND a.deleted_at IS NULL
 			RETURNING a.id
@@ -915,7 +922,7 @@ func reconcileRemovedGroupBillingGuards(ctx context.Context, exec sqlExecutor, a
 				WHERE ag.account_id = a.id
 					AND g.platform = a.platform
 					AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
-					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+				AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 			)
 		RETURNING a.id
 	`, pq.Array(accountIDs))
@@ -1067,6 +1074,32 @@ type groupAccountCounts struct {
 }
 
 const (
+	// Binding overrides can only tighten a configured side of the group policy.
+	// PostgreSQL's GREATEST/LEAST ignore NULL arguments, so each comparison must
+	// explicitly require the corresponding group bound to avoid reviving a stale
+	// binding override after an administrator clears that side of the policy.
+	upstreamBillingGuardObservedOutOfBoundsSQL = `(
+		(g.upstream_billing_guard_min_multiplier IS NOT NULL
+			AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+			AND GREATEST(
+				COALESCE(ag.upstream_billing_guard_min_multiplier, g.upstream_billing_guard_min_multiplier),
+				g.upstream_billing_guard_min_multiplier
+			) >= LEAST(
+				COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
+				g.upstream_billing_guard_max_multiplier
+			))
+		OR (g.upstream_billing_guard_min_multiplier IS NOT NULL
+			AND a.upstream_billing_guard_observed_multiplier < GREATEST(
+				COALESCE(ag.upstream_billing_guard_min_multiplier, g.upstream_billing_guard_min_multiplier),
+				g.upstream_billing_guard_min_multiplier
+			))
+		OR (g.upstream_billing_guard_max_multiplier IS NOT NULL
+			AND a.upstream_billing_guard_observed_multiplier > LEAST(
+				COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
+				g.upstream_billing_guard_max_multiplier
+			))
+	)`
+
 	// 分组页的"可用"账号数必须与账号仓储的 ListSchedulableByGroupID 过滤口径一致。
 	groupAccountAvailableSQL = `a.deleted_at IS NULL
 				AND a.status = 'active'
@@ -1076,14 +1109,10 @@ const (
 						AND a.type = 'apikey'
 						AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 						AND a.upstream_billing_guard_enabled = TRUE
-						AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+						AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 					AND (
 						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
-						OR COALESCE(
-							a.upstream_billing_guard_observed_multiplier > LEAST(
-								COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
-								g.upstream_billing_guard_max_multiplier
-							),
+						OR COALESCE(` + upstreamBillingGuardObservedOutOfBoundsSQL + `,
 							FALSE
 						)
 					)

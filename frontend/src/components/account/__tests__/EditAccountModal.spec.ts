@@ -134,13 +134,19 @@ const GroupSelectorStub = defineComponent({
   `
 })
 
-function buildGroup(id: number, name: string, guardLimit: number | null = null) {
+function buildGroup(
+  id: number,
+  name: string,
+  guardLimit: number | null = null,
+  guardMin: number | null = null
+) {
   return {
     id,
     name,
     platform: 'openai',
     status: 'active',
-    upstream_billing_guard_max_multiplier: guardLimit
+    upstream_billing_guard_max_multiplier: guardLimit,
+    upstream_billing_guard_min_multiplier: guardMin
   } as any
 }
 
@@ -605,6 +611,79 @@ describe('EditAccountModal', () => {
     await flushPromises()
 
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ '10': 0.065 })
+  })
+
+  it('only enables overrides for group bounds that are configured', () => {
+    const account = buildAccount()
+    const maxOnly = buildGroup(10, 'Maximum only', 2)
+    const minOnly = buildGroup(20, 'Minimum only', null, 0.5)
+    account.group_ids = [10, 20]
+
+    const wrapper = mountModal(account, [maxOnly, minOnly])
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="upstream-billing-guard-min-override-10"]').element.disabled).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="upstream-billing-guard-max-override-10"]').element.disabled).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="upstream-billing-guard-min-override-20"]').element.disabled).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="upstream-billing-guard-max-override-20"]').element.disabled).toBe(true)
+  })
+
+  it('rejects equal account-group protection overrides before submitting', async () => {
+    const account = buildAccount()
+    const group = buildGroup(10, 'Primary', 2, 0.5)
+    account.group_ids = [10]
+    account.groups = [group]
+    account.upstream_billing_guard_enabled = true
+    account.extra = { upstream_billing_probe_enabled: true }
+    updateAccountMock.mockReset()
+
+    const wrapper = mountModal(account, [group])
+    await wrapper.get('[data-testid="upstream-billing-guard-min-override-10"]').setValue('1.5')
+    await wrapper.get('[data-testid="upstream-billing-guard-max-override-10"]').setValue('1.5')
+
+    expect(wrapper.get('[data-testid="upstream-billing-guard-override-range-error-10"]').text())
+      .toBe('admin.accounts.upstreamBilling.overrideRangeInvalid')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('does not resubmit a stale minimum override after the group minimum is cleared', async () => {
+    const account = buildAccount()
+    const currentGroup = buildGroup(10, 'Current', 2)
+    const removedGroup = buildGroup(20, 'Removed', 2, 0.5)
+    account.group_ids = [10, 20]
+    account.groups = [currentGroup, removedGroup]
+    account.account_groups = [{
+      account_id: 1,
+      group_id: 10,
+      priority: 1,
+      upstream_billing_guard_max_multiplier: 2,
+      upstream_billing_guard_min_multiplier: null,
+      upstream_billing_guard_override_min_multiplier: 0.8,
+      created_at: '2026-07-17T00:00:00Z',
+      group: currentGroup
+    }, {
+      account_id: 1,
+      group_id: 20,
+      priority: 2,
+      upstream_billing_guard_max_multiplier: 2,
+      upstream_billing_guard_min_multiplier: 0.5,
+      created_at: '2026-07-17T00:00:00Z',
+      group: removedGroup
+    }]
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account, [currentGroup, removedGroup], false)
+    await wrapper.get('[data-testid="remove-last-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_min_limits).toEqual({})
   })
 
   it('does not submit an unchanged account protection switch during an unrelated edit', async () => {

@@ -147,6 +147,7 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 	out := &AdminGroup{
 		Group:                             groupFromServiceBase(g),
 		UpstreamBillingGuardMaxMultiplier: g.UpstreamBillingGuardMaxMultiplier,
+		UpstreamBillingGuardMinMultiplier: g.UpstreamBillingGuardMinMultiplier,
 		EdgeProtectionEnabled:             g.EdgeProtectionEnabled,
 		ModelRouting:                      g.ModelRouting,
 		ModelRoutingEnabled:               g.ModelRoutingEnabled,
@@ -479,6 +480,8 @@ func AccountGroupFromService(ag *service.AccountGroup) *AccountGroup {
 		Priority:                          ag.Priority,
 		UpstreamBillingGuardMaxMultiplier: ag.UpstreamBillingGuardMaxMultiplier,
 		UpstreamBillingGuardOverrideMaxMultiplier: ag.UpstreamBillingGuardOverrideMaxMultiplier,
+		UpstreamBillingGuardMinMultiplier:         ag.UpstreamBillingGuardMinMultiplier,
+		UpstreamBillingGuardOverrideMinMultiplier: ag.UpstreamBillingGuardOverrideMinMultiplier,
 		CreatedAt: ag.CreatedAt,
 		Account:   AccountFromServiceShallow(ag.Account),
 		Group:     GroupFromServiceShallow(ag.Group),

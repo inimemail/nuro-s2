@@ -540,33 +540,61 @@
                 <span :class="item.badgeClass" class="flex-none rounded px-2 py-1 text-xs font-medium">{{ item.statusLabel }}</span>
               </div>
             </div>
-            <details v-if="upstreamBillingGuardGroupSummaries.some((item) => item.defaultLimit != null)" class="mt-3 rounded border border-gray-200 dark:border-dark-700">
+            <details v-if="upstreamBillingGuardGroupSummaries.some((item) => item.defaultLimit != null || item.defaultMin != null)" class="mt-3 rounded border border-gray-200 dark:border-dark-700">
               <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300">
                 {{ t('admin.accounts.upstreamBilling.advancedOverrides') }}
               </summary>
               <div class="space-y-2 border-t border-gray-100 p-3 dark:border-dark-700">
                 <div
-                  v-for="item in upstreamBillingGuardGroupSummaries.filter((entry) => entry.defaultLimit != null)"
+                  v-for="item in upstreamBillingGuardGroupSummaries.filter((entry) => entry.defaultLimit != null || entry.defaultMin != null)"
                   :key="`override-${item.group.id}`"
-                  class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-3"
+                  :class="[
+                    'grid grid-cols-1 items-center gap-2 rounded px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:gap-3',
+                    guardOverrideRangeInvalid(item.group)
+                      ? 'bg-rose-50 ring-1 ring-rose-200 dark:bg-rose-950/20 dark:ring-rose-900/70'
+                      : ''
+                  ]"
                 >
                   <div class="min-w-0">
                     <div class="truncate text-xs font-medium text-gray-700 dark:text-gray-300" :title="item.group.name">{{ item.group.name }}</div>
                     <div class="text-[11px] text-gray-400">
-                      {{ t('admin.accounts.upstreamBilling.inheritDefault', { rate: `${item.defaultLimit}x` }) }}
+                      {{ t('admin.accounts.upstreamBilling.inheritDefault', { rate: formatGuardRange(item.defaultMin, item.defaultLimit) }) }}
                     </div>
                   </div>
+                  <input
+                    :value="guardMinOverrideInputValue(item.group.id)"
+                    type="number"
+                    :min="item.defaultMin ?? undefined"
+                    :disabled="item.defaultMin == null"
+                    step="0.001"
+                    class="input py-1.5 text-xs disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:disabled:bg-dark-800"
+                    :data-testid="`upstream-billing-guard-min-override-${item.group.id}`"
+                    :placeholder="t(item.defaultMin == null ? 'admin.accounts.upstreamBilling.minUnavailablePlaceholder' : 'admin.accounts.upstreamBilling.minInheritPlaceholder')"
+                    :aria-label="t('admin.accounts.upstreamBilling.minOverrideLabel', { group: item.group.name })"
+                    :aria-invalid="guardOverrideRangeInvalid(item.group) || undefined"
+                    @input="handleGuardMinOverrideInput(item.group.id, $event)"
+                  />
                   <input
                     :value="guardOverrideInputValue(item.group.id)"
                     type="number"
                     min="0"
                     :max="item.defaultLimit ?? undefined"
+                    :disabled="item.defaultLimit == null"
                     step="0.001"
-                    class="input py-1.5 text-xs"
-                    :placeholder="t('admin.accounts.upstreamBilling.inheritPlaceholder')"
+                    class="input py-1.5 text-xs disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:disabled:bg-dark-800"
+                    :data-testid="`upstream-billing-guard-max-override-${item.group.id}`"
+                    :placeholder="t(item.defaultLimit == null ? 'admin.accounts.upstreamBilling.maxUnavailablePlaceholder' : 'admin.accounts.upstreamBilling.inheritPlaceholder')"
                     :aria-label="t('admin.accounts.upstreamBilling.overrideLabel', { group: item.group.name })"
+                    :aria-invalid="guardOverrideRangeInvalid(item.group) || undefined"
                     @input="handleGuardOverrideInput(item.group.id, $event)"
                   />
+                  <p
+                    v-if="guardOverrideRangeInvalid(item.group)"
+                    :data-testid="`upstream-billing-guard-override-range-error-${item.group.id}`"
+                    class="text-[11px] font-medium text-rose-600 dark:text-rose-300 sm:col-span-2 sm:col-start-2"
+                  >
+                    {{ t('admin.accounts.upstreamBilling.overrideRangeInvalid') }}
+                  </p>
                 </div>
                 <p class="text-[11px] text-gray-400">{{ t('admin.accounts.upstreamBilling.overrideHint') }}</p>
               </div>
@@ -4240,6 +4268,8 @@ const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
 const upstreamBillingGuardGroupOverrides = ref<Record<string, number | string | null>>({})
 const initialUpstreamBillingGuardGroupOverrides = ref<Record<string, number>>({})
+const upstreamBillingGuardGroupMinOverrides = ref<Record<string, number | string | null>>({})
+const initialUpstreamBillingGuardGroupMinOverrides = ref<Record<string, number>>({})
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4872,45 +4902,74 @@ const selectedUpstreamBillingGuardGroups = computed(() => {
   for (const group of props.account?.groups || []) groups.set(group.id, group)
   for (const group of props.groups) {
     const existing = groups.get(group.id)
-    const incomingHasPolicy = Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier')
-    const existingHasPolicy = existing && Object.prototype.hasOwnProperty.call(existing, 'upstream_billing_guard_max_multiplier')
+    const incomingHasPolicy =
+      Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier') ||
+      Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_min_multiplier')
+    const existingHasPolicy = existing && (
+      Object.prototype.hasOwnProperty.call(existing, 'upstream_billing_guard_max_multiplier') ||
+      Object.prototype.hasOwnProperty.call(existing, 'upstream_billing_guard_min_multiplier')
+    )
     // Preserve a richer account response when an older groups endpoint returns
     // a shallow object without the new policy field. An explicit null from the
     // newer endpoint still intentionally overrides the old value.
     if (!existing || incomingHasPolicy || !existingHasPolicy) {
-      groups.set(group.id, group)
+      groups.set(group.id, existing ? { ...existing, ...group } : group)
     }
   }
   for (const binding of props.account?.account_groups || []) {
     const mappedGroup = groups.get(binding.group_id)
     const group = mappedGroup || binding.group
     if (!group) continue
-    const policyGroup = mappedGroup && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
-      ? mappedGroup
-      : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
-        ? binding.group
-        : undefined
+    const mappedHasMax = mappedGroup != null && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
+    const mappedHasMin = mappedGroup != null && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_min_multiplier')
+    const bindingGroupHasMax = binding.group != null && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
+    const bindingGroupHasMin = binding.group != null && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_min_multiplier')
     const hasRawOverride = Object.prototype.hasOwnProperty.call(binding, 'upstream_billing_guard_override_max_multiplier')
     const rawOverride = hasRawOverride
       ? binding.upstream_billing_guard_override_max_multiplier
       : binding.upstream_billing_guard_max_multiplier
-    const effectiveLimit = policyGroup
-      ? (policyGroup.upstream_billing_guard_max_multiplier == null
+    const effectiveLimit = mappedHasMax
+      ? (mappedGroup!.upstream_billing_guard_max_multiplier == null
         ? null
         : rawOverride == null
-          ? policyGroup.upstream_billing_guard_max_multiplier
-          : Math.min(rawOverride, policyGroup.upstream_billing_guard_max_multiplier))
-      : binding.upstream_billing_guard_max_multiplier ?? null
+          ? mappedGroup!.upstream_billing_guard_max_multiplier
+          : Math.min(rawOverride, mappedGroup!.upstream_billing_guard_max_multiplier))
+      : bindingGroupHasMax
+        ? (binding.group!.upstream_billing_guard_max_multiplier == null
+          ? null
+          : rawOverride == null
+            ? binding.group!.upstream_billing_guard_max_multiplier
+            : Math.min(rawOverride, binding.group!.upstream_billing_guard_max_multiplier))
+        : binding.upstream_billing_guard_max_multiplier ?? null
     groups.set(binding.group_id, {
       ...group,
       upstream_billing_guard_max_multiplier: effectiveLimit,
-      __upstream_billing_guard_default_multiplier: policyGroup?.upstream_billing_guard_max_multiplier ?? null
+      upstream_billing_guard_min_multiplier: (() => {
+        const groupMin = mappedHasMin
+          ? mappedGroup!.upstream_billing_guard_min_multiplier
+          : bindingGroupHasMin
+            ? binding.group!.upstream_billing_guard_min_multiplier
+            : binding.upstream_billing_guard_min_multiplier
+        const hasRawMinOverride = Object.prototype.hasOwnProperty.call(binding, 'upstream_billing_guard_override_min_multiplier')
+        const rawMin = hasRawMinOverride
+          ? binding.upstream_billing_guard_override_min_multiplier
+          : binding.upstream_billing_guard_min_multiplier
+        return mappedHasMin || bindingGroupHasMin
+          ? groupMin == null ? null : rawMin == null ? groupMin : Math.max(rawMin, groupMin)
+          : binding.upstream_billing_guard_min_multiplier ?? null
+      })(),
+        __upstream_billing_guard_default_multiplier: mappedHasMax
+          ? mappedGroup!.upstream_billing_guard_max_multiplier ?? null
+          : bindingGroupHasMax ? binding.group!.upstream_billing_guard_max_multiplier ?? null : null,
+        __upstream_billing_guard_default_min_multiplier: mappedHasMin
+          ? mappedGroup!.upstream_billing_guard_min_multiplier ?? null
+          : bindingGroupHasMin ? binding.group!.upstream_billing_guard_min_multiplier ?? null : null
     } as GuardGroupView)
   }
   return [...groups.values()].filter((group) => selected.has(group.id))
 })
 
-type GuardGroupView = Group & { __upstream_billing_guard_default_multiplier?: number | null }
+type GuardGroupView = Group & { __upstream_billing_guard_default_multiplier?: number | null; __upstream_billing_guard_default_min_multiplier?: number | null }
 
 const guardGroupDefaultLimit = (group: Group): number | null => {
   const value = (group as GuardGroupView).__upstream_billing_guard_default_multiplier
@@ -4923,6 +4982,28 @@ const guardOverrideInputValue = (groupID: number): string | number => {
   const value = upstreamBillingGuardGroupOverrides.value[String(groupID)]
   return value == null ? '' : value
 }
+const guardGroupDefaultMin = (group: Group): number | null => {
+  const value = (group as GuardGroupView).__upstream_billing_guard_default_min_multiplier
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
+  const fallback = group.upstream_billing_guard_min_multiplier
+  return typeof fallback === 'number' && Number.isFinite(fallback) && fallback >= 0 ? fallback : null
+}
+const formatGuardRange = (min: number | null, max: number | null): string => {
+  if (min == null) {
+    return max == null
+      ? t('admin.accounts.upstreamBilling.unlimited')
+      : `${max}x`
+  }
+  return max == null
+    ? t('admin.accounts.upstreamBilling.minimumOnlyRange', { rate: `${min}x` })
+    : `${min}x ~ ${max}x`
+}
+const guardMinOverrideInputValue = (groupID: number): string | number => upstreamBillingGuardGroupMinOverrides.value[String(groupID)] ?? ''
+const handleGuardMinOverrideInput = (groupID: number, event: Event) => {
+  const target = event.target
+  const raw = target instanceof HTMLInputElement ? target.value : ''
+  upstreamBillingGuardGroupMinOverrides.value[String(groupID)] = raw.trim() === '' ? null : raw
+}
 
 const setGuardOverride = (groupID: number, raw: string) => {
   upstreamBillingGuardGroupOverrides.value[String(groupID)] = raw.trim() === '' ? null : raw
@@ -4933,25 +5014,69 @@ const handleGuardOverrideInput = (groupID: number, event: Event) => {
   setGuardOverride(groupID, target instanceof HTMLInputElement ? target.value : '')
 }
 
+const finiteGuardOverride = (raw: number | string | null | undefined): number | null => {
+  if (raw == null || raw === '') return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : null
+}
+
+const guardOverrideRangeInvalid = (group: Group): boolean => {
+  const defaultMin = guardGroupDefaultMin(group)
+  const defaultMax = guardGroupDefaultLimit(group)
+  const minOverride = finiteGuardOverride(upstreamBillingGuardGroupMinOverrides.value[String(group.id)])
+  const maxOverride = finiteGuardOverride(upstreamBillingGuardGroupOverrides.value[String(group.id)])
+  const effectiveMin = minOverride ?? defaultMin
+  const effectiveMax = maxOverride ?? defaultMax
+  return effectiveMin != null && effectiveMax != null && effectiveMin >= effectiveMax
+}
+
 const normalizedGuardOverrides = (): Record<string, number> => {
   const selected = new Set(form.group_ids)
+  const configured = new Set(
+    selectedUpstreamBillingGuardGroups.value
+      .filter((group) => guardGroupDefaultLimit(group) != null)
+      .map((group) => group.id)
+  )
   const result: Record<string, number> = {}
   for (const [groupID, raw] of Object.entries(upstreamBillingGuardGroupOverrides.value)) {
     const id = Number(groupID)
-    if (!selected.has(id) || raw == null || raw === '') continue
+    if (!selected.has(id) || !configured.has(id) || raw == null || raw === '') continue
     const value = Number(raw)
     if (Number.isFinite(value) && value >= 0) result[groupID] = value
+  }
+  return result
+}
+const normalizedGuardMinOverrides = (): Record<string, number> => {
+  const selected = new Set(form.group_ids)
+  const configured = new Set(
+    selectedUpstreamBillingGuardGroups.value
+      .filter((group) => guardGroupDefaultMin(group) != null)
+      .map((group) => group.id)
+  )
+  const result: Record<string, number> = {}
+  for (const [groupID, raw] of Object.entries(upstreamBillingGuardGroupMinOverrides.value)) {
+    const value = Number(raw)
+    const id = Number(groupID)
+    if (selected.has(id) && configured.has(id) && raw != null && raw !== '' && Number.isFinite(value) && value >= 0) {
+      result[groupID] = value
+    }
   }
   return result
 }
 
 const guardOverridesChanged = (): boolean =>
   JSON.stringify(normalizedGuardOverrides()) !== JSON.stringify(initialUpstreamBillingGuardGroupOverrides.value)
+const guardMinOverridesChanged = (): boolean => JSON.stringify(normalizedGuardMinOverrides()) !== JSON.stringify(initialUpstreamBillingGuardGroupMinOverrides.value)
+
+const hasChangedInvalidGuardOverrideRange = (): boolean =>
+  (guardOverridesChanged() || guardMinOverridesChanged()) &&
+  selectedUpstreamBillingGuardGroups.value.some(guardOverrideRangeInvalid)
 
 const configuredUpstreamBillingGuardGroupCount = computed(() =>
   selectedUpstreamBillingGuardGroups.value.filter((group) => {
-    const value = group.upstream_billing_guard_max_multiplier
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    const min = group.upstream_billing_guard_min_multiplier
+    const max = group.upstream_billing_guard_max_multiplier
+    return (typeof min === 'number' && Number.isFinite(min) && min >= 0) || (typeof max === 'number' && Number.isFinite(max) && max >= 0)
   }).length
 )
 
@@ -4963,33 +5088,38 @@ const upstreamBillingGuardObservedRate = computed(() => {
 const upstreamBillingGuardGroupSummaries = computed(() =>
   selectedUpstreamBillingGuardGroups.value.map((group) => {
     const rawLimit = group.upstream_billing_guard_max_multiplier
-    const configured = typeof rawLimit === 'number' && Number.isFinite(rawLimit) && rawLimit >= 0
+    const rawMin = group.upstream_billing_guard_min_multiplier
+    const configured = (typeof rawLimit === 'number' && Number.isFinite(rawLimit) && rawLimit >= 0) || (typeof rawMin === 'number' && Number.isFinite(rawMin) && rawMin >= 0)
     if (!configured) {
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
+        defaultMin: guardGroupDefaultMin(group),
         limitLabel: t('admin.accounts.upstreamBilling.groupNotConfigured'),
         statusLabel: t('admin.accounts.upstreamBilling.unlimited'),
         badgeClass: 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
       }
     }
 
-    const limit = Number(Number(rawLimit).toPrecision(8))
+    const limit = typeof rawLimit === 'number' ? Number(rawLimit.toPrecision(8)) : null
+    const min = typeof rawMin === 'number' ? Number(rawMin.toPrecision(8)) : null
+    const range = formatGuardRange(min, limit)
+    const invalidRange = min != null && limit != null && min >= limit
     if (!upstreamBillingGuardEnabled.value) {
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
-        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+        defaultMin: guardGroupDefaultMin(group), limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: range }),
         statusLabel: t('admin.accounts.upstreamBilling.guardDisabled'),
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
       }
     }
-    if (!upstreamBillingAutoProbeEnabled.value || (upstreamBillingGuardObservedRate.value != null && upstreamBillingGuardObservedRate.value > limit)) {
+    if (!upstreamBillingAutoProbeEnabled.value || invalidRange || (upstreamBillingGuardObservedRate.value != null && ((min != null && upstreamBillingGuardObservedRate.value < min) || (limit != null && upstreamBillingGuardObservedRate.value > limit)))) {
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
-        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
-        statusLabel: t('admin.accounts.upstreamBilling.guardPaused'),
+        defaultMin: guardGroupDefaultMin(group), limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: range }),
+        statusLabel: upstreamBillingGuardObservedRate.value != null && min != null && upstreamBillingGuardObservedRate.value < min ? t('admin.accounts.upstreamBilling.guardBelowMin') : t('admin.accounts.upstreamBilling.guardPaused'),
         badgeClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
       }
     }
@@ -4997,7 +5127,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
-        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+        defaultMin: guardGroupDefaultMin(group), limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: range }),
         statusLabel: t('admin.accounts.upstreamBilling.guardWaitingFirstProbe'),
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
       }
@@ -5005,7 +5135,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     return {
       group,
       defaultLimit: guardGroupDefaultLimit(group),
-      limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+      defaultMin: guardGroupDefaultMin(group), limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: range }),
       statusLabel: t('admin.accounts.upstreamBilling.guardAvailable'),
       badgeClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
     }
@@ -5232,16 +5362,21 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   const overrides: Record<string, number | string | null> = {}
+  const minOverrides: Record<string, number | string | null> = {}
   for (const binding of newAccount.account_groups || []) {
     const value = binding.upstream_billing_guard_override_max_multiplier
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
       overrides[String(binding.group_id)] = value
     }
+    const minValue = binding.upstream_billing_guard_override_min_multiplier
+    if (typeof minValue === 'number' && Number.isFinite(minValue) && minValue >= 0) minOverrides[String(binding.group_id)] = minValue
   }
   upstreamBillingGuardGroupOverrides.value = overrides
   initialUpstreamBillingGuardGroupOverrides.value = Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => typeof value === 'number')
   ) as Record<string, number>
+  upstreamBillingGuardGroupMinOverrides.value = minOverrides
+  initialUpstreamBillingGuardGroupMinOverrides.value = Object.fromEntries(Object.entries(minOverrides).filter(([, value]) => typeof value === 'number')) as Record<string, number>
   mixedScheduling.value = extra?.mixed_scheduling === true
   allowOverages.value = extra?.allow_overages === true
   autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -6276,6 +6411,10 @@ const handleSubmit = async () => {
       return
     }
   }
+  if (showUpstreamBillingProbeConfig.value && hasChangedInvalidGuardOverrideRange()) {
+    appStore.showError(t('admin.accounts.upstreamBilling.overrideRangeInvalid'))
+    return
+  }
 
   const updatePayload: Record<string, unknown> = { ...form }
   try {
@@ -7176,6 +7315,9 @@ const handleSubmit = async () => {
       }
       if (guardOverridesChanged()) {
         updatePayload.upstream_billing_guard_group_limits = normalizedGuardOverrides()
+      }
+      if (guardMinOverridesChanged()) {
+        updatePayload.upstream_billing_guard_group_min_limits = normalizedGuardMinOverrides()
       }
     }
 

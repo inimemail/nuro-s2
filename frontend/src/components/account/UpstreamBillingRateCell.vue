@@ -21,7 +21,7 @@
           <div :data-testid="`upstream-billing-guard-group-${item.groupId}-details`" class="pointer-events-none absolute bottom-full left-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard:opacity-100 dark:bg-dark-700">
             <div class="font-medium">{{ item.name }}</div>
             <div class="mt-1 text-gray-300">{{ t('admin.accounts.upstreamBilling.currentRateDetail', { rate: displayedRate }) }}</div>
-            <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${item.limit}x` }) }}</div>
+            <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: item.limit }) }}</div>
             <div class="text-gray-400">{{ statusTitle }}</div>
             <div :class="item.detailClass">{{ item.detail }}</div>
             <div class="absolute left-3 top-full border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
@@ -37,7 +37,7 @@
             <div v-for="item in hiddenProtectedGroups" :key="item.groupId" class="border-t border-gray-700 py-1 first:border-t-0 dark:border-dark-600">
               <div class="flex items-center justify-between gap-3">
                 <span class="truncate">{{ item.name }}</span>
-                <span class="flex-none text-gray-300">{{ item.limit }}x</span>
+                <span class="flex-none text-gray-300">{{ item.limit }}</span>
               </div>
               <div :class="item.detailClass" class="truncate">{{ item.detail }}</div>
             </div>
@@ -112,39 +112,69 @@ const protectedGroups = computed(() => {
     .map((binding) => {
       const mappedGroup = groups.get(binding.group_id)
       const group = mappedGroup || binding.group
-      const policyGroup = mappedGroup && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
-        ? mappedGroup
-        : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
-          ? binding.group
-          : undefined
+      const mappedHasMax = mappedGroup != null && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
+      const mappedHasMin = mappedGroup != null && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_min_multiplier')
+      const bindingGroupHasMax = binding.group != null && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
+      const bindingGroupHasMin = binding.group != null && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_min_multiplier')
       const hasRawOverride = Object.prototype.hasOwnProperty.call(binding, 'upstream_billing_guard_override_max_multiplier')
       const rawOverride = hasRawOverride
         ? binding.upstream_billing_guard_override_max_multiplier
         : binding.upstream_billing_guard_max_multiplier
-      const limit = policyGroup
-        ? (policyGroup.upstream_billing_guard_max_multiplier == null
+      const limit = mappedHasMax
+        ? (mappedGroup!.upstream_billing_guard_max_multiplier == null
           ? null
           : rawOverride == null
-            ? policyGroup.upstream_billing_guard_max_multiplier
-            : Math.min(rawOverride, policyGroup.upstream_billing_guard_max_multiplier))
-        : binding.upstream_billing_guard_max_multiplier
-      return { binding, group, limit }
+            ? mappedGroup!.upstream_billing_guard_max_multiplier
+            : Math.min(rawOverride, mappedGroup!.upstream_billing_guard_max_multiplier))
+        : bindingGroupHasMax
+          ? (binding.group!.upstream_billing_guard_max_multiplier == null
+            ? null
+            : rawOverride == null
+              ? binding.group!.upstream_billing_guard_max_multiplier
+              : Math.min(rawOverride, binding.group!.upstream_billing_guard_max_multiplier))
+          : binding.upstream_billing_guard_max_multiplier
+      const hasRawMinOverride = Object.prototype.hasOwnProperty.call(binding, 'upstream_billing_guard_override_min_multiplier')
+      const rawMin = hasRawMinOverride
+        ? binding.upstream_billing_guard_override_min_multiplier
+        : binding.upstream_billing_guard_min_multiplier
+      const groupMin = mappedHasMin ? mappedGroup!.upstream_billing_guard_min_multiplier : null
+      const min = mappedHasMin
+        ? groupMin == null ? null : rawMin == null ? groupMin : Math.max(rawMin, groupMin)
+        : bindingGroupHasMin
+          ? (binding.group!.upstream_billing_guard_min_multiplier == null
+            ? null
+            : rawMin == null
+              ? binding.group!.upstream_billing_guard_min_multiplier
+              : Math.max(rawMin, binding.group!.upstream_billing_guard_min_multiplier))
+          : binding.upstream_billing_guard_min_multiplier
+      return { binding, group, limit, min }
     })
-    .filter((item) => typeof item.limit === 'number' && Number.isFinite(item.limit) && item.limit >= 0)
-    .map((binding) => {
-      const limit = binding.limit as number
+    .filter((item) =>
+      (typeof item.limit === 'number' && Number.isFinite(item.limit) && item.limit >= 0) ||
+      (typeof item.min === 'number' && Number.isFinite(item.min) && item.min >= 0)
+    )
+    .map((item) => {
+      const limit = typeof item.limit === 'number' ? item.limit : null
+      const min = typeof item.min === 'number' ? item.min : null
       const disabled = props.account.upstream_billing_guard_enabled !== true
       const blocked = !disabled && (
-        !autoProbeEnabled.value || (guardObservedRate.value != null && guardObservedRate.value > limit)
+        !autoProbeEnabled.value ||
+        (min != null && limit != null && min >= limit) ||
+        (guardObservedRate.value != null &&
+          ((min != null && guardObservedRate.value < min) || (limit != null && guardObservedRate.value > limit)))
       )
       const pending = !disabled && !blocked && (
         globalProbeDisabled.value || guardObservedRate.value == null
       )
       const state = disabled ? 'disabled' : blocked ? 'blocked' : pending ? 'pending' : 'available'
       return {
-        groupId: binding.binding.group_id,
-        name: binding.group?.name || `#${binding.binding.group_id}`,
-        limit: Number(limit.toPrecision(8)),
+        groupId: item.binding.group_id,
+        name: item.group?.name || `#${item.binding.group_id}`,
+        limit: min == null
+          ? limit == null ? t('admin.accounts.upstreamBilling.unlimited') : `${Number(limit.toPrecision(8))}x`
+          : limit == null
+            ? t('admin.accounts.upstreamBilling.minimumOnlyRange', { rate: `${Number(min.toPrecision(8))}x` })
+            : `${Number(min.toPrecision(8))}x ~ ${Number(limit.toPrecision(8))}x`,
         blocked,
         state,
         badgeClass: blocked
@@ -159,14 +189,16 @@ const protectedGroups = computed(() => {
           : blocked
             ? !autoProbeEnabled.value
               ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
-              : t('admin.accounts.upstreamBilling.guardPaused')
+              : guardObservedRate.value != null && min != null && guardObservedRate.value < min
+                ? t('admin.accounts.upstreamBilling.guardBelowMin')
+                : t('admin.accounts.upstreamBilling.guardPaused')
             : globalProbeDisabled.value
               ? t('admin.accounts.upstreamBilling.guardGlobalProbeDisabled')
-          : !autoProbeEnabled.value
-          ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
-          : pending
-            ? t('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
-              : t('admin.accounts.upstreamBilling.guardAvailable')
+              : !autoProbeEnabled.value
+                ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
+                : pending
+                  ? t('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
+                  : t('admin.accounts.upstreamBilling.guardAvailable')
       }
     })
 })

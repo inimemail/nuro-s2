@@ -382,8 +382,8 @@ func TestParseUpstreamBillingProbeResponseSanitizesAndValidates(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestUpstreamBillingProbeIdentitySupportsFiveAPIKeyPlatforms(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity} {
+func TestUpstreamBillingProbeIdentitySupportsEightAPIKeyPlatforms(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
 		require.True(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey), platform)
 		require.False(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeOAuth), platform)
 	}

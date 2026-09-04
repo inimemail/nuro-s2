@@ -38,9 +38,13 @@ export const buildUpstreamBillingGuardRefreshKey = (
   const bindings = (account.account_groups ?? [])
     .map((binding) => {
       const group = binding.group
-      const hasGroupLimit = group != null && Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier')
-      const groupLimit = hasGroupLimit ? group?.upstream_billing_guard_max_multiplier : ''
-      return [binding.group_id, binding.upstream_billing_guard_max_multiplier, binding.upstream_billing_guard_override_max_multiplier, groupLimit].map(normalizeUsageRefreshValue).join(':')
+      const hasGroupBounds = group != null && (
+        Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier') ||
+        Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_min_multiplier')
+      )
+      const groupMin = hasGroupBounds ? group?.upstream_billing_guard_min_multiplier : ''
+      const groupMax = hasGroupBounds ? group?.upstream_billing_guard_max_multiplier : ''
+      return [binding.group_id, binding.upstream_billing_guard_min_multiplier, binding.upstream_billing_guard_override_min_multiplier, groupMin, binding.upstream_billing_guard_max_multiplier, binding.upstream_billing_guard_override_max_multiplier, groupMax].map(normalizeUsageRefreshValue).join(':')
     })
     .sort()
   return [

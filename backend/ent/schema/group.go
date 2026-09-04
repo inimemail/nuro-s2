@@ -50,7 +50,12 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
-			Comment("OpenAI 上游倍率保护上限；NULL 表示该分组不限制"),
+			Comment("上游倍率保护上限；NULL 表示该分组不限制"),
+		field.Float("upstream_billing_guard_min_multiplier").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
+			Comment("上游倍率保护下限；NULL 表示该分组不限制"),
 		// 高峰时段倍率（added by migration 158）
 		field.Bool("peak_rate_enabled").
 			Default(false).

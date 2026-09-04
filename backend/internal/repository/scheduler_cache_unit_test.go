@@ -68,8 +68,11 @@ func TestBuildSchedulerMetadataAccount_KeepsAnthropicAPIKeyBehaviorFlags(t *test
 
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	limit := 1.25
+	minimum := 0.75
 	override := 1.0
+	minimumOverride := 0.8
 	groupLimit := 2.0
+	groupMinimum := 0.5
 	account := service.Account{
 		ID:       42,
 		Platform: service.PlatformAnthropic,
@@ -80,8 +83,11 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 				GroupID:                           7,
 				Priority:                          2,
 				UpstreamBillingGuardMaxMultiplier: &limit,
+				UpstreamBillingGuardMinMultiplier: &minimum,
 				UpstreamBillingGuardOverrideMaxMultiplier: &override,
+				UpstreamBillingGuardOverrideMinMultiplier: &minimumOverride,
 				GroupUpstreamBillingGuardMaxMultiplier:    &groupLimit,
+				GroupUpstreamBillingGuardMinMultiplier:    &groupMinimum,
 				GroupPolicyLoaded:                         true,
 				Account:                                   &service.Account{ID: 42, Name: "drop-from-metadata"},
 				Group:                                     &service.Group{ID: 7, Name: "drop-from-metadata"},
@@ -109,15 +115,44 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	require.Equal(t, 2, got.AccountGroups[0].Priority)
 	require.NotNil(t, got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, 1.25, *got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, 0.75, *got.AccountGroups[0].UpstreamBillingGuardMinMultiplier)
 	require.NotNil(t, got.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
 	require.Equal(t, 1.0, *got.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
+	require.Equal(t, 0.8, *got.AccountGroups[0].UpstreamBillingGuardOverrideMinMultiplier)
 	require.NotNil(t, got.AccountGroups[0].GroupUpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, 2.0, *got.AccountGroups[0].GroupUpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, 0.5, *got.AccountGroups[0].GroupUpstreamBillingGuardMinMultiplier)
 	require.True(t, got.AccountGroups[0].GroupPolicyLoaded)
 	require.Nil(t, got.AccountGroups[0].Account)
 	require.Nil(t, got.AccountGroups[0].Group)
 	require.Equal(t, int64(11), got.AccountGroups[1].GroupID)
 	require.Nil(t, got.Groups)
+}
+
+func TestBuildSchedulerMetadataAccount_DropsCrossPlatformBillingGuardPolicy(t *testing.T) {
+	minimum, maximum := 0.8, 1.2
+	account := service.Account{
+		Platform: service.PlatformAnthropic,
+		AccountGroups: []service.AccountGroup{{
+			GroupID:                                9,
+			UpstreamBillingGuardMinMultiplier:      &minimum,
+			UpstreamBillingGuardMaxMultiplier:      &maximum,
+			GroupUpstreamBillingGuardMinMultiplier: &minimum,
+			GroupUpstreamBillingGuardMaxMultiplier: &maximum,
+			GroupPolicyLoaded:                      true,
+			Group:                                  &service.Group{ID: 9, Platform: service.PlatformOpenAI},
+		}},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Len(t, got.AccountGroups, 1)
+	binding := got.AccountGroups[0]
+	require.True(t, binding.GroupPolicyLoaded)
+	require.Nil(t, binding.UpstreamBillingGuardMinMultiplier)
+	require.Nil(t, binding.UpstreamBillingGuardMaxMultiplier)
+	require.Nil(t, binding.GroupUpstreamBillingGuardMinMultiplier)
+	require.Nil(t, binding.GroupUpstreamBillingGuardMaxMultiplier)
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsBillingProbeToggle(t *testing.T) {

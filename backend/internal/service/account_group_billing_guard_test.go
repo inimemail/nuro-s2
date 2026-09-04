@@ -223,3 +223,94 @@ func TestAccountIsSchedulableUsesOnlyRuntimeGroupDecision(t *testing.T) {
 	account.UpstreamBillingGuardGroupBlocked = true
 	require.False(t, account.IsSchedulable())
 }
+
+func TestAccountUpstreamBillingGuardLowerBoundAndEquality(t *testing.T) {
+	groupID := int64(10)
+	min, max := 0.8, 1.2
+	observed := 0.79
+	account := &Account{
+		Platform: PlatformDeepSeek, Type: AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled:            true,
+		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		AccountGroups: []AccountGroup{{
+			GroupID: groupID, GroupPolicyLoaded: true,
+			GroupUpstreamBillingGuardMinMultiplier: &min,
+			GroupUpstreamBillingGuardMaxMultiplier: &max,
+		}},
+	}
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+	observed = min
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "equality at minimum is allowed")
+	observed = max
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "equality at maximum is allowed")
+	observed = 1.21
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+}
+
+func TestAccountUpstreamBillingGuardMinimumOverrideOnlyTightens(t *testing.T) {
+	groupMin, groupMax := 0.5, 2.0
+	overrideMin, staleRelaxingMin := 0.8, 0.2
+	binding := AccountGroup{
+		GroupPolicyLoaded:                         true,
+		GroupUpstreamBillingGuardMinMultiplier:    &groupMin,
+		GroupUpstreamBillingGuardMaxMultiplier:    &groupMax,
+		UpstreamBillingGuardOverrideMinMultiplier: &overrideMin,
+	}
+	min, max, configured := binding.EffectiveUpstreamBillingGuardBounds()
+	require.True(t, configured)
+	require.Equal(t, overrideMin, *min)
+	require.Equal(t, groupMax, *max)
+
+	binding.UpstreamBillingGuardOverrideMinMultiplier = &staleRelaxingMin
+	min, _, configured = binding.EffectiveUpstreamBillingGuardBounds()
+	require.True(t, configured)
+	require.Equal(t, groupMin, *min, "a stale override cannot relax the group lower bound")
+}
+
+func TestAccountUpstreamBillingGuardMinimumOnlyAndOldSnapshotCompatibility(t *testing.T) {
+	min := 1.0
+	binding := AccountGroup{GroupPolicyLoaded: true, GroupUpstreamBillingGuardMinMultiplier: &min}
+	effectiveMin, effectiveMax, configured := binding.EffectiveUpstreamBillingGuardBounds()
+	require.True(t, configured)
+	require.Equal(t, min, *effectiveMin)
+	require.Nil(t, effectiveMax)
+
+	legacyMax := 1.5
+	binding = AccountGroup{UpstreamBillingGuardMaxMultiplier: &legacyMax}
+	effectiveMin, effectiveMax, configured = binding.EffectiveUpstreamBillingGuardBounds()
+	require.True(t, configured)
+	require.Nil(t, effectiveMin)
+	require.Equal(t, legacyMax, *effectiveMax)
+}
+
+func TestAccountUpstreamBillingGuardCrossedEffectiveBoundsFailClosed(t *testing.T) {
+	groupMin, groupMax, overrideMax := 0.5, 2.0, 0.4
+	binding := AccountGroup{
+		GroupID:                                   1,
+		GroupPolicyLoaded:                         true,
+		GroupUpstreamBillingGuardMinMultiplier:    &groupMin,
+		GroupUpstreamBillingGuardMaxMultiplier:    &groupMax,
+		UpstreamBillingGuardOverrideMaxMultiplier: &overrideMax,
+	}
+	min, max, configured := binding.EffectiveUpstreamBillingGuardBounds()
+	require.True(t, configured)
+	require.Equal(t, groupMin, *min)
+	require.Equal(t, overrideMax, *max)
+
+	account := &Account{
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+		Extra:                       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		AccountGroups:               []AccountGroup{binding},
+	}
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(func() *int64 { id := int64(1); return &id }()), "crossed bounds must block before the first probe")
+
+	overrideMax = groupMin
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(func() *int64 { id := int64(1); return &id }()), "equal bounds must block before the first probe")
+
+	observed := 0.45
+	account.UpstreamBillingGuardObservedMultiplier = &observed
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(func() *int64 { id := int64(1); return &id }()))
+}

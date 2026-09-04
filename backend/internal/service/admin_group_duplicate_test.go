@@ -64,12 +64,12 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	video480, video720, video1080 := 0.5, 0.7, 1.0
 	webSearch := 0.03
 	modelInputPrice := 2e-6
-	guardLimit := 1.25
+	guardLimit, guardMin := 1.25, 0.75
 	edgeProtectionEnabled := false
 	fallback, invalidFallback := int64(8), int64(9)
 	source := &Group{
 		ID: 4, Name: "Primary", Description: "description", Platform: PlatformOpenAI,
-		RateMultiplier: 1.7, UpstreamBillingGuardMaxMultiplier: &guardLimit,
+		RateMultiplier: 1.7, UpstreamBillingGuardMaxMultiplier: &guardLimit, UpstreamBillingGuardMinMultiplier: &guardMin,
 		PeakRateEnabled: true, PeakStart: "08:00", PeakEnd: "12:00", PeakRateMultiplier: 1.3,
 		IsExclusive: true, Status: StatusActive, SubscriptionType: SubscriptionTypeSubscription,
 		DailyLimitUSD: &daily, WeeklyLimitUSD: &weekly, MonthlyLimitUSD: &monthly, DefaultValidityDays: 31,
@@ -104,6 +104,8 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	require.Equal(t, source.RateMultiplier, duplicate.RateMultiplier)
 	require.Equal(t, source.UpstreamBillingGuardMaxMultiplier, duplicate.UpstreamBillingGuardMaxMultiplier)
 	require.NotSame(t, source.UpstreamBillingGuardMaxMultiplier, duplicate.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, source.UpstreamBillingGuardMinMultiplier, duplicate.UpstreamBillingGuardMinMultiplier)
+	require.NotSame(t, source.UpstreamBillingGuardMinMultiplier, duplicate.UpstreamBillingGuardMinMultiplier)
 	require.Equal(t, source.PeakRateMultiplier, duplicate.PeakRateMultiplier)
 	require.Equal(t, source.ImagePrice4K, duplicate.ImagePrice4K)
 	require.Equal(t, source.VideoPrice1080P, duplicate.VideoPrice1080P)
@@ -117,12 +119,14 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 
 	duplicate.ModelRouting["gpt-*"][0] = 99
 	*duplicate.UpstreamBillingGuardMaxMultiplier = 2
+	*duplicate.UpstreamBillingGuardMinMultiplier = 1
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["gpt-5"] = "changed"
 	duplicate.ModelsListConfig.Models[0] = "changed"
 	duplicate.ModelPricing[0].Models[0] = "changed"
 	*duplicate.ModelPricing[0].InputPrice = 9
 	require.Equal(t, int64(12), source.ModelRouting["gpt-*"][0])
 	require.Equal(t, 1.25, *source.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, 0.75, *source.UpstreamBillingGuardMinMultiplier)
 	require.Equal(t, "gpt-5.6", source.MessagesDispatchModelConfig.ExactModelMappings["gpt-5"])
 	require.Equal(t, "gpt-5.6", source.ModelsListConfig.Models[0])
 	require.Equal(t, "gpt-5.6", source.ModelPricing[0].Models[0])

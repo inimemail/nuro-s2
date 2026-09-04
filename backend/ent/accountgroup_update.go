@@ -105,6 +105,33 @@ func (_u *AccountGroupUpdate) ClearUpstreamBillingGuardMaxMultiplier() *AccountG
 	return _u
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdate) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpdate {
+	_u.mutation.ResetUpstreamBillingGuardMinMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_u *AccountGroupUpdate) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *AccountGroupUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds value to the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdate) AddUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpdate {
+	_u.mutation.AddUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdate) ClearUpstreamBillingGuardMinMultiplier() *AccountGroupUpdate {
+	_u.mutation.ClearUpstreamBillingGuardMinMultiplier()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdate) SetAccount(v *Account) *AccountGroupUpdate {
 	return _u.SetAccountID(v.ID)
@@ -196,6 +223,15 @@ func (_u *AccountGroupUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
 		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMinMultiplier(); ok {
+		_spec.AddField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMinMultiplierCleared() {
+		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -351,6 +387,33 @@ func (_u *AccountGroupUpdateOne) ClearUpstreamBillingGuardMaxMultiplier() *Accou
 	return _u
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdateOne) SetUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpdateOne {
+	_u.mutation.ResetUpstreamBillingGuardMinMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field if the given value is not nil.
+func (_u *AccountGroupUpdateOne) SetNillableUpstreamBillingGuardMinMultiplier(v *float64) *AccountGroupUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMinMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds value to the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdateOne) AddUpstreamBillingGuardMinMultiplier(v float64) *AccountGroupUpdateOne {
+	_u.mutation.AddUpstreamBillingGuardMinMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (_u *AccountGroupUpdateOne) ClearUpstreamBillingGuardMinMultiplier() *AccountGroupUpdateOne {
+	_u.mutation.ClearUpstreamBillingGuardMinMultiplier()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdateOne) SetAccount(v *Account) *AccountGroupUpdateOne {
 	return _u.SetAccountID(v.ID)
@@ -474,6 +537,15 @@ func (_u *AccountGroupUpdateOne) sqlSave(ctx context.Context) (_node *AccountGro
 	}
 	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
 		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMinMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMinMultiplier(); ok {
+		_spec.AddField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMinMultiplierCleared() {
+		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMinMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{

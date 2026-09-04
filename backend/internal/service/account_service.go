@@ -104,6 +104,20 @@ type AccountGroupBillingSettingsRepository interface {
 	) error
 }
 
+type AccountGroupBillingBoundsRepository interface {
+	UpdateAccountWithGroupConfigAndBillingSettingsWithBounds(
+		ctx context.Context,
+		account *Account,
+		groupIDs *[]int64,
+		guardMaxLimits *map[int64]float64,
+		guardMinLimits *map[int64]float64,
+		propagateProxyToShadows bool,
+		probeEnabled *bool,
+		rateSyncEnabled *bool,
+		rateMultiplier *float64,
+	) error
+}
+
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {

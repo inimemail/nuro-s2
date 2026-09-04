@@ -7,7 +7,10 @@ const upstreamBillingGuardPlatforms = new Set<GroupPlatform>([
   'anthropic',
   'gemini',
   'grok',
-  'antigravity'
+  'antigravity',
+  'kimi',
+  'zhipu',
+  'deepseek'
 ])
 
 export function isUpstreamBillingGuardPlatform(platform: GroupPlatform): boolean {
@@ -29,4 +32,16 @@ export function buildUpstreamBillingGuardLimitPayload(
 ): number | null | undefined {
   if (!isUpstreamBillingGuardPlatform(platform)) return null
   return normalizeUpstreamBillingGuardLimit(value)
+}
+
+export function buildUpstreamBillingGuardBoundsPayload(
+  platform: GroupPlatform,
+  minValue: OptionalGuardLimit,
+  maxValue: OptionalGuardLimit
+): { min: number | null | undefined; max: number | null | undefined; valid: boolean } {
+  if (!isUpstreamBillingGuardPlatform(platform)) return { min: null, max: null, valid: true }
+  const min = normalizeUpstreamBillingGuardLimit(minValue)
+  const max = normalizeUpstreamBillingGuardLimit(maxValue)
+  const valid = min !== undefined && max !== undefined && (min === null || max === null || min < max)
+  return { min, max, valid }
 }

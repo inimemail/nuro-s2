@@ -37,6 +37,11 @@ func (AccountGroup) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
 			Comment("账号-分组上游倍率保护覆盖值；NULL 表示继承分组默认值"),
+		field.Float("upstream_billing_guard_min_multiplier").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
+			Comment("账号-分组上游倍率保护下限覆盖值；NULL 表示继承分组默认值"),
 		field.Time("created_at").
 			Immutable().
 			Default(time.Now).

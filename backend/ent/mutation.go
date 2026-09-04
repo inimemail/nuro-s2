@@ -5469,6 +5469,8 @@ type AccountGroupMutation struct {
 	addpriority                              *int
 	upstream_billing_guard_max_multiplier    *float64
 	addupstream_billing_guard_max_multiplier *float64
+	upstream_billing_guard_min_multiplier    *float64
+	addupstream_billing_guard_min_multiplier *float64
 	created_at                               *time.Time
 	clearedFields                            map[string]struct{}
 	account                                  *int64
@@ -5648,6 +5650,59 @@ func (m *AccountGroupMutation) ResetUpstreamBillingGuardMaxMultiplier() {
 	delete(m.clearedFields, accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
 }
 
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (m *AccountGroupMutation) SetUpstreamBillingGuardMinMultiplier(f float64) {
+	m.upstream_billing_guard_min_multiplier = &f
+	m.addupstream_billing_guard_min_multiplier = nil
+}
+
+// UpstreamBillingGuardMinMultiplier returns the value of the "upstream_billing_guard_min_multiplier" field in the mutation.
+func (m *AccountGroupMutation) UpstreamBillingGuardMinMultiplier() (r float64, exists bool) {
+	v := m.upstream_billing_guard_min_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds f to the "upstream_billing_guard_min_multiplier" field.
+func (m *AccountGroupMutation) AddUpstreamBillingGuardMinMultiplier(f float64) {
+	if m.addupstream_billing_guard_min_multiplier != nil {
+		*m.addupstream_billing_guard_min_multiplier += f
+	} else {
+		m.addupstream_billing_guard_min_multiplier = &f
+	}
+}
+
+// AddedUpstreamBillingGuardMinMultiplier returns the value that was added to the "upstream_billing_guard_min_multiplier" field in this mutation.
+func (m *AccountGroupMutation) AddedUpstreamBillingGuardMinMultiplier() (r float64, exists bool) {
+	v := m.addupstream_billing_guard_min_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (m *AccountGroupMutation) ClearUpstreamBillingGuardMinMultiplier() {
+	m.upstream_billing_guard_min_multiplier = nil
+	m.addupstream_billing_guard_min_multiplier = nil
+	m.clearedFields[accountgroup.FieldUpstreamBillingGuardMinMultiplier] = struct{}{}
+}
+
+// UpstreamBillingGuardMinMultiplierCleared returns if the "upstream_billing_guard_min_multiplier" field was cleared in this mutation.
+func (m *AccountGroupMutation) UpstreamBillingGuardMinMultiplierCleared() bool {
+	_, ok := m.clearedFields[accountgroup.FieldUpstreamBillingGuardMinMultiplier]
+	return ok
+}
+
+// ResetUpstreamBillingGuardMinMultiplier resets all changes to the "upstream_billing_guard_min_multiplier" field.
+func (m *AccountGroupMutation) ResetUpstreamBillingGuardMinMultiplier() {
+	m.upstream_billing_guard_min_multiplier = nil
+	m.addupstream_billing_guard_min_multiplier = nil
+	delete(m.clearedFields, accountgroup.FieldUpstreamBillingGuardMinMultiplier)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *AccountGroupMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -5755,7 +5810,7 @@ func (m *AccountGroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AccountGroupMutation) Fields() []string {
-	fields := make([]string, 0, 5)
+	fields := make([]string, 0, 6)
 	if m.account != nil {
 		fields = append(fields, accountgroup.FieldAccountID)
 	}
@@ -5767,6 +5822,9 @@ func (m *AccountGroupMutation) Fields() []string {
 	}
 	if m.upstream_billing_guard_max_multiplier != nil {
 		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
+	}
+	if m.upstream_billing_guard_min_multiplier != nil {
+		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMinMultiplier)
 	}
 	if m.created_at != nil {
 		fields = append(fields, accountgroup.FieldCreatedAt)
@@ -5787,6 +5845,8 @@ func (m *AccountGroupMutation) Field(name string) (ent.Value, bool) {
 		return m.Priority()
 	case accountgroup.FieldUpstreamBillingGuardMaxMultiplier:
 		return m.UpstreamBillingGuardMaxMultiplier()
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		return m.UpstreamBillingGuardMinMultiplier()
 	case accountgroup.FieldCreatedAt:
 		return m.CreatedAt()
 	}
@@ -5833,6 +5893,13 @@ func (m *AccountGroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetUpstreamBillingGuardMaxMultiplier(v)
 		return nil
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardMinMultiplier(v)
+		return nil
 	case accountgroup.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -5854,6 +5921,9 @@ func (m *AccountGroupMutation) AddedFields() []string {
 	if m.addupstream_billing_guard_max_multiplier != nil {
 		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
 	}
+	if m.addupstream_billing_guard_min_multiplier != nil {
+		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMinMultiplier)
+	}
 	return fields
 }
 
@@ -5866,6 +5936,8 @@ func (m *AccountGroupMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedPriority()
 	case accountgroup.FieldUpstreamBillingGuardMaxMultiplier:
 		return m.AddedUpstreamBillingGuardMaxMultiplier()
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		return m.AddedUpstreamBillingGuardMinMultiplier()
 	}
 	return nil, false
 }
@@ -5889,6 +5961,13 @@ func (m *AccountGroupMutation) AddField(name string, value ent.Value) error {
 		}
 		m.AddUpstreamBillingGuardMaxMultiplier(v)
 		return nil
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUpstreamBillingGuardMinMultiplier(v)
+		return nil
 	}
 	return fmt.Errorf("unknown AccountGroup numeric field %s", name)
 }
@@ -5899,6 +5978,9 @@ func (m *AccountGroupMutation) ClearedFields() []string {
 	var fields []string
 	if m.FieldCleared(accountgroup.FieldUpstreamBillingGuardMaxMultiplier) {
 		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
+	}
+	if m.FieldCleared(accountgroup.FieldUpstreamBillingGuardMinMultiplier) {
+		fields = append(fields, accountgroup.FieldUpstreamBillingGuardMinMultiplier)
 	}
 	return fields
 }
@@ -5916,6 +5998,9 @@ func (m *AccountGroupMutation) ClearField(name string) error {
 	switch name {
 	case accountgroup.FieldUpstreamBillingGuardMaxMultiplier:
 		m.ClearUpstreamBillingGuardMaxMultiplier()
+		return nil
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		m.ClearUpstreamBillingGuardMinMultiplier()
 		return nil
 	}
 	return fmt.Errorf("unknown AccountGroup nullable field %s", name)
@@ -5936,6 +6021,9 @@ func (m *AccountGroupMutation) ResetField(name string) error {
 		return nil
 	case accountgroup.FieldUpstreamBillingGuardMaxMultiplier:
 		m.ResetUpstreamBillingGuardMaxMultiplier()
+		return nil
+	case accountgroup.FieldUpstreamBillingGuardMinMultiplier:
+		m.ResetUpstreamBillingGuardMinMultiplier()
 		return nil
 	case accountgroup.FieldCreatedAt:
 		m.ResetCreatedAt()
@@ -23311,6 +23399,8 @@ type GroupMutation struct {
 	addrate_multiplier                       *float64
 	upstream_billing_guard_max_multiplier    *float64
 	addupstream_billing_guard_max_multiplier *float64
+	upstream_billing_guard_min_multiplier    *float64
+	addupstream_billing_guard_min_multiplier *float64
 	peak_rate_enabled                        *bool
 	peak_start                               *string
 	peak_end                                 *string
@@ -23847,6 +23937,76 @@ func (m *GroupMutation) ResetUpstreamBillingGuardMaxMultiplier() {
 	m.upstream_billing_guard_max_multiplier = nil
 	m.addupstream_billing_guard_max_multiplier = nil
 	delete(m.clearedFields, group.FieldUpstreamBillingGuardMaxMultiplier)
+}
+
+// SetUpstreamBillingGuardMinMultiplier sets the "upstream_billing_guard_min_multiplier" field.
+func (m *GroupMutation) SetUpstreamBillingGuardMinMultiplier(f float64) {
+	m.upstream_billing_guard_min_multiplier = &f
+	m.addupstream_billing_guard_min_multiplier = nil
+}
+
+// UpstreamBillingGuardMinMultiplier returns the value of the "upstream_billing_guard_min_multiplier" field in the mutation.
+func (m *GroupMutation) UpstreamBillingGuardMinMultiplier() (r float64, exists bool) {
+	v := m.upstream_billing_guard_min_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardMinMultiplier returns the old "upstream_billing_guard_min_multiplier" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldUpstreamBillingGuardMinMultiplier(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardMinMultiplier is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardMinMultiplier requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardMinMultiplier: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardMinMultiplier, nil
+}
+
+// AddUpstreamBillingGuardMinMultiplier adds f to the "upstream_billing_guard_min_multiplier" field.
+func (m *GroupMutation) AddUpstreamBillingGuardMinMultiplier(f float64) {
+	if m.addupstream_billing_guard_min_multiplier != nil {
+		*m.addupstream_billing_guard_min_multiplier += f
+	} else {
+		m.addupstream_billing_guard_min_multiplier = &f
+	}
+}
+
+// AddedUpstreamBillingGuardMinMultiplier returns the value that was added to the "upstream_billing_guard_min_multiplier" field in this mutation.
+func (m *GroupMutation) AddedUpstreamBillingGuardMinMultiplier() (r float64, exists bool) {
+	v := m.addupstream_billing_guard_min_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearUpstreamBillingGuardMinMultiplier clears the value of the "upstream_billing_guard_min_multiplier" field.
+func (m *GroupMutation) ClearUpstreamBillingGuardMinMultiplier() {
+	m.upstream_billing_guard_min_multiplier = nil
+	m.addupstream_billing_guard_min_multiplier = nil
+	m.clearedFields[group.FieldUpstreamBillingGuardMinMultiplier] = struct{}{}
+}
+
+// UpstreamBillingGuardMinMultiplierCleared returns if the "upstream_billing_guard_min_multiplier" field was cleared in this mutation.
+func (m *GroupMutation) UpstreamBillingGuardMinMultiplierCleared() bool {
+	_, ok := m.clearedFields[group.FieldUpstreamBillingGuardMinMultiplier]
+	return ok
+}
+
+// ResetUpstreamBillingGuardMinMultiplier resets all changes to the "upstream_billing_guard_min_multiplier" field.
+func (m *GroupMutation) ResetUpstreamBillingGuardMinMultiplier() {
+	m.upstream_billing_guard_min_multiplier = nil
+	m.addupstream_billing_guard_min_multiplier = nil
+	delete(m.clearedFields, group.FieldUpstreamBillingGuardMinMultiplier)
 }
 
 // SetPeakRateEnabled sets the "peak_rate_enabled" field.
@@ -27074,7 +27234,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 64)
+	fields := make([]string, 0, 65)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -27095,6 +27255,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.upstream_billing_guard_max_multiplier != nil {
 		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
+	}
+	if m.upstream_billing_guard_min_multiplier != nil {
+		fields = append(fields, group.FieldUpstreamBillingGuardMinMultiplier)
 	}
 	if m.peak_rate_enabled != nil {
 		fields = append(fields, group.FieldPeakRateEnabled)
@@ -27289,6 +27452,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.RateMultiplier()
 	case group.FieldUpstreamBillingGuardMaxMultiplier:
 		return m.UpstreamBillingGuardMaxMultiplier()
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		return m.UpstreamBillingGuardMinMultiplier()
 	case group.FieldPeakRateEnabled:
 		return m.PeakRateEnabled()
 	case group.FieldPeakStart:
@@ -27426,6 +27591,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldRateMultiplier(ctx)
 	case group.FieldUpstreamBillingGuardMaxMultiplier:
 		return m.OldUpstreamBillingGuardMaxMultiplier(ctx)
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		return m.OldUpstreamBillingGuardMinMultiplier(ctx)
 	case group.FieldPeakRateEnabled:
 		return m.OldPeakRateEnabled(ctx)
 	case group.FieldPeakStart:
@@ -27597,6 +27764,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetUpstreamBillingGuardMaxMultiplier(v)
+		return nil
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardMinMultiplier(v)
 		return nil
 	case group.FieldPeakRateEnabled:
 		v, ok := value.(bool)
@@ -28011,6 +28185,9 @@ func (m *GroupMutation) AddedFields() []string {
 	if m.addupstream_billing_guard_max_multiplier != nil {
 		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
 	}
+	if m.addupstream_billing_guard_min_multiplier != nil {
+		fields = append(fields, group.FieldUpstreamBillingGuardMinMultiplier)
+	}
 	if m.addpeak_rate_multiplier != nil {
 		fields = append(fields, group.FieldPeakRateMultiplier)
 	}
@@ -28095,6 +28272,8 @@ func (m *GroupMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedRateMultiplier()
 	case group.FieldUpstreamBillingGuardMaxMultiplier:
 		return m.AddedUpstreamBillingGuardMaxMultiplier()
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		return m.AddedUpstreamBillingGuardMinMultiplier()
 	case group.FieldPeakRateMultiplier:
 		return m.AddedPeakRateMultiplier()
 	case group.FieldDailyLimitUsd:
@@ -28165,6 +28344,13 @@ func (m *GroupMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddUpstreamBillingGuardMaxMultiplier(v)
+		return nil
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUpstreamBillingGuardMinMultiplier(v)
 		return nil
 	case group.FieldPeakRateMultiplier:
 		v, ok := value.(float64)
@@ -28351,6 +28537,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldUpstreamBillingGuardMaxMultiplier) {
 		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
 	}
+	if m.FieldCleared(group.FieldUpstreamBillingGuardMinMultiplier) {
+		fields = append(fields, group.FieldUpstreamBillingGuardMinMultiplier)
+	}
 	if m.FieldCleared(group.FieldDuplicateOperationID) {
 		fields = append(fields, group.FieldDuplicateOperationID)
 	}
@@ -28436,6 +28625,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldUpstreamBillingGuardMaxMultiplier:
 		m.ClearUpstreamBillingGuardMaxMultiplier()
+		return nil
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		m.ClearUpstreamBillingGuardMinMultiplier()
 		return nil
 	case group.FieldDuplicateOperationID:
 		m.ClearDuplicateOperationID()
@@ -28528,6 +28720,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldUpstreamBillingGuardMaxMultiplier:
 		m.ResetUpstreamBillingGuardMaxMultiplier()
+		return nil
+	case group.FieldUpstreamBillingGuardMinMultiplier:
+		m.ResetUpstreamBillingGuardMinMultiplier()
 		return nil
 	case group.FieldPeakRateEnabled:
 		m.ResetPeakRateEnabled()

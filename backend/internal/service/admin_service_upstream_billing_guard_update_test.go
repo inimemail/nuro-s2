@@ -17,7 +17,9 @@ type updateAccountGuardRepoStub struct {
 
 type updateAccountGuardAtomicRepoStub struct {
 	updateAccountGuardRepoStub
-	guardLimits *map[int64]float64
+	guardLimits         *map[int64]float64
+	guardMinLimits      map[int64]float64
+	guardMinUpdateCalls int
 }
 
 func (r *updateAccountGuardAtomicRepoStub) UpdateAccountWithGroupConfig(
@@ -39,6 +41,24 @@ func (r *updateAccountGuardAtomicRepoStub) UpdateAccountWithGroupConfig(
 			}
 			account.AccountGroups[i].UpstreamBillingGuardOverrideMaxMultiplier = &limit
 		}
+	}
+	return nil
+}
+
+func (r *updateAccountGuardAtomicRepoStub) UpdateUpstreamBillingGuardGroupMinLimits(
+	_ context.Context,
+	_ int64,
+	limits map[int64]float64,
+) error {
+	r.guardMinUpdateCalls++
+	r.guardMinLimits = limits
+	for i := range r.account.AccountGroups {
+		limit, exists := limits[r.account.AccountGroups[i].GroupID]
+		if !exists {
+			r.account.AccountGroups[i].UpstreamBillingGuardOverrideMinMultiplier = nil
+			continue
+		}
+		r.account.AccountGroups[i].UpstreamBillingGuardOverrideMinMultiplier = &limit
 	}
 	return nil
 }
@@ -233,6 +253,43 @@ func TestUpdateAccountPersistsBillingGuardOverridesAtomically(t *testing.T) {
 	require.Equal(t, override, *updated.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
 }
 
+func TestUpdateAccountDoesNotDropMinimumOverrideWithLegacyAtomicRepository(t *testing.T) {
+	groupMin, groupMax := 0.5, 2.0
+	account := &Account{
+		ID:       359,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		GroupIDs: []int64{7},
+		AccountGroups: []AccountGroup{{
+			GroupID:                                7,
+			GroupUpstreamBillingGuardMinMultiplier: &groupMin,
+			GroupUpstreamBillingGuardMaxMultiplier: &groupMax,
+			GroupPolicyLoaded:                      true,
+		}},
+	}
+	repo := &updateAccountGuardAtomicRepoStub{updateAccountGuardRepoStub: updateAccountGuardRepoStub{account: account}}
+	svc := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo: &groupRepoStubForAdmin{getByID: &Group{
+			ID: 7, Platform: PlatformOpenAI,
+			UpstreamBillingGuardMinMultiplier: &groupMin,
+			UpstreamBillingGuardMaxMultiplier: &groupMax,
+		}},
+	}
+	minOverrides := map[int64]float64{7: 0.8}
+
+	updated, err := svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupMinLimits: &minOverrides,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCalls, "the base account update must still be persisted")
+	require.Equal(t, 1, repo.guardMinUpdateCalls, "the legacy maximum-only atomic path must not swallow the minimum update")
+	require.Equal(t, minOverrides, repo.guardMinLimits)
+	require.NotNil(t, updated.AccountGroups[0].UpstreamBillingGuardOverrideMinMultiplier)
+	require.Equal(t, 0.8, *updated.AccountGroups[0].UpstreamBillingGuardOverrideMinMultiplier)
+}
+
 func TestUpdateAccountRejectsBillingGuardOverrideAboveGroupCeiling(t *testing.T) {
 	groupLimit := 2.0
 	account := &Account{
@@ -257,6 +314,50 @@ func TestUpdateAccountRejectsBillingGuardOverrideAboveGroupCeiling(t *testing.T)
 		UpstreamBillingGuardGroupLimits: &limits,
 	})
 
+	require.ErrorIs(t, err, ErrInvalidUpstreamBillingGuardGroupLimits)
+	require.Zero(t, repo.updateCalls)
+}
+
+func TestUpdateAccountRejectsCrossedEffectiveBillingGuardBounds(t *testing.T) {
+	groupMin, groupMax := 0.5, 2.0
+	account := &Account{
+		ID:       359,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		GroupIDs: []int64{7},
+		AccountGroups: []AccountGroup{{
+			GroupID:                                7,
+			GroupUpstreamBillingGuardMinMultiplier: &groupMin,
+			GroupUpstreamBillingGuardMaxMultiplier: &groupMax,
+			GroupPolicyLoaded:                      true,
+		}},
+	}
+	repo := &updateAccountGuardAtomicRepoStub{updateAccountGuardRepoStub: updateAccountGuardRepoStub{account: account}}
+	svc := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo: &groupRepoStubForAdmin{getByID: &Group{
+			ID: 7, Platform: PlatformOpenAI,
+			UpstreamBillingGuardMinMultiplier: &groupMin,
+			UpstreamBillingGuardMaxMultiplier: &groupMax,
+		}},
+	}
+	minOverrides := map[int64]float64{7: 1.6}
+	maxOverrides := map[int64]float64{7: 1.4}
+
+	_, err := svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupMinLimits: &minOverrides,
+		UpstreamBillingGuardGroupLimits:    &maxOverrides,
+	})
+
+	require.ErrorIs(t, err, ErrInvalidUpstreamBillingGuardGroupLimits)
+	require.Zero(t, repo.updateCalls)
+
+	minOverrides[7] = 1.5
+	maxOverrides[7] = 1.5
+	_, err = svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupMinLimits: &minOverrides,
+		UpstreamBillingGuardGroupLimits:    &maxOverrides,
+	})
 	require.ErrorIs(t, err, ErrInvalidUpstreamBillingGuardGroupLimits)
 	require.Zero(t, repo.updateCalls)
 }

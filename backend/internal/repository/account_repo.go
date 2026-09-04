@@ -689,7 +689,7 @@ func ensureEnabledBillingGuardHasConfiguredGroup(ctx context.Context, exec sqlEx
 			WHERE ag.account_id = $1
 				AND g.platform = $2
 				AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
-				AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+					AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 		)
 	`, account.ID, account.Platform)
 	if err != nil {
@@ -941,6 +941,181 @@ func (r *accountRepository) UpdateAccountWithGroupConfigAndBillingSettings(
 	r.syncSchedulerAccountSnapshot(refreshCtx, account.ID)
 	for _, shadowID := range shadowIDs {
 		r.syncSchedulerAccountSnapshot(refreshCtx, shadowID)
+	}
+	return nil
+}
+
+func (r *accountRepository) UpdateAccountWithGroupConfigAndBillingSettingsWithBounds(
+	ctx context.Context, account *service.Account, groupIDs *[]int64,
+	guardMaxLimits, guardMinLimits *map[int64]float64, propagateProxyToShadows bool,
+	probeEnabled, rateSyncEnabled *bool, rateMultiplier *float64,
+) error {
+	if account == nil {
+		return nil
+	}
+	apply := func(txCtx context.Context) ([]int64, error) {
+		if err := r.updateWithAccountBillingSettingsLocked(txCtx, account, probeEnabled, rateSyncEnabled, rateMultiplier, false); err != nil {
+			return nil, err
+		}
+		if groupIDs != nil {
+			if err := r.BindGroups(txCtx, account.ID, *groupIDs); err != nil {
+				return nil, err
+			}
+		}
+		if guardMaxLimits != nil || guardMinLimits != nil {
+			if err := r.updateUpstreamBillingGuardGroupBounds(txCtx, account.ID, guardMinLimits, guardMaxLimits); err != nil {
+				return nil, err
+			}
+		}
+		if err := ensureEnabledBillingGuardHasConfiguredGroup(txCtx, sqlExecutorFromContext(txCtx, r.sql), account); err != nil {
+			return nil, err
+		}
+		shadowIDs := make([]int64, 0)
+		if propagateProxyToShadows {
+			shadows, err := r.ListShadowsByParent(txCtx, account.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, shadow := range shadows {
+				if shadow == nil {
+					continue
+				}
+				shadow.ProxyID, shadow.Proxy = account.ProxyID, nil
+				if err := r.Update(txCtx, shadow); err != nil {
+					return nil, err
+				}
+				shadowIDs = append(shadowIDs, shadow.ID)
+			}
+		}
+		return shadowIDs, nil
+	}
+	if dbent.TxFromContext(ctx) != nil {
+		shadowIDs, err := apply(ctx)
+		if err != nil {
+			return err
+		}
+		dbent.TxFromContext(ctx).OnCommit(func(next dbent.Committer) dbent.Committer {
+			return dbent.CommitFunc(func(commitCtx context.Context, tx *dbent.Tx) error {
+				if err := next.Commit(commitCtx, tx); err != nil {
+					return err
+				}
+				refreshCtx := context.WithoutCancel(commitCtx)
+				r.syncSchedulerAccountSnapshot(refreshCtx, account.ID)
+				for _, shadowID := range shadowIDs {
+					r.syncSchedulerAccountSnapshot(refreshCtx, shadowID)
+				}
+				return nil
+			})
+		})
+		return nil
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	shadowIDs, err := apply(dbent.NewTxContext(ctx, tx))
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	refreshCtx := context.WithoutCancel(ctx)
+	r.syncSchedulerAccountSnapshot(refreshCtx, account.ID)
+	for _, shadowID := range shadowIDs {
+		r.syncSchedulerAccountSnapshot(refreshCtx, shadowID)
+	}
+	return nil
+}
+
+func (r *accountRepository) updateUpstreamBillingGuardGroupBounds(ctx context.Context, accountID int64, minLimits, maxLimits *map[int64]float64) error {
+	exec := sqlExecutorFromContext(ctx, r.sql)
+	if exec == nil {
+		return errors.New("account group billing guard SQL executor is unavailable")
+	}
+	requested := make(map[int64]struct{})
+	validate := func(values *map[int64]float64) error {
+		if values == nil {
+			return nil
+		}
+		for id, value := range *values {
+			if id <= 0 || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+				return errors.New("account group billing guard bounds must use positive group IDs and finite values >= 0")
+			}
+			requested[id] = struct{}{}
+		}
+		return nil
+	}
+	if err := validate(minLimits); err != nil {
+		return err
+	}
+	if err := validate(maxLimits); err != nil {
+		return err
+	}
+	requestedIDs := make([]int64, 0, len(requested))
+	for id := range requested {
+		requestedIDs = append(requestedIDs, id)
+	}
+	sort.Slice(requestedIDs, func(i, j int) bool { return requestedIDs[i] < requestedIDs[j] })
+	if len(requestedIDs) > 0 {
+		rows, err := exec.QueryContext(ctx, `SELECT requested.group_id FROM unnest($2::bigint[]) requested(group_id) WHERE NOT EXISTS (SELECT 1 FROM account_groups WHERE account_id = $1 AND group_id = requested.group_id) LIMIT 1`, accountID, pq.Array(requestedIDs))
+		if err != nil {
+			return err
+		}
+		missing := rows.Next()
+		_ = rows.Close()
+		if missing {
+			return infraerrors.Conflict("UPSTREAM_BILLING_GUARD_GROUP_BINDING_CHANGED", "account group bindings changed while updating the billing guard; reload and retry")
+		}
+	}
+	args := []any{accountID}
+	buildAssignment := func(values *map[int64]float64, column string) string {
+		if values == nil {
+			return column
+		}
+		if len(*values) == 0 {
+			return "NULL::double precision"
+		}
+		ids := make([]int64, 0, len(*values))
+		for id := range *values {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		var b strings.Builder
+		b.WriteString("CASE group_id")
+		for _, id := range ids {
+			groupArg, valueArg := len(args)+1, len(args)+2
+			b.WriteString(fmt.Sprintf(" WHEN $%d::bigint THEN $%d::double precision", groupArg, valueArg))
+			args = append(args, id, (*values)[id])
+		}
+		b.WriteString(" ELSE NULL::double precision END")
+		return b.String()
+	}
+	minExpr := buildAssignment(minLimits, "upstream_billing_guard_min_multiplier")
+	maxExpr := buildAssignment(maxLimits, "upstream_billing_guard_max_multiplier")
+	rows, err := exec.QueryContext(ctx, `UPDATE account_groups SET upstream_billing_guard_min_multiplier = `+minExpr+`, upstream_billing_guard_max_multiplier = `+maxExpr+` WHERE account_id = $1 AND (upstream_billing_guard_min_multiplier IS DISTINCT FROM (`+minExpr+`) OR upstream_billing_guard_max_multiplier IS DISTINCT FROM (`+maxExpr+`)) RETURNING group_id`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	changed := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		changed = append(changed, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	payload := buildSchedulerGroupPayload(changed)
+	if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account group billing guard bounds update failed: account=%d err=%v", accountID, err)
 	}
 	return nil
 }
@@ -1767,11 +1942,16 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	}
 	existingGroupIDs := make([]int64, 0, len(existingBindings))
 	existingLimits := make(map[int64]*float64, len(existingBindings))
+	existingMinLimits := make(map[int64]*float64, len(existingBindings))
 	for _, binding := range existingBindings {
 		existingGroupIDs = append(existingGroupIDs, binding.GroupID)
 		if binding.UpstreamBillingGuardMaxMultiplier != nil {
 			value := *binding.UpstreamBillingGuardMaxMultiplier
 			existingLimits[binding.GroupID] = &value
+		}
+		if binding.UpstreamBillingGuardMinMultiplier != nil {
+			value := *binding.UpstreamBillingGuardMinMultiplier
+			existingMinLimits[binding.GroupID] = &value
 		}
 	}
 
@@ -1788,6 +1968,9 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 				SetPriority(i + 1)
 			if limit := existingLimits[groupID]; limit != nil {
 				builder = builder.SetUpstreamBillingGuardMaxMultiplier(*limit)
+			}
+			if limit := existingMinLimits[groupID]; limit != nil {
+				builder = builder.SetUpstreamBillingGuardMinMultiplier(*limit)
 			}
 			builders = append(builders, builder)
 		}
@@ -1898,6 +2081,81 @@ func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Co
 	return nil
 }
 
+func (r *accountRepository) UpdateUpstreamBillingGuardGroupMinLimits(ctx context.Context, accountID int64, limits map[int64]float64) error {
+	client := sqlExecutorFromContext(ctx, r.sql)
+	if client == nil {
+		return errors.New("account group billing guard SQL executor is unavailable")
+	}
+	args := []any{accountID}
+	ids := make([]int64, 0, len(limits))
+	for groupID, limit := range limits {
+		if groupID <= 0 || limit < 0 || math.IsNaN(limit) || math.IsInf(limit, 0) {
+			return errors.New("account group billing guard minimum limits must use positive group IDs and finite values >= 0")
+		}
+		ids = append(ids, groupID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	assignment := "NULL::double precision"
+	if len(ids) > 0 {
+		var b strings.Builder
+		b.WriteString("CASE group_id")
+		for _, groupID := range ids {
+			groupArg, valueArg := len(args)+1, len(args)+2
+			b.WriteString(fmt.Sprintf(" WHEN $%d::bigint THEN $%d::double precision", groupArg, valueArg))
+			args = append(args, groupID, limits[groupID])
+		}
+		b.WriteString(" ELSE NULL::double precision END")
+		assignment = b.String()
+	}
+	requestedArg := len(args) + 1
+	args = append(args, pq.Array(ids))
+	rows, err := client.QueryContext(ctx, `
+		WITH requested(group_id) AS (
+			SELECT unnest($`+strconv.Itoa(requestedArg)+`::bigint[])
+		), missing AS (
+			SELECT requested.group_id FROM requested
+			WHERE NOT EXISTS (SELECT 1 FROM account_groups WHERE account_id = $1 AND group_id = requested.group_id)
+		), updated AS (
+			UPDATE account_groups
+			SET upstream_billing_guard_min_multiplier = `+assignment+`
+			WHERE account_id = $1
+				AND NOT EXISTS (SELECT 1 FROM missing)
+				AND upstream_billing_guard_min_multiplier IS DISTINCT FROM (`+assignment+`)
+			RETURNING group_id
+		)
+		SELECT group_id, FALSE AS is_missing FROM updated
+		UNION ALL SELECT group_id, TRUE AS is_missing FROM missing
+		ORDER BY group_id`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	changedIDs := make([]int64, 0)
+	for rows.Next() {
+		var groupID int64
+		var missing bool
+		if err := rows.Scan(&groupID, &missing); err != nil {
+			return err
+		}
+		if missing {
+			return infraerrors.Conflict("UPSTREAM_BILLING_GUARD_GROUP_BINDING_CHANGED", "account group bindings changed while updating the billing guard; reload and retry")
+		}
+		changedIDs = append(changedIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(changedIDs) == 0 {
+		return nil
+	}
+	payload := buildSchedulerGroupPayload(changedIDs)
+	if err := enqueueSchedulerOutbox(ctx, sqlExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account group billing guard minimum update failed: account=%d err=%v", accountID, err)
+	}
+	r.syncSchedulerAccountSnapshotUnlessTransactional(ctx, accountID)
+	return nil
+}
+
 func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Account, error) {
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
@@ -1977,14 +2235,11 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 				AND a.type = $4
 				AND g.platform = ANY($5)
 				AND a.upstream_billing_guard_enabled = TRUE
-				AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+				AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 				AND (
 					COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
 					OR COALESCE(
-						a.upstream_billing_guard_observed_multiplier > LEAST(
-							COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
-							g.upstream_billing_guard_max_multiplier
-						),
+						`+upstreamBillingGuardObservedOutOfBoundsSQL+`,
 						FALSE
 					)
 				)
@@ -3197,22 +3452,28 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 
 	for _, ag := range entries {
 		groupSvc := groupEntityToService(ag.Edges.Group)
-		var groupGuardLimit *float64
+		var groupGuardLimit, groupGuardMin *float64
 		if groupSvc != nil && service.IsUpstreamBillingProbeIdentity(groupSvc.Platform, service.AccountTypeAPIKey) {
 			groupGuardLimit = cloneFloat64Ptr(groupSvc.UpstreamBillingGuardMaxMultiplier)
+			groupGuardMin = cloneFloat64Ptr(groupSvc.UpstreamBillingGuardMinMultiplier)
 		}
 		agSvc := service.AccountGroup{
 			AccountID: ag.AccountID,
 			GroupID:   ag.GroupID,
 			Priority:  ag.Priority,
 			UpstreamBillingGuardOverrideMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier),
+			UpstreamBillingGuardOverrideMinMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMinMultiplier),
 			GroupUpstreamBillingGuardMaxMultiplier:    groupGuardLimit,
+			GroupUpstreamBillingGuardMinMultiplier:    groupGuardMin,
 			GroupPolicyLoaded:                         true,
 			CreatedAt:                                 ag.CreatedAt,
 			Group:                                     groupSvc,
 		}
 		if effective, configured := agSvc.EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
 			agSvc.UpstreamBillingGuardMaxMultiplier = cloneFloat64Ptr(effective)
+		}
+		if effectiveMin, _, configured := agSvc.EffectiveUpstreamBillingGuardBounds(); configured {
+			agSvc.UpstreamBillingGuardMinMultiplier = cloneFloat64Ptr(effectiveMin)
 		}
 		accountGroupsByAccount[ag.AccountID] = append(accountGroupsByAccount[ag.AccountID], agSvc)
 		groupIDsByAccount[ag.AccountID] = append(groupIDsByAccount[ag.AccountID], ag.GroupID)

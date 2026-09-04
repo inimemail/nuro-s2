@@ -30,6 +30,11 @@ func UpstreamBillingGuardMaxMultiplier(v float64) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
 }
 
+// UpstreamBillingGuardMinMultiplier applies equality check predicate on the "upstream_billing_guard_min_multiplier" field. It's identical to UpstreamBillingGuardMinMultiplierEQ.
+func UpstreamBillingGuardMinMultiplier(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldEQ(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldEQ(FieldCreatedAt, v))
@@ -163,6 +168,56 @@ func UpstreamBillingGuardMaxMultiplierIsNil() predicate.AccountGroup {
 // UpstreamBillingGuardMaxMultiplierNotNil applies the NotNil predicate on the "upstream_billing_guard_max_multiplier" field.
 func UpstreamBillingGuardMaxMultiplierNotNil() predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldNotNull(FieldUpstreamBillingGuardMaxMultiplier))
+}
+
+// UpstreamBillingGuardMinMultiplierEQ applies the EQ predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierEQ(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldEQ(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierNEQ applies the NEQ predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierNEQ(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNEQ(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierIn applies the In predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierIn(vs ...float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldIn(FieldUpstreamBillingGuardMinMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMinMultiplierNotIn applies the NotIn predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierNotIn(vs ...float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNotIn(FieldUpstreamBillingGuardMinMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMinMultiplierGT applies the GT predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierGT(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldGT(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierGTE applies the GTE predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierGTE(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldGTE(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierLT applies the LT predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierLT(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldLT(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierLTE applies the LTE predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierLTE(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldLTE(FieldUpstreamBillingGuardMinMultiplier, v))
+}
+
+// UpstreamBillingGuardMinMultiplierIsNil applies the IsNil predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierIsNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldIsNull(FieldUpstreamBillingGuardMinMultiplier))
+}
+
+// UpstreamBillingGuardMinMultiplierNotNil applies the NotNil predicate on the "upstream_billing_guard_min_multiplier" field.
+func UpstreamBillingGuardMinMultiplierNotNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNotNull(FieldUpstreamBillingGuardMinMultiplier))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

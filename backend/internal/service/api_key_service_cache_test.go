@@ -236,7 +236,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
 	groupID := int64(9)
 	webSearchPricePerCall := 0.025
-	upstreamGuard := 2.0
+	upstreamGuard, upstreamGuardMin := 2.0, 0.75
 	edgeProtectionEnabled := false
 	apiKey := &APIKey{
 		ID:      1,
@@ -261,6 +261,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 			SubscriptionType:                  SubscriptionTypeStandard,
 			RateMultiplier:                    1,
 			UpstreamBillingGuardMaxMultiplier: &upstreamGuard,
+			UpstreamBillingGuardMinMultiplier: &upstreamGuardMin,
 			IsExclusive:                       true,
 			AllowBatchImageGeneration:         true,
 			BatchImageDiscountMultiplier:      0.4,
@@ -294,6 +295,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Group.IsExclusive, roundTrip.Group.IsExclusive)
 	require.Equal(t, apiKey.Group.AllowBatchImageGeneration, roundTrip.Group.AllowBatchImageGeneration)
 	require.Equal(t, apiKey.Group.UpstreamBillingGuardMaxMultiplier, roundTrip.Group.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, apiKey.Group.UpstreamBillingGuardMinMultiplier, roundTrip.Group.UpstreamBillingGuardMinMultiplier)
 	require.Equal(t, apiKey.Group.BatchImageDiscountMultiplier, roundTrip.Group.BatchImageDiscountMultiplier)
 	require.Equal(t, apiKey.Group.BatchImageHoldMultiplier, roundTrip.Group.BatchImageHoldMultiplier)
 	require.Equal(t, apiKey.Group.EdgeProtectionEnabled, roundTrip.Group.EdgeProtectionEnabled)
