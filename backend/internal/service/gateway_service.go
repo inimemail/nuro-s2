@@ -1792,6 +1792,13 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
 	}
 	selectWithLoad := func(items []accountWithLoad) *accountWithLoad {
+		if groupUsesHealthFirst(group) {
+			affinityID, affinityActive := anthropicAffinityAccountID, anthropicAffinityActive
+			if !affinityActive && stickyAccountID > 0 {
+				affinityID, affinityActive = stickyAccountID, true
+			}
+			return selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), affinityID, affinityActive)
+		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithLoadAndAnthropicAffinity(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
 		}
@@ -1986,7 +1993,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 		if len(routingCandidates) > 0 {
 			// 1.5. 在路由账号范围内检查粘性会话
-			if sessionHash != "" && stickyAccountID > 0 {
+			if !groupUsesHealthFirst(group) && sessionHash != "" && stickyAccountID > 0 {
 				slog.Debug("sticky.layer1_5_checking",
 					"sticky_account_id", stickyAccountID,
 					"in_routing_list", containsInt64(routingAccountIDs, stickyAccountID),
@@ -2187,7 +2194,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 1.5: 粘性会话（仅在无模型路由配置时生效） ============
-	if len(routingAccountIDs) == 0 && sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
+	if !groupUsesHealthFirst(group) && len(routingAccountIDs) == 0 && sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, ok := accountByID[accountID]
@@ -3696,6 +3703,131 @@ func selectHealthAwareAccountWithLoad(accounts []accountWithLoad, healthStats *a
 	return selectByLRU(healthBand, preferOAuth)
 }
 
+// selectHealthFirstAccountWithLoad is the opt-in group scheduler. It keeps the
+// existing hard eligibility checks outside this function, then orders eligible
+// accounts by runtime health, effective upstream billing multiplier, cache
+// affinity, configured priority, load and LRU. Missing or stale probe data is
+// deliberately treated as an undeclared multiplier, never as zero.
+func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, affinityAccountID int64, affinityActive bool) *accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+	candidates := buildAccountHealthCandidates(accounts, healthStats)
+	bestScore := bestAccountHealthScore(candidates)
+	if cfg.PreferSoonestReset {
+		// Reset remains a hard scheduling preference only after health has been
+		// evaluated; it must not make an unhealthy account win.
+		band := filterAccountHealthBandCandidates(candidates, bestScore)
+		resetBand := filterBySoonestReset(band, now)
+		if len(resetBand) > 0 {
+			allowed := make(map[*Account]struct{}, len(resetBand))
+			for _, item := range resetBand {
+				if item.account != nil {
+					allowed[item.account] = struct{}{}
+				}
+			}
+			filtered := make([]accountHealthCandidate, 0, len(resetBand))
+			for _, candidate := range candidates {
+				if _, ok := allowed[candidate.item.account]; ok {
+					filtered = append(filtered, candidate)
+				}
+			}
+			if len(filtered) > 0 {
+				candidates = filtered
+			}
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.score != b.score {
+			return a.score > b.score
+		}
+		aRate, aOK := accountEffectiveUpstreamMultiplier(a.item.account, now)
+		bRate, bOK := accountEffectiveUpstreamMultiplier(b.item.account, now)
+		if aOK != bOK {
+			return aOK
+		}
+		if aOK && aRate != bRate {
+			return aRate < bRate
+		}
+		if affinityActive && affinityAccountID > 0 {
+			aAffinity := a.item.account != nil && a.item.account.ID == affinityAccountID
+			bAffinity := b.item.account != nil && b.item.account.ID == affinityAccountID
+			if aAffinity != bAffinity {
+				// Cache affinity is subordinate to health and multiplier, but wins
+				// before priority/load when those dimensions are otherwise tied.
+				return aAffinity
+			}
+		}
+		aPriority, bPriority := accountPriority(a.item.account), accountPriority(b.item.account)
+		if aPriority != bPriority {
+			return aPriority < bPriority
+		}
+		if less, ok := nonPoolAccountBeforePool(a.item.account, b.item.account); ok {
+			return less
+		}
+		if a.item.loadInfoMissing != b.item.loadInfoMissing {
+			return !a.item.loadInfoMissing
+		}
+		if a.item.loadInfo != nil && b.item.loadInfo != nil && a.item.loadInfo.LoadRate != b.item.loadInfo.LoadRate {
+			return a.item.loadInfo.LoadRate < b.item.loadInfo.LoadRate
+		}
+		if a.item.loadInfo != nil && b.item.loadInfo != nil && a.item.loadInfo.WaitingCount != b.item.loadInfo.WaitingCount {
+			return a.item.loadInfo.WaitingCount < b.item.loadInfo.WaitingCount
+		}
+		return lruAccountBefore(a.item.account, b.item.account, preferOAuth)
+	})
+	if len(candidates) == 0 {
+		return nil
+	}
+	return &candidates[0].item
+}
+
+func lruAccountBefore(a, b *Account, preferOAuth bool) bool {
+	if a == nil || b == nil {
+		return a != nil
+	}
+	if a.LastUsedAt == nil && b.LastUsedAt != nil {
+		return true
+	}
+	if a.LastUsedAt != nil && b.LastUsedAt == nil {
+		return false
+	}
+	if a.LastUsedAt != nil && b.LastUsedAt != nil && !a.LastUsedAt.Equal(*b.LastUsedAt) {
+		return a.LastUsedAt.Before(*b.LastUsedAt)
+	}
+	if preferOAuth && a.Type != b.Type {
+		return a.Type == AccountTypeOAuth
+	}
+	return a.ID < b.ID
+}
+
+func accountPriority(account *Account) int {
+	if account == nil {
+		return int(^uint(0) >> 1)
+	}
+	return account.Priority
+}
+
+func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float64, bool) {
+	if account == nil {
+		return 0, false
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil || snapshot.Status != UpstreamBillingProbeStatusOK || snapshot.FreshUntil == nil || !snapshot.FreshUntil.After(now) {
+		return 0, false
+	}
+	value, ok := billingMultiplierFromProbeData(snapshot.Data)
+	if !ok {
+		return 0, false
+	}
+	return value, true
+}
+
+func groupUsesHealthFirst(group *Group) bool {
+	return group != nil && NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy) == AccountSchedulingStrategyHealthFirst
+}
+
 func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *accountWithLoad {
 	if len(accounts) == 0 {
 		return nil
@@ -4075,17 +4207,34 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	if anthropicAffinityActive {
 		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
 	}
+	// require_privacy_set and account scheduling strategy are group-scoped.
+	var schedGroup *Group
+	if groupID != nil {
+		schedGroup = s.groupFromContext(ctx, *groupID)
+		if schedGroup == nil && s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
+	}
+	selectionAffinityAccountID := anthropicAffinityAccountID
+	selectionAffinityActive := anthropicAffinityActive
+	if groupUsesHealthFirst(schedGroup) && !selectionAffinityActive && sessionHash != "" && s.cache != nil {
+		if cachedID, cacheErr := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); cacheErr == nil && cachedID > 0 {
+			selectionAffinityAccountID, selectionAffinityActive = cachedID, true
+		}
+	}
 	selectAccount := func(candidates []*Account) *Account {
+		if groupUsesHealthFirst(schedGroup) {
+			items := accountPointersToNeutralLoads(candidates)
+			selected := selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), selectionAffinityAccountID, selectionAffinityActive)
+			if selected != nil {
+				return selected.account
+			}
+			return nil
+		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithAnthropicAffinity(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
 		}
 		return selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
-	}
-
-	// require_privacy_set: 获取分组信息
-	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
 	}
 
 	var accounts []Account
@@ -4100,7 +4249,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				derefGroupID(groupID), requestedModel, platform, shortSessionHash(sessionHash), routingAccountIDs)
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
-		if sessionHash != "" && s.cache != nil {
+		if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
@@ -4216,7 +4365,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	// 1. 查询粘性会话
-	if sessionHash != "" && s.cache != nil {
+	if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
@@ -4342,17 +4491,33 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	if anthropicAffinityActive {
 		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
 	}
+	var schedGroup *Group
+	if groupID != nil {
+		schedGroup = s.groupFromContext(ctx, *groupID)
+		if schedGroup == nil && s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
+	}
+	selectionAffinityAccountID := anthropicAffinityAccountID
+	selectionAffinityActive := anthropicAffinityActive
+	if groupUsesHealthFirst(schedGroup) && !selectionAffinityActive && sessionHash != "" && s.cache != nil {
+		if cachedID, cacheErr := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); cacheErr == nil && cachedID > 0 {
+			selectionAffinityAccountID, selectionAffinityActive = cachedID, true
+		}
+	}
 	selectAccount := func(candidates []*Account) *Account {
+		if groupUsesHealthFirst(schedGroup) {
+			items := accountPointersToNeutralLoads(candidates)
+			selected := selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), selectionAffinityAccountID, selectionAffinityActive)
+			if selected != nil {
+				return selected.account
+			}
+			return nil
+		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithAnthropicAffinity(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
 		}
 		return selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
-	}
-
-	// require_privacy_set: 获取分组信息
-	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
 	}
 
 	var accounts []Account
@@ -4365,7 +4530,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				derefGroupID(groupID), requestedModel, nativePlatform, shortSessionHash(sessionHash), routingAccountIDs)
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
-		if sessionHash != "" && s.cache != nil {
+		if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
@@ -4483,7 +4648,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	// 1. 查询粘性会话
-	if sessionHash != "" && s.cache != nil {
+	if !groupUsesHealthFirst(schedGroup) && sessionHash != "" && s.cache != nil {
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {

@@ -645,11 +645,12 @@ func TestAPIKeyAuthSnapshotDetachesAndSharesLargeGroupPricing(t *testing.T) {
 	updatedAt := time.Unix(1_800_000_000, 123)
 	price := 0.125
 	group := &Group{
-		ID:        groupID,
-		Platform:  PlatformOpenAI,
-		Status:    StatusActive,
-		Hydrated:  true,
-		UpdatedAt: updatedAt,
+		ID:                        groupID,
+		Platform:                  PlatformOpenAI,
+		Status:                    StatusActive,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+		Hydrated:                  true,
+		UpdatedAt:                 updatedAt,
 		VideoModelPrices: map[string]map[string]float64{
 			"grok-imagine-video-1.5": {VideoBillingResolution720P: price},
 		},
@@ -672,6 +673,7 @@ func TestAPIKeyAuthSnapshotDetachesAndSharesLargeGroupPricing(t *testing.T) {
 
 	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
 	require.NotNil(t, snapshot.Group)
+	require.Equal(t, AccountSchedulingStrategyHealthFirst, snapshot.Group.AccountSchedulingStrategy)
 	require.True(t, snapshot.Group.HasDetachedPricing)
 	require.Equal(t, updatedAt.UnixNano(), snapshot.Group.DetachedPricingVersion)
 	encoded, err := json.Marshal(snapshot)
@@ -688,6 +690,8 @@ func TestAPIKeyAuthSnapshotDetachesAndSharesLargeGroupPricing(t *testing.T) {
 	second, used, err := svc.applyAuthCacheEntry(context.Background(), "key-b", entry)
 	require.NoError(t, err)
 	require.True(t, used)
+	require.Equal(t, AccountSchedulingStrategyHealthFirst, first.Group.AccountSchedulingStrategy)
+	require.Equal(t, AccountSchedulingStrategyHealthFirst, second.Group.AccountSchedulingStrategy)
 	require.Equal(t, 0, repo.getByIDCalls, "auth pricing hydration must not load unrelated group account statistics")
 	require.Equal(t, 1, repo.getByIDLiteCalls, "large pricing must load once per group, not once per API key")
 	require.Equal(t, group.ModelPricing, first.Group.ModelPricing)

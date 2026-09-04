@@ -2319,6 +2319,12 @@ export default {
         ,addReasoningEffortMapping: 'Add reasoning mapping'
         ,removeReasoningEffortMapping: 'Remove reasoning mapping'
         ,reasoningEffortMappingInvalid: 'Reasoning mappings must use supported values with unique source levels within each model scope.'
+        ,accountSchedulingStrategy: 'Account scheduling strategy'
+        ,accountSchedulingStrategyHint: 'Applies only to this group. Billing protection, rate limits, and existing cooldowns remain hard constraints.'
+        ,strictPriority: 'Strict priority'
+        ,strictPriorityHint: 'Keep the current behavior and prefer accounts in the highest configured priority layer.'
+        ,healthFirst: 'Health first'
+        ,healthFirstHint: 'Evaluate all priority layers: health, lower declared upstream multiplier, healthy cache affinity, then priority and load/LRU.'
       },
       enterGroupName: 'Enter group name',
       optionalDescription: 'Optional description',

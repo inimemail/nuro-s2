@@ -23478,6 +23478,7 @@ type GroupMutation struct {
 	messages_dispatch_model_config           *domain.OpenAIMessagesDispatchModelConfig
 	models_list_config                       *domain.GroupModelsListConfig
 	strict_model_priority_on_model_mismatch  *bool
+	account_scheduling_strategy              *string
 	rpm_limit                                *int
 	addrpm_limit                             *int
 	force_openai_fast                        *bool
@@ -26661,6 +26662,42 @@ func (m *GroupMutation) ResetStrictModelPriorityOnModelMismatch() {
 	m.strict_model_priority_on_model_mismatch = nil
 }
 
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (m *GroupMutation) SetAccountSchedulingStrategy(s string) {
+	m.account_scheduling_strategy = &s
+}
+
+// AccountSchedulingStrategy returns the value of the "account_scheduling_strategy" field in the mutation.
+func (m *GroupMutation) AccountSchedulingStrategy() (r string, exists bool) {
+	v := m.account_scheduling_strategy
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAccountSchedulingStrategy returns the old "account_scheduling_strategy" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldAccountSchedulingStrategy(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAccountSchedulingStrategy is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAccountSchedulingStrategy requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAccountSchedulingStrategy: %w", err)
+	}
+	return oldValue.AccountSchedulingStrategy, nil
+}
+
+// ResetAccountSchedulingStrategy resets all changes to the "account_scheduling_strategy" field.
+func (m *GroupMutation) ResetAccountSchedulingStrategy() {
+	m.account_scheduling_strategy = nil
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (m *GroupMutation) SetRpmLimit(i int) {
 	m.rpm_limit = &i
@@ -27234,7 +27271,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 65)
+	fields := make([]string, 0, 66)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -27415,6 +27452,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.strict_model_priority_on_model_mismatch != nil {
 		fields = append(fields, group.FieldStrictModelPriorityOnModelMismatch)
 	}
+	if m.account_scheduling_strategy != nil {
+		fields = append(fields, group.FieldAccountSchedulingStrategy)
+	}
 	if m.rpm_limit != nil {
 		fields = append(fields, group.FieldRpmLimit)
 	}
@@ -27558,6 +27598,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ModelsListConfig()
 	case group.FieldStrictModelPriorityOnModelMismatch:
 		return m.StrictModelPriorityOnModelMismatch()
+	case group.FieldAccountSchedulingStrategy:
+		return m.AccountSchedulingStrategy()
 	case group.FieldRpmLimit:
 		return m.RpmLimit()
 	case group.FieldForceOpenaiFast:
@@ -27697,6 +27739,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldModelsListConfig(ctx)
 	case group.FieldStrictModelPriorityOnModelMismatch:
 		return m.OldStrictModelPriorityOnModelMismatch(ctx)
+	case group.FieldAccountSchedulingStrategy:
+		return m.OldAccountSchedulingStrategy(ctx)
 	case group.FieldRpmLimit:
 		return m.OldRpmLimit(ctx)
 	case group.FieldForceOpenaiFast:
@@ -28135,6 +28179,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetStrictModelPriorityOnModelMismatch(v)
+		return nil
+	case group.FieldAccountSchedulingStrategy:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAccountSchedulingStrategy(v)
 		return nil
 	case group.FieldRpmLimit:
 		v, ok := value.(int)
@@ -28879,6 +28930,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldStrictModelPriorityOnModelMismatch:
 		m.ResetStrictModelPriorityOnModelMismatch()
+		return nil
+	case group.FieldAccountSchedulingStrategy:
+		m.ResetAccountSchedulingStrategy()
 		return nil
 	case group.FieldRpmLimit:
 		m.ResetRpmLimit()

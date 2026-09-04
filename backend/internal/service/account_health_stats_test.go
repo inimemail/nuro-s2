@@ -35,6 +35,68 @@ func reportHealthSamples(stats *accountRuntimeHealthStats, accountID int64, succ
 	}
 }
 
+func withProbeMultiplier(account accountWithLoad, multiplier float64, freshUntil time.Time) accountWithLoad {
+	account.account.Extra = map[string]any{
+		UpstreamBillingProbeExtraKey: map[string]any{
+			"status":      UpstreamBillingProbeStatusOK,
+			"fresh_until": freshUntil,
+			"data": map[string]any{
+				"effective_rate_multiplier": multiplier,
+			},
+		},
+	}
+	return account
+}
+
+func TestNormalizeAccountSchedulingStrategyDefaultsToStrict(t *testing.T) {
+	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy(""))
+	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy("invalid"))
+	require.Equal(t, AccountSchedulingStrategyHealthFirst, NormalizeAccountSchedulingStrategy(AccountSchedulingStrategyHealthFirst))
+}
+
+func TestSelectHealthFirstAccountWithLoad_CrossesPriorityForHealthyAccount(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	slow := 2500
+	fast := 100
+	reportHealthSamples(stats, 1, false, &slow, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+
+	selected := selectHealthFirstAccountWithLoad([]accountWithLoad{
+		makeHealthTestAccount(1, 1, 0, true),
+		makeHealthTestAccount(2, 10, 0, true),
+	}, stats, config.GatewaySchedulingConfig{}, false, time.Now(), 0, false)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestSelectHealthFirstAccountWithLoad_LowerDeclaredMultiplierWinsWithinHealth(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+	now := time.Now()
+	first := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.5, now.Add(time.Hour))
+	second := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.5, now.Add(time.Hour))
+
+	selected := selectHealthFirstAccountWithLoad([]accountWithLoad{first, second}, stats, config.GatewaySchedulingConfig{}, false, now, 0, false)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestSelectHealthFirstAccountWithLoad_ExpiredMultiplierIsUndeclared(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+	now := time.Now()
+	first := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 2.0, now.Add(-time.Minute))
+	second := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.5, now.Add(time.Hour))
+
+	selected := selectHealthFirstAccountWithLoad([]accountWithLoad{first, second}, stats, config.GatewaySchedulingConfig{}, false, now, 0, false)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
 func TestFilterByAccountHealthBand_PrefersHealthBeforeLoadInsideSameLayer(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 120

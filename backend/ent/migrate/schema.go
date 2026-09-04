@@ -968,6 +968,7 @@ var (
 		{Name: "messages_dispatch_model_config", Type: field.TypeJSON, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "models_list_config", Type: field.TypeJSON, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "strict_model_priority_on_model_mismatch", Type: field.TypeBool, Default: false},
+		{Name: "account_scheduling_strategy", Type: field.TypeString, Size: 30, Default: "strict_priority"},
 		{Name: "rpm_limit", Type: field.TypeInt, Default: 0},
 		{Name: "force_openai_fast", Type: field.TypeBool, Default: false},
 		{Name: "max_reasoning_effort", Type: field.TypeString, Size: 20, Default: ""},

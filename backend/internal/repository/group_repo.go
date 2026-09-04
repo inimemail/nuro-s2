@@ -110,6 +110,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig).
 		SetModelsListConfig(groupIn.ModelsListConfig).
 		SetStrictModelPriorityOnModelMismatch(groupIn.StrictModelPriorityOnModelMismatch).
+		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
@@ -285,6 +286,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig).
 		SetModelsListConfig(groupIn.ModelsListConfig).
 		SetStrictModelPriorityOnModelMismatch(groupIn.StrictModelPriorityOnModelMismatch).
+		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).

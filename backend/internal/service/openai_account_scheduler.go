@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
@@ -45,21 +46,22 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	UserID                  int64
-	UserConcurrency         int
-	SessionHash             string
-	StickyAccountID         int64
-	PreviousResponseID      string
-	RequestedModel          string
-	RequiredTransport       OpenAIUpstreamTransport
-	RequiredCapability      OpenAIEndpointCapability
-	RequiredImageCapability OpenAIImagesCapability
-	RequireCompact          bool
-	RequestPlatform         string
-	ExcludedIDs             map[int64]struct{}
-	LockedPriority          int
-	PreserveStickyBinding   bool
+	GroupID                   *int64
+	UserID                    int64
+	UserConcurrency           int
+	SessionHash               string
+	StickyAccountID           int64
+	PreviousResponseID        string
+	RequestedModel            string
+	RequiredTransport         OpenAIUpstreamTransport
+	RequiredCapability        OpenAIEndpointCapability
+	RequiredImageCapability   OpenAIImagesCapability
+	RequireCompact            bool
+	RequestPlatform           string
+	ExcludedIDs               map[int64]struct{}
+	LockedPriority            int
+	PreserveStickyBinding     bool
+	AccountSchedulingStrategy string
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -595,6 +597,19 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	// Normalize an explicitly supplied strategy first so scheduler callers that
+	// do not carry HTTP middleware context still get deterministic behavior.
+	req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(req.AccountSchedulingStrategy)
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && (req.GroupID == nil || group.ID == *req.GroupID) {
+		req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+	} else if req.GroupID != nil && s != nil && s.service != nil && s.service.schedulerSnapshot != nil {
+		// Internal/service callers may provide only GroupID. Resolve the snapshot
+		// before sticky/previous-response shortcuts so health-first is honored for
+		// the complete scheduler path, not just load balancing.
+		if group, err := s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID); err == nil && group != nil {
+			req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+		}
+	}
 	decision := OpenAIAccountScheduleDecision{}
 	start := time.Now()
 	defer func() {
@@ -685,19 +700,21 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	selection, stickyBusy, err := s.selectBySessionHash(ctx, req)
-	if err != nil {
-		return nil, decision, err
-	}
-	if selection != nil && selection.Account != nil {
-		decision.Layer = openAIAccountScheduleLayerSessionSticky
-		decision.StickySessionHit = true
-		decision.SelectedAccountID = selection.Account.ID
-		decision.SelectedAccountType = selection.Account.Type
-		return selection, decision, nil
-	}
-	if stickyBusy {
-		req.PreserveStickyBinding = true
+	if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst {
+		selection, stickyBusy, err := s.selectBySessionHash(ctx, req)
+		if err != nil {
+			return nil, decision, err
+		}
+		if selection != nil && selection.Account != nil {
+			decision.Layer = openAIAccountScheduleLayerSessionSticky
+			decision.StickySessionHit = true
+			decision.SelectedAccountID = selection.Account.ID
+			decision.SelectedAccountType = selection.Account.Type
+			return selection, decision, nil
+		}
+		if stickyBusy {
+			req.PreserveStickyBinding = true
+		}
 	}
 
 	selection, candidateCount, topK, loadSkew, err := s.selectByLoadBalance(ctx, req)
@@ -1320,6 +1337,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(pool) == 0 {
 			return nil
 		}
+		if req.AccountSchedulingStrategy == AccountSchedulingStrategyHealthFirst {
+			return s.buildHealthFirstSelectionOrder(pool, req)
+		}
 		return s.buildStrictPrioritySelectionOrderForSession(pool, req.RequestedModel, req.SessionHash)
 	}
 
@@ -1344,6 +1364,62 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	}
 
 	return buildSelectionOrder(plan.candidates)
+}
+
+func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) []openAIAccountCandidateScore {
+	ordered := append([]openAIAccountCandidateScore(nil), pool...)
+	if len(ordered) <= 1 {
+		return ordered
+	}
+	healthScores := buildOpenAIAccountCandidateHealthScores(ordered)
+	for i := range ordered {
+		if ordered[i].account != nil {
+			ordered[i].healthScore = healthScores[ordered[i].account.ID]
+			ordered[i].hasHealthScore = true
+		}
+	}
+	now := time.Now()
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.healthScore != b.healthScore {
+			return a.healthScore > b.healthScore
+		}
+		aRate, aOK := accountEffectiveUpstreamMultiplier(a.account, now)
+		bRate, bOK := accountEffectiveUpstreamMultiplier(b.account, now)
+		if aOK != bOK {
+			return aOK
+		}
+		if aOK && aRate != bRate {
+			return aRate < bRate
+		}
+		if req.StickyAccountID > 0 {
+			aAffinity := a.account != nil && a.account.ID == req.StickyAccountID
+			bAffinity := b.account != nil && b.account.ID == req.StickyAccountID
+			if aAffinity != bAffinity {
+				return aAffinity
+			}
+		}
+		aPriority, bPriority := accountPriority(a.account), accountPriority(b.account)
+		if aPriority != bPriority {
+			return aPriority < bPriority
+		}
+		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
+		}
+		if a.loadInfoMissing != b.loadInfoMissing {
+			return !a.loadInfoMissing
+		}
+		if a.loadInfo != nil && b.loadInfo != nil {
+			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+			}
+			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+			}
+		}
+		return lruAccountBefore(a.account, b.account, false)
+	})
+	return ordered
 }
 
 func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore, requestedModel string) []openAIAccountCandidateScore {
@@ -1870,8 +1946,15 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	// require_privacy_set: 获取分组信息
 	var schedGroup *Group
-	if req.GroupID != nil && s.service.schedulerSnapshot != nil {
-		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
+	if req.GroupID != nil {
+		if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *req.GroupID {
+			schedGroup = group
+		} else if s.service.schedulerSnapshot != nil {
+			schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
+		}
+	}
+	if schedGroup != nil {
+		req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(schedGroup.AccountSchedulingStrategy)
 	}
 
 	baseFiltered := make([]*Account, 0, len(accounts))

@@ -262,6 +262,7 @@ type CreateGroupInput struct {
 	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig
 	ModelsListConfig                   GroupModelsListConfig
 	StrictModelPriorityOnModelMismatch bool
+	AccountSchedulingStrategy          string
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int
 	ForceOpenAIFast             bool
@@ -334,6 +335,7 @@ type UpdateGroupInput struct {
 	MessagesDispatchModelConfig        *OpenAIMessagesDispatchModelConfig
 	ModelsListConfig                   *GroupModelsListConfig
 	StrictModelPriorityOnModelMismatch *bool
+	AccountSchedulingStrategy          *string
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit                    *int
 	ForceOpenAIFast             *bool
@@ -2321,6 +2323,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		MessagesDispatchModelConfig:        normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
 		ModelsListConfig:                   normalizeGroupModelsListConfig(input.ModelsListConfig),
 		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
 		RPMLimit:                           input.RPMLimit,
 		ForceOpenAIFast:                    input.ForceOpenAIFast,
 		MaxReasoningEffort:                 maxReasoningEffort,
@@ -2747,6 +2750,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.StrictModelPriorityOnModelMismatch != nil {
 		group.StrictModelPriorityOnModelMismatch = *input.StrictModelPriorityOnModelMismatch
+	}
+	if input.AccountSchedulingStrategy != nil {
+		group.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(*input.AccountSchedulingStrategy)
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit

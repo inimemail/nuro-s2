@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestAPIKeyService_RejectsV20AuthSnapshotAfterPolicyFieldsAdded(t *testing.T) {
+func TestAPIKeyService_RejectsV21AuthSnapshotWithoutSchedulingStrategy(t *testing.T) {
 	const legacy = `{
 		"snapshot": {
-			"version": 20,
+			"version": 21,
 			"api_key_id": 1,
 			"user_id": 2,
 			"group_id": 9,
@@ -34,15 +34,15 @@ func TestAPIKeyService_RejectsV20AuthSnapshotAfterPolicyFieldsAdded(t *testing.T
 
 	var entry APIKeyAuthCacheEntry
 	if err := json.Unmarshal([]byte(legacy), &entry); err != nil {
-		t.Fatalf("unmarshal v20 auth snapshot: %v", err)
+		t.Fatalf("unmarshal v21 auth snapshot: %v", err)
 	}
 
-	apiKey, ok, err := (&APIKeyService{}).applyAuthCacheEntry(context.Background(), "k-v20", &entry)
+	apiKey, ok, err := (&APIKeyService{}).applyAuthCacheEntry(context.Background(), "k-v21", &entry)
 	if err != nil {
 		t.Fatalf("apply v20 auth snapshot: %v", err)
 	}
 	if ok || apiKey != nil {
-		t.Fatalf("expected v20 auth snapshot to be rejected after cache schema change, got ok=%v apiKey=%#v", ok, apiKey)
+		t.Fatalf("expected v21 auth snapshot to be rejected after cache schema change, got ok=%v apiKey=%#v", ok, apiKey)
 	}
 }
 

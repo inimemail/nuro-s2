@@ -14,6 +14,18 @@ type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfi
 type GroupModelsListConfig = domain.GroupModelsListConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
 
+const (
+	AccountSchedulingStrategyStrictPriority = "strict_priority"
+	AccountSchedulingStrategyHealthFirst    = "health_first"
+)
+
+func NormalizeAccountSchedulingStrategy(value string) string {
+	if value == AccountSchedulingStrategyHealthFirst {
+		return value
+	}
+	return AccountSchedulingStrategyStrictPriority
+}
+
 type Group struct {
 	ID             int64
 	Name           string
@@ -101,6 +113,7 @@ type Group struct {
 	// Legacy API/database field: true permits model-mismatch fallback to lower
 	// priorities; false keeps the highest eligible priority layer strict.
 	StrictModelPriorityOnModelMismatch bool
+	AccountSchedulingStrategy          string
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。

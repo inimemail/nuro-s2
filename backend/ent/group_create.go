@@ -830,6 +830,20 @@ func (_c *GroupCreate) SetNillableStrictModelPriorityOnModelMismatch(v *bool) *G
 	return _c
 }
 
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (_c *GroupCreate) SetAccountSchedulingStrategy(v string) *GroupCreate {
+	_c.mutation.SetAccountSchedulingStrategy(v)
+	return _c
+}
+
+// SetNillableAccountSchedulingStrategy sets the "account_scheduling_strategy" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableAccountSchedulingStrategy(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetAccountSchedulingStrategy(*v)
+	}
+	return _c
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_c *GroupCreate) SetRpmLimit(v int) *GroupCreate {
 	_c.mutation.SetRpmLimit(v)
@@ -1161,6 +1175,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultStrictModelPriorityOnModelMismatch
 		_c.mutation.SetStrictModelPriorityOnModelMismatch(v)
 	}
+	if _, ok := _c.mutation.AccountSchedulingStrategy(); !ok {
+		v := group.DefaultAccountSchedulingStrategy
+		_c.mutation.SetAccountSchedulingStrategy(v)
+	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		v := group.DefaultRpmLimit
 		_c.mutation.SetRpmLimit(v)
@@ -1350,6 +1368,14 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.StrictModelPriorityOnModelMismatch(); !ok {
 		return &ValidationError{Name: "strict_model_priority_on_model_mismatch", err: errors.New(`ent: missing required field "Group.strict_model_priority_on_model_mismatch"`)}
+	}
+	if _, ok := _c.mutation.AccountSchedulingStrategy(); !ok {
+		return &ValidationError{Name: "account_scheduling_strategy", err: errors.New(`ent: missing required field "Group.account_scheduling_strategy"`)}
+	}
+	if v, ok := _c.mutation.AccountSchedulingStrategy(); ok {
+		if err := group.AccountSchedulingStrategyValidator(v); err != nil {
+			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		return &ValidationError{Name: "rpm_limit", err: errors.New(`ent: missing required field "Group.rpm_limit"`)}
@@ -1642,6 +1668,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.StrictModelPriorityOnModelMismatch(); ok {
 		_spec.SetField(group.FieldStrictModelPriorityOnModelMismatch, field.TypeBool, value)
 		_node.StrictModelPriorityOnModelMismatch = value
+	}
+	if value, ok := _c.mutation.AccountSchedulingStrategy(); ok {
+		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
+		_node.AccountSchedulingStrategy = value
 	}
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -2812,6 +2842,18 @@ func (u *GroupUpsert) SetStrictModelPriorityOnModelMismatch(v bool) *GroupUpsert
 // UpdateStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateStrictModelPriorityOnModelMismatch() *GroupUpsert {
 	u.SetExcluded(group.FieldStrictModelPriorityOnModelMismatch)
+	return u
+}
+
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (u *GroupUpsert) SetAccountSchedulingStrategy(v string) *GroupUpsert {
+	u.Set(group.FieldAccountSchedulingStrategy, v)
+	return u
+}
+
+// UpdateAccountSchedulingStrategy sets the "account_scheduling_strategy" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateAccountSchedulingStrategy() *GroupUpsert {
+	u.SetExcluded(group.FieldAccountSchedulingStrategy)
 	return u
 }
 
@@ -4088,6 +4130,20 @@ func (u *GroupUpsertOne) SetStrictModelPriorityOnModelMismatch(v bool) *GroupUps
 func (u *GroupUpsertOne) UpdateStrictModelPriorityOnModelMismatch() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateStrictModelPriorityOnModelMismatch()
+	})
+}
+
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (u *GroupUpsertOne) SetAccountSchedulingStrategy(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAccountSchedulingStrategy(v)
+	})
+}
+
+// UpdateAccountSchedulingStrategy sets the "account_scheduling_strategy" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateAccountSchedulingStrategy() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAccountSchedulingStrategy()
 	})
 }
 
@@ -5541,6 +5597,20 @@ func (u *GroupUpsertBulk) SetStrictModelPriorityOnModelMismatch(v bool) *GroupUp
 func (u *GroupUpsertBulk) UpdateStrictModelPriorityOnModelMismatch() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateStrictModelPriorityOnModelMismatch()
+	})
+}
+
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (u *GroupUpsertBulk) SetAccountSchedulingStrategy(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAccountSchedulingStrategy(v)
+	})
+}
+
+// UpdateAccountSchedulingStrategy sets the "account_scheduling_strategy" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateAccountSchedulingStrategy() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAccountSchedulingStrategy()
 	})
 }
 

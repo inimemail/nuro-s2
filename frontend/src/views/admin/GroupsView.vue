@@ -1778,6 +1778,23 @@
           </div>
         </div>
 
+        <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-4 dark:border-dark-600 dark:bg-dark-800/60">
+          <div class="mb-3">
+            <label class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.form.accountSchedulingStrategy") }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.accountSchedulingStrategyHint") }}</p>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60" :aria-pressed="createForm.account_scheduling_strategy === 'strict_priority'" :class="createForm.account_scheduling_strategy === 'strict_priority' ? 'border-primary-500 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20' : 'border-gray-200 bg-white hover:border-primary-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-primary-500'" @click="createForm.account_scheduling_strategy = 'strict_priority'">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.strictPriority") }}</span>
+              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.strictPriorityHint") }}</span>
+            </button>
+            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60" :aria-pressed="createForm.account_scheduling_strategy === 'health_first'" :class="createForm.account_scheduling_strategy === 'health_first' ? 'border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-900/20' : 'border-gray-200 bg-white hover:border-emerald-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-emerald-500'" @click="createForm.account_scheduling_strategy = 'health_first'">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.healthFirst") }}</span>
+              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.healthFirstHint") }}</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
           v-if="
@@ -3387,6 +3404,23 @@
           </div>
         </div>
 
+        <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-4 dark:border-dark-600 dark:bg-dark-800/60">
+          <div class="mb-3">
+            <label class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.form.accountSchedulingStrategy") }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.accountSchedulingStrategyHint") }}</p>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60" :aria-pressed="editForm.account_scheduling_strategy === 'strict_priority'" :class="editForm.account_scheduling_strategy === 'strict_priority' ? 'border-primary-500 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20' : 'border-gray-200 bg-white hover:border-primary-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-primary-500'" @click="editForm.account_scheduling_strategy = 'strict_priority'">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.strictPriority") }}</span>
+              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.strictPriorityHint") }}</span>
+            </button>
+            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60" :aria-pressed="editForm.account_scheduling_strategy === 'health_first'" :class="editForm.account_scheduling_strategy === 'health_first' ? 'border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-900/20' : 'border-gray-200 bg-white hover:border-emerald-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-emerald-500'" @click="editForm.account_scheduling_strategy = 'health_first'">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.healthFirst") }}</span>
+              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.healthFirstHint") }}</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
           v-if="
@@ -4286,6 +4320,7 @@ const createForm = reactive({
   require_oauth_only: false,
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
+  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first",
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4647,6 +4682,7 @@ const editForm = reactive({
   require_oauth_only: false,
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
+  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first",
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5093,6 +5129,7 @@ const closeCreateModal = () => {
   createForm.require_oauth_only = false;
   createForm.require_privacy_set = false;
   createForm.strict_model_priority_on_model_mismatch = false;
+  createForm.account_scheduling_strategy = "strict_priority";
   createForm.supported_model_scopes = ["claude", "gemini_text", "gemini_image"];
   createForm.mcp_xml_inject = true;
   createForm.copy_accounts_from_group_ids = [];
@@ -5323,6 +5360,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.require_privacy_set = group.require_privacy_set ?? false;
   editForm.strict_model_priority_on_model_mismatch =
     group.strict_model_priority_on_model_mismatch ?? false;
+  editForm.account_scheduling_strategy = group.account_scheduling_strategy === "health_first" ? "health_first" : "strict_priority";
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",
@@ -5376,6 +5414,7 @@ const closeEditModal = () => {
   resetMessagesDispatchFormState(editForm);
   editForm.allow_live = false;
   editForm.strict_model_priority_on_model_mismatch = false;
+  editForm.account_scheduling_strategy = "strict_priority";
   resetModelsListState(editModelsListState);
 };
 

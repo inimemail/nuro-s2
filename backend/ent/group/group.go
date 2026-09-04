@@ -136,6 +136,8 @@ const (
 	FieldModelsListConfig = "models_list_config"
 	// FieldStrictModelPriorityOnModelMismatch holds the string denoting the strict_model_priority_on_model_mismatch field in the database.
 	FieldStrictModelPriorityOnModelMismatch = "strict_model_priority_on_model_mismatch"
+	// FieldAccountSchedulingStrategy holds the string denoting the account_scheduling_strategy field in the database.
+	FieldAccountSchedulingStrategy = "account_scheduling_strategy"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
 	// FieldForceOpenaiFast holds the string denoting the force_openai_fast field in the database.
@@ -281,6 +283,7 @@ var Columns = []string{
 	FieldMessagesDispatchModelConfig,
 	FieldModelsListConfig,
 	FieldStrictModelPriorityOnModelMismatch,
+	FieldAccountSchedulingStrategy,
 	FieldRpmLimit,
 	FieldForceOpenaiFast,
 	FieldMaxReasoningEffort,
@@ -409,6 +412,10 @@ var (
 	DefaultModelsListConfig domain.GroupModelsListConfig
 	// DefaultStrictModelPriorityOnModelMismatch holds the default value on creation for the "strict_model_priority_on_model_mismatch" field.
 	DefaultStrictModelPriorityOnModelMismatch bool
+	// DefaultAccountSchedulingStrategy holds the default value on creation for the "account_scheduling_strategy" field.
+	DefaultAccountSchedulingStrategy string
+	// AccountSchedulingStrategyValidator is a validator for the "account_scheduling_strategy" field. It is called by the builders before save.
+	AccountSchedulingStrategyValidator func(string) error
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
 	// DefaultForceOpenaiFast holds the default value on creation for the "force_openai_fast" field.
@@ -701,6 +708,11 @@ func ByDefaultMappedModel(opts ...sql.OrderTermOption) OrderOption {
 // ByStrictModelPriorityOnModelMismatch orders the results by the strict_model_priority_on_model_mismatch field.
 func ByStrictModelPriorityOnModelMismatch(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldStrictModelPriorityOnModelMismatch, opts...).ToFunc()
+}
+
+// ByAccountSchedulingStrategy orders the results by the account_scheduling_strategy field.
+func ByAccountSchedulingStrategy(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAccountSchedulingStrategy, opts...).ToFunc()
 }
 
 // ByRpmLimit orders the results by the rpm_limit field.

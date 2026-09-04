@@ -139,6 +139,8 @@ type Group struct {
 	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config,omitempty"`
 	// 兼容字段名：true 允许模型不匹配时跨优先级，false 严格限制跨优先级；仅影响 OpenAI 分组
 	StrictModelPriorityOnModelMismatch bool `json:"strict_model_priority_on_model_mismatch,omitempty"`
+	// 账号调度策略：strict_priority 保持原有优先级调度，health_first 启用健康优先调度
+	AccountSchedulingStrategy string `json:"account_scheduling_strategy,omitempty"`
 	// 分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流
 	RpmLimit int `json:"rpm_limit,omitempty"`
 	// 是否强制此 OpenAI/Composite 分组请求使用 service_tier=priority
@@ -263,7 +265,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullFloat64)
 		case group.FieldID, group.FieldDefaultValidityDays, group.FieldFallbackGroupID, group.FieldFallbackGroupIDOnInvalidRequest, group.FieldSortOrder, group.FieldRpmLimit:
 			values[i] = new(sql.NullInt64)
-		case group.FieldName, group.FieldDescription, group.FieldPeakStart, group.FieldPeakEnd, group.FieldStatus, group.FieldDuplicateOperationID, group.FieldPlatform, group.FieldSubscriptionType, group.FieldDefaultMappedModel, group.FieldMaxReasoningEffort, group.FieldMaxReasoningEffortOverLimit:
+		case group.FieldName, group.FieldDescription, group.FieldPeakStart, group.FieldPeakEnd, group.FieldStatus, group.FieldDuplicateOperationID, group.FieldPlatform, group.FieldSubscriptionType, group.FieldDefaultMappedModel, group.FieldAccountSchedulingStrategy, group.FieldMaxReasoningEffort, group.FieldMaxReasoningEffortOverLimit:
 			values[i] = new(sql.NullString)
 		case group.FieldCreatedAt, group.FieldUpdatedAt, group.FieldDeletedAt:
 			values[i] = new(sql.NullTime)
@@ -682,6 +684,12 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.StrictModelPriorityOnModelMismatch = value.Bool
 			}
+		case group.FieldAccountSchedulingStrategy:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field account_scheduling_strategy", values[i])
+			} else if value.Valid {
+				_m.AccountSchedulingStrategy = value.String
+			}
 		case group.FieldRpmLimit:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field rpm_limit", values[i])
@@ -1013,6 +1021,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("strict_model_priority_on_model_mismatch=")
 	builder.WriteString(fmt.Sprintf("%v", _m.StrictModelPriorityOnModelMismatch))
+	builder.WriteString(", ")
+	builder.WriteString("account_scheduling_strategy=")
+	builder.WriteString(_m.AccountSchedulingStrategy)
 	builder.WriteString(", ")
 	builder.WriteString("rpm_limit=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RpmLimit))

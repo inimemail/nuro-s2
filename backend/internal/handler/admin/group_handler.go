@@ -247,6 +247,7 @@ type CreateGroupRequest struct {
 	MessagesDispatchModelConfig        service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
 	ModelsListConfig                   service.GroupModelsListConfig             `json:"models_list_config"`
 	StrictModelPriorityOnModelMismatch bool                                      `json:"strict_model_priority_on_model_mismatch"`
+	AccountSchedulingStrategy          string                                    `json:"account_scheduling_strategy"`
 	// 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int                              `json:"rpm_limit"`
 	ForceOpenAIFast             bool                             `json:"force_openai_fast"`
@@ -317,6 +318,7 @@ type UpdateGroupRequest struct {
 	MessagesDispatchModelConfig        *service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
 	ModelsListConfig                   *service.GroupModelsListConfig             `json:"models_list_config"`
 	StrictModelPriorityOnModelMismatch *bool                                      `json:"strict_model_priority_on_model_mismatch"`
+	AccountSchedulingStrategy          *string                                    `json:"account_scheduling_strategy"`
 	// 分组 RPM 上限（0 = 不限制）；nil 表示未提供不改动
 	RPMLimit                    *int                              `json:"rpm_limit"`
 	ForceOpenAIFast             *bool                             `json:"force_openai_fast"`
@@ -491,6 +493,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
 		ModelsListConfig:                   req.ModelsListConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
 		RPMLimit:                           req.RPMLimit,
 		ForceOpenAIFast:                    req.ForceOpenAIFast,
 		MaxReasoningEffort:                 req.MaxReasoningEffort,
@@ -576,6 +579,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
 		ModelsListConfig:                   req.ModelsListConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
 		RPMLimit:                           req.RPMLimit,
 		ForceOpenAIFast:                    req.ForceOpenAIFast,
 		MaxReasoningEffort:                 req.MaxReasoningEffort,

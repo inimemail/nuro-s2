@@ -325,6 +325,11 @@ func StrictModelPriorityOnModelMismatch(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldStrictModelPriorityOnModelMismatch, v))
 }
 
+// AccountSchedulingStrategy applies equality check predicate on the "account_scheduling_strategy" field. It's identical to AccountSchedulingStrategyEQ.
+func AccountSchedulingStrategy(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAccountSchedulingStrategy, v))
+}
+
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
@@ -2498,6 +2503,71 @@ func StrictModelPriorityOnModelMismatchEQ(v bool) predicate.Group {
 // StrictModelPriorityOnModelMismatchNEQ applies the NEQ predicate on the "strict_model_priority_on_model_mismatch" field.
 func StrictModelPriorityOnModelMismatchNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldStrictModelPriorityOnModelMismatch, v))
+}
+
+// AccountSchedulingStrategyEQ applies the EQ predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyNEQ applies the NEQ predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyNEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyIn applies the In predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldAccountSchedulingStrategy, vs...))
+}
+
+// AccountSchedulingStrategyNotIn applies the NotIn predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyNotIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldAccountSchedulingStrategy, vs...))
+}
+
+// AccountSchedulingStrategyGT applies the GT predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyGT(v string) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyGTE applies the GTE predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyGTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyLT applies the LT predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyLT(v string) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyLTE applies the LTE predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyLTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyContains applies the Contains predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyContains(v string) predicate.Group {
+	return predicate.Group(sql.FieldContains(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyHasPrefix applies the HasPrefix predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyHasPrefix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasPrefix(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyHasSuffix applies the HasSuffix predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyHasSuffix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasSuffix(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyEqualFold applies the EqualFold predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyEqualFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldEqualFold(FieldAccountSchedulingStrategy, v))
+}
+
+// AccountSchedulingStrategyContainsFold applies the ContainsFold predicate on the "account_scheduling_strategy" field.
+func AccountSchedulingStrategyContainsFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldContainsFold(FieldAccountSchedulingStrategy, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

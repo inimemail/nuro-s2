@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 21 // v21: include public-group and reasoning/Fast policy fields
+const apiKeyAuthSnapshotVersion = 22 // v22: include per-group account scheduling strategy
 
 var errAPIKeyAuthGroupPricingVersionChanged = errors.New("API key auth group pricing version changed")
 
@@ -531,6 +531,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			MessagesDispatchModelConfig:        apiKey.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                   apiKey.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: apiKey.Group.StrictModelPriorityOnModelMismatch,
+			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy),
 			RPMLimit:                           apiKey.Group.RPMLimit,
 			ForceOpenAIFast:                    apiKey.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 apiKey.Group.MaxReasoningEffort,
@@ -634,6 +635,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			MessagesDispatchModelConfig:        snapshot.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                   snapshot.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: snapshot.Group.StrictModelPriorityOnModelMismatch,
+			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(snapshot.Group.AccountSchedulingStrategy),
 			RPMLimit:                           snapshot.Group.RPMLimit,
 			ForceOpenAIFast:                    snapshot.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 snapshot.Group.MaxReasoningEffort,

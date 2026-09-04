@@ -1147,6 +1147,20 @@ func (_u *GroupUpdate) SetNillableStrictModelPriorityOnModelMismatch(v *bool) *G
 	return _u
 }
 
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (_u *GroupUpdate) SetAccountSchedulingStrategy(v string) *GroupUpdate {
+	_u.mutation.SetAccountSchedulingStrategy(v)
+	return _u
+}
+
+// SetNillableAccountSchedulingStrategy sets the "account_scheduling_strategy" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableAccountSchedulingStrategy(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetAccountSchedulingStrategy(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdate) SetRpmLimit(v int) *GroupUpdate {
 	_u.mutation.ResetRpmLimit()
@@ -1542,6 +1556,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AccountSchedulingStrategy(); ok {
+		if err := group.AccountSchedulingStrategyValidator(v); err != nil {
+			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -1903,6 +1922,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.StrictModelPriorityOnModelMismatch(); ok {
 		_spec.SetField(group.FieldStrictModelPriorityOnModelMismatch, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AccountSchedulingStrategy(); ok {
+		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -3351,6 +3373,20 @@ func (_u *GroupUpdateOne) SetNillableStrictModelPriorityOnModelMismatch(v *bool)
 	return _u
 }
 
+// SetAccountSchedulingStrategy sets the "account_scheduling_strategy" field.
+func (_u *GroupUpdateOne) SetAccountSchedulingStrategy(v string) *GroupUpdateOne {
+	_u.mutation.SetAccountSchedulingStrategy(v)
+	return _u
+}
+
+// SetNillableAccountSchedulingStrategy sets the "account_scheduling_strategy" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableAccountSchedulingStrategy(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetAccountSchedulingStrategy(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdateOne) SetRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.ResetRpmLimit()
@@ -3759,6 +3795,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AccountSchedulingStrategy(); ok {
+		if err := group.AccountSchedulingStrategyValidator(v); err != nil {
+			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -4137,6 +4178,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.StrictModelPriorityOnModelMismatch(); ok {
 		_spec.SetField(group.FieldStrictModelPriorityOnModelMismatch, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AccountSchedulingStrategy(); ok {
+		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

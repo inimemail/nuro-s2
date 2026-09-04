@@ -90,6 +90,13 @@ func (s *OpenAIGatewayService) prioritizeOpenAIPromptCacheWarmCandidates(ctx con
 	if len(candidates) <= 1 || !IsOpenAIPromptCacheBoostAffinitySessionHash(req.SessionHash) {
 		return candidates
 	}
+	// Health-first ordering already places session/cache affinity after health and
+	// the effective upstream multiplier. The legacy warm-candidate shortcut is
+	// intentionally strict-priority based and could otherwise move a less
+	// healthy account ahead of a healthier one.
+	if req.AccountSchedulingStrategy == AccountSchedulingStrategyHealthFirst {
+		return candidates
+	}
 	baseline := candidates[0]
 	if baseline.account == nil || baseline.loadInfo == nil {
 		return candidates

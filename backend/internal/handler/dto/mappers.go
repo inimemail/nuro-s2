@@ -218,6 +218,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequireOAuthOnly:                   g.RequireOAuthOnly,
 		RequirePrivacySet:                  g.RequirePrivacySet,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:          service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
 		RPMLimit:                           g.RPMLimit,
 		ForceOpenAIFast:                    g.ForceOpenAIFast,
 		MaxReasoningEffort:                 g.MaxReasoningEffort,
