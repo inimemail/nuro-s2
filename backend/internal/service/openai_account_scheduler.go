@@ -297,8 +297,40 @@ type openAIAccountRuntimeStats struct {
 	selectionCounter   atomic.Uint64
 	unknownExploreAt   sync.Map
 	degradedRecoveryAt sync.Map
+	healthFirstCounter sync.Map
+	healthFirstProbeAt sync.Map
 	sharedMu           sync.RWMutex
 	shared             *openAIAccountHealthSharedState
+}
+
+func (s *openAIAccountRuntimeStats) healthFirstProbeTurn(groupID int64) bool {
+	if s == nil || accountHealthUnknownExploreEvery == 0 {
+		return false
+	}
+	value, _ := s.healthFirstCounter.LoadOrStore(groupID, &atomic.Uint64{})
+	counter, _ := value.(*atomic.Uint64)
+	return counter != nil && counter.Add(1)%accountHealthUnknownExploreEvery == 0
+}
+
+func (s *openAIAccountRuntimeStats) healthFirstProbeDue(groupID, accountID int64, now time.Time, delay time.Duration) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
+	if raw, ok := s.healthFirstProbeAt.Load(key); ok {
+		lastNano, _ := raw.(int64)
+		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < delay {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *openAIAccountRuntimeStats) markHealthFirstProbe(groupID, accountID int64, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.healthFirstProbeAt.Store(accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}, now.UnixNano())
 }
 
 type openAIAccountRuntimeStatsKey struct {
@@ -1379,9 +1411,90 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 		}
 	}
 	now := time.Now()
+	known := hasKnownOpenAIHealthSample(ordered)
+	groupID := int64(0)
+	if req.GroupID != nil {
+		groupID = *req.GroupID
+	}
+	// Cold start protection: retain a valid sticky account, otherwise begin with
+	// the configured priority order until runtime samples are available.
+	if !known {
+		if req.StickyAccountID > 0 {
+			for i := range ordered {
+				if ordered[i].account != nil && ordered[i].account.ID == req.StickyAccountID {
+					result := append([]openAIAccountCandidateScore(nil), ordered...)
+					selected := result[i]
+					copy(result[1:i+1], result[:i])
+					result[0] = selected
+					return result
+				}
+			}
+		}
+		return sortOpenAIStrictPriorityCandidatesWithResetAndSession(ordered, false, "")
+	}
+	// Cache hysteresis keeps an active conversation on the current account when
+	// its health is still within the wider exit band and its multiplier is not
+	// materially worse than the best declared candidate.
+	if req.StickyAccountID > 0 {
+		for _, candidate := range ordered {
+			if candidate.account == nil || candidate.account.ID != req.StickyAccountID || candidate.healthScore < bestOpenAIHealthScore(ordered)-accountHealthCacheAffinityExitGap {
+				continue
+			}
+			affinityRate, affinityOK := accountEffectiveUpstreamMultiplier(candidate.account, now)
+			bestRate, bestOK := 0.0, false
+			for _, other := range ordered {
+				rate, ok := accountEffectiveUpstreamMultiplier(other.account, now)
+				if ok && (!bestOK || rate < bestRate) {
+					bestRate, bestOK = rate, true
+				}
+			}
+			if !bestOK || (affinityOK && affinityRate <= bestRate*accountHealthCacheMultiplierTolerance) {
+				result := append([]openAIAccountCandidateScore(nil), ordered...)
+				for i := range result {
+					if result[i].account != nil && result[i].account.ID == req.StickyAccountID {
+						selected := result[i]
+						copy(result[1:i+1], result[:i])
+						result[0] = selected
+						return result
+					}
+				}
+			}
+		}
+	}
+	// Group-isolated recovery sampling only runs without active affinity.
+	probeAccountID := int64(0)
+	if s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.healthFirstProbeTurn(groupID) {
+		best := bestOpenAIHealthScore(ordered)
+		for i := range ordered {
+			candidate := &ordered[i]
+			if candidate.account == nil || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || candidate.healthScore >= best-accountHealthScoreBandThreshold {
+				continue
+			}
+			delay := accountHealthAdaptiveRecoveryDelay(accountHealthCandidate{errorRate: candidate.errorRate})
+			if accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !s.stats.healthFirstProbeDue(groupID, candidate.account.ID, now, delay) {
+				continue
+			}
+			s.stats.markHealthFirstProbe(groupID, candidate.account.ID, now)
+			probeAccountID = candidate.account.ID
+			break
+		}
+	}
+	bestScore := bestOpenAIHealthScore(ordered)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if a.healthScore != b.healthScore {
+		if probeAccountID > 0 {
+			aProbe := a.account != nil && a.account.ID == probeAccountID
+			bProbe := b.account != nil && b.account.ID == probeAccountID
+			if aProbe != bProbe {
+				return aProbe
+			}
+		}
+		aInBestBand := a.account == nil || a.healthScore >= bestScore-accountHealthScoreBandThreshold
+		bInBestBand := b.account == nil || b.healthScore >= bestScore-accountHealthScoreBandThreshold
+		if aInBestBand != bInBestBand {
+			return aInBestBand
+		}
+		if !aInBestBand && a.healthScore != b.healthScore {
 			return a.healthScore > b.healthScore
 		}
 		aRate, aOK := accountEffectiveUpstreamMultiplier(a.account, now)
@@ -1527,6 +1640,16 @@ func hasKnownOpenAIHealthSample(candidates []openAIAccountCandidateScore) bool {
 		}
 	}
 	return false
+}
+
+func bestOpenAIHealthScore(candidates []openAIAccountCandidateScore) float64 {
+	best := -1.0
+	for _, candidate := range candidates {
+		if candidate.healthScore > best {
+			best = candidate.healthScore
+		}
+	}
+	return best
 }
 
 func openAIHealthProbeTopLayer(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
@@ -1796,7 +1919,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 				}
 				continue
 			}
-			if req.SessionHash != "" && !req.PreserveStickyBinding {
+			if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst && req.SessionHash != "" && !req.PreserveStickyBinding {
 				_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 			}
 			return &AccountSelectionResult{
@@ -1917,7 +2040,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 			}
 			continue
 		}
-		if req.SessionHash != "" && !req.PreserveStickyBinding {
+		if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst && req.SessionHash != "" && !req.PreserveStickyBinding {
 			_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 		}
 		return &AccountSelectionResult{

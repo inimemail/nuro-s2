@@ -348,6 +348,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		switch {
 		case successfulOutcome:
 			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if bindErr := h.gatewayService.BindStickySession(requestCtx, apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+					reqLog.Warn("gateway.responses.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
+				}
+			}
 		case neutralOutcome:
 		default:
 			h.reportAccountScheduleResult(account, false, nil)

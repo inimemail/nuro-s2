@@ -420,6 +420,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 			}
 			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, result.FirstTokenMs, parsed.RequiredCapability)
+			// Keep health-first cache affinity only after a successful image turn.
+			// Strict-priority sticky behavior remains inside the scheduler.
+			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+					reqLog.Warn("openai.images.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
+				}
+			}
 		case neutralOutcome:
 			// Client disconnect, cyber policy, and incomplete/cancelled image
 			// turns remain billable but are not account-health samples.

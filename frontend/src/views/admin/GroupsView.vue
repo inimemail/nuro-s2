@@ -1778,22 +1778,7 @@
           </div>
         </div>
 
-        <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-4 dark:border-dark-600 dark:bg-dark-800/60">
-          <div class="mb-3">
-            <label class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.form.accountSchedulingStrategy") }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.accountSchedulingStrategyHint") }}</p>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60" :aria-pressed="createForm.account_scheduling_strategy === 'strict_priority'" :class="createForm.account_scheduling_strategy === 'strict_priority' ? 'border-primary-500 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20' : 'border-gray-200 bg-white hover:border-primary-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-primary-500'" @click="createForm.account_scheduling_strategy = 'strict_priority'">
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.strictPriority") }}</span>
-              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.strictPriorityHint") }}</span>
-            </button>
-            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60" :aria-pressed="createForm.account_scheduling_strategy === 'health_first'" :class="createForm.account_scheduling_strategy === 'health_first' ? 'border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-900/20' : 'border-gray-200 bg-white hover:border-emerald-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-emerald-500'" @click="createForm.account_scheduling_strategy = 'health_first'">
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.healthFirst") }}</span>
-              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.healthFirstHint") }}</span>
-            </button>
-          </div>
-        </div>
+        <AccountSchedulingStrategyField v-model="createForm.account_scheduling_strategy" />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
@@ -3404,22 +3389,7 @@
           </div>
         </div>
 
-        <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-4 dark:border-dark-600 dark:bg-dark-800/60">
-          <div class="mb-3">
-            <label class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.form.accountSchedulingStrategy") }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.accountSchedulingStrategyHint") }}</p>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60" :aria-pressed="editForm.account_scheduling_strategy === 'strict_priority'" :class="editForm.account_scheduling_strategy === 'strict_priority' ? 'border-primary-500 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20' : 'border-gray-200 bg-white hover:border-primary-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-primary-500'" @click="editForm.account_scheduling_strategy = 'strict_priority'">
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.strictPriority") }}</span>
-              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.strictPriorityHint") }}</span>
-            </button>
-            <button type="button" class="rounded-md border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60" :aria-pressed="editForm.account_scheduling_strategy === 'health_first'" :class="editForm.account_scheduling_strategy === 'health_first' ? 'border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-900/20' : 'border-gray-200 bg-white hover:border-emerald-300 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-emerald-500'" @click="editForm.account_scheduling_strategy = 'health_first'">
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t("admin.groups.form.healthFirst") }}</span>
-              <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.form.healthFirstHint") }}</span>
-            </button>
-          </div>
-        </div>
+        <AccountSchedulingStrategyField v-model="editForm.account_scheduling_strategy" />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
@@ -3826,6 +3796,7 @@ import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import EmptyState from "@/components/common/EmptyState.vue";
 import Select from "@/components/common/Select.vue";
+import AccountSchedulingStrategyField from "@/components/admin/group/AccountSchedulingStrategyField.vue";
 import PlatformIcon from "@/components/common/PlatformIcon.vue";
 import Icon from "@/components/icons/Icon.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";

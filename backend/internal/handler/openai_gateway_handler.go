@@ -1025,12 +1025,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			if !healthProbe {
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
+				if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+					_ = h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
+				}
 			}
 			return
 		}
 		service.ApplyObservedOpenAIServiceTier(c, result)
 		if !healthProbe && successfulOutcome {
 			h.recordOpenAIHealthProbeRecentSuccess(apiKey.ID, requestPlatform, reqModel)
+		}
+		if successfulOutcome && !healthProbe && sessionHash != "" && apiKey.Group != nil &&
+			service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+			if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+				reqLog.Warn("openai.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
+			}
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -1718,6 +1727,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
+			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				_ = h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
+			}
 			return
 		}
 
@@ -2666,6 +2678,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				switch {
 				case successfulTerminal:
 					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, routingModel, true, result.FirstTokenMs)
+					if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+						_ = h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID)
+					}
 				case neutralOutcome:
 					// Client disconnect, cyber policy, and incomplete/cancelled turns are
 					// billable when usage exists but are not account-health samples.

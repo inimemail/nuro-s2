@@ -1775,6 +1775,20 @@ func (s *OpenAIGatewayService) ClaimStickySession(ctx context.Context, groupID *
 	if sessionHash == "" || accountID <= 0 {
 		return nil
 	}
+	// Health-first selections are provisional until the upstream turn succeeds;
+	// claiming here would make a failed candidate sticky and cause reconnect
+	// loops to hit the same unhealthy account repeatedly.
+	if groupID != nil {
+		if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
+			if groupUsesHealthFirst(group) {
+				return nil
+			}
+		} else if s.schedulerSnapshot != nil {
+			if group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); err == nil && groupUsesHealthFirst(group) {
+				return nil
+			}
+		}
+	}
 	ttl := openaiStickySessionTTL
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
 		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second

@@ -452,6 +452,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 		if !endpoint.IsVideoLookupRequest() {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, routingModel, true, nil)
+			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+					reqLog.Warn("grok_media.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
+				}
+			}
 		}
 		if shouldRecordGrokMediaUsage(endpoint, requestModel) {
 			recordGrokMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, routingModel, body, requestID)

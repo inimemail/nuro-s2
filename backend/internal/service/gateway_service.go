@@ -1797,7 +1797,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if !affinityActive && stickyAccountID > 0 {
 				affinityID, affinityActive = stickyAccountID, true
 			}
-			return selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), affinityID, affinityActive)
+			return selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), affinityID, affinityActive)
 		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithLoadAndAnthropicAffinity(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
@@ -2136,7 +2136,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 						} else {
 							if sessionHash != "" && s.cache != nil {
-								_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
+								_ = s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.account.ID, groupUsesHealthFirst(group))
 							}
 							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected.account)
 							if s.debugModelRoutingEnabled() {
@@ -2407,7 +2407,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group)); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -2443,7 +2443,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 				} else {
 					if sessionHash != "" && s.cache != nil {
-						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
+						_ = s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.account.ID, groupUsesHealthFirst(group))
 					}
 					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected.account)
 					return s.newAcquiredSelectionResult(ctx, selected.account, result.ReleaseFunc)
@@ -2463,7 +2463,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
-	s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
+	if groupUsesHealthFirst(group) {
+		s.sortHealthFirstCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID))
+	} else {
+		s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
+	}
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -2562,7 +2566,7 @@ func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
 	})
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig, healthFirst bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
 	anthropicAffinityActive := anthropicAffinityHash != ""
@@ -2588,7 +2592,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 				return nil, false, err
 			}
 			if sessionHash != "" && s.cache != nil {
-				_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selection.Account.ID, stickySessionTTL)
+				_ = s.bindSelectedStickySession(ctx, groupID, sessionHash, selection.Account.ID, healthFirst)
 			}
 			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
 			return selection, true, nil
@@ -2644,6 +2648,19 @@ func (s *GatewayService) groupFromContext(ctx context.Context, groupID int64) *G
 		return group
 	}
 	return nil
+}
+
+// bindSelectedStickySession records a scheduler candidate only for the legacy
+// strict-priority policy. Health-first binds after a successful upstream turn
+// in the handler, so a failed first attempt cannot poison cache affinity.
+func (s *GatewayService) bindSelectedStickySession(ctx context.Context, groupID *int64, sessionHash string, accountID int64, healthFirst bool) error {
+	if healthFirst {
+		return nil
+	}
+	if sessionHash == "" || s.cache == nil {
+		return nil
+	}
+	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
 }
 
 func (s *GatewayService) resolveGroupByID(ctx context.Context, groupID int64) (*Group, error) {
@@ -3709,11 +3726,81 @@ func selectHealthAwareAccountWithLoad(accounts []accountWithLoad, healthStats *a
 // affinity, configured priority, load and LRU. Missing or stale probe data is
 // deliberately treated as an undeclared multiplier, never as zero.
 func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, affinityAccountID int64, affinityActive bool) *accountWithLoad {
+	return selectHealthFirstAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, 0, affinityAccountID, affinityActive)
+}
+
+// selectHealthFirstAccountWithLoadForGroup applies the opt-in adaptive policy.
+// The group id is used only to isolate recovery sampling state; all hard
+// eligibility and capacity checks remain in the caller.
+func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
 	if len(accounts) == 0 {
 		return nil
 	}
 	candidates := buildAccountHealthCandidates(accounts, healthStats)
 	bestScore := bestAccountHealthScore(candidates)
+	known := hasKnownAccountHealthSample(candidates)
+	// On a cold start do not let an undeclared multiplier win merely because it
+	// is cheaper. Preserve a valid cache binding, otherwise use the configured
+	// priority/load order until enough observations exist.
+	if !known {
+		if affinityActive && affinityAccountID > 0 {
+			for i := range candidates {
+				if candidates[i].item.account != nil && candidates[i].item.account.ID == affinityAccountID {
+					return &candidates[i].item
+				}
+			}
+		}
+		return selectHealthFirstColdStart(candidates, preferOAuth)
+	}
+
+	// Cache hysteresis: one or two transient failures should not immediately
+	// evict an active conversation. The wider exit band is still subordinate to
+	// hard multiplier guards and a materially better declared multiplier.
+	if affinityActive && affinityAccountID > 0 {
+		var affinity *accountHealthCandidate
+		for i := range candidates {
+			if candidates[i].item.account != nil && candidates[i].item.account.ID == affinityAccountID {
+				affinity = &candidates[i]
+				break
+			}
+		}
+		if affinity != nil && affinity.score >= bestScore-accountHealthCacheAffinityExitGap {
+			affinityRate, affinityOK := accountEffectiveUpstreamMultiplier(affinity.item.account, now)
+			bestRate, bestOK := 0.0, false
+			for _, candidate := range candidates {
+				rate, ok := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
+				if ok && (!bestOK || rate < bestRate) {
+					bestRate, bestOK = rate, true
+				}
+			}
+			if !bestOK || (affinityOK && affinityRate <= bestRate*accountHealthCacheMultiplierTolerance) {
+				return &affinity.item
+			}
+		}
+	}
+
+	// Recovery probes are deliberately sparse, group-scoped, and only happen
+	// when there is no active cache affinity. They never bypass caller filters.
+	if healthStats != nil && !affinityActive && healthStats.healthFirstProbeTurn(groupID) {
+		for i := range candidates {
+			candidate := &candidates[i]
+			if candidate.item.account == nil {
+				continue
+			}
+			knownSample := accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate)
+			if !knownSample || candidate.score >= bestScore-accountHealthScoreBandThreshold {
+				continue
+			}
+			if accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, accountHealthAdaptiveRecoveryDelay(*candidate)) {
+				continue
+			}
+			delay := accountHealthAdaptiveRecoveryDelay(*candidate)
+			if healthStats.healthFirstProbeDue(groupID, candidate.item.account.ID, now, delay) {
+				healthStats.markHealthFirstProbe(groupID, candidate.item.account.ID, now)
+				return &candidate.item
+			}
+		}
+	}
 	if cfg.PreferSoonestReset {
 		// Reset remains a hard scheduling preference only after health has been
 		// evaluated; it must not make an unhealthy account win.
@@ -3737,11 +3824,22 @@ func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *a
 			}
 		}
 	}
+	// Keep only the best health band. Ordering inside the band follows the
+	// approved policy: declared multiplier, cache affinity, priority, pool type,
+	// load, then LRU. This avoids exact-score thrashing.
+	if bestScore >= 0 {
+		band := make([]accountHealthCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.item.account == nil || candidate.score >= bestScore-accountHealthScoreBandThreshold {
+				band = append(band, candidate)
+			}
+		}
+		if len(band) > 0 {
+			candidates = band
+		}
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
-		if a.score != b.score {
-			return a.score > b.score
-		}
 		aRate, aOK := accountEffectiveUpstreamMultiplier(a.item.account, now)
 		bRate, bOK := accountEffectiveUpstreamMultiplier(b.item.account, now)
 		if aOK != bOK {
@@ -3780,6 +3878,30 @@ func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *a
 	if len(candidates) == 0 {
 		return nil
 	}
+	return &candidates[0].item
+}
+
+func selectHealthFirstColdStart(candidates []accountHealthCandidate, preferOAuth bool) *accountWithLoad {
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i].item, candidates[j].item
+		pa, pb := accountPriority(a.account), accountPriority(b.account)
+		if pa != pb {
+			return pa < pb
+		}
+		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
+		}
+		if a.loadInfoMissing != b.loadInfoMissing {
+			return !a.loadInfoMissing
+		}
+		if a.loadInfo != nil && b.loadInfo != nil && a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		return lruAccountBefore(a.account, b.account, preferOAuth)
+	})
 	return &candidates[0].item
 }
 
@@ -4155,6 +4277,42 @@ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, healthSt
 	}
 }
 
+// sortHealthFirstCandidatesForFallback preserves the adaptive policy even when
+// every account is currently at capacity and the caller must return a wait plan.
+// It intentionally uses neutral load samples because no account slot is
+// available in this path; the health band, multiplier, priority and LRU rules
+// still determine the order. Strict-priority callers continue using the legacy
+// sorter above.
+func (s *GatewayService) sortHealthFirstCandidatesForFallback(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, groupID int64) {
+	if len(accounts) <= 1 {
+		return
+	}
+	remaining := accountPointersToNeutralLoads(accounts)
+	ordered := make([]*Account, 0, len(remaining))
+	for len(remaining) > 0 {
+		selected := selectHealthFirstAccountWithLoadForGroup(remaining, healthStats, cfg, preferOAuth, time.Now(), groupID, 0, false)
+		if selected == nil || selected.account == nil {
+			break
+		}
+		ordered = append(ordered, selected.account)
+		remaining = removeAccountWithLoadCandidate(remaining, selected.account.ID)
+	}
+	if len(ordered) == len(accounts) {
+		copy(accounts, ordered)
+	}
+}
+
+func removeAccountWithLoadCandidate(candidates []accountWithLoad, accountID int64) []accountWithLoad {
+	result := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.account == nil || candidate.account.ID == accountID {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
 // sortAccountsByPriorityOnly 仅按优先级排序
 func sortAccountsByPriorityOnly(accounts []*Account, preferOAuth bool) {
 	sort.SliceStable(accounts, func(i, j int) bool {
@@ -4225,7 +4383,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), selectionAffinityAccountID, selectionAffinityActive)
+			selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive)
 			if selected != nil {
 				return selected.account
 			}
@@ -4351,7 +4509,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		selected := selectAccount(candidates)
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
-				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
+				if err := s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.ID, groupUsesHealthFirst(schedGroup)); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 				}
 			}
@@ -4470,7 +4628,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	// 4. 建立粘性绑定
 	if sessionHash != "" && s.cache != nil {
-		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
+		if err := s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.ID, groupUsesHealthFirst(schedGroup)); err != nil {
 			logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 		}
 	}
@@ -4508,7 +4666,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectHealthFirstAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), selectionAffinityAccountID, selectionAffinityActive)
+			selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive)
 			if selected != nil {
 				return selected.account
 			}
@@ -4634,7 +4792,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		selected := selectAccount(candidates)
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
-				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
+				if err := s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.ID, groupUsesHealthFirst(schedGroup)); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 				}
 			}
@@ -4754,7 +4912,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	// 4. 建立粘性绑定
 	if sessionHash != "" && s.cache != nil {
-		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
+		if err := s.bindSelectedStickySession(ctx, groupID, sessionHash, selected.ID, groupUsesHealthFirst(schedGroup)); err != nil {
 			logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 		}
 	}

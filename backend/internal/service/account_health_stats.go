@@ -12,14 +12,19 @@ const (
 	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
 	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
 	// 首 token 速度差即可跨带胜出，10%~30% 的抖动仍判为同带走均衡。
-	accountHealthScoreBandThreshold           = 0.12
-	accountHealthCacheAffinityMaxGap          = 0.10
-	accountHealthUnknownScore                 = 0.82
-	accountHealthUnknownTTFTScore             = 0.78
-	accountHealthUnknownMinSamples      int64 = 3
-	accountHealthUnknownExploreEvery          = uint64(20)
-	accountHealthUnknownExploreCooldown       = time.Minute
-	accountHealthDegradedRecoveryDelay        = 5 * time.Minute
+	accountHealthScoreBandThreshold  = 0.12
+	accountHealthCacheAffinityMaxGap = 0.10
+	// A cached account gets a wider exit band than a new candidate's entry
+	// band. This hysteresis prevents small EWMA fluctuations from moving an
+	// active conversation back and forth between accounts.
+	accountHealthCacheAffinityExitGap           = 0.18
+	accountHealthCacheMultiplierTolerance       = 1.10
+	accountHealthUnknownScore                   = 0.82
+	accountHealthUnknownTTFTScore               = 0.78
+	accountHealthUnknownMinSamples        int64 = 3
+	accountHealthUnknownExploreEvery            = uint64(20)
+	accountHealthUnknownExploreCooldown         = time.Minute
+	accountHealthDegradedRecoveryDelay          = 5 * time.Minute
 	// 健康分权重：错误率 + 首 token(TTFT)。提高 TTFT 权重让"更丝滑/回复更快"
 	// 的账号在同优先级里更容易被优先选中（仅作用于无粘性的 load-balance 选号层）。
 	accountHealthErrorWeight = 0.55
@@ -31,6 +36,13 @@ type accountRuntimeHealthStats struct {
 	selectionCounter   atomic.Uint64
 	unknownExploreAt   sync.Map
 	degradedRecoveryAt sync.Map
+	healthFirstCounter sync.Map
+	healthFirstProbeAt sync.Map
+}
+
+type accountHealthGroupProbeKey struct {
+	groupID   int64
+	accountID int64
 }
 
 type accountRuntimeHealthStat struct {
@@ -287,6 +299,53 @@ func accountHealthSampleRecentlyUpdated(lastUpdated time.Time, now time.Time, in
 		return false
 	}
 	return now.Sub(lastUpdated) < interval
+}
+
+func (s *accountRuntimeHealthStats) healthFirstProbeTurn(groupID int64) bool {
+	if s == nil || accountHealthUnknownExploreEvery == 0 {
+		return false
+	}
+	value, _ := s.healthFirstCounter.LoadOrStore(groupID, &atomic.Uint64{})
+	counter, _ := value.(*atomic.Uint64)
+	return counter != nil && counter.Add(1)%accountHealthUnknownExploreEvery == 0
+}
+
+func accountHealthAdaptiveRecoveryDelay(candidate accountHealthCandidate) time.Duration {
+	delay := time.Minute
+	switch {
+	case candidate.errorRate >= 0.60:
+		delay = 8 * time.Minute
+	case candidate.errorRate >= 0.40:
+		delay = 4 * time.Minute
+	case candidate.errorRate >= 0.20:
+		delay = 2 * time.Minute
+	}
+	if delay > 10*time.Minute {
+		return 10 * time.Minute
+	}
+	return delay
+}
+
+func (s *accountRuntimeHealthStats) healthFirstProbeDue(groupID, accountID int64, now time.Time, delay time.Duration) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
+	if raw, ok := s.healthFirstProbeAt.Load(key); ok {
+		lastNano, _ := raw.(int64)
+		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < delay {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *accountRuntimeHealthStats) markHealthFirstProbe(groupID, accountID int64, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
+	s.healthFirstProbeAt.Store(key, now.UnixNano())
 }
 
 func filterByAccountHealthBand(accounts []accountWithLoad, stats *accountRuntimeHealthStats) []accountWithLoad {

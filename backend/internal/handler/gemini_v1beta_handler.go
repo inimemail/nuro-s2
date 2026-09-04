@@ -523,8 +523,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
 			}
-			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
-				reqLog.Warn("gemini.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			if apiKey.Group == nil || service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) != service.AccountSchedulingStrategyHealthFirst {
+				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
+					reqLog.Warn("gemini.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
 			}
 		}
 		// 账号槽位/等待计数需要在超时或断开时安全回收
@@ -584,6 +586,12 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		switch {
 		case successfulOutcome:
 			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			healthFirst := apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst
+			if sessionKey != "" && (healthFirst || sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
+				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
+					reqLog.Warn("gemini.bind_sticky_session_after_success_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
 		case neutralOutcome:
 		default:
 			h.reportAccountScheduleResult(account, false, nil)

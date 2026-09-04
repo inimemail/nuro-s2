@@ -370,6 +370,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		switch {
 		case successfulOutcome:
 			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			if selectionSessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, selectionSessionHash, account.ID); bindErr != nil {
+					reqLog.Warn("gateway.cc.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
+				}
+			}
 		case neutralOutcome:
 		default:
 			h.reportAccountScheduleResult(account, false, nil)

@@ -83,6 +83,35 @@ func TestSelectHealthFirstAccountWithLoad_LowerDeclaredMultiplierWinsWithinHealt
 	require.Equal(t, int64(2), selected.account.ID)
 }
 
+func TestSelectHealthFirstAccountWithLoad_CacheHysteresisKeepsSingleTransientFailure(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 120
+	// The cached account has a strong history with one transient failure; the
+	// competitor remains healthy but should not evict the active cache yet.
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	stats.report(1, false, &fast)
+	reportHealthSamples(stats, 2, true, &fast, 4)
+	now := time.Now()
+	selected := selectHealthFirstAccountWithLoadForGroup([]accountWithLoad{
+		makeHealthTestAccount(1, 1, 0, true),
+		makeHealthTestAccount(2, 10, 0, true),
+	}, stats, config.GatewaySchedulingConfig{}, false, now, 77, 1, true)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+}
+
+func TestSelectHealthFirstAccountWithLoad_ColdStartPreservesPriority(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	cheapLowerPriority := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.1, now.Add(time.Hour))
+	selected := selectHealthFirstAccountWithLoadForGroup([]accountWithLoad{
+		makeHealthTestAccount(1, 1, 0, true),
+		cheapLowerPriority,
+	}, stats, config.GatewaySchedulingConfig{}, false, now, 88, 0, false)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+}
+
 func TestSelectHealthFirstAccountWithLoad_ExpiredMultiplierIsUndeclared(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 100
