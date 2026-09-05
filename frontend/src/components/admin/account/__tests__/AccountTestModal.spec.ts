@@ -144,4 +144,50 @@ describe('AccountTestModal', () => {
     expect(preview.exists()).toBe(true)
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
+
+  it('OpenAI 测试模型将 GPT-6 置顶但保留原接口默认模型', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
+      { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
+      { id: 'gpt-6-astra', display_name: 'GPT-6 Astra' },
+      { id: 'gpt-5.4', display_name: 'GPT-5.4' }
+    ])
+
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: false,
+        account: {
+          id: 42,
+          name: 'OpenAI Test',
+          platform: 'openai',
+          type: 'oauth',
+          status: 'active'
+        }
+      } as any,
+      global: {
+        stubs: {
+          BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+          Select: { template: '<div class="select-stub"></div>' },
+          TextArea: {
+            props: ['modelValue'],
+            emits: ['update:modelValue'],
+            template: '<textarea class="textarea-stub" :value="modelValue" />'
+          },
+          Icon: true
+        }
+      }
+    })
+
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const vm = wrapper.vm as any
+    expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'gpt-6-astra',
+      'gpt-6',
+      'gpt-5.6',
+      'gpt-5.4'
+    ])
+    expect(vm.selectedModelId).toBe('gpt-5.6')
+  })
 })

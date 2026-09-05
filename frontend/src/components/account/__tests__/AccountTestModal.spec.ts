@@ -148,6 +148,42 @@ describe('AccountTestModal', () => {
     })
   })
 
+  it('puts GPT-6 aliases first without changing the API-order default model', async () => {
+    getAvailableModelsMock.mockResolvedValue([
+      { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
+      { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
+      { id: 'gpt-6-astra', display_name: 'GPT-6 Astra' },
+      { id: 'gpt-5.4', display_name: 'GPT-5.4' }
+    ])
+
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: false,
+        account: buildAccount()
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+    })
+
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const vm = wrapper.vm as any
+    expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'gpt-6-astra',
+      'gpt-6',
+      'gpt-5.6',
+      'gpt-5.4'
+    ])
+    expect(vm.selectedModelId).toBe('gpt-5.6')
+  })
+
   it('renders Chat Completions path status from test SSE', async () => {
     const encoder = new TextEncoder()
     const chunks = [

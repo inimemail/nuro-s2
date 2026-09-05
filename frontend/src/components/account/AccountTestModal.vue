@@ -293,6 +293,8 @@ const openAITestModeOptions = computed(() => [
 ])
 const previewImageUrl = ref('')
 const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
+// Keep the newest GPT-6 aliases together at the top of the test-model picker.
+const prioritizedOpenAIModels = ['gpt-6-astra', 'gpt-6']
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
@@ -310,6 +312,17 @@ const supportsImageTest = computed(() => supportsGeminiImageTest.value || suppor
 
 const sortTestModels = (models: ClaudeModel[]) => {
   const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
+
+  return [...models].sort((a, b) => {
+    const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
+    const bPriority = priorityMap.get(b.id) ?? Number.MAX_SAFE_INTEGER
+    if (aPriority !== bPriority) return aPriority - bPriority
+    return 0
+  })
+}
+
+const sortOpenAITestModels = (models: ClaudeModel[]) => {
+  const priorityMap = new Map(prioritizedOpenAIModels.map((id, index) => [id, index]))
 
   return [...models].sort((a, b) => {
     const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
@@ -347,9 +360,12 @@ const loadAvailableModels = async () => {
   selectedModelId.value = '' // Reset selection before loading
   try {
     const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
-      ? sortTestModels(models)
-      : models
+    availableModels.value =
+      props.account.platform === 'gemini' || props.account.platform === 'antigravity'
+        ? sortTestModels(models)
+        : props.account.platform === 'openai'
+          ? sortOpenAITestModels(models)
+          : models
     // Default selection by platform
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {
@@ -357,7 +373,9 @@ const loadAvailableModels = async () => {
       } else {
         // Try to select Sonnet as default, otherwise use first model
         const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
-        selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
+        // Keep the pre-existing API-order fallback even when the picker is visually sorted.
+        const fallbackModel = props.account.platform === 'openai' ? models[0] : availableModels.value[0]
+        selectedModelId.value = sonnetModel?.id || fallbackModel.id
       }
     }
   } catch (error) {

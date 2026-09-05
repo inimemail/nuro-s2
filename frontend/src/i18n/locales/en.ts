@@ -2326,13 +2326,13 @@ export default {
         ,strictPriority: 'Strict priority'
         ,strictPriorityHint: 'Keep the current behavior and prefer accounts in the highest configured priority layer.'
         ,healthFirst: 'Adaptive health'
-        ,healthLeading: 'Health leading'
-        ,healthLeadingShortHint: 'Best health first'
+        ,healthLeading: 'Health first'
+        ,healthLeadingShortHint: 'Prefer healthy accounts'
         ,healthLeadingHint: 'Prioritize health score; sample-starved accounts receive bounded evaluation opportunities, then multiplier, affinity, and load break close ties.'
         ,healthCostBalanced: 'Health cost balanced'
-        ,healthCostBalancedShortHint: 'Lower cost after health'
+        ,healthCostBalancedShortHint: 'Balance health and cost'
         ,healthCostBalancedHint: 'Exclude clearly unhealthy accounts first; among healthy accounts prefer a valid lower multiplier with load protection and bounded rotation.'
-        ,strictPriorityShortHint: 'Original priority order'
+        ,strictPriorityShortHint: 'Use account priority'
       },
       enterGroupName: 'Enter group name',
       optionalDescription: 'Optional description',
