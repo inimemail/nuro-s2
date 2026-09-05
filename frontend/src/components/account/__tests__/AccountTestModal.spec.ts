@@ -148,7 +148,7 @@ describe('AccountTestModal', () => {
     })
   })
 
-  it('puts GPT-6 aliases first without changing the API-order default model', async () => {
+  it('puts GPT-6 aliases first and selects the first model by default', async () => {
     getAvailableModelsMock.mockResolvedValue([
       { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
       { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
@@ -181,7 +181,7 @@ describe('AccountTestModal', () => {
       'gpt-5.6',
       'gpt-5.4'
     ])
-    expect(vm.selectedModelId).toBe('gpt-5.6')
+    expect(vm.selectedModelId).toBe('gpt-6-astra')
   })
 
   it('renders Chat Completions path status from test SSE', async () => {

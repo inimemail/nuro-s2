@@ -145,7 +145,7 @@ describe('AccountTestModal', () => {
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
 
-  it('OpenAI 测试模型将 GPT-6 置顶但保留原接口默认模型', async () => {
+  it('OpenAI 测试模型将 GPT-6 置顶并默认选择第一项', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
       { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
@@ -188,6 +188,6 @@ describe('AccountTestModal', () => {
       'gpt-5.6',
       'gpt-5.4'
     ])
-    expect(vm.selectedModelId).toBe('gpt-5.6')
+    expect(vm.selectedModelId).toBe('gpt-6-astra')
   })
 })

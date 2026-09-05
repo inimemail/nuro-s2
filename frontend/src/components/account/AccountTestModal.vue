@@ -373,9 +373,7 @@ const loadAvailableModels = async () => {
       } else {
         // Try to select Sonnet as default, otherwise use first model
         const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
-        // Keep the pre-existing API-order fallback even when the picker is visually sorted.
-        const fallbackModel = props.account.platform === 'openai' ? models[0] : availableModels.value[0]
-        selectedModelId.value = sonnetModel?.id || fallbackModel.id
+        selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
       }
     }
   } catch (error) {
