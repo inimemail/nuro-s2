@@ -118,6 +118,7 @@ type APIKeyAuthGroupSnapshot struct {
 	DefaultMappedModel                 string                            `json:"default_mapped_model,omitempty"`
 	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
 	ModelsListConfig                   GroupModelsListConfig             `json:"models_list_config,omitempty"`
+	CodexModelsManifestConfig          GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config,omitempty"`
 	StrictModelPriorityOnModelMismatch bool                              `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          string                            `json:"account_scheduling_strategy"`
 

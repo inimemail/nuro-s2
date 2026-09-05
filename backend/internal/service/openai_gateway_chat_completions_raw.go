@@ -272,6 +272,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -316,7 +318,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			if s.shouldFailoverUpstreamError(resp.StatusCode) {
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+					ProxyID:   opsUpstreamProxyID(account),
+					ProxyName: opsUpstreamProxyName(account),
+					Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
 					UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
 					Kind: "failover", Message: upstreamMsg,
 				})
@@ -348,6 +352,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				upstreamDetail = truncateString(string(respBody), maxBytes)
 			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,

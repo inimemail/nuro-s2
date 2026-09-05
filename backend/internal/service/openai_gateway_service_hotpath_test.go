@@ -81,6 +81,13 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "max",
 		},
 		{
+			name:      "GPT-6 Astra 显式 max 保留",
+			body:      []byte(`{"reasoning":{"effort":"max"}}`),
+			model:     "gpt-6-astra",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
 			name:      "非 GPT-5.6 显式 max 兼容为 xhigh",
 			body:      []byte(`{"reasoning":{"effort":"max"}}`),
 			model:     "gpt-5.4",

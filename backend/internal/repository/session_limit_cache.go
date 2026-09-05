@@ -220,6 +220,15 @@ func (c *sessionLimitCache) RefreshSession(ctx context.Context, accountID int64,
 	return err
 }
 
+// UnregisterSession immediately removes a session registration. ZREM is
+// idempotent, so callers may safely invoke it from failover and defer paths.
+func (c *sessionLimitCache) UnregisterSession(ctx context.Context, accountID int64, sessionUUID string) error {
+	if sessionUUID == "" {
+		return nil
+	}
+	return c.rdb.ZRem(ctx, sessionLimitKey(accountID), sessionUUID).Err()
+}
+
 // GetActiveSessionCount 获取活跃会话数
 func (c *sessionLimitCache) GetActiveSessionCount(ctx context.Context, accountID int64) (int, error) {
 	key := sessionLimitKey(accountID)

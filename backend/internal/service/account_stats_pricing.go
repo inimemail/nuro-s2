@@ -296,7 +296,7 @@ func applyStatsServiceTierMultiplier(cost *float64, pricing *ChannelModelPricing
 	}
 	var multiplier *float64
 	switch normalizeBillingServiceTier(serviceTier[0]) {
-	case "priority", "fast":
+	case "priority", "fast", OpenAIFastTierUltrafast:
 		multiplier = pricing.FastMultiplier
 	case "flex":
 		multiplier = pricing.FlexMultiplier

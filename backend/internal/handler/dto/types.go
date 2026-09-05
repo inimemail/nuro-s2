@@ -106,28 +106,29 @@ type Group struct {
 	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
-	AllowImageGeneration         bool                          `json:"allow_image_generation"`
-	AllowBatchImageGeneration    bool                          `json:"allow_batch_image_generation"`
-	ImageRateIndependent         bool                          `json:"image_rate_independent"`
-	ImageRateMultiplier          float64                       `json:"image_rate_multiplier"`
-	ImagePrice1K                 *float64                      `json:"image_price_1k"`
-	ImagePrice2K                 *float64                      `json:"image_price_2k"`
-	ImagePrice4K                 *float64                      `json:"image_price_4k"`
-	BatchImageDiscountMultiplier float64                       `json:"batch_image_discount_multiplier"`
-	BatchImageHoldMultiplier     float64                       `json:"batch_image_hold_multiplier"`
-	VideoRateIndependent         bool                          `json:"video_rate_independent"`
-	VideoRateMultiplier          float64                       `json:"video_rate_multiplier"`
-	VideoPrice480P               *float64                      `json:"video_price_480p"`
-	VideoPrice720P               *float64                      `json:"video_price_720p"`
-	VideoPrice1080P              *float64                      `json:"video_price_1080p"`
-	VideoModelPrices             map[string]map[string]float64 `json:"video_model_prices"`
-	WebSearchPricePerCall        *float64                      `json:"web_search_price_per_call"`
-	SearchPricePer1K             *float64                      `json:"search_price_per_1k"`
-	AudioRealtimePricePerMin     *float64                      `json:"audio_realtime_price_per_min"`
-	AudioTTSPricePerMillionChars *float64                      `json:"audio_tts_price_per_million_chars"`
-	AudioSTTPricePerHour         *float64                      `json:"audio_stt_price_per_hour"`
-	LongContextPricingEnabled    bool                          `json:"long_context_pricing_enabled"`
-	ModelPricing                 []service.ChannelModelPricing `json:"model_pricing"`
+	AllowImageGeneration         bool                                  `json:"allow_image_generation"`
+	AllowBatchImageGeneration    bool                                  `json:"allow_batch_image_generation"`
+	ImageRateIndependent         bool                                  `json:"image_rate_independent"`
+	ImageRateMultiplier          float64                               `json:"image_rate_multiplier"`
+	ImagePrice1K                 *float64                              `json:"image_price_1k"`
+	ImagePrice2K                 *float64                              `json:"image_price_2k"`
+	ImagePrice4K                 *float64                              `json:"image_price_4k"`
+	BatchImageDiscountMultiplier float64                               `json:"batch_image_discount_multiplier"`
+	BatchImageHoldMultiplier     float64                               `json:"batch_image_hold_multiplier"`
+	VideoRateIndependent         bool                                  `json:"video_rate_independent"`
+	VideoRateMultiplier          float64                               `json:"video_rate_multiplier"`
+	VideoPrice480P               *float64                              `json:"video_price_480p"`
+	VideoPrice720P               *float64                              `json:"video_price_720p"`
+	VideoPrice1080P              *float64                              `json:"video_price_1080p"`
+	VideoModelPrices             map[string]map[string]float64         `json:"video_model_prices"`
+	WebSearchPricePerCall        *float64                              `json:"web_search_price_per_call"`
+	SearchPricePer1K             *float64                              `json:"search_price_per_1k"`
+	AudioRealtimePricePerMin     *float64                              `json:"audio_realtime_price_per_min"`
+	AudioTTSPricePerMillionChars *float64                              `json:"audio_tts_price_per_million_chars"`
+	AudioSTTPricePerHour         *float64                              `json:"audio_stt_price_per_hour"`
+	LongContextPricingEnabled    bool                                  `json:"long_context_pricing_enabled"`
+	ModelPricing                 []service.ChannelModelPricing         `json:"model_pricing"`
+	CodexModelsManifestConfig    domain.GroupCodexModelsManifestConfig `json:"codex_models_manifest_config"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`
@@ -177,6 +178,7 @@ type AdminGroup struct {
 	DefaultMappedModel          string                                   `json:"default_mapped_model"`
 	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
 	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
+	CodexModelsManifestConfig   domain.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes    []string       `json:"supported_model_scopes"`
@@ -610,6 +612,8 @@ type AdminUsageLog struct {
 	ChannelID *int64 `json:"channel_id,omitempty"`
 	// ModelMappingChain 模型映射链，如 "a→b→c"
 	ModelMappingChain *string `json:"model_mapping_chain,omitempty"`
+	// UpstreamRequestID 是直接上游声明的请求标识，仅管理端可见。
+	UpstreamRequestID *string `json:"upstream_request_id,omitempty"`
 	// BillingTier 计费层级标签（per_request/image 模式）
 	BillingTier *string `json:"billing_tier,omitempty"`
 

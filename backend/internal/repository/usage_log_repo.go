@@ -30,7 +30,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_input_tokens, image_input_cost, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, slot_wait_ms, upstream_header_ms, upstream_first_byte_ms, first_client_flush_ms, edge_prepare_ms, edge_queue_wait_ms, edge_relay_start_ms, edge_fallback_reason, edge_retry_count, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, requested_reasoning_effort, native_compaction_v2, session_id, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, upstream_response_model, upstream_model_mismatch, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_input_tokens, image_input_cost, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, slot_wait_ms, upstream_header_ms, upstream_first_byte_ms, first_client_flush_ms, edge_prepare_ms, edge_queue_wait_ms, edge_relay_start_ms, edge_fallback_reason, edge_retry_count, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, upstream_request_id, requested_reasoning_effort, native_compaction_v2, session_id, created_at"
 
 // usageLogInsertArgTypes must stay in the same order as:
 //  1. prepareUsageLogInsert().args
@@ -106,6 +106,7 @@ var usageLogInsertArgTypes = [...]string{
 	"text",        // billing_tier
 	"text",        // billing_mode
 	"numeric",     // account_stats_cost
+	"text",        // upstream_request_id
 	"text",        // requested_reasoning_effort
 	"boolean",     // native_compaction_v2
 	"text",        // session_id
@@ -443,6 +444,7 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			upstream_request_id,
 			requested_reasoning_effort,
 			native_compaction_v2,
 			session_id,
@@ -453,7 +455,7 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			$10, $11, $12, $13,
 			$14, $15, $16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -907,6 +909,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			upstream_request_id,
 			requested_reasoning_effort,
 			native_compaction_v2,
 			session_id,
@@ -1008,6 +1011,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				upstream_request_id,
 				requested_reasoning_effort,
 				native_compaction_v2,
 				session_id,
@@ -1080,6 +1084,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				upstream_request_id,
 				requested_reasoning_effort,
 				native_compaction_v2,
 				session_id,
@@ -1192,6 +1197,7 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			upstream_request_id,
 			requested_reasoning_effort,
 			native_compaction_v2,
 			session_id,
@@ -1290,6 +1296,7 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			upstream_request_id,
 			requested_reasoning_effort,
 			native_compaction_v2,
 			session_id,
@@ -1360,10 +1367,11 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			channel_id,
 			model_mapping_chain,
 			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			requested_reasoning_effort,
-			native_compaction_v2,
+				billing_mode,
+				account_stats_cost,
+				upstream_request_id,
+				requested_reasoning_effort,
+				native_compaction_v2,
 			session_id,
 			created_at
 		FROM input
@@ -1442,6 +1450,7 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			upstream_request_id,
 			requested_reasoning_effort,
 			native_compaction_v2,
 			session_id,
@@ -1452,7 +1461,7 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			$10, $11, $12, $13,
 			$14, $15, $16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
@@ -1498,6 +1507,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	modelMappingChain := nullString(log.ModelMappingChain)
 	billingTier := nullString(log.BillingTier)
 	billingMode := nullString(log.BillingMode)
+	upstreamRequestID := nullString(log.UpstreamRequestID)
 	requestedModel := strings.TrimSpace(log.RequestedModel)
 	if requestedModel == "" {
 		requestedModel = strings.TrimSpace(log.Model)
@@ -1583,6 +1593,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			billingTier,
 			billingMode,
 			log.AccountStatsCost, // account_stats_cost
+			upstreamRequestID,    // upstream_request_id
 			requestedReasoningEffort,
 			log.NativeCompactionV2,
 			nullString(log.SessionID),
@@ -4546,6 +4557,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		billingTier              sql.NullString
 		billingMode              sql.NullString
 		accountStatsCost         sql.NullFloat64
+		upstreamRequestID        sql.NullString
 		createdAt                time.Time
 	)
 
@@ -4617,6 +4629,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&billingTier,
 		&billingMode,
 		&accountStatsCost,
+		&upstreamRequestID,
 		&requestedReasoningEffort,
 		&nativeCompactionV2,
 		&sessionID,
@@ -4667,6 +4680,9 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 
 	if requestID.Valid {
 		log.RequestID = requestID.String
+	}
+	if upstreamRequestID.Valid {
+		log.UpstreamRequestID = &upstreamRequestID.String
 	}
 	if sessionID.Valid {
 		log.SessionID = &sessionID.String

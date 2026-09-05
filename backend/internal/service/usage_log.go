@@ -107,6 +107,9 @@ type UsageLog struct {
 	APIKeyID  int64
 	AccountID int64
 	RequestID string
+	// UpstreamRequestID is the account-configured response-header correlation ID.
+	// It is observational metadata and is nil when not configured or unavailable.
+	UpstreamRequestID *string
 	SessionID *string
 	Model     string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.

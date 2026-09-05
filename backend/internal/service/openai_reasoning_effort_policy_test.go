@@ -21,7 +21,7 @@ func TestNormalizeReasoningEffortPolicy(t *testing.T) {
 	require.Equal(t, []ReasoningEffortMapping{{From: "max", To: "xhigh"}}, got)
 
 	_, err = NormalizeReasoningEffortMappings(PlatformAnthropic, []ReasoningEffortMapping{{From: "low", To: "high"}})
-	require.Error(t, err)
+	require.NoError(t, err)
 	_, err = NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{
 		{From: "max", To: "xhigh"},
 		{From: "MAX", To: "low"},

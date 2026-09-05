@@ -75,6 +75,11 @@ func RequestID(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldRequestID, v))
 }
 
+// UpstreamRequestID applies equality check predicate on the "upstream_request_id" field. It's identical to UpstreamRequestIDEQ.
+func UpstreamRequestID(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldUpstreamRequestID, v))
+}
+
 // SessionID applies equality check predicate on the "session_id" field. It's identical to SessionIDEQ.
 func SessionID(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldSessionID, v))
@@ -443,6 +448,81 @@ func RequestIDEqualFold(v string) predicate.UsageLog {
 // RequestIDContainsFold applies the ContainsFold predicate on the "request_id" field.
 func RequestIDContainsFold(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldContainsFold(FieldRequestID, v))
+}
+
+// UpstreamRequestIDEQ applies the EQ predicate on the "upstream_request_id" field.
+func UpstreamRequestIDEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDNEQ applies the NEQ predicate on the "upstream_request_id" field.
+func UpstreamRequestIDNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDIn applies the In predicate on the "upstream_request_id" field.
+func UpstreamRequestIDIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldUpstreamRequestID, vs...))
+}
+
+// UpstreamRequestIDNotIn applies the NotIn predicate on the "upstream_request_id" field.
+func UpstreamRequestIDNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldUpstreamRequestID, vs...))
+}
+
+// UpstreamRequestIDGT applies the GT predicate on the "upstream_request_id" field.
+func UpstreamRequestIDGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDGTE applies the GTE predicate on the "upstream_request_id" field.
+func UpstreamRequestIDGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDLT applies the LT predicate on the "upstream_request_id" field.
+func UpstreamRequestIDLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDLTE applies the LTE predicate on the "upstream_request_id" field.
+func UpstreamRequestIDLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDContains applies the Contains predicate on the "upstream_request_id" field.
+func UpstreamRequestIDContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDHasPrefix applies the HasPrefix predicate on the "upstream_request_id" field.
+func UpstreamRequestIDHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDHasSuffix applies the HasSuffix predicate on the "upstream_request_id" field.
+func UpstreamRequestIDHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDIsNil applies the IsNil predicate on the "upstream_request_id" field.
+func UpstreamRequestIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldUpstreamRequestID))
+}
+
+// UpstreamRequestIDNotNil applies the NotNil predicate on the "upstream_request_id" field.
+func UpstreamRequestIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldUpstreamRequestID))
+}
+
+// UpstreamRequestIDEqualFold applies the EqualFold predicate on the "upstream_request_id" field.
+func UpstreamRequestIDEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldUpstreamRequestID, v))
+}
+
+// UpstreamRequestIDContainsFold applies the ContainsFold predicate on the "upstream_request_id" field.
+func UpstreamRequestIDContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldUpstreamRequestID, v))
 }
 
 // SessionIDEQ applies the EQ predicate on the "session_id" field.

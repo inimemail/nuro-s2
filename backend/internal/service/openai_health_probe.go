@@ -373,6 +373,8 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 	setOpsUpstreamError(c, resp.StatusCode, openAIHealthProbeUpstreamMessage, "")
 	if account != nil {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,

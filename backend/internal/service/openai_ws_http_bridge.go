@@ -220,6 +220,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		setOpsUpstreamError(c, http.StatusBadGateway, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -234,6 +236,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, openAIWSHTTPBridgeErrorBodyLimitBytes))
+		if resp.StatusCode == http.StatusBadRequest && extractUpstreamErrorCode(respBody) == openAIWSFallbackReasonInvalidEncryptedContent {
+			s.markOpenAIWSInvalidEncryptedContentLineageFromPayload(c, body, "ingress_ws_http_bridge_invalid_encrypted_lineage_mark", account.ID, turn)
+		}
 		if account.Platform == PlatformGrok {
 			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
@@ -255,6 +260,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		if turn == 1 && s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:              opsUpstreamProxyID(account),
+				ProxyName:            opsUpstreamProxyName(account),
 				Platform:             account.Platform,
 				AccountID:            account.ID,
 				AccountName:          account.Name,
@@ -279,6 +286,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			}
 		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:              opsUpstreamProxyID(account),
+			ProxyName:            opsUpstreamProxyName(account),
 			Platform:             account.Platform,
 			AccountID:            account.ID,
 			AccountName:          account.Name,
@@ -446,6 +455,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(originalUpstreamMessage)
+			if reason, _ := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw); reason == openAIWSFallbackReasonInvalidEncryptedContent {
+				s.markOpenAIWSInvalidEncryptedContentLineageFromPayload(c, body, "ingress_ws_http_bridge_invalid_encrypted_lineage_mark", account.ID, turn)
+			}
 			s.persistOpenAIWSRateLimitSignal(ctx, account, resp.Header, originalUpstreamMessage, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(errMsgRaw))
 			if errMessage == "" {

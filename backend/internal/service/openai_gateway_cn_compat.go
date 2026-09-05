@@ -45,7 +45,9 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	}
 	decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, message, body)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+		ProxyID:   opsUpstreamProxyID(account),
+		ProxyName: opsUpstreamProxyName(account),
+		Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
 		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
 		Kind: "failover", Message: message,
 	})

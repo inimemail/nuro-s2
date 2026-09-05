@@ -274,6 +274,9 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 		resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
 		resolved.BasePricing.ImageOutputPriceExplicit = true
 	}
+	if chPricing.MaxReasoningEffortMultiplier != nil {
+		resolved.BasePricing.MaxReasoningEffortMultiplier = chPricing.MaxReasoningEffortMultiplier
+	}
 	applyChannelImageInputPrice(chPricing, resolved.BasePricing)
 }
 

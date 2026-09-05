@@ -10,6 +10,13 @@ func optionalTrimmedStringPtr(raw string) *string {
 	return &trimmed
 }
 
+func optionalStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
 // optionalNonEqualStringPtr returns a pointer to value if it is non-empty and
 // differs from compare; otherwise nil. Used to store upstream_model only when
 // it differs from the requested model.

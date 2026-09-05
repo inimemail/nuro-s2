@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,23 @@ var (
 		LiteLLMProvider:                 "openai",
 		Mode:                            "chat",
 		SupportsPromptCaching:           true,
+	}
+	openAIGPT6AstraFallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:                   10e-6,
+		InputCostPerTokenPriority:           20e-6,
+		OutputCostPerToken:                  50e-6,
+		OutputCostPerTokenPriority:          100e-6,
+		CacheCreationInputTokenCost:         12.5e-6,
+		CacheCreationInputTokenCostPriority: 25e-6,
+		CacheReadInputTokenCost:             1e-6,
+		CacheReadInputTokenCostPriority:     2e-6,
+		LongContextInputTokenThreshold:      openAIGPT54LongContextInputThreshold,
+		LongContextInputCostMultiplier:      openAIGPT54LongContextInputMultiplier,
+		LongContextOutputCostMultiplier:     openAIGPT54LongContextOutputMultiplier,
+		SupportsServiceTier:                 true,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "chat",
+		SupportsPromptCaching:               true,
 	}
 	openAIGPT55FallbackPricing = &LiteLLMModelPricing{
 		InputCostPerToken:               5e-06,
@@ -191,12 +209,13 @@ type LiteLLMRawEntry struct {
 
 // PricingService 动态价格服务
 type PricingService struct {
-	cfg          *config.Config
-	remoteClient PricingRemoteClient
-	mu           sync.RWMutex
-	pricingData  map[string]*LiteLLMModelPricing
-	lastUpdated  time.Time
-	localHash    string
+	cfg             *config.Config
+	remoteClient    PricingRemoteClient
+	mu              sync.RWMutex
+	pricingData     map[string]*LiteLLMModelPricing
+	lastUpdated     time.Time
+	localHash       string
+	customFilesHash string
 
 	// 停止信号
 	stopCh chan struct{}
@@ -245,7 +264,12 @@ func (s *PricingService) Stop() {
 
 // startUpdateScheduler 启动定时更新调度器
 func (s *PricingService) startUpdateScheduler() {
-	if s == nil || s.cfg == nil || strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
+	if s == nil || s.cfg == nil {
+		return
+	}
+	remoteEnabled := strings.TrimSpace(s.cfg.Pricing.RemoteURL) != ""
+	customEnabled := strings.TrimSpace(s.cfg.Pricing.FallbackFile) != "" || strings.TrimSpace(s.cfg.Pricing.OverrideFile) != ""
+	if !remoteEnabled && !customEnabled {
 		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Remote sync disabled: pricing remote URL is empty")
 		return
 	}
@@ -264,8 +288,13 @@ func (s *PricingService) startUpdateScheduler() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := s.syncWithRemote(); err != nil {
-					logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+				if remoteEnabled {
+					if err := s.syncWithRemote(); err != nil {
+						logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+					}
+				}
+				if customEnabled {
+					s.reloadIfCustomFilesChanged()
 				}
 			case <-s.stopCh:
 				return
@@ -273,7 +302,72 @@ func (s *PricingService) startUpdateScheduler() {
 		}
 	}()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (check every %v)", hashInterval)
+	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (check every %v, remote sync=%t, custom file watch=%t)", hashInterval, remoteEnabled, customEnabled)
+}
+
+func (s *PricingService) customPricingFilesFingerprint() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	paths := []string{s.cfg.Pricing.FallbackFile, s.cfg.Pricing.OverrideFile}
+	if strings.TrimSpace(paths[0]) == "" && strings.TrimSpace(paths[1]) == "" {
+		return ""
+	}
+	h := sha256.New()
+	for _, raw := range paths {
+		body, _ := os.ReadFile(strings.TrimSpace(raw))
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(body)))
+		_, _ = h.Write(size[:])
+		_, _ = h.Write(body)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (s *PricingService) validateCustomPricingFiles() error {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	for _, raw := range []string{s.cfg.Pricing.FallbackFile, s.cfg.Pricing.OverrideFile} {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		body, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(body, &object); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func (s *PricingService) reloadIfCustomFilesChanged() {
+	fingerprint := s.customPricingFilesFingerprint()
+	s.mu.RLock()
+	unchanged := fingerprint == s.customFilesHash
+	s.mu.RUnlock()
+	if unchanged {
+		return
+	}
+	if err := s.validateCustomPricingFiles(); err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Custom pricing file changed but previous data kept: %v", err)
+		return
+	}
+	if err := s.loadPricingData(s.getPricingFilePath()); err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Custom pricing file reload failed: %v", err)
+		return
+	}
+	s.mu.Lock()
+	s.customFilesHash = fingerprint
+	s.mu.Unlock()
+	logger.LegacyPrintf("service.pricing", "[Pricing] Custom pricing files reloaded")
 }
 
 // checkAndUpdatePricing 检查并更新价格数据
@@ -438,6 +532,7 @@ func (s *PricingService) downloadPricingData() error {
 	s.pricingData = data
 	s.lastUpdated = time.Now()
 	s.localHash = syncHash
+	s.customFilesHash = s.customPricingFilesFingerprint()
 	s.mu.Unlock()
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded %d models successfully", len(data))
@@ -731,6 +826,7 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	s.mu.Lock()
 	s.pricingData = pricingData
 	s.localHash = hashStr
+	s.customFilesHash = s.customPricingFilesFingerprint()
 
 	info, _ := os.Stat(filePath)
 	if info != nil {
@@ -944,6 +1040,9 @@ func normalizeModelNameForPricing(model string) string {
 
 	model = strings.TrimLeft(model, "/")
 	if canonical := canonicalizeOpenAIModelAliasSpelling(model); canonical != "" {
+		if canonical == "gpt-6" {
+			return "gpt-6-astra"
+		}
 		if canonical == "gpt-5.6" {
 			return "gpt-5.6-sol"
 		}
@@ -1127,6 +1226,12 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 				Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, variant))
 			return pricing
 		}
+	}
+
+	if isOpenAIGPT6AstraModel(model) {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-6-astra(static)"))
+		return openAIGPT6AstraFallbackPricing
 	}
 
 	if strings.HasPrefix(model, "gpt-5.3-codex") {

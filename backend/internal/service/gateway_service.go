@@ -1978,6 +1978,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		_, excluded := excludedIDs[accountID]
 		return excluded
 	}
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	isChannelRestricted := func(account *Account) bool {
+		return needsUpstreamCheck && groupID != nil && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel)
+	}
 
 	// 获取模型路由配置（仅 anthropic 平台）
 	var routingAccountIDs []int64
@@ -2006,7 +2010,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		// 1. 过滤出路由列表中可调度的账号
 		var routingBaseCandidates []*Account
 		var routingCandidates []*Account
-		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost int
+		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredChannelRestricted, filteredWindowCost int
 		var modelScopeSkippedIDs []int64 // 记录因模型限流被跳过的账号 ID
 		for _, routingAccountID := range routingAccountIDs {
 			if isExcluded(routingAccountID) {
@@ -2049,6 +2053,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			routingBaseCandidates = append(routingBaseCandidates, account)
 			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
 				filteredModelMapping++
+				continue
+			}
+			if isChannelRestricted(account) {
+				filteredChannelRestricted++
 				continue
 			}
 			if !s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) {
@@ -2098,6 +2106,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							groupOK &&
 							s.isAccountAllowedForPlatform(stickyAccount, platform, useMixed) &&
 							(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, stickyAccount, requestedModel)) &&
+							!isChannelRestricted(stickyAccount) &&
 							s.isAccountSchedulableForModelSelection(ctx, stickyAccount, requestedModel) &&
 							s.isAccountSchedulableForQuota(stickyAccount) &&
 							s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true)
@@ -2296,6 +2305,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				// 反序列化后 AccountGroups 字段为空，导致 isAccountInGroup 永远返回 false。
 				platformOK := s.isAccountAllowedForPlatform(account, platform, useMixed)
 				modelSupported := requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)
+				channelOK := !isChannelRestricted(account)
 				modelSchedulable := s.isAccountSchedulableForModelSelection(ctx, account, requestedModel)
 				quotaOK := s.isAccountSchedulableForQuota(account)
 				windowCostOK := s.isAccountSchedulableForWindowCost(ctx, account, true)
@@ -2328,7 +2338,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					)
 				}
 
-				samePriorityNonPoolAvailable := !clearSticky && groupOK && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable &&
+				samePriorityNonPoolAvailable := !clearSticky && groupOK && platformOK && modelSupported && channelOK && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable &&
 					s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, accountPtrs, groupID, account, requestedModel, excludedIDs, platform, useMixed)
 				if samePriorityNonPoolAvailable {
 					if s.cache != nil {
@@ -2339,7 +2349,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						"reason", "same_priority_non_pool_available",
 						"session", shortSessionHash(sessionHash),
 					)
-				} else if !clearSticky && groupOK && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
+				} else if !clearSticky && groupOK && platformOK && modelSupported && channelOK && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.Platform)
 					if err == nil && result.Acquired {
 						// 会话数量限制检查
@@ -2429,6 +2439,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	)
 	baseCandidates := make([]*Account, 0, len(accounts))
 	candidates := make([]*Account, 0, len(accounts))
+	channelRestrictedCount := 0
 	for i := range accounts {
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
@@ -2465,6 +2476,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
 			continue
 		}
+		if isChannelRestricted(acc) {
+			channelRestrictedCount++
+			continue
+		}
 		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
 			continue
 		}
@@ -2475,6 +2490,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
+		if channelRestrictedCount > 0 {
+			slog.Warn("channel pricing restriction blocked request",
+				"group_id", derefGroupID(groupID), "model", requestedModel,
+				"restricted_accounts", channelRestrictedCount, "total_accounts", len(accounts))
+			return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 
@@ -3424,6 +3445,23 @@ func (s *GatewayService) checkAndRegisterSession(ctx context.Context, account *A
 		return true
 	}
 	return allowed
+}
+
+// ReleaseAccountSession immediately frees a session slot after an upstream
+// attempt that never served the request. It is intentionally a no-op for
+// accounts outside the existing session-limit scope.
+func (s *GatewayService) ReleaseAccountSession(ctx context.Context, account *Account, sessionID string) {
+	if s == nil || s.sessionLimitCache == nil || account == nil || sessionID == "" || !account.IsAnthropicOAuthOrSetupToken() || account.GetMaxSessions() <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	releaseCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	if err := s.sessionLimitCache.UnregisterSession(releaseCtx, account.ID, sessionID); err != nil {
+		slog.Debug("session_limit.release_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -5649,7 +5687,7 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 	//
 	//    缺失 billing block 的系统 payload 是 Anthropic 判定第三方的关键信号之一
 	//    （真实 CLI 每个请求都带）。新版 CLI 已取消 cch=... 签名字段。
-	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLICurrentVersion)
+	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLIVersion())
 	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, true)
 	if billingErr != nil || ccErr != nil {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to build system blocks (billing=%v, cc=%v)", billingErr, ccErr)
@@ -5764,14 +5802,14 @@ func expandClaudeOAuthSystemPromptTextTemplate(body []byte, text string, expansi
 		return "", nil
 	}
 	expansionPrompt = defaultClaudeOAuthExpansionPrompt(expansionPrompt)
-	billingText, err := buildBillingAttributionText(body, claude.CLICurrentVersion)
+	billingText, err := buildBillingAttributionText(body, claude.CLIVersion())
 	if err != nil {
 		return "", err
 	}
-	fp := computeClaudeCodeFingerprint(body, claude.CLICurrentVersion)
+	fp := computeClaudeCodeFingerprint(body, claude.CLIVersion())
 	replacer := strings.NewReplacer(
 		"{billing_header}", billingText,
-		"{cc_version}", claude.CLICurrentVersion,
+		"{cc_version}", claude.CLIVersion(),
 		"{fp}", fp,
 		"{claude_code_system_prompt}", claudeCodeSystemPrompt,
 		"{claude_code_expansion_prompt}", expansionPrompt,
@@ -6453,6 +6491,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -6488,6 +6528,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 				if s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						ProxyID:            opsUpstreamProxyID(account),
+						ProxyName:          opsUpstreamProxyName(account),
 						Platform:           account.Platform,
 						AccountID:          account.ID,
 						AccountName:        account.Name,
@@ -6543,6 +6585,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 							_ = retryResp.Body.Close()
 							if retryReadErr == nil && retryResp.StatusCode == 400 && s.isSignatureErrorPattern(ctx, account, retryRespBody, reqModel) {
 								appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+									ProxyID:            opsUpstreamProxyID(account),
+									ProxyName:          opsUpstreamProxyName(account),
 									Platform:           account.Platform,
 									AccountID:          account.ID,
 									AccountName:        account.Name,
@@ -6575,6 +6619,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 											_ = retryResp2.Body.Close()
 										}
 										appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+											ProxyID:            opsUpstreamProxyID(account),
+											ProxyName:          opsUpstreamProxyName(account),
 											Platform:           account.Platform,
 											AccountID:          account.ID,
 											AccountName:        account.Name,
@@ -6614,6 +6660,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				errMsg := extractUpstreamErrorMessage(respBody)
 				if isThinkingBudgetConstraintError(errMsg) && s.settingService.IsBudgetRectifierEnabled(ctx) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						ProxyID:            opsUpstreamProxyID(account),
+						ProxyName:          opsUpstreamProxyName(account),
 						Platform:           account.Platform,
 						AccountID:          account.ID,
 						AccountName:        account.Name,
@@ -6676,6 +6724,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -6730,6 +6780,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account, reqModel)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -6761,6 +6813,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			UpstreamStatusCode: resp.StatusCode,
@@ -6802,6 +6856,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -6965,6 +7021,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -7013,6 +7071,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -7057,6 +7117,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account, input.RequestModel)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -7087,6 +7149,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -7896,6 +7960,8 @@ func (s *GatewayService) executeBedrockUpstream(
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -7942,6 +8008,8 @@ func (s *GatewayService) executeBedrockUpstream(
 				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -7993,6 +8061,8 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -8013,6 +8083,8 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 
 		s.handleFailoverSideEffects(ctx, resp, account)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -8178,9 +8250,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if fingerprint != nil {
-		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
+	// Mimicry may override the cached User-Agent even when fingerprint unification is off.
+	if billingUA := effectiveBillingUserAgent(tokenType, mimicClaudeCode, fingerprint); billingUA != "" {
+		body = syncBillingHeaderVersion(body, billingUA)
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize）===
@@ -9256,6 +9328,8 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		UpstreamStatusCode: resp.StatusCode,
@@ -9437,6 +9511,8 @@ func (s *GatewayService) maybeAnthropicPoolClientErrorFailover(ctx context.Conte
 
 	s.handleFailoverSideEffects(ctx, resp, account, requestedModel)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -9511,6 +9587,8 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		UpstreamStatusCode: resp.StatusCode,
@@ -11301,15 +11379,16 @@ func (s *GatewayService) calculateTokenCost(
 	if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil {
 		gid := apiKey.Group.ID
 		cost, err = s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			Group:          apiKey.Group,
-			Tokens:         tokens,
-			RequestCount:   1,
-			RateMultiplier: multiplier,
-			Resolver:       s.resolver,
-			Resolved:       resolved,
+			Ctx:             ctx,
+			Model:           billingModel,
+			GroupID:         &gid,
+			Group:           apiKey.Group,
+			Tokens:          tokens,
+			RequestCount:    1,
+			RateMultiplier:  multiplier,
+			ReasoningEffort: optionalStringValue(result.ReasoningEffort),
+			Resolver:        s.resolver,
+			Resolved:        resolved,
 		})
 	} else if opts.LongContextThreshold > 0 && (apiKey.Group == nil || apiKey.Group.LongContextPricingEnabled) {
 		// 长上下文双倍计费（如 Gemini 200K 阈值）
@@ -11317,14 +11396,20 @@ func (s *GatewayService) calculateTokenCost(
 			billingModel, tokens, multiplier,
 			opts.LongContextThreshold, opts.LongContextMultiplier,
 		)
+		if err == nil {
+			applyCostBreakdownMultiplier(cost, maxReasoningEffortBillingMultiplier(billingModel, optionalStringValue(result.ReasoningEffort), nil))
+		}
 	} else if s.resolver != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		cost, err = s.billingService.CalculateCostUnified(CostInput{
 			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
-			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, Resolver: s.resolver,
+			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, ReasoningEffort: optionalStringValue(result.ReasoningEffort), Resolver: s.resolver,
 		})
 	} else {
 		cost, err = s.billingService.CalculateCost(billingModel, tokens, multiplier)
+		if err == nil {
+			applyCostBreakdownMultiplier(cost, maxReasoningEffortBillingMultiplier(billingModel, optionalStringValue(result.ReasoningEffort), nil))
+		}
 	}
 	if err != nil {
 		logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
@@ -11768,6 +11853,8 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	if err != nil {
 		setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -11825,6 +11912,8 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		}
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -12003,9 +12092,12 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 
-	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if ctFingerprint != nil && ctEnableFP {
-		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
+	var billingFingerprint *Fingerprint
+	if ctEnableFP {
+		billingFingerprint = ctFingerprint
+	}
+	if billingUA := effectiveBillingUserAgent(tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
+		body = syncBillingHeaderVersion(body, billingUA)
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize）===

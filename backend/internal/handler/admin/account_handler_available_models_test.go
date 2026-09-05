@@ -141,7 +141,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotEmpty(t, resp.Data)
-	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
+	require.Equal(t, "gpt-5.6", resp.Data[0].ID, "preserve the existing account-test default")
 
 	ids := make([]string, 0, len(resp.Data))
 	for _, model := range resp.Data {
@@ -150,6 +150,8 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.Contains(t, ids, "gpt-5.6-sol")
 	require.Contains(t, ids, "gpt-5.6-terra")
 	require.Contains(t, ids, "gpt-5.6-luna")
+	require.Contains(t, ids, "gpt-6-astra")
+	require.Contains(t, ids, "gpt-6")
 	require.Contains(t, ids, "gpt-5.5")
 }
 

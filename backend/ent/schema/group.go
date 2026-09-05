@@ -248,6 +248,10 @@ func (Group) Fields() []ent.Field {
 			Default(domain.GroupModelsListConfig{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("自定义 /v1/models 展示列表配置；仅影响模型列表响应，不影响调度"),
+		field.JSON("codex_models_manifest_config", domain.GroupCodexModelsManifestConfig{}).
+			Default(domain.GroupCodexModelsManifestConfig{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("固定账号获取 Codex Model Manifest 配置；仅影响 OpenAI 分组 /models"),
 		field.Bool("strict_model_priority_on_model_mismatch").
 			Default(false).
 			Comment("兼容字段名：true 允许模型不匹配时跨优先级，false 严格限制跨优先级；仅影响 OpenAI 分组"),

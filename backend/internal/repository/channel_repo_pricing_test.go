@@ -25,7 +25,7 @@ func TestChannelRepositoryUpdateModelPricingUsesIDAfterAllPricingFields(t *testi
 		},
 	}
 
-	mock.ExpectExec(`UPDATE channel_model_pricing[\s\S]+WHERE id = \$15`).
+	mock.ExpectExec(`UPDATE channel_model_pricing[\s\S]+WHERE id = \$16`).
 		WithArgs(
 			sqlmock.AnyArg(),
 			service.BillingModeToken,
@@ -36,6 +36,7 @@ func TestChannelRepositoryUpdateModelPricingUsesIDAfterAllPricingFields(t *testi
 			pricing.CacheReadPrice,
 			pricing.FastMultiplier,
 			pricing.FlexMultiplier,
+			pricing.MaxReasoningEffortMultiplier,
 			pricing.ImageInputPrice,
 			pricing.ImageOutputPrice,
 			pricing.PerRequestPrice,

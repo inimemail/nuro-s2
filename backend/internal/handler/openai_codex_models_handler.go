@@ -33,6 +33,27 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Models manifest is not available for this group")
 		return
 	}
+	if cfg := apiKey.Group.CodexModelsManifestConfig; cfg.Enabled && len(cfg.AccountIDs) > 0 {
+		manifest, account, err := h.gatewayService.FetchPinnedCodexModelsManifest(c.Request.Context(), apiKey.Group, c.Query("client_version"))
+		if err == nil && manifest != nil {
+			if account != nil {
+				setOpsSelectedAccount(c, account.ID, account.Platform)
+			}
+			if manifest.ETag != "" {
+				c.Header("ETag", manifest.ETag)
+			}
+			if service.CodexModelsManifestETagMatches(c.GetHeader("If-None-Match"), manifest.ETag) {
+				c.Status(http.StatusNotModified)
+				return
+			}
+			c.Data(http.StatusOK, "application/json", manifest.Body)
+			return
+		}
+		if !cfg.FallbackToScheduler {
+			h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "No available pinned OpenAI accounts")
+			return
+		}
+	}
 	maxAccountSwitches := h.maxAccountSwitches
 	if maxAccountSwitches <= 0 {
 		maxAccountSwitches = 3

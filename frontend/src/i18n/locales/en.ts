@@ -964,6 +964,7 @@ export default {
     cacheWrite: 'Write',
     serviceTier: 'Service tier',
     serviceTierPriority: 'Fast',
+    serviceTierUltrafast: 'Ultrafast',
     serviceTierFlex: 'Flex',
     serviceTierStandard: 'Standard',
     rate: 'Rate',
@@ -2462,6 +2463,19 @@ export default {
         hint: 'Only changes the /v1/models response. Whitelist model calls and account routing are unchanged.',
         loading: 'Loading model list...',
         empty: 'No displayable models'
+      },
+      codexModelsManifest: {
+        title: 'Pinned Codex Model Manifest Accounts',
+        hint: 'Only affects the Codex /models endpoint for OpenAI groups. Models are fetched and merged in account order.',
+        enable: 'Enable pinned manifest accounts',
+        enabledHint: 'When enabled, only the selected OpenAI accounts are used. Normal request scheduling is unchanged.',
+        disabledHint: 'When disabled, /models keeps the scheduler-selected account behavior.',
+        accounts: 'Pinned accounts',
+        searchPlaceholder: 'Search OpenAI accounts in this group...',
+        searchEmpty: 'No matching OpenAI accounts',
+        fallback: 'Fallback to scheduler on failure',
+        fallbackHint: 'Allow /models to use normal account scheduling if all pinned accounts fail.',
+        selectAtLeastOne: 'Select at least one account when pinned manifest is enabled.'
       },
       claudeCode: {
         title: 'Claude Code Client Restriction',
@@ -7393,6 +7407,7 @@ export default {
         serviceTier: 'service_tier match',
         tierAll: 'All tiers',
         tierPriority: 'priority (fast)',
+        tierUltrafast: 'ultrafast',
         tierFlex: 'flex',
         action: 'Action',
         actionPass: 'Pass (keep service_tier)',

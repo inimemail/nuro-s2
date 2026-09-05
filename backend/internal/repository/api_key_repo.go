@@ -1021,6 +1021,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		DefaultMappedModel:                 g.DefaultMappedModel,
 		MessagesDispatchModelConfig:        g.MessagesDispatchModelConfig,
 		ModelsListConfig:                   g.ModelsListConfig,
+		CodexModelsManifestConfig:          g.CodexModelsManifestConfig,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
 		RPMLimit:                           g.RpmLimit,

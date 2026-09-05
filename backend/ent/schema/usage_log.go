@@ -38,6 +38,11 @@ func (UsageLog) Fields() []ent.Field {
 		field.String("request_id").
 			MaxLen(64).
 			NotEmpty(),
+		field.String("upstream_request_id").
+			MaxLen(128).
+			Optional().
+			Nillable().
+			Comment("Account-configured direct upstream response request identifier"),
 		field.String("session_id").
 			MaxLen(255).
 			Optional().

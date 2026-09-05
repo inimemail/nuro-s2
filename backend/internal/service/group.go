@@ -12,6 +12,7 @@ import (
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
 type GroupModelsListConfig = domain.GroupModelsListConfig
+type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
 
 const (
@@ -122,6 +123,7 @@ type Group struct {
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            GroupModelsListConfig
+	CodexModelsManifestConfig   GroupCodexModelsManifestConfig
 	// Legacy API/database field: true permits model-mismatch fallback to lower
 	// priorities; false keeps the highest eligible priority layer strict.
 	StrictModelPriorityOnModelMismatch bool

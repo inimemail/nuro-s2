@@ -27,7 +27,7 @@ const (
 	checkPaidResultAlreadyPaid = "already_paid"
 	checkPaidResultCancelled   = "cancelled"
 
-	pendingWxpayReconcileLimit = 20
+	pendingPaymentReconcileLimit = 20
 )
 
 type checkPaidOptions struct {
@@ -297,9 +297,9 @@ func (s *PaymentService) VerifyOrderByOutTradeNo(ctx context.Context, outTradeNo
 	return o, nil
 }
 
-// ReconcilePendingWxpayOrders actively checks recent pending WeChat orders so
-// missed provider notifications do not wait until order expiry to fulfill.
-func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, error) {
+// ReconcilePendingPaymentOrders actively checks recent pending Alipay and WeChat
+// orders so missed provider notifications do not wait until order expiry to fulfill.
+func (s *PaymentService) ReconcilePendingPaymentOrders(ctx context.Context) (int, error) {
 	now := time.Now()
 	orders, err := s.entClient.PaymentOrder.Query().
 		Where(
@@ -310,13 +310,17 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),
 				paymentorder.ProviderKeyEQ(payment.TypeWxpay),
 				paymentorder.ProviderKeyHasPrefix(payment.TypeWxpay+"_"),
+				paymentorder.PaymentTypeEQ(payment.TypeAlipay),
+				paymentorder.PaymentTypeHasPrefix(payment.TypeAlipay+"_"),
+				paymentorder.ProviderKeyEQ(payment.TypeAlipay),
+				paymentorder.ProviderKeyHasPrefix(payment.TypeAlipay+"_"),
 			),
 		).
 		Order(dbent.Asc(paymentorder.FieldCreatedAt)).
-		Limit(pendingWxpayReconcileLimit).
+		Limit(pendingPaymentReconcileLimit).
 		All(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("query pending wxpay orders: %w", err)
+		return 0, fmt.Errorf("query pending payment orders: %w", err)
 	}
 
 	recovered := 0
@@ -326,6 +330,12 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 		}
 	}
 	return recovered, nil
+}
+
+// ReconcilePendingWxpayOrders is kept for integrations compiled against the
+// previous helper name; the reconciliation scope now includes Alipay too.
+func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, error) {
+	return s.ReconcilePendingPaymentOrders(ctx)
 }
 
 // VerifyOrderPublic returns the currently persisted public order state without

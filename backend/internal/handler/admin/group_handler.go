@@ -246,6 +246,7 @@ type CreateGroupRequest struct {
 	DefaultMappedModel                 string                                    `json:"default_mapped_model"`
 	MessagesDispatchModelConfig        service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
 	ModelsListConfig                   service.GroupModelsListConfig             `json:"models_list_config"`
+	CodexModelsManifestConfig          service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
 	StrictModelPriorityOnModelMismatch bool                                      `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          string                                    `json:"account_scheduling_strategy"`
 	// 分组 RPM 上限（0 = 不限制）
@@ -317,6 +318,7 @@ type UpdateGroupRequest struct {
 	DefaultMappedModel                 *string                                    `json:"default_mapped_model"`
 	MessagesDispatchModelConfig        *service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
 	ModelsListConfig                   *service.GroupModelsListConfig             `json:"models_list_config"`
+	CodexModelsManifestConfig          *service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
 	StrictModelPriorityOnModelMismatch *bool                                      `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          *string                                    `json:"account_scheduling_strategy"`
 	// 分组 RPM 上限（0 = 不限制）；nil 表示未提供不改动
@@ -492,6 +494,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		DefaultMappedModel:                 req.DefaultMappedModel,
 		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
 		ModelsListConfig:                   req.ModelsListConfig,
+		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
 		RPMLimit:                           req.RPMLimit,
@@ -578,6 +581,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		DefaultMappedModel:                 req.DefaultMappedModel,
 		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
 		ModelsListConfig:                   req.ModelsListConfig,
+		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
 		RPMLimit:                           req.RPMLimit,

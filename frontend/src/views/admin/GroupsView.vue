@@ -3261,6 +3261,15 @@
           </div>
         </div>
 
+        <CodexManifestAccountsField
+          v-if="editForm.platform === 'openai' && editingGroup"
+          ref="editCodexManifestRef"
+          :group-id="editingGroup.id"
+          :model-value="editCodexManifestConfig"
+          @update:model-value="Object.assign(editCodexManifestConfig, $event)"
+          :account-names="editCodexManifestAccountNames"
+        />
+
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -3785,7 +3794,7 @@ import { useI18n } from "vue-i18n";
 import { useAppStore } from "@/stores/app";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { adminAPI } from "@/api/admin";
-import type { AdminGroup, GroupPlatform, SubscriptionType, ReasoningEffortMapping } from "@/types";
+import type { AdminGroup, CodexModelsManifestConfig, GroupPlatform, SubscriptionType, ReasoningEffortMapping } from "@/types";
 import type { Column } from "@/components/common/types";
 import AppLayout from "@/components/layout/AppLayout.vue";
 import TablePageLayout from "@/components/layout/TablePageLayout.vue";
@@ -3803,6 +3812,7 @@ import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipl
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
 import GroupReasoningEffortControl from "@/components/admin/GroupReasoningEffortControl.vue";
+import CodexManifestAccountsField from "@/components/admin/group/CodexManifestAccountsField.vue";
 import { VueDraggable } from "vue-draggable-plus";
 import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
@@ -4215,6 +4225,7 @@ const showSortModal = ref(false);
 const submitting = ref(false);
 const sortSubmitting = ref(false);
 const editingGroup = ref<AdminGroup | null>(null);
+let editLoadGeneration = 0;
 const deletingGroup = ref<AdminGroup | null>(null);
 const duplicatingGroupIds = reactive(new Set<number>());
 const showRateMultipliersModal = ref(false);
@@ -4228,6 +4239,20 @@ const createModelsListState = reactive(createInitialModelsListState());
 const editModelsListState = reactive(createInitialModelsListState());
 const createModelsListLoading = ref(false);
 const editModelsListLoading = ref(false);
+type CodexManifestAccountsFieldExpose = {
+  validate: () => boolean;
+  resetValidation: () => void;
+};
+const editCodexManifestRef = ref<CodexManifestAccountsFieldExpose | null>(null);
+const createCodexManifestDefaults = (): CodexModelsManifestConfig => ({
+  enabled: false,
+  account_ids: [],
+  fallback_to_scheduler: false,
+});
+const editCodexManifestConfig = reactive<CodexModelsManifestConfig>(
+  createCodexManifestDefaults(),
+);
+const editCodexManifestAccountNames = ref<Record<number, string>>({});
 const modelsListCandidatesTracker = createModelsListCandidatesTracker();
 const createModelsListSelectedCount = computed(
   () => createModelsListState.items.filter((item) => item.selected).length,
@@ -5183,6 +5208,8 @@ const handleCreateGroup = async () => {
         createModelRoutingRules.value,
       ),
       models_list_config: buildModelsListConfig(createModelsListState),
+      // 固定账号 Manifest 仅允许在已有 OpenAI 分组上启用；新建分组保持关闭。
+      codex_models_manifest_config: createCodexManifestDefaults(),
       max_reasoning_effort: normalizeReasoningEffortForPlatform(createForm.platform, createForm.max_reasoning_effort),
       reasoning_effort_mappings: reasoningEffortMappingsToAPI(createForm.reasoning_effort_mappings),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(
@@ -5255,6 +5282,7 @@ const handleCreateGroup = async () => {
 };
 
 const handleEdit = async (group: AdminGroup) => {
+  const loadGeneration = ++editLoadGeneration;
   editingGroup.value = group;
   editForm.name = group.name;
   editForm.description = group.description || "";
@@ -5348,15 +5376,43 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.max_reasoning_effort_over_limit = group.max_reasoning_effort_over_limit ?? "downgrade";
   editForm.reasoning_effort_mappings = reasoningEffortMappingsToRows(group.reasoning_effort_mappings, group.platform);
   resetModelsListState(editModelsListState, group.models_list_config);
+  const savedCodexManifestConfig =
+    group.codex_models_manifest_config ?? createCodexManifestDefaults();
+  Object.assign(editCodexManifestConfig, {
+    enabled: savedCodexManifestConfig.enabled ?? false,
+    account_ids: [...(savedCodexManifestConfig.account_ids ?? [])],
+    fallback_to_scheduler: savedCodexManifestConfig.fallback_to_scheduler ?? false,
+  });
+  editCodexManifestAccountNames.value = {};
+  const editGroupID = group.id;
+  for (const id of editCodexManifestConfig.account_ids) {
+    adminAPI.accounts
+      .getById(id)
+      .then((account) => {
+        // The edit dialog can be closed or switched while these requests are
+        // in flight. Do not let an earlier group's labels leak into it.
+        if (loadGeneration !== editLoadGeneration || editingGroup.value?.id !== editGroupID) return;
+        editCodexManifestAccountNames.value = {
+          ...editCodexManifestAccountNames.value,
+          [id]: account.name,
+        };
+      })
+      .catch(() => {
+        // Keep the numeric ID visible when an old/deleted account cannot be loaded.
+      });
+  }
   // 加载模型路由规则（异步加载账号名称）
-  editModelRoutingRules.value = await convertApiFormatToRoutingRules(
+  const loadedRoutingRules = await convertApiFormatToRoutingRules(
     group.model_routing,
   );
+  if (loadGeneration !== editLoadGeneration || editingGroup.value?.id !== editGroupID) return;
+  editModelRoutingRules.value = loadedRoutingRules;
   loadModelsListCandidates("edit", group.id, group.platform);
   showEditModal.value = true;
 };
 
 const closeEditModal = () => {
+  editLoadGeneration++;
   if (pendingLiveForm.value === "edit") pendingLiveForm.value = null;
   editModelRoutingRules.value.forEach((rule) => {
     accountSearchRunner.clearKey(getEditRuleSearchKey(rule));
@@ -5389,6 +5445,9 @@ const closeEditModal = () => {
   editForm.strict_model_priority_on_model_mismatch = false;
   editForm.account_scheduling_strategy = "strict_priority";
   resetModelsListState(editModelsListState);
+  Object.assign(editCodexManifestConfig, createCodexManifestDefaults());
+  editCodexManifestAccountNames.value = {};
+  editCodexManifestRef.value?.resetValidation?.();
 };
 
 const handleUpdateGroup = async () => {
@@ -5414,6 +5473,15 @@ const handleUpdateGroup = async () => {
   }
   if ((editForm.platform === "openai" || editForm.platform === "composite") && !validateReasoningEffortMappings(editForm.reasoning_effort_mappings, editForm.platform)) {
     appStore.showError(t("admin.groups.form.reasoningEffortMappingInvalid"));
+    return;
+  }
+  if (
+    editForm.platform === "openai" &&
+    editCodexManifestConfig.enabled &&
+    editCodexManifestConfig.account_ids.length === 0
+  ) {
+    appStore.showError(t("admin.groups.codexModelsManifest.selectAtLeastOne"));
+    editCodexManifestRef.value?.validate();
     return;
   }
   submitting.value = true;
@@ -5443,6 +5511,14 @@ const handleUpdateGroup = async () => {
         editModelRoutingRules.value,
       ),
       models_list_config: buildModelsListConfig(editModelsListState),
+      codex_models_manifest_config:
+        editForm.platform === "openai"
+          ? {
+              enabled: editCodexManifestConfig.enabled,
+              account_ids: [...editCodexManifestConfig.account_ids],
+              fallback_to_scheduler: editCodexManifestConfig.fallback_to_scheduler,
+            }
+          : createCodexManifestDefaults(),
       max_reasoning_effort: normalizeReasoningEffortForPlatform(editForm.platform, editForm.max_reasoning_effort),
       reasoning_effort_mappings: reasoningEffortMappingsToAPI(editForm.reasoning_effort_mappings),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(

@@ -665,6 +665,7 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 		{"image_input_price", p.ImageInputPrice},
 		{"image_output_price", p.ImageOutputPrice},
 		{"per_request_price", p.PerRequestPrice},
+		{"max_reasoning_effort_multiplier", p.MaxReasoningEffortMultiplier},
 	}
 	for _, c := range checks {
 		if c.val != nil && *c.val < 0 {

@@ -23,6 +23,14 @@ const (
 )
 
 var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+var anthropicReasoningEffortValues = []string{"low", "medium", "high", "xhigh", "max"}
+
+func normalizeReasoningEffortMappingSource(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "none") {
+		return "none"
+	}
+	return NormalizeMaxReasoningEffort(raw)
+}
 
 type openAIReasoningEffortPolicyContextKey struct{}
 type requestedReasoningEffortContextKey struct{}
@@ -84,10 +92,14 @@ func NormalizeMaxReasoningEffort(raw string) string {
 }
 
 func reasoningEffortValuesForPlatform(platform string) []string {
-	if platform != PlatformOpenAI && platform != PlatformComposite {
+	switch platform {
+	case PlatformOpenAI, PlatformComposite:
+		return openAIReasoningEffortValues
+	case PlatformAnthropic:
+		return anthropicReasoningEffortValues
+	default:
 		return nil
 	}
-	return openAIReasoningEffortValues
 }
 
 func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error) {
@@ -98,7 +110,8 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 	allowedValues := reasoningEffortValuesForPlatform(platform)
 	if len(allowedValues) == 0 {
 		return "", fmt.Errorf(
-			"reasoning effort policy is only supported for platforms %q and %q",
+			"reasoning effort policy is only supported for platforms %q, %q, and %q",
+			PlatformAnthropic,
 			PlatformOpenAI,
 			PlatformComposite,
 		)
@@ -146,7 +159,8 @@ func normalizeMaxReasoningEffortOverLimitForPlatform(platform, raw string) (stri
 	}
 	if len(reasoningEffortValuesForPlatform(platform)) == 0 {
 		return "", fmt.Errorf(
-			"reasoning effort policy is only supported for platforms %q and %q",
+			"reasoning effort policy is only supported for platforms %q, %q, and %q",
+			PlatformAnthropic,
 			PlatformOpenAI,
 			PlatformComposite,
 		)
@@ -221,7 +235,7 @@ func selectReasoningEffortMapping(mappings []ReasoningEffortMapping, from, reque
 	}
 	candidates := make([]candidate, 0, len(mappings))
 	for i, mapping := range mappings {
-		if NormalizeMaxReasoningEffort(mapping.From) != from {
+		if normalizeReasoningEffortMappingSource(mapping.From) != from {
 			continue
 		}
 		model := strings.TrimSpace(mapping.Model)
@@ -284,7 +298,7 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 	normalized := make([]ReasoningEffortMapping, 0, len(raw))
 	seen := make(map[string]struct{}, len(raw))
 	for i, mapping := range raw {
-		from := NormalizeMaxReasoningEffort(mapping.From)
+		from := normalizeReasoningEffortMappingSource(mapping.From)
 		to := NormalizeMaxReasoningEffort(mapping.To)
 		if from == "" || to == "" {
 			return nil, fmt.Errorf("reasoning effort mapping %d contains an empty or unknown value", i+1)
@@ -292,8 +306,12 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 		if len(from) > maxReasoningEffortValueLen || len(to) > maxReasoningEffortValueLen {
 			return nil, fmt.Errorf("reasoning effort mapping %d values cannot exceed %d characters", i+1, maxReasoningEffortValueLen)
 		}
-		if _, err := normalizeMaxReasoningEffortForPlatform(platform, from); err != nil {
-			return nil, fmt.Errorf("reasoning effort mapping %d source: %w", i+1, err)
+		if from != "none" {
+			if _, err := normalizeMaxReasoningEffortForPlatform(platform, from); err != nil {
+				return nil, fmt.Errorf("reasoning effort mapping %d source: %w", i+1, err)
+			}
+		} else if len(reasoningEffortValuesForPlatform(platform)) == 0 {
+			return nil, fmt.Errorf("reasoning effort mapping %d source is not supported for platform %q", i+1, platform)
 		}
 		if _, err := normalizeMaxReasoningEffortForPlatform(platform, to); err != nil {
 			return nil, fmt.Errorf("reasoning effort mapping %d target: %w", i+1, err)
@@ -444,7 +462,7 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 
 func mapReasoningEffort(raw string, mappings []ReasoningEffortMapping, requestModel string) (string, bool) {
 	value := strings.TrimSpace(raw)
-	canonical := NormalizeMaxReasoningEffort(value)
+	canonical := normalizeReasoningEffortMappingSource(value)
 	if canonical == "" {
 		return value, false
 	}
@@ -468,7 +486,7 @@ func sanitizeGroupReasoningEffortPolicy(group *Group) {
 	if mappingsErr != nil {
 		mappings = []ReasoningEffortMapping{}
 	}
-	if overLimit == "" || (group.Platform != PlatformOpenAI && group.Platform != PlatformComposite) {
+	if overLimit == "" || (group.Platform != PlatformAnthropic && group.Platform != PlatformOpenAI && group.Platform != PlatformComposite) {
 		overLimit = ReasoningEffortOverLimitDowngrade
 	}
 	group.MaxReasoningEffort = maxEffort

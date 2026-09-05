@@ -3,10 +3,14 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Gin context keys used by Ops error logger for capturing upstream error details.
@@ -239,6 +243,17 @@ type OpsUpstreamErrorEvent struct {
 	AccountID   int64  `json:"account_id,omitempty"`
 	AccountName string `json:"account_name,omitempty"`
 
+	// Proxy attribution is an immutable, credential-free snapshot of the route
+	// used by this attempt. A missing durable proxy identity is represented by
+	// proxy_id=null and either direct/no_proxy or unknown; URLs and credentials
+	// are never stored here.
+	ProxyID   *int64 `json:"proxy_id"`
+	ProxyName string `json:"proxy_name"`
+
+	// DroppedEarlierAttempts records how many older attempts were removed by
+	// the queued-event bounds. It is stamped only by the Ops sanitizer.
+	DroppedEarlierAttempts int `json:"dropped_earlier_attempts,omitempty"`
+
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
 	UpstreamRequestID  string `json:"upstream_request_id,omitempty"`
@@ -262,6 +277,12 @@ type OpsUpstreamErrorEvent struct {
 	CyberPolicyAnchorHash     string `json:"cyber_policy_anchor_hash,omitempty"`
 }
 
+const (
+	opsProxyNameDirect  = "direct/no_proxy"
+	opsProxyNameUnknown = "unknown"
+	opsProxyNameUnnamed = "proxy"
+)
+
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if c == nil {
 		return
@@ -270,6 +291,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
+	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
@@ -306,6 +328,78 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	// Match configured skip-monitoring rules against the original diagnostic
 	// text, while retaining only the sanitized event in request context/logs.
 	checkSkipMonitoringForUpstreamEvent(c, &ruleMatchEvent)
+}
+
+// opsUpstreamProxyAttribution derives both fields from one account snapshot.
+// The forwarding code only uses a managed proxy when both ProxyID and Proxy
+// are present. A durable ID without a hydrated proxy relation is therefore
+// unknown, while an account with no configured proxy is direct/no_proxy.
+func opsUpstreamProxyAttribution(account *Account) (*int64, string) {
+	if account == nil {
+		return nil, opsProxyNameUnknown
+	}
+	if account.ProxyID == nil {
+		if account.Proxy != nil && account.Proxy.ID > 0 {
+			return nil, opsProxyNameUnknown
+		}
+		return nil, opsProxyNameDirect
+	}
+	// A durable ProxyID with no hydrated relation is not proof of a direct
+	// route. Shadow/scheduler snapshots intentionally omit relations, and the
+	// actual transport may still use that managed proxy. Keep attribution
+	// unknown until the proxy identity is available.
+	if account.Proxy == nil {
+		return nil, opsProxyNameUnknown
+	}
+	if account.Proxy.ID <= 0 || account.Proxy.ID != *account.ProxyID {
+		return nil, opsProxyNameUnknown
+	}
+	proxyID := *account.ProxyID
+	name := strings.TrimSpace(account.Proxy.Name)
+	if name == "" {
+		name = opsProxyNameUnnamed
+	}
+	return &proxyID, name
+}
+
+func opsUpstreamProxyID(account *Account) *int64 {
+	proxyID, _ := opsUpstreamProxyAttribution(account)
+	return proxyID
+}
+
+func opsUpstreamProxyName(account *Account) string {
+	_, name := opsUpstreamProxyAttribution(account)
+	return name
+}
+
+// WebSocket dialing falls back to http.DefaultClient when there is no usable
+// managed proxy, which may honor HTTP(S)_PROXY environment variables. That
+// route cannot be proven direct, so report unknown rather than direct/no_proxy.
+func opsUpstreamWSProxyAttribution(account *Account) (*int64, string) {
+	proxyID, name := opsUpstreamProxyAttribution(account)
+	if proxyID == nil {
+		return nil, opsProxyNameUnknown
+	}
+	return proxyID, name
+}
+
+func normalizeOpsUpstreamProxyAttribution(ev *OpsUpstreamErrorEvent) {
+	if ev == nil {
+		return
+	}
+	if ev.ProxyID != nil && *ev.ProxyID <= 0 {
+		ev.ProxyID = nil
+	}
+	ev.ProxyName = strings.TrimSpace(ev.ProxyName)
+	if ev.ProxyID != nil {
+		if ev.ProxyName == "" {
+			ev.ProxyName = opsProxyNameUnnamed
+		}
+		return
+	}
+	if ev.ProxyName != opsProxyNameDirect {
+		ev.ProxyName = opsProxyNameUnknown
+	}
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event
@@ -358,6 +452,54 @@ func ParseOpsUpstreamErrors(raw string) ([]*OpsUpstreamErrorEvent, error) {
 	var out []*OpsUpstreamErrorEvent
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil, err
+	}
+	for _, ev := range out {
+		normalizeOpsUpstreamProxyAttribution(ev)
+	}
+	return out, nil
+}
+
+// normalizeOpsUpstreamErrorsJSON adds attribution to legacy detail JSON while
+// preserving all unrelated fields and their original key order.
+func normalizeOpsUpstreamErrorsJSON(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw, nil
+	}
+	if !gjson.Valid(raw) {
+		return "", errors.New("upstream_errors is not valid JSON")
+	}
+	parsed := gjson.Parse(raw)
+	if !parsed.IsArray() {
+		return "", errors.New("upstream_errors is not a JSON array")
+	}
+	out := raw
+	for i, item := range parsed.Array() {
+		if !item.IsObject() {
+			continue
+		}
+		prefix := strconv.Itoa(i) + "."
+		proxyID := item.Get("proxy_id")
+		proxyName := strings.TrimSpace(item.Get("proxy_name").String())
+		hasValidID := proxyID.Exists() && proxyID.Type == gjson.Number && proxyID.Int() > 0
+		var err error
+		switch {
+		case hasValidID:
+			if proxyName == "" {
+				out, err = sjson.Set(out, prefix+"proxy_name", opsProxyNameUnnamed)
+			}
+		case proxyName == opsProxyNameDirect:
+			if !proxyID.Exists() || proxyID.Type != gjson.Null {
+				out, err = sjson.Set(out, prefix+"proxy_id", nil)
+			}
+		default:
+			if out, err = sjson.Set(out, prefix+"proxy_id", nil); err == nil {
+				out, err = sjson.Set(out, prefix+"proxy_name", opsProxyNameUnknown)
+			}
+		}
+		if err != nil {
+			return "", err
+		}
 	}
 	return out, nil
 }

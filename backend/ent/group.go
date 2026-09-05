@@ -137,6 +137,8 @@ type Group struct {
 	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
 	// 自定义 /v1/models 展示列表配置；仅影响模型列表响应，不影响调度
 	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config,omitempty"`
+	// 固定账号获取 Codex Model Manifest 配置；仅影响 OpenAI 分组 /models
+	CodexModelsManifestConfig domain.GroupCodexModelsManifestConfig `json:"codex_models_manifest_config,omitempty"`
 	// 兼容字段名：true 允许模型不匹配时跨优先级，false 严格限制跨优先级；仅影响 OpenAI 分组
 	StrictModelPriorityOnModelMismatch bool `json:"strict_model_priority_on_model_mismatch,omitempty"`
 	// 账号调度策略：strict_priority 保持原有优先级调度，health_first 健康领先，health_cost_balanced 健康成本均衡
@@ -257,7 +259,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case group.FieldVideoModelPrices, group.FieldModelPricing, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelsListConfig, group.FieldReasoningEffortMappings:
+		case group.FieldVideoModelPrices, group.FieldModelPricing, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelsListConfig, group.FieldCodexModelsManifestConfig, group.FieldReasoningEffortMappings:
 			values[i] = new([]byte)
 		case group.FieldPeakRateEnabled, group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldAllowBatchImageGeneration, group.FieldAllowLive, group.FieldEdgeProtectionEnabled, group.FieldImageRateIndependent, group.FieldVideoRateIndependent, group.FieldLongContextPricingEnabled, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldStrictModelPriorityOnModelMismatch, group.FieldForceOpenaiFast:
 			values[i] = new(sql.NullBool)
@@ -678,6 +680,14 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field models_list_config: %w", err)
 				}
 			}
+		case group.FieldCodexModelsManifestConfig:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field codex_models_manifest_config", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.CodexModelsManifestConfig); err != nil {
+					return fmt.Errorf("unmarshal field codex_models_manifest_config: %w", err)
+				}
+			}
 		case group.FieldStrictModelPriorityOnModelMismatch:
 			if value, ok := values[i].(*sql.NullBool); !ok {
 				return fmt.Errorf("unexpected type %T for field strict_model_priority_on_model_mismatch", values[i])
@@ -1018,6 +1028,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("models_list_config=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ModelsListConfig))
+	builder.WriteString(", ")
+	builder.WriteString("codex_models_manifest_config=")
+	builder.WriteString(fmt.Sprintf("%v", _m.CodexModelsManifestConfig))
 	builder.WriteString(", ")
 	builder.WriteString("strict_model_priority_on_model_mismatch=")
 	builder.WriteString(fmt.Sprintf("%v", _m.StrictModelPriorityOnModelMismatch))

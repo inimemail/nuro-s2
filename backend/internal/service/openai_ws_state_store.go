@@ -43,6 +43,13 @@ type openAIWSSessionConnBinding struct {
 	expiresAt time.Time
 }
 
+type openAIWSInvalidEncryptedBinding struct {
+	digests   map[string]struct{}
+	expiresAt time.Time
+}
+
+const openAIWSInvalidEncryptedDigestsPerSession = 512
+
 // OpenAIWSStateStore 管理 WSv2 的粘连状态。
 // - response_id -> account_id 用于续链路由
 // - response_id -> conn_id 用于连接内上下文复用
@@ -65,20 +72,25 @@ type OpenAIWSStateStore interface {
 	BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration)
 	GetSessionConn(groupID int64, sessionHash string) (string, bool)
 	DeleteSessionConn(groupID int64, sessionHash string)
+	MarkSessionInvalidEncryptedContent(groupID int64, sessionHash string, digests []string, ttl time.Duration)
+	GetSessionInvalidEncryptedContentDigests(groupID int64, sessionHash string) map[string]struct{}
+	HasAnySessionInvalidEncryptedContent() bool
 }
 
 type defaultOpenAIWSStateStore struct {
 	cache GatewayCache
 
-	responseToAccountMu  sync.RWMutex
-	responseToAccount    map[string]openAIWSAccountBinding
-	responseAccountSF    singleflight.Group
-	responseToConnMu     sync.RWMutex
-	responseToConn       map[string]openAIWSConnBinding
-	sessionToTurnStateMu sync.RWMutex
-	sessionToTurnState   map[string]openAIWSTurnStateBinding
-	sessionToConnMu      sync.RWMutex
-	sessionToConn        map[string]openAIWSSessionConnBinding
+	responseToAccountMu       sync.RWMutex
+	responseToAccount         map[string]openAIWSAccountBinding
+	responseAccountSF         singleflight.Group
+	responseToConnMu          sync.RWMutex
+	responseToConn            map[string]openAIWSConnBinding
+	sessionToTurnStateMu      sync.RWMutex
+	sessionToTurnState        map[string]openAIWSTurnStateBinding
+	sessionToConnMu           sync.RWMutex
+	sessionToConn             map[string]openAIWSSessionConnBinding
+	sessionInvalidEncryptedMu sync.RWMutex
+	sessionInvalidEncrypted   map[string]openAIWSInvalidEncryptedBinding
 
 	lastCleanupUnixNano atomic.Int64
 }
@@ -86,11 +98,12 @@ type defaultOpenAIWSStateStore struct {
 // NewOpenAIWSStateStore 创建默认 WS 状态存储。
 func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 	store := &defaultOpenAIWSStateStore{
-		cache:              cache,
-		responseToAccount:  make(map[string]openAIWSAccountBinding, 256),
-		responseToConn:     make(map[string]openAIWSConnBinding, 256),
-		sessionToTurnState: make(map[string]openAIWSTurnStateBinding, 256),
-		sessionToConn:      make(map[string]openAIWSSessionConnBinding, 256),
+		cache:                   cache,
+		responseToAccount:       make(map[string]openAIWSAccountBinding, 256),
+		responseToConn:          make(map[string]openAIWSConnBinding, 256),
+		sessionToTurnState:      make(map[string]openAIWSTurnStateBinding, 256),
+		sessionToConn:           make(map[string]openAIWSSessionConnBinding, 256),
+		sessionInvalidEncrypted: make(map[string]openAIWSInvalidEncryptedBinding),
 	}
 	store.lastCleanupUnixNano.Store(time.Now().UnixNano())
 	return store
@@ -314,6 +327,64 @@ func (s *defaultOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash
 	s.sessionToConnMu.Unlock()
 }
 
+func (s *defaultOpenAIWSStateStore) MarkSessionInvalidEncryptedContent(groupID int64, sessionHash string, digests []string, ttl time.Duration) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" || len(digests) == 0 {
+		return
+	}
+	ttl = normalizeOpenAIWSTTL(ttl)
+	s.maybeCleanup()
+	now := time.Now()
+	s.sessionInvalidEncryptedMu.Lock()
+	ensureBindingCapacity(s.sessionInvalidEncrypted, key, openAIWSStateStoreMaxEntriesPerMap)
+	binding, ok := s.sessionInvalidEncrypted[key]
+	if !ok || now.After(binding.expiresAt) || binding.digests == nil {
+		binding = openAIWSInvalidEncryptedBinding{digests: make(map[string]struct{})}
+	}
+	for _, digest := range digests {
+		digest = strings.TrimSpace(digest)
+		if digest == "" {
+			continue
+		}
+		if len(binding.digests) >= openAIWSInvalidEncryptedDigestsPerSession {
+			if _, exists := binding.digests[digest]; !exists {
+				continue
+			}
+		}
+		binding.digests[digest] = struct{}{}
+	}
+	binding.expiresAt = now.Add(ttl)
+	s.sessionInvalidEncrypted[key] = binding
+	s.sessionInvalidEncryptedMu.Unlock()
+}
+
+func (s *defaultOpenAIWSStateStore) GetSessionInvalidEncryptedContentDigests(groupID int64, sessionHash string) map[string]struct{} {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" {
+		return nil
+	}
+	s.maybeCleanup()
+	now := time.Now()
+	s.sessionInvalidEncryptedMu.RLock()
+	binding, ok := s.sessionInvalidEncrypted[key]
+	if !ok || now.After(binding.expiresAt) || len(binding.digests) == 0 {
+		s.sessionInvalidEncryptedMu.RUnlock()
+		return nil
+	}
+	out := make(map[string]struct{}, len(binding.digests))
+	for digest := range binding.digests {
+		out[digest] = struct{}{}
+	}
+	s.sessionInvalidEncryptedMu.RUnlock()
+	return out
+}
+
+func (s *defaultOpenAIWSStateStore) HasAnySessionInvalidEncryptedContent() bool {
+	s.sessionInvalidEncryptedMu.RLock()
+	defer s.sessionInvalidEncryptedMu.RUnlock()
+	return len(s.sessionInvalidEncrypted) > 0
+}
+
 func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	if s == nil {
 		return
@@ -343,6 +414,25 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	s.sessionToConnMu.Lock()
 	cleanupExpiredSessionConnBindings(s.sessionToConn, now, openAIWSStateStoreCleanupMaxPerMap)
 	s.sessionToConnMu.Unlock()
+	s.sessionInvalidEncryptedMu.Lock()
+	cleanupExpiredInvalidEncryptedBindings(s.sessionInvalidEncrypted, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.sessionInvalidEncryptedMu.Unlock()
+}
+
+func cleanupExpiredInvalidEncryptedBindings(bindings map[string]openAIWSInvalidEncryptedBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
+		return
+	}
+	scanned := 0
+	for key, binding := range bindings {
+		if now.After(binding.expiresAt) {
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= maxScan {
+			break
+		}
+	}
 }
 
 func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time, maxScan int) {

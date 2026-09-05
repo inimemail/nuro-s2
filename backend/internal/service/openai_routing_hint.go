@@ -29,7 +29,7 @@ func setOpenAICodexRoutingHint(headers http.Header, account *Account, model, tie
 	}
 	hint := "model=" + model
 	switch normalizedOpenAIServiceTierValue(tier) {
-	case OpenAIFastTierPriority, OpenAIFastTierFlex:
+	case OpenAIFastTierPriority, OpenAIFastTierUltrafast, OpenAIFastTierFlex:
 		hint += ";tier=" + normalizedOpenAIServiceTierValue(tier)
 	}
 	headers.Set(openAICodexRoutingHintHeader, hint)

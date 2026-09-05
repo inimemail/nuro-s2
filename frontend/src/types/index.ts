@@ -618,6 +618,7 @@ export interface Group {
   allow_live: boolean
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
+  codex_models_manifest_config?: CodexModelsManifestConfig
   require_oauth_only: boolean
   require_privacy_set: boolean
   strict_model_priority_on_model_mismatch: boolean
@@ -647,6 +648,7 @@ export interface AdminGroup extends Group {
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   models_list_config?: ModelsListConfig
+  codex_models_manifest_config?: CodexModelsManifestConfig
 
   // 分组排序
   sort_order: number
@@ -655,6 +657,12 @@ export interface AdminGroup extends Group {
 export interface ModelsListConfig {
   enabled: boolean
   models: string[]
+}
+
+export interface CodexModelsManifestConfig {
+  enabled: boolean
+  account_ids: number[]
+  fallback_to_scheduler?: boolean
 }
 
 export interface ApiKey {
@@ -761,6 +769,7 @@ export interface CreateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  codex_models_manifest_config?: CodexModelsManifestConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   edge_protection_enabled?: boolean | null
@@ -826,6 +835,7 @@ export interface UpdateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  codex_models_manifest_config?: CodexModelsManifestConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   edge_protection_enabled?: boolean | null

@@ -518,12 +518,14 @@ func codexModelsManifestBodyETag(body []byte) string {
 }
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
+	"gpt-6-astra":   {},
 	"gpt-5.6-sol":   {},
 	"gpt-5.6-terra": {},
 	"gpt-5.6-luna":  {},
 }
 
-// adjustAPIKeyCodexModelsManifest keeps web.run available for the three GPT-5.6
+// adjustAPIKeyCodexModelsManifest keeps web.run available for GPT-6 Astra and
+// the GPT-5.6 Codex models
 // Codex models on custom API-key providers. OAuth manifests remain byte-identical.
 func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
 	var envelope map[string]json.RawMessage
@@ -678,6 +680,12 @@ func codexModelsManifestETagMatches(ifNoneMatch, etag string) bool {
 		}
 	}
 	return false
+}
+
+// CodexModelsManifestETagMatches applies the HTTP If-None-Match comparison
+// rules used by both scheduler and pinned-account manifest handlers.
+func CodexModelsManifestETagMatches(ifNoneMatch, etag string) bool {
+	return codexModelsManifestETagMatches(ifNoneMatch, etag)
 }
 
 func isOfficialOpenAIModelsBaseURL(raw string) bool {

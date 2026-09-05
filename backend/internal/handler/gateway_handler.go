@@ -342,6 +342,20 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	// Session-limit registrations are created during account selection. If an
+	// attempt never reaches the upstream, release those registrations immediately
+	// instead of waiting for the idle timeout; successful/partially-served turns
+	// retain the existing idle-expiry semantics.
+	sessionSlotAccounts := make(map[int64]*service.Account)
+	upstreamServedSession := false
+	defer func() {
+		if upstreamServedSession {
+			return
+		}
+		for _, account := range sessionSlotAccounts {
+			h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+		}
+	}()
 	if platform == service.PlatformAnthropic &&
 		h.gatewayService.AnthropicCacheBoostUpstreamPriorityAvailableForGroup(c.Request.Context(), apiKey.GroupID, reqModel) {
 		if affinityHash := service.DeriveAnthropicCacheBoostUpstreamAffinityHash(reqModel, body); affinityHash != "" {
@@ -440,6 +454,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
+			if account.IsAnthropicOAuthOrSetupToken() {
+				sessionSlotAccounts[account.ID] = account
+			}
 			setOpsSelectedAccount(c, account.ID, account.Platform)
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
@@ -563,6 +580,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 					switch action {
 					case FailoverContinue:
+						h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+						delete(sessionSlotAccounts, account.ID)
 						continue
 					case FailoverExhausted:
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
@@ -606,6 +625,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+			if successfulOutcome || gatewayForwardResultHasBillableUsage(result) {
+				upstreamServedSession = true
+			}
 			if !successfulOutcome {
 				result.FirstTokenMs = nil
 			}
@@ -762,6 +784,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
+			if account.IsAnthropicOAuthOrSetupToken() {
+				sessionSlotAccounts[account.ID] = account
+			}
 			setOpsSelectedAccount(c, account.ID, account.Platform)
 
 			// [DEBUG-STICKY] 打印账号选择结果
@@ -1080,6 +1105,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 					switch action {
 					case FailoverContinue:
+						h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+						delete(sessionSlotAccounts, account.ID)
 						continue
 					case FailoverExhausted:
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
@@ -1123,6 +1150,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+			if successfulOutcome || gatewayForwardResultHasBillableUsage(result) {
+				upstreamServedSession = true
+			}
 			if !successfulOutcome {
 				result.FirstTokenMs = nil
 			}

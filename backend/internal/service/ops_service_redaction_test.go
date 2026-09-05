@@ -125,6 +125,31 @@ func TestSanitizeOpsUpstreamErrors_DropsUpstreamURL(t *testing.T) {
 	require.NotContains(t, *entry.UpstreamErrorsJSON, "upstream_url")
 }
 
+func TestSanitizeOpsUpstreamErrorsBoundsQueuedAttempts(t *testing.T) {
+	t.Parallel()
+
+	entry := &OpsInsertErrorLogInput{}
+	for i := 0; i < 300; i++ {
+		entry.UpstreamErrors = append(entry.UpstreamErrors, &OpsUpstreamErrorEvent{
+			AtUnixMs:           int64(i + 1),
+			UpstreamStatusCode: 502,
+			Message:            strings.Repeat("x", 2048),
+			Detail:             `{"error":"detail"}`,
+		})
+	}
+	require.NoError(t, sanitizeOpsUpstreamErrors(entry))
+	require.NotNil(t, entry.UpstreamErrorsJSON)
+	require.LessOrEqual(t, len(*entry.UpstreamErrorsJSON), 512*1024)
+	events, err := ParseOpsUpstreamErrors(*entry.UpstreamErrorsJSON)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(events), 256)
+	require.NotEmpty(t, events)
+	require.Equal(t, int64(300), events[len(events)-1].AtUnixMs)
+	if len(events) < 300 {
+		require.Greater(t, events[0].DroppedEarlierAttempts, 0)
+	}
+}
+
 func TestSanitizeUpstreamErrorMessageForOps_RemovesIdentityURLAndCredentials(t *testing.T) {
 	t.Parallel()
 

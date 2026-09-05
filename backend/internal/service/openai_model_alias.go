@@ -68,6 +68,8 @@ func normalizeKnownOpenAICodexModel(model string) string {
 	}
 
 	switch {
+	case isOpenAIGPT6AstraModel(normalized):
+		return "gpt-6-astra"
 	case strings.Contains(normalized, "gpt-5.6-sol"):
 		return "gpt-5.6-sol"
 	case strings.Contains(normalized, "gpt-5.6-terra"):
@@ -107,6 +109,11 @@ func normalizeKnownOpenAICodexModel(model string) string {
 	default:
 		return ""
 	}
+}
+
+func isOpenAIGPT6AstraModel(model string) bool {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	return normalized == "gpt-6" || normalized == "gpt-6-astra"
 }
 
 // isOpenAIGPT56Model reports whether model belongs to the GPT-5.6 family.

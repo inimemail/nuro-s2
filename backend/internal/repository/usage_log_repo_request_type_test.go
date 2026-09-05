@@ -107,6 +107,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // requested_reasoning_effort
 			sqlmock.AnyArg(), // native_compaction_v2
 			sqlmock.AnyArg(), // session_id
@@ -210,6 +211,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // requested_reasoning_effort
 			sqlmock.AnyArg(), // native_compaction_v2
 			sqlmock.AnyArg(), // session_id
@@ -684,10 +686,17 @@ func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
 	withVideo = append(withVideo, out[:videoInsertAt]...)
 	withVideo = append(withVideo, videoValues...)
 	withVideo = append(withVideo, out[videoInsertAt:]...)
-	// requested_reasoning_effort, native_compaction_v2 and session_id precede created_at.
-	withSession := make([]any, 0, len(withVideo)+3)
+	// Newer rows also include upstream_request_id before requested_reasoning_effort.
+	// A few legacy fixtures already carry that slot in their input; normalize both
+	// shapes so the scanner tests continue to describe the selected column order.
+	withSession := make([]any, 0, len(withVideo)+4)
 	withSession = append(withSession, withVideo[:len(withVideo)-1]...)
+	withSession = append(withSession, sql.NullString{}) // upstream_request_id
 	withSession = append(withSession, sql.NullString{}, false, sql.NullString{}, withVideo[len(withVideo)-1])
+	if len(withSession) > len(usageLogInsertArgTypes)+1 {
+		// The legacy fixture already supplied the upstream request ID.
+		withSession = append(withSession[:len(withSession)-5], withSession[len(withSession)-4:]...)
+	}
 	if len(withSession) != len(usageLogInsertArgTypes)+1 {
 		panic(fmt.Sprintf("usage log scan fixture has %d values, want %d", len(withSession), len(usageLogInsertArgTypes)+1))
 	}

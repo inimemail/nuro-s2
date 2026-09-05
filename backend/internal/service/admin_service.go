@@ -261,6 +261,7 @@ type CreateGroupInput struct {
 	RequirePrivacySet                  bool
 	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig
 	ModelsListConfig                   GroupModelsListConfig
+	CodexModelsManifestConfig          GroupCodexModelsManifestConfig
 	StrictModelPriorityOnModelMismatch bool
 	AccountSchedulingStrategy          string
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
@@ -334,6 +335,7 @@ type UpdateGroupInput struct {
 	RequirePrivacySet                  *bool
 	MessagesDispatchModelConfig        *OpenAIMessagesDispatchModelConfig
 	ModelsListConfig                   *GroupModelsListConfig
+	CodexModelsManifestConfig          *GroupCodexModelsManifestConfig
 	StrictModelPriorityOnModelMismatch *bool
 	AccountSchedulingStrategy          *string
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
@@ -2264,6 +2266,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_REASONING_EFFORT_MAPPING", "%v", err)
 	}
+	codexManifestConfig := normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig)
+	if err := validatePinnedCodexModelsManifestConfig(codexManifestConfig); err != nil {
+		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_CODEX_MODELS_MANIFEST_CONFIG", "%v", err)
+	}
 
 	longContextPricingEnabled := true
 	if input.LongContextPricingEnabled != nil {
@@ -2322,6 +2328,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		DefaultMappedModel:                 input.DefaultMappedModel,
 		MessagesDispatchModelConfig:        normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
 		ModelsListConfig:                   normalizeGroupModelsListConfig(input.ModelsListConfig),
+		CodexModelsManifestConfig:          codexManifestConfig,
 		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
 		RPMLimit:                           input.RPMLimit,
@@ -2509,6 +2516,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.Platform != "" {
 		group.Platform = input.Platform
+		// The pinned Codex manifest is OpenAI-only. Clear stale configuration
+		// when a group changes platform so switching back later cannot silently
+		// re-enable an old account list.
+		if group.Platform != PlatformOpenAI {
+			group.CodexModelsManifestConfig = GroupCodexModelsManifestConfig{}
+		}
 	}
 	if previousPlatform != group.Platform && input.ModelPricing == nil && len(group.ModelPricing) > 0 {
 		modelPricing, normalizeErr := normalizeGroupModelPricing(group.Platform, group.ModelPricing)
@@ -2747,6 +2760,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.ModelsListConfig != nil {
 		group.ModelsListConfig = normalizeGroupModelsListConfig(*input.ModelsListConfig)
+	}
+	if input.CodexModelsManifestConfig != nil {
+		group.CodexModelsManifestConfig = normalizeCodexModelsManifestConfig(group.Platform, *input.CodexModelsManifestConfig)
+		if err := validatePinnedCodexModelsManifestConfig(group.CodexModelsManifestConfig); err != nil {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_CODEX_MODELS_MANIFEST_CONFIG", "%v", err)
+		}
 	}
 	if input.StrictModelPriorityOnModelMismatch != nil {
 		group.StrictModelPriorityOnModelMismatch = *input.StrictModelPriorityOnModelMismatch

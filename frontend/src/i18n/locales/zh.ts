@@ -968,6 +968,7 @@ export default {
     cacheWrite: '写入',
     serviceTier: '服务档位',
     serviceTierPriority: 'Fast',
+    serviceTierUltrafast: 'Ultrafast',
     serviceTierFlex: 'Flex',
     serviceTierStandard: 'Standard',
     rate: '倍率',
@@ -2544,6 +2545,19 @@ export default {
         hint: '仅影响 /v1/models 展示结果，不影响白名单模型调用和账号调度。',
         loading: '正在加载模型列表...',
         empty: '暂无可展示模型'
+      },
+      codexModelsManifest: {
+        title: '固定账号获取 Codex 模型列表',
+        hint: '仅影响 OpenAI 分组的 Codex /models；按顺序从指定账号获取并合并模型。',
+        enable: '启用固定账号模型列表',
+        enabledHint: '启用后只使用下面选择的 OpenAI 账号，不会改变普通请求调度。',
+        disabledHint: '关闭时沿用当前调度器选择账号的行为。',
+        accounts: '固定账号',
+        searchPlaceholder: '搜索当前分组中的 OpenAI 账号...',
+        searchEmpty: '没有匹配的 OpenAI 账号',
+        fallback: '固定账号失败时回退调度器',
+        fallbackHint: '固定账号均不可用时，允许 /models 请求回到普通账号调度。',
+        selectAtLeastOne: '启用固定账号模型列表时至少选择一个账号。'
       },
       claudeCode: {
         title: 'Claude Code 客户端限制',
@@ -7535,6 +7549,7 @@ export default {
         serviceTier: 'service_tier 匹配',
         tierAll: '全部 tier',
         tierPriority: 'priority（fast）',
+        tierUltrafast: 'ultrafast',
         tierFlex: 'flex',
         action: '处理方式',
         actionPass: '透传（保留 service_tier）',

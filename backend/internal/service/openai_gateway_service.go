@@ -236,6 +236,9 @@ type OpenAIUsage struct {
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
 	RequestID string
+	// UpstreamHeaders contains direct upstream response headers for optional
+	// account-scoped observability. It is never used as the billing request ID.
+	UpstreamHeaders http.Header
 	// UpstreamStatusCode is populated for terminal HTTP failures so transport
 	// policy can distinguish ambiguous server failures from explicit rejections.
 	UpstreamStatusCode int
@@ -977,7 +980,10 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 
 	setOpsUpstreamError(c, statusCode, upstreamMessage, "")
 	if account != nil {
+		proxyID, proxyName := opsUpstreamWSProxyAttribution(account)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            proxyID,
+			ProxyName:          proxyName,
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -4248,6 +4254,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if err != nil {
 		return nil, err
 	}
+	// Remember the request as it entered the gateway. If OpenAI rejects an
+	// encrypted reasoning item, its digest is recorded against this session and
+	// only that exact item is stripped from later turns. The store lookup is
+	// gated so the normal path remains a no-op.
+	lineageGroupID := getOpenAIGroupIDFromContext(c)
+	lineageEntryBody := body
+	lineageSessionHash := ""
+	if stateStore := s.getOpenAIWSStateStore(); stateStore != nil && stateStore.HasAnySessionInvalidEncryptedContent() {
+		lineageSessionHash = s.openAIWSLineageSessionHashFromContext(c, lineageEntryBody)
+		if invalidDigests := stateStore.GetSessionInvalidEncryptedContentDigests(lineageGroupID, lineageSessionHash); len(invalidDigests) > 0 {
+			if strippedBody, strippedCount := s.stripSessionInvalidEncryptedContentLogged(body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0); strippedCount > 0 {
+				body = strippedBody
+				decoder := json.NewDecoder(bytes.NewReader(body))
+				decoder.UseNumber()
+				refreshedBody := map[string]any{}
+				if decodeErr := decoder.Decode(&refreshedBody); decodeErr != nil {
+					return nil, fmt.Errorf("decode invalid encrypted lineage body: %w", decodeErr)
+				}
+				reqBody = refreshedBody
+			}
+		}
+	}
 
 	if v, ok := reqBody["model"].(string); ok {
 		reqModel = v
@@ -4833,6 +4861,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsInvalidEncryptedContentRecoveryTried {
 				return false
 			}
+			invalidDigests := collectOpenAIEncryptedContentDigestsRaw(lineageEntryBody)
 			removedReasoningItems := trimOpenAIEncryptedReasoningItems(wsReqBody)
 			if !removedReasoningItems {
 				logOpenAIWSModeInfo(
@@ -4841,6 +4870,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					attempt,
 				)
 				return false
+			}
+			if len(invalidDigests) > 0 {
+				if lineageSessionHash == "" {
+					lineageSessionHash = s.openAIWSLineageSessionHashFromContext(c, lineageEntryBody)
+				}
+				s.markOpenAIWSInvalidEncryptedContentLineage(lineageGroupID, lineageSessionHash, invalidDigests)
 			}
 			previousResponseID := openAIWSPayloadString(wsReqBody, "previous_response_id")
 			hasFunctionCallOutput := HasFunctionCallOutput(wsReqBody)
@@ -5137,6 +5172,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -5202,10 +5239,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 			}
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
+				invalidDigests := collectOpenAIEncryptedContentDigestsRaw(lineageEntryBody)
 				if trimOpenAIEncryptedReasoningItems(reqBody) {
 					body, err = json.Marshal(reqBody)
 					if err != nil {
 						return nil, fmt.Errorf("serialize invalid_encrypted_content retry body: %w", err)
+					}
+					if len(invalidDigests) > 0 {
+						if lineageSessionHash == "" {
+							lineageSessionHash = s.openAIWSLineageSessionHashFromContext(c, lineageEntryBody)
+						}
+						s.markOpenAIWSInvalidEncryptedContentLineage(lineageGroupID, lineageSessionHash, invalidDigests)
 					}
 					httpInvalidEncryptedContentRetryTried = true
 					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after invalid_encrypted_content (account: %s)", account.Name)
@@ -5249,6 +5293,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -5672,6 +5718,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, reqModel, upstreamMsg)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -6000,6 +6048,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
@@ -6047,6 +6096,8 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
 	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:              opsUpstreamProxyID(account),
+		ProxyName:            opsUpstreamProxyName(account),
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -6092,6 +6143,8 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
 	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:              opsUpstreamProxyID(account),
+		ProxyName:            opsUpstreamProxyName(account),
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -8140,6 +8193,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
@@ -8246,7 +8300,9 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 	if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, body) {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+			ProxyID:   opsUpstreamProxyID(account),
+			ProxyName: opsUpstreamProxyName(account),
+			Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
 			UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
 			Kind: "failover", Message: upstreamMsg, Detail: upstreamDetail,
 		})
@@ -8307,6 +8363,8 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -8346,6 +8404,8 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 		kind = "failover"
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -8472,6 +8532,8 @@ func (s *OpenAIGatewayService) handleCompatErrorResponseInternal(
 			c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown,
 		)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -8523,6 +8585,8 @@ func (s *OpenAIGatewayService) handleCompatErrorResponseInternal(
 	// return a generic error without exposing upstream details.
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -8556,6 +8620,8 @@ func (s *OpenAIGatewayService) handleCompatErrorResponseInternal(
 		kind = "failover"
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -11200,11 +11266,16 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		requestedModel = input.OriginalModel
 	}
 
+	upstreamHeaders := result.UpstreamHeaders
+	if len(upstreamHeaders) == 0 {
+		upstreamHeaders = result.ResponseHeaders
+	}
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
 		AccountID:             account.ID,
 		RequestID:             requestID,
+		UpstreamRequestID:     usageUpstreamRequestIDPtr(account, upstreamHeaders, result.OpenAIWSMode),
 		SessionID:             optionalTrimmedStringPtr(input.SessionID),
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
@@ -11509,7 +11580,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		if len(billingModels) == 0 || billingModel == "" || (result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0) {
 			return addUsageSurcharge(searchCost, s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier)), nil
 		}
-		baseCost, baseErr := s.calculateOpenAIRecordUsageTokenCost(ctx, apiKey, billingModel, multiplier, tokens, serviceTier, longContextBillingEnabled)
+		baseCost, baseErr := s.calculateOpenAIRecordUsageTokenCost(ctx, apiKey, billingModel, multiplier, tokens, serviceTier, optionalStringValue(result.ReasoningEffort), longContextBillingEnabled)
 		if baseErr != nil {
 			return nil, baseErr
 		}
@@ -11544,6 +11615,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 			multiplier,
 			tokens,
 			serviceTier,
+			optionalStringValue(result.ReasoningEffort),
 			longContextBillingEnabled,
 		)
 		if err == nil {
@@ -11599,6 +11671,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	multiplier float64,
 	tokens UsageTokens,
 	serviceTier string,
+	reasoningEffort string,
 	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
 	if s.resolver != nil && apiKey.Group != nil {
@@ -11606,17 +11679,21 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 		return s.billingService.CalculateCostUnified(CostInput{
 			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
 			Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier,
-			ServiceTier: serviceTier, Resolver: s.resolver,
+			ServiceTier: serviceTier, ReasoningEffort: reasoningEffort, Resolver: s.resolver,
 			LongContextBillingEnabled: &longContextBillingEnabled,
 		})
 	}
-	return s.billingService.calculateCostWithServiceTierPolicy(
+	cost, err := s.billingService.calculateCostWithServiceTierPolicy(
 		billingModel,
 		tokens,
 		multiplier,
 		serviceTier,
 		longContextBillingEnabled,
 	)
+	if err == nil {
+		applyCostBreakdownMultiplier(cost, maxReasoningEffortBillingMultiplier(billingModel, reasoningEffort, nil))
+	}
+	return cost, err
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(
@@ -12189,12 +12266,12 @@ func normalizeOpenAIServiceTier(raw string) *string {
 	if value == "fast" {
 		value = "priority"
 	}
-	// 放过 OpenAI 官方文档定义的所有合法 tier 值：priority/flex/auto/default/scale。
+	// 放过 OpenAI 官方文档定义的合法 tier 值，以及 Codex/API 的 ultrafast。
 	// 对 Codex 客户端零影响（Codex 只发 priority 或 flex，见 codex-rs/core/src/client.rs），
 	// 但能让直连 OpenAI SDK 的用户透传 auto/default/scale 以便抓包/调试。
 	// 真未知值仍返回 nil，由 normalizeResponsesBodyServiceTier 从 body 中删除。
 	switch value {
-	case "priority", "flex", "auto", "default", "scale":
+	case "priority", "flex", "auto", "default", "scale", OpenAIFastTierUltrafast:
 		return &value
 	default:
 		return nil
@@ -12756,7 +12833,7 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "max") && isOpenAIGPT56Model(model) {
+	if strings.EqualFold(strings.TrimSpace(raw), "max") && (isOpenAIGPT6AstraModel(model) || isOpenAIGPT56Model(model)) {
 		return "max"
 	}
 	return normalizeOpenAIReasoningEffort(raw)
