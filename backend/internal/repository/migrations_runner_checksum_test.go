@@ -161,4 +161,22 @@ func TestIsMigrationChecksumCompatible(t *testing.T) {
 		)
 		require.False(t, ok)
 	})
+
+	t.Run("223健康成本调度升级兼容已应用的旧版本", func(t *testing.T) {
+		ok := isMigrationChecksumCompatible(
+			"223_group_account_scheduling_strategy.sql",
+			"b84d8404e2f89277c42d931c16e56200909f9f9610ced8f829cdc96c1f2afed",
+			"d1d93bed2bdb5598c8a4c1a21997ece99c68936c02543a77cec63688964e94fd",
+		)
+		require.True(t, ok)
+	})
+
+	t.Run("223未知版本仍然拒绝", func(t *testing.T) {
+		ok := isMigrationChecksumCompatible(
+			"223_group_account_scheduling_strategy.sql",
+			"unknown-db-checksum",
+			"d1d93bed2bdb5598c8a4c1a21997ece99c68936c02543a77cec63688964e94fd",
+		)
+		require.False(t, ok)
+	})
 }

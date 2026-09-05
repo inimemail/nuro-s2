@@ -1635,6 +1635,7 @@ struct CompleteRequest {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 struct Usage {
     input_tokens: i64,
     output_tokens: i64,
@@ -12737,6 +12738,17 @@ mod tests {
         let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
 
         assert!(wal.load().await.is_err());
+    }
+
+    #[test]
+    fn usage_deserializes_wal_records_written_before_cache_creation_field() {
+        let usage: Usage =
+            serde_json::from_str(r#"{"input_tokens":12,"output_tokens":3}"#).unwrap();
+
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        assert_eq!(usage.cache_read_input_tokens, 0);
     }
 
     #[tokio::test]
