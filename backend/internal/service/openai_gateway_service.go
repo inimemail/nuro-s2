@@ -2350,7 +2350,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 4. 设置粘性会话绑定
 	// Set sticky session binding
-	if sessionHash != "" {
+	if sessionHash != "" && !s.openAIGroupUsesHealthFirst(ctx, groupID) {
 		_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 	}
 
@@ -2472,6 +2472,33 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	selectedCompactTier := -1
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	strategy := s.openAIGroupSchedulingStrategy(ctx, groupID)
+	adaptiveRank := make(map[int64]int)
+	if IsAdaptiveHealthSchedulingStrategy(strategy) && len(accounts) > 1 {
+		items := make([]accountWithLoad, 0, len(accounts))
+		for i := range accounts {
+			candidate := s.resolveFreshSchedulableOpenAIAccount(ctx, &accounts[i], requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...)
+			if candidate == nil || s.isNonOpenAIPoolCandidateBlocked(ctx, candidate) {
+				continue
+			}
+			candidate = s.recheckSelectedOpenAIAccountForGroup(ctx, candidate, groupID, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...)
+			if candidate == nil || (s.needsUpstreamChannelRestrictionCheck(ctx, groupID) && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, candidate, requestedModel, requireCompact)) {
+				continue
+			}
+			items = append(items, accountWithLoad{account: candidate, loadInfo: &AccountLoadInfo{AccountID: candidate.ID}})
+		}
+		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
+		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidates(items, requestedModel), OpenAIAccountScheduleRequest{
+			GroupID:                   groupID,
+			RequestedModel:            requestedModel,
+			AccountSchedulingStrategy: strategy,
+		})
+		for rank, candidate := range ordered {
+			if candidate.account != nil {
+				adaptiveRank[candidate.account.ID] = rank
+			}
+		}
+	}
 	probeDue := make([]*Account, 0)
 	rng := newOpenAISelectionRNG(nextOpenAIAccountBalanceSeed())
 	selectedRankSeen := 0
@@ -2535,6 +2562,18 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 				selectedRankSeen = 1
 			}
 			continue
+		}
+		if len(adaptiveRank) > 0 {
+			freshRank, freshKnown := adaptiveRank[fresh.ID]
+			selectedRank, selectedKnown := adaptiveRank[selected.ID]
+			if freshKnown && selectedKnown && freshRank != selectedRank {
+				if freshRank < selectedRank {
+					selected = fresh
+					selectedCompactTier = compactTier
+					selectedRankSeen = 1
+				}
+				continue
+			}
 		}
 
 		if fresh.Priority < selected.Priority {
@@ -2615,7 +2654,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	cfg := s.schedulingConfig()
-	healthFirst := s.openAIGroupUsesHealthFirst(ctx, groupID)
+	strategy := s.openAIGroupSchedulingStrategy(ctx, groupID)
+	healthFirst := IsAdaptiveHealthSchedulingStrategy(strategy)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	stickyBusyPreserve := false
 	if stickyAccountID <= 0 && sessionHash != "" && s.cache != nil {
@@ -2881,6 +2921,7 @@ openAIGroupGuardFallback:
 			requestedModel,
 			cfg,
 			healthFirst,
+			strategy,
 			groupID,
 			stickyAccountID,
 		)
@@ -2939,7 +2980,7 @@ openAIGroupGuardFallback:
 				if selectErr != nil {
 					return nil, true, selectErr
 				}
-				if sessionHash != "" && !stickyBusyPreserve {
+				if sessionHash != "" && !stickyBusyPreserve && !healthFirst {
 					_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, true, nil
@@ -2953,7 +2994,7 @@ openAIGroupGuardFallback:
 		// Load data is optional. Preserve the same strategy-aware ordering
 		// used by the normal path instead of silently reverting to an older
 		// priority-only sorter when the batch query is unavailable.
-		ordered := s.orderOpenAIWaitCandidatesForStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, groupID, stickyAccountID)
+		ordered := s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
@@ -2984,7 +3025,7 @@ openAIGroupGuardFallback:
 				if selectErr != nil {
 					return nil, selectErr
 				}
-				if sessionHash != "" && !stickyBusyPreserve {
+				if sessionHash != "" && !stickyBusyPreserve && !healthFirst {
 					_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, nil
@@ -3007,7 +3048,7 @@ openAIGroupGuardFallback:
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	candidates = s.orderOpenAIWaitCandidatesForStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, groupID, stickyAccountID)
+	candidates = s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
@@ -3063,22 +3104,28 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 // openAIGroupUsesHealthFirst resolves the opt-in strategy for legacy OpenAI
 // scheduling paths. The advanced scheduler normally resolves this itself, but
 // load-batch fallback must make the same decision when that scheduler is off.
-func (s *OpenAIGatewayService) openAIGroupUsesHealthFirst(ctx context.Context, groupID *int64) bool {
+func (s *OpenAIGatewayService) openAIGroupSchedulingStrategy(ctx context.Context, groupID *int64) string {
 	if groupID == nil {
-		return false
+		return AccountSchedulingStrategyStrictPriority
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
-		return groupUsesHealthFirst(group)
+		return NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
 	}
 	if s != nil && s.schedulerSnapshot != nil {
 		if group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); err == nil {
-			return groupUsesHealthFirst(group)
+			if group != nil {
+				return NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+			}
 		}
 	}
-	return false
+	return AccountSchedulingStrategyStrictPriority
+}
+
+func (s *OpenAIGatewayService) openAIGroupUsesHealthFirst(ctx context.Context, groupID *int64) bool {
+	return IsAdaptiveHealthSchedulingStrategy(s.openAIGroupSchedulingStrategy(ctx, groupID))
 }
 
 func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
@@ -3086,6 +3133,7 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
 	requestedModel string,
 	cfg config.GatewaySchedulingConfig,
 	healthFirst bool,
+	strategy string,
 	groupID *int64,
 	stickyAccountID int64,
 ) []accountWithLoad {
@@ -3097,9 +3145,10 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
 		candidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(candidates, OpenAIAccountScheduleRequest{
-			GroupID:         groupID,
-			StickyAccountID: stickyAccountID,
-			RequestedModel:  requestedModel,
+			GroupID:                   groupID,
+			StickyAccountID:           stickyAccountID,
+			RequestedModel:            requestedModel,
+			AccountSchedulingStrategy: strategy,
 		})
 		byID := make(map[int64]accountWithLoad, len(available))
 		for _, item := range available {
@@ -3164,7 +3213,18 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
 	return available
 }
 
+// orderOpenAIWaitCandidatesForStrategy preserves the pre-existing internal
+// helper signature for callers that only distinguish strict vs adaptive health.
+// New scheduling paths should use the strategy-aware variant below.
 func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategy(candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, groupID *int64, stickyAccountID int64) []*Account {
+	strategy := AccountSchedulingStrategyStrictPriority
+	if healthFirst {
+		strategy = AccountSchedulingStrategyHealthFirst
+	}
+	return s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+}
+
+func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string, groupID *int64, stickyAccountID int64) []*Account {
 	if healthFirst && len(candidates) > 1 {
 		items := make([]accountWithLoad, 0, len(candidates))
 		for _, account := range candidates {
@@ -3172,7 +3232,7 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategy(candidates [
 				items = append(items, accountWithLoad{account: account, loadInfo: &AccountLoadInfo{AccountID: account.ID}})
 			}
 		}
-		orderedItems := s.orderOpenAIAvailableCandidatesForStrategy(items, requestedModel, cfg, true, groupID, stickyAccountID)
+		orderedItems := s.orderOpenAIAvailableCandidatesForStrategy(items, requestedModel, cfg, true, strategy, groupID, stickyAccountID)
 		ordered := make([]*Account, 0, len(orderedItems))
 		for _, item := range orderedItems {
 			ordered = append(ordered, item.account)

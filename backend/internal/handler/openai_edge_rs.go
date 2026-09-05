@@ -3047,7 +3047,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		switch {
 		case successfulTerminal:
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
-			if lease.sessionHash != "" && lease.apiKey != nil && lease.apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(lease.apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+			if lease.sessionHash != "" && lease.apiKey != nil && lease.apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(lease.apiKey.Group.AccountSchedulingStrategy) {
 				_ = h.gatewayService.BindStickySession(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account.ID)
 			}
 		case neutralOutcome || cachePolicyCompatibilityFailure:

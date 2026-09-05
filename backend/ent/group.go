@@ -139,7 +139,7 @@ type Group struct {
 	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config,omitempty"`
 	// 兼容字段名：true 允许模型不匹配时跨优先级，false 严格限制跨优先级；仅影响 OpenAI 分组
 	StrictModelPriorityOnModelMismatch bool `json:"strict_model_priority_on_model_mismatch,omitempty"`
-	// 账号调度策略：strict_priority 保持原有优先级调度，health_first 启用健康优先调度
+	// 账号调度策略：strict_priority 保持原有优先级调度，health_first 健康领先，health_cost_balanced 健康成本均衡
 	AccountSchedulingStrategy string `json:"account_scheduling_strategy,omitempty"`
 	// 分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流
 	RpmLimit int `json:"rpm_limit,omitempty"`

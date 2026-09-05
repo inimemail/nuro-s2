@@ -1878,7 +1878,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if !affinityActive && stickyAccountID > 0 {
 				affinityID, affinityActive = stickyAccountID, true
 			}
-			return selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), affinityID, affinityActive)
+			return selectAdaptiveAccountWithLoadForGroupStrategy(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), affinityID, affinityActive, group.AccountSchedulingStrategy)
 		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithLoadAndAnthropicAffinity(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
@@ -2488,7 +2488,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group)); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group), group.AccountSchedulingStrategy); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -2545,7 +2545,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// ============ Layer 3: 兜底排队 ============
 	if groupUsesHealthFirst(group) {
-		s.sortHealthFirstCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID))
+		s.sortAdaptiveCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID), group.AccountSchedulingStrategy)
 	} else {
 		s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
 	}
@@ -2647,7 +2647,7 @@ func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
 	})
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig, healthFirst bool) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
 	anthropicAffinityActive := anthropicAffinityHash != ""
@@ -2660,7 +2660,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 		var acc *Account
 		if healthFirst {
 			items := accountPointersToNeutralLoads(ordered)
-			if selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), anthropicAffinityAccountID, anthropicAffinityActive); selected != nil {
+			if selected := selectAdaptiveAccountWithLoadForGroupStrategy(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), anthropicAffinityAccountID, anthropicAffinityActive, strategy); selected != nil {
 				acc = selected.account
 			}
 		} else {
@@ -3818,15 +3818,47 @@ func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *a
 	return selectHealthFirstAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, 0, affinityAccountID, affinityActive)
 }
 
+func selectHealthCostBalancedAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, true)
+}
+
+func selectAdaptiveAccountWithLoadForGroupStrategy(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string) *accountWithLoad {
+	return selectAdaptiveAccountWithLoadForGroupStrategyWarmup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, strategy, true)
+}
+
+func selectAdaptiveAccountWithLoadForGroupStrategyWarmup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string, allowWarmup bool) *accountWithLoad {
+	if IsHealthCostBalancedSchedulingStrategy(strategy) {
+		return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, allowWarmup)
+	}
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, allowWarmup)
+}
+
 // selectHealthFirstAccountWithLoadForGroup applies the opt-in adaptive policy.
 // The group id is used only to isolate recovery sampling state; all hard
 // eligibility and capacity checks remain in the caller.
 func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, true)
+}
+
+func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, costBalanced bool, allowWarmup bool) *accountWithLoad {
 	if len(accounts) == 0 {
 		return nil
 	}
 	candidates := buildAccountHealthCandidates(accounts, healthStats)
 	bestScore := bestAccountHealthScore(candidates)
+	// Every adaptive mode gives sample-starved accounts a bounded, group-scoped
+	// chance to use an otherwise valid real request. Strict priority never calls
+	// this function, so it cannot be affected by the warm-up queue.
+	if allowWarmup && healthStats != nil && !affinityActive && healthStats.warmingUpTurn(groupID) {
+		for i := range candidates {
+			candidate := &candidates[i]
+			if candidate.item.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples || !healthStats.warmingUpDue(groupID, candidate.item.account.ID, now) {
+				continue
+			}
+			healthStats.markWarmingUp(groupID, candidate.item.account.ID, now)
+			return &candidate.item
+		}
+	}
 	known := hasKnownAccountHealthSample(candidates)
 	// On a cold start do not let an undeclared multiplier win merely because it
 	// is cheaper. Preserve a valid cache binding, otherwise use the configured
@@ -3893,7 +3925,19 @@ func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, health
 	if cfg.PreferSoonestReset {
 		// Reset remains a hard scheduling preference only after health has been
 		// evaluated; it must not make an unhealthy account win.
-		band := filterAccountHealthBandCandidates(candidates, bestScore)
+		healthGap := accountHealthScoreBandThreshold
+		if costBalanced {
+			healthGap = accountHealthCostEligibleGap
+		}
+		band := make([]accountWithLoad, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.item.account == nil || candidate.score >= bestScore-healthGap {
+				band = append(band, candidate.item)
+			}
+		}
+		if len(band) == 0 {
+			band = accountHealthItems(candidates)
+		}
 		resetBand := filterBySoonestReset(band, now)
 		if len(resetBand) > 0 {
 			allowed := make(map[*Account]struct{}, len(resetBand))
@@ -3913,13 +3957,19 @@ func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, health
 			}
 		}
 	}
-	// Keep only the best health band. Ordering inside the band follows the
+	// Keep only the best health band. Cost-balanced mode uses a wider
+	// admissible health range so a healthy lower-cost account is not discarded
+	// before multiplier ordering. Ordering inside the band follows the
 	// approved policy: declared multiplier, cache affinity, priority, pool type,
 	// load, then LRU. This avoids exact-score thrashing.
 	if bestScore >= 0 {
 		band := make([]accountHealthCandidate, 0, len(candidates))
 		for _, candidate := range candidates {
-			if candidate.item.account == nil || candidate.score >= bestScore-accountHealthScoreBandThreshold {
+			gap := accountHealthScoreBandThreshold
+			if costBalanced {
+				gap = accountHealthCostEligibleGap
+			}
+			if candidate.item.account == nil || candidate.score >= bestScore-gap {
 				band = append(band, candidate)
 			}
 		}
@@ -4036,7 +4086,7 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 }
 
 func groupUsesHealthFirst(group *Group) bool {
-	return group != nil && NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy) == AccountSchedulingStrategyHealthFirst
+	return group != nil && IsAdaptiveHealthSchedulingStrategy(group.AccountSchedulingStrategy)
 }
 
 func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *accountWithLoad {
@@ -4373,13 +4423,17 @@ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, healthSt
 // still determine the order. Strict-priority callers continue using the legacy
 // sorter above.
 func (s *GatewayService) sortHealthFirstCandidatesForFallback(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, groupID int64) {
+	s.sortAdaptiveCandidatesForFallback(accounts, healthStats, cfg, preferOAuth, groupID, AccountSchedulingStrategyHealthFirst)
+}
+
+func (s *GatewayService) sortAdaptiveCandidatesForFallback(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, groupID int64, strategy string) {
 	if len(accounts) <= 1 {
 		return
 	}
 	remaining := accountPointersToNeutralLoads(accounts)
 	ordered := make([]*Account, 0, len(remaining))
 	for len(remaining) > 0 {
-		selected := selectHealthFirstAccountWithLoadForGroup(remaining, healthStats, cfg, preferOAuth, time.Now(), groupID, 0, false)
+		selected := selectAdaptiveAccountWithLoadForGroupStrategyWarmup(remaining, healthStats, cfg, preferOAuth, time.Now(), groupID, 0, false, strategy, false)
 		if selected == nil || selected.account == nil {
 			break
 		}
@@ -4472,7 +4526,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive)
+			selected := selectAdaptiveAccountWithLoadForGroupStrategy(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy)
 			if selected != nil {
 				return selected.account
 			}
@@ -4755,7 +4809,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectHealthFirstAccountWithLoadForGroup(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive)
+			selected := selectAdaptiveAccountWithLoadForGroupStrategy(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy)
 			if selected != nil {
 				return selected.account
 			}

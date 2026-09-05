@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,6 +53,9 @@ func TestNormalizeAccountSchedulingStrategyDefaultsToStrict(t *testing.T) {
 	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy(""))
 	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy("invalid"))
 	require.Equal(t, AccountSchedulingStrategyHealthFirst, NormalizeAccountSchedulingStrategy(AccountSchedulingStrategyHealthFirst))
+	require.Equal(t, AccountSchedulingStrategyHealthCostBalanced, NormalizeAccountSchedulingStrategy(AccountSchedulingStrategyHealthCostBalanced))
+	require.True(t, IsAdaptiveHealthSchedulingStrategy(AccountSchedulingStrategyHealthCostBalanced))
+	require.False(t, IsAdaptiveHealthSchedulingStrategy(AccountSchedulingStrategyStrictPriority))
 }
 
 func TestSelectHealthFirstAccountWithLoad_CrossesPriorityForHealthyAccount(t *testing.T) {
@@ -311,7 +315,7 @@ func TestSelectLayeredAccountWithLoad_DoesNotExploreUnknownInMainPath(t *testing
 	require.Equal(t, int64(1), selected.account.ID)
 }
 
-func TestSelectLayeredAccountWithLoad_NilTTFTSamplesRemainUnknown(t *testing.T) {
+func TestSelectLayeredAccountWithLoad_BusinessSamplesWithoutTTFTAreKnown(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 120
 	reportHealthSamples(stats, 1, true, &fast, 3)
@@ -329,12 +333,102 @@ func TestSelectLayeredAccountWithLoad_NilTTFTSamplesRemainUnknown(t *testing.T) 
 		{account: &Account{ID: 2, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
 	}
 	unknownOnly := buildAccountHealthCandidates(candidates[1:], stats)
-	require.False(t, hasKnownAccountHealthSample(unknownOnly))
+	require.True(t, hasKnownAccountHealthSample(unknownOnly))
 
 	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
 	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
 	require.NotNil(t, selected)
 	require.Equal(t, int64(1), selected.account.ID)
+}
+
+func TestSelectHealthCostBalancedAccountWithLoad_LowerMultiplierWithinHealthyGapWins(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	acceptable := 220
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, &acceptable, 3)
+	now := time.Now()
+	leading := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.5, now.Add(time.Hour))
+	cheaper := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.5, now.Add(time.Hour))
+
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{leading, cheaper}, stats, config.GatewaySchedulingConfig{}, false, now, 101, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+
+	selectedLeading := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{leading, cheaper}, stats, config.GatewaySchedulingConfig{}, false, now, 102, 0, false, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, selectedLeading)
+	require.Equal(t, int64(1), selectedLeading.account.ID)
+}
+
+func TestSelectHealthCostBalancedAccountWithLoad_PreferSoonestResetKeepsWideHealthBand(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	acceptable := 220
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, &acceptable, 3)
+	now := time.Now()
+	leadingReset := now.Add(20 * time.Minute)
+	cheaperReset := now.Add(2 * time.Minute)
+	leading := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.5, leadingReset)
+	cheaper := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.5, cheaperReset)
+
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(
+		[]accountWithLoad{{account: leading.account}, {account: cheaper.account}},
+		stats,
+		config.GatewaySchedulingConfig{PreferSoonestReset: true},
+		false,
+		now,
+		105,
+		0,
+		false,
+		AccountSchedulingStrategyHealthCostBalanced,
+	)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestAdaptiveSelection_WarmingUpRotatesSampleStarvedAccounts(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	accounts := []accountWithLoad{
+		makeHealthTestAccount(1, 1, 0, true),
+		makeHealthTestAccount(2, 1, 0, true),
+		makeHealthTestAccount(3, 1, 0, true),
+	}
+	now := time.Now()
+	// The counter is per-group and starts at zero; drive it to the next turn.
+	value, _ := stats.warmingUpCounter.LoadOrStore(int64(103), &atomic.Uint64{})
+	value.(*atomic.Uint64).Store(9)
+	first := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now, 103, 0, false, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, first)
+	require.Equal(t, int64(2), first.account.ID)
+
+	value.(*atomic.Uint64).Store(19)
+	second := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now.Add(10*time.Second), 103, 0, false, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, second)
+	require.Equal(t, int64(3), second.account.ID)
+
+	// Active affinity suppresses warm-up so continuation/sticky semantics remain intact.
+	value.(*atomic.Uint64).Store(29)
+	affined := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now.Add(4*time.Minute), 103, 1, true, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, affined)
+	require.Equal(t, int64(1), affined.account.ID)
+}
+
+func TestAdaptiveSelection_FallbackOrderingDoesNotMarkWarmingUp(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	accounts := []accountWithLoad{
+		makeHealthTestAccount(1, 1, 0, true),
+		makeHealthTestAccount(2, 1, 0, true),
+	}
+	for i := 0; i < 10; i++ {
+		selected := selectAdaptiveAccountWithLoadForGroupStrategyWarmup(accounts, stats, config.GatewaySchedulingConfig{}, false, time.Now(), 104, 0, false, AccountSchedulingStrategyHealthFirst, false)
+		require.NotNil(t, selected)
+	}
+	value, ok := stats.warmingUpCounter.Load(int64(104))
+	require.False(t, ok)
+	require.Nil(t, value)
 }
 
 func TestSelectLayeredAccountWithLoad_NilTTFTFailuresBecomeDegraded(t *testing.T) {

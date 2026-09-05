@@ -17,13 +17,25 @@ type ReasoningEffortMapping = domain.ReasoningEffortMapping
 const (
 	AccountSchedulingStrategyStrictPriority = "strict_priority"
 	AccountSchedulingStrategyHealthFirst    = "health_first"
+	// AccountSchedulingStrategyHealthCostBalanced keeps the adaptive health
+	// model, but admits healthy lower-cost accounts after a bounded warm-up.
+	AccountSchedulingStrategyHealthCostBalanced = "health_cost_balanced"
 )
 
 func NormalizeAccountSchedulingStrategy(value string) string {
-	if value == AccountSchedulingStrategyHealthFirst {
+	if value == AccountSchedulingStrategyHealthFirst || value == AccountSchedulingStrategyHealthCostBalanced {
 		return value
 	}
 	return AccountSchedulingStrategyStrictPriority
+}
+
+func IsAdaptiveHealthSchedulingStrategy(value string) bool {
+	strategy := NormalizeAccountSchedulingStrategy(value)
+	return strategy == AccountSchedulingStrategyHealthFirst || strategy == AccountSchedulingStrategyHealthCostBalanced
+}
+
+func IsHealthCostBalancedSchedulingStrategy(value string) bool {
+	return NormalizeAccountSchedulingStrategy(value) == AccountSchedulingStrategyHealthCostBalanced
 }
 
 type Group struct {

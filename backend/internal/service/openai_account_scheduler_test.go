@@ -3992,7 +3992,7 @@ func TestOpenAIAccountRuntimeHealthScore_NoTTFTDoesNotExceedUnknown(t *testing.T
 	require.Less(t, openAIAccountRuntimeHealthScore(0.5, 0, false, 0, 0, false), accountHealthUnknownScore)
 }
 
-func TestPrioritizeOpenAIHealthProbeCandidate_NilTTFTSamplesRemainUnknown(t *testing.T) {
+func TestPrioritizeOpenAIHealthProbeCandidate_BusinessSamplesWithoutTTFTAreKnown(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	knownTTFT := 120
 	for i := 0; i < int(accountHealthUnknownMinSamples); i++ {
@@ -4024,7 +4024,7 @@ func TestPrioritizeOpenAIHealthProbeCandidate_NilTTFTSamplesRemainUnknown(t *tes
 			hasHealthScore:  true,
 		},
 	}
-	require.False(t, hasKnownOpenAIHealthSample(candidates[1:]))
+	require.True(t, hasKnownOpenAIHealthSample(candidates[1:]))
 
 	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
 	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, time.Now())

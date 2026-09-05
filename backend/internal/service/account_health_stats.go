@@ -12,7 +12,10 @@ const (
 	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
 	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
 	// 首 token 速度差即可跨带胜出，10%~30% 的抖动仍判为同带走均衡。
-	accountHealthScoreBandThreshold  = 0.12
+	accountHealthScoreBandThreshold = 0.12
+	// Cost-balanced adaptive health admits accounts that are healthy enough to
+	// serve traffic, even when they are not in the narrow speed-leading band.
+	accountHealthCostEligibleGap     = 0.25
 	accountHealthCacheAffinityMaxGap = 0.10
 	// A cached account gets a wider exit band than a new candidate's entry
 	// band. This hysteresis prevents small EWMA fluctuations from moving an
@@ -38,6 +41,8 @@ type accountRuntimeHealthStats struct {
 	degradedRecoveryAt sync.Map
 	healthFirstCounter sync.Map
 	healthFirstProbeAt sync.Map
+	warmingUpCounter   sync.Map
+	warmingUpAt        sync.Map
 }
 
 type accountHealthGroupProbeKey struct {
@@ -226,7 +231,7 @@ func accountHealthHasKnownSamples(sampleCount int64, ttftSampleCount int64, erro
 	if ttftSampleCount >= accountHealthUnknownMinSamples {
 		return true
 	}
-	return sampleCount >= accountHealthUnknownMinSamples && errorRate > 0
+	return sampleCount >= accountHealthUnknownMinSamples
 }
 
 func bestAccountHealthScore(candidates []accountHealthCandidate) float64 {
@@ -244,6 +249,39 @@ func (s *accountRuntimeHealthStats) shouldTriggerUnknownExploration() bool {
 		return false
 	}
 	return s.selectionCounter.Add(1)%accountHealthUnknownExploreEvery == 0
+}
+
+// warmingUpTurn returns true at a bounded cadence per group. It is independent
+// from unknown/degraded recovery so both adaptive modes give accounts with too
+// few samples a fair initial evaluation opportunity.
+func (s *accountRuntimeHealthStats) warmingUpTurn(groupID int64) bool {
+	if s == nil {
+		return false
+	}
+	value, _ := s.warmingUpCounter.LoadOrStore(groupID, &atomic.Uint64{})
+	counter, _ := value.(*atomic.Uint64)
+	return counter != nil && counter.Add(1)%10 == 0
+}
+
+func (s *accountRuntimeHealthStats) warmingUpDue(groupID, accountID int64, now time.Time) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
+	if raw, ok := s.warmingUpAt.Load(key); ok {
+		lastNano, _ := raw.(int64)
+		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < time.Minute {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *accountRuntimeHealthStats) markWarmingUp(groupID, accountID int64, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.warmingUpAt.Store(accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}, now.UnixNano())
 }
 
 func accountHealthProbeDue(probes *sync.Map, accountID int64, now time.Time, interval time.Duration) bool {

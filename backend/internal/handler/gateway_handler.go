@@ -520,7 +520,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
-				if apiKey.Group == nil || service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) != service.AccountSchedulingStrategyHealthFirst {
+				if apiKey.Group == nil || !service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 					if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
 						reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					}
@@ -612,7 +612,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			switch {
 			case successfulOutcome:
 				h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
-				if sessionKey != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if sessionKey != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 					if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
 						reqLog.Warn("gateway.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					}
@@ -856,7 +856,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					zap.Bool("has_session_key", strings.TrimSpace(sessionKey) != ""),
 					zap.Int64("account_id", account.ID),
 				)
-				if currentAPIKey.Group == nil || service.NormalizeAccountSchedulingStrategy(currentAPIKey.Group.AccountSchedulingStrategy) != service.AccountSchedulingStrategyHealthFirst {
+				if currentAPIKey.Group == nil || !service.IsAdaptiveHealthSchedulingStrategy(currentAPIKey.Group.AccountSchedulingStrategy) {
 					if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 						reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					}
@@ -1149,7 +1149,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 绑定粘性会话（成功转发后绑定/刷新）。严格优先级保留旧的
 			// failover 绑定语义；健康模式成功切换后覆盖旧绑定，避免下次请求
 			// 再次命中已经降权的账号。
-			healthFirst := currentAPIKey.Group != nil && service.NormalizeAccountSchedulingStrategy(currentAPIKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst
+			healthFirst := currentAPIKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(currentAPIKey.Group.AccountSchedulingStrategy)
 			if successfulOutcome && sessionKey != "" && (healthFirst || sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))

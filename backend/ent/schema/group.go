@@ -254,7 +254,7 @@ func (Group) Fields() []ent.Field {
 		field.String("account_scheduling_strategy").
 			MaxLen(30).
 			Default("strict_priority").
-			Comment("账号调度策略：strict_priority 保持原有优先级调度，health_first 启用健康优先调度"),
+			Comment("账号调度策略：strict_priority 保持原有优先级调度，health_first 健康领先，health_cost_balanced 健康成本均衡"),
 
 		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
 		field.Int("rpm_limit").

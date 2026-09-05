@@ -299,6 +299,8 @@ type openAIAccountRuntimeStats struct {
 	degradedRecoveryAt sync.Map
 	healthFirstCounter sync.Map
 	healthFirstProbeAt sync.Map
+	warmingUpCounter   sync.Map
+	warmingUpAt        sync.Map
 	sharedMu           sync.RWMutex
 	shared             *openAIAccountHealthSharedState
 }
@@ -310,6 +312,36 @@ func (s *openAIAccountRuntimeStats) healthFirstProbeTurn(groupID int64) bool {
 	value, _ := s.healthFirstCounter.LoadOrStore(groupID, &atomic.Uint64{})
 	counter, _ := value.(*atomic.Uint64)
 	return counter != nil && counter.Add(1)%accountHealthUnknownExploreEvery == 0
+}
+
+func (s *openAIAccountRuntimeStats) warmingUpTurn(groupID int64) bool {
+	if s == nil {
+		return false
+	}
+	value, _ := s.warmingUpCounter.LoadOrStore(groupID, &atomic.Uint64{})
+	counter, _ := value.(*atomic.Uint64)
+	return counter != nil && counter.Add(1)%10 == 0
+}
+
+func (s *openAIAccountRuntimeStats) warmingUpDue(groupID, accountID int64, now time.Time) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
+	if raw, ok := s.warmingUpAt.Load(key); ok {
+		lastNano, _ := raw.(int64)
+		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < time.Minute {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *openAIAccountRuntimeStats) markWarmingUp(groupID, accountID int64, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.warmingUpAt.Store(accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}, now.UnixNano())
 }
 
 func (s *openAIAccountRuntimeStats) healthFirstProbeDue(groupID, accountID int64, now time.Time, delay time.Duration) bool {
@@ -732,7 +764,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst {
+	if !IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 		selection, stickyBusy, err := s.selectBySessionHash(ctx, req)
 		if err != nil {
 			return nil, decision, err
@@ -1369,7 +1401,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(pool) == 0 {
 			return nil
 		}
-		if req.AccountSchedulingStrategy == AccountSchedulingStrategyHealthFirst {
+		if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 			return s.buildHealthFirstSelectionOrder(pool, req)
 		}
 		return s.buildStrictPrioritySelectionOrderForSession(pool, req.RequestedModel, req.SessionHash)
@@ -1412,9 +1444,27 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	}
 	now := time.Now()
 	known := hasKnownOpenAIHealthSample(ordered)
+	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
 	groupID := int64(0)
 	if req.GroupID != nil {
 		groupID = *req.GroupID
+	}
+	// Both adaptive modes must give sample-starved accounts bounded initial
+	// evaluation opportunities. This only changes the order inside the already
+	// eligible pool; strict_priority never enters this function.
+	if s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.warmingUpTurn(groupID) {
+		for i := range ordered {
+			candidate := &ordered[i]
+			if candidate.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples || !s.stats.warmingUpDue(groupID, candidate.account.ID, now) {
+				continue
+			}
+			s.stats.markWarmingUp(groupID, candidate.account.ID, now)
+			result := append([]openAIAccountCandidateScore(nil), ordered...)
+			selected := result[i]
+			copy(result[1:i+1], result[:i])
+			result[0] = selected
+			return result
+		}
 	}
 	// Cold start protection: retain a valid sticky account, otherwise begin with
 	// the configured priority order until runtime samples are available.
@@ -1489,8 +1539,12 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 				return aProbe
 			}
 		}
-		aInBestBand := a.account == nil || a.healthScore >= bestScore-accountHealthScoreBandThreshold
-		bInBestBand := b.account == nil || b.healthScore >= bestScore-accountHealthScoreBandThreshold
+		healthGap := accountHealthScoreBandThreshold
+		if costBalanced {
+			healthGap = accountHealthCostEligibleGap
+		}
+		aInBestBand := a.account == nil || a.healthScore >= bestScore-healthGap
+		bInBestBand := b.account == nil || b.healthScore >= bestScore-healthGap
 		if aInBestBand != bInBestBand {
 			return aInBestBand
 		}
@@ -1919,7 +1973,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 				}
 				continue
 			}
-			if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst && req.SessionHash != "" && !req.PreserveStickyBinding {
+			if !IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) && req.SessionHash != "" && !req.PreserveStickyBinding {
 				_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 			}
 			return &AccountSelectionResult{
@@ -2040,7 +2094,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 			}
 			continue
 		}
-		if req.AccountSchedulingStrategy != AccountSchedulingStrategyHealthFirst && req.SessionHash != "" && !req.PreserveStickyBinding {
+		if !IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) && req.SessionHash != "" && !req.PreserveStickyBinding {
 			_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 		}
 		return &AccountSelectionResult{

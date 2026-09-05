@@ -94,7 +94,7 @@ func (s *OpenAIGatewayService) prioritizeOpenAIPromptCacheWarmCandidates(ctx con
 	// the effective upstream multiplier. The legacy warm-candidate shortcut is
 	// intentionally strict-priority based and could otherwise move a less
 	// healthy account ahead of a healthier one.
-	if req.AccountSchedulingStrategy == AccountSchedulingStrategyHealthFirst {
+	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 		return candidates
 	}
 	baseline := candidates[0]

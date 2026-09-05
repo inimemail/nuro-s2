@@ -621,7 +621,7 @@ export interface Group {
   require_oauth_only: boolean
   require_privacy_set: boolean
   strict_model_priority_on_model_mismatch: boolean
-  account_scheduling_strategy?: 'strict_priority' | 'health_first'
+  account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   created_at: string
   updated_at: string
 }
@@ -776,7 +776,7 @@ export interface CreateGroupRequest {
   require_oauth_only?: boolean
   require_privacy_set?: boolean
   strict_model_priority_on_model_mismatch?: boolean
-  account_scheduling_strategy?: 'strict_priority' | 'health_first'
+  account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
 }
@@ -841,7 +841,7 @@ export interface UpdateGroupRequest {
   require_oauth_only?: boolean
   require_privacy_set?: boolean
   strict_model_priority_on_model_mismatch?: boolean
-  account_scheduling_strategy?: 'strict_priority' | 'health_first'
+  account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   copy_accounts_from_group_ids?: number[]
 }
 

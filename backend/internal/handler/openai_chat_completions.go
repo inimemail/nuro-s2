@@ -444,7 +444,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
 				// Health-first deliberately defers sticky binding until an upstream
 				// turn succeeds, so a failed candidate cannot poison the session.
-				if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 					if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
 						reqLog.Warn("openai_chat_completions.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 					}
@@ -458,7 +458,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
-			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+			if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 				if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
 					reqLog.Warn("openai_chat_completions.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 				}

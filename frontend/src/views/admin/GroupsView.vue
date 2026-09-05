@@ -4291,7 +4291,7 @@ const createForm = reactive({
   require_oauth_only: false,
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
-  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first",
+  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4653,7 +4653,7 @@ const editForm = reactive({
   require_oauth_only: false,
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
-  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first",
+  account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5331,7 +5331,9 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.require_privacy_set = group.require_privacy_set ?? false;
   editForm.strict_model_priority_on_model_mismatch =
     group.strict_model_priority_on_model_mismatch ?? false;
-  editForm.account_scheduling_strategy = group.account_scheduling_strategy === "health_first" ? "health_first" : "strict_priority";
+  editForm.account_scheduling_strategy = group.account_scheduling_strategy === "health_cost_balanced"
+    ? "health_cost_balanced"
+    : group.account_scheduling_strategy === "health_first" ? "health_first" : "strict_priority";
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",

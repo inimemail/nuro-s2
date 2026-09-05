@@ -53,6 +53,26 @@ func TestOpenAIWaitFallbackStrategyKeepsStrictPriorityAndOptInHealthFirst(t *tes
 	require.Equal(t, healthySecondary.ID, healthFirst[0].ID, "health_first may cross priority for a materially healthier account")
 }
 
+func TestOpenAILegacyLoadStrategyPropagatesHealthCostBalanced(t *testing.T) {
+	groupID := int64(8802)
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < 5; i++ {
+		fast := 100
+		acceptable := 220
+		stats.reportForRoute(88021, true, &fast, "gpt-5.1", OpenAIUpstreamTransportHTTPSSE)
+		stats.reportForRoute(88022, true, &acceptable, "gpt-5.1", OpenAIUpstreamTransportHTTPSSE)
+	}
+	now := time.Now()
+	primary := withProbeMultiplier(makeHealthTestAccount(88021, 1, 0, true), 1.5, now.Add(time.Hour))
+	cheaper := withProbeMultiplier(makeHealthTestAccount(88022, 5, 0, true), 0.5, now.Add(time.Hour))
+	service := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	available := []accountWithLoad{primary, cheaper}
+
+	balanced := service.orderOpenAIAvailableCandidatesForStrategy(available, "gpt-5.1", config.GatewaySchedulingConfig{}, true, AccountSchedulingStrategyHealthCostBalanced, &groupID, 0)
+	require.Len(t, balanced, 2)
+	require.Equal(t, int64(88022), balanced[0].account.ID)
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account

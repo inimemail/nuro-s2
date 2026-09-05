@@ -1025,7 +1025,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			if !healthProbe {
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
-				if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+				if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 					_ = h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 				}
 			}
@@ -1036,7 +1036,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.recordOpenAIHealthProbeRecentSuccess(apiKey.ID, requestPlatform, reqModel)
 		}
 		if successfulOutcome && !healthProbe && sessionHash != "" && apiKey.Group != nil &&
-			service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+			service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 			if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
 				reqLog.Warn("openai.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 			}
@@ -1727,7 +1727,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
-			if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+			if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 				_ = h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 			}
 			return
@@ -2678,7 +2678,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				switch {
 				case successfulTerminal:
 					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, routingModel, true, result.FirstTokenMs)
-					if sessionHash != "" && apiKey.Group != nil && service.NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) == service.AccountSchedulingStrategyHealthFirst {
+					if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
 						_ = h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID)
 					}
 				case neutralOutcome:
