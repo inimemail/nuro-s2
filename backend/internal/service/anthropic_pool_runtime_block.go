@@ -78,6 +78,20 @@ func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	}
 }
 
+// clearAccountSchedulingBlockBefore handles a fenced full-clear event for all
+// pool runtimes owned by GatewayService. New cooldowns carrying this
+// generation remain intact if they race the clear.
+func (s *GatewayService) clearAccountSchedulingBlockBefore(accountID, generation int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
+	if s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.noteClearGeneration(accountID, generation)
+		s.nonOpenAIPoolRuntime.clearAccountIDBefore(accountID, generation)
+	}
+}
+
 func (s *GatewayService) ClearAccountRuntimeBlockOnly(accountID int64) {
 	if s != nil && s.nonOpenAIPoolRuntime != nil {
 		// Domestic-platform runtime cooldowns share this gateway service, but

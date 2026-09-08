@@ -18,6 +18,7 @@ type NonOpenAIPoolRuntime struct {
 	probes              sync.Map // key: platform:kind:accountID, value: nonOpenAIPoolProbeLease
 	consecutiveFailures sync.Map // key: platform:kind:accountID, value: int
 	probeFailures       sync.Map // key: platform:kind:accountID, value: int
+	clearGenerations    sync.Map // key: int64(accountID), value: int64
 	nextProbe           atomic.Uint64
 	probeRunnersMu      sync.RWMutex
 	probeRunners        map[string]NonOpenAIPoolProbeFunc
@@ -28,6 +29,23 @@ type nonOpenAIPoolProbeLease struct {
 	StartedAt time.Time
 	Token     uint64
 	Deadline  time.Time
+}
+
+type nonOpenAIPoolDeadline struct {
+	Until           time.Time
+	ClearGeneration int64
+}
+
+func parseNonOpenAIPoolDeadline(value any) (time.Time, int64, bool) {
+	switch deadline := value.(type) {
+	case nonOpenAIPoolDeadline:
+		return deadline.Until, deadline.ClearGeneration, !deadline.Until.IsZero()
+	case time.Time:
+		// Keep compatibility with state created before generation fencing.
+		return deadline, 0, !deadline.IsZero()
+	default:
+		return time.Time{}, 0, false
+	}
 }
 
 type NonOpenAIPoolProbeResult struct {
@@ -41,6 +59,7 @@ type NonOpenAIPoolProbeFunc func(ctx context.Context, accountID int64, platform,
 
 type NonOpenAIPoolRuntimeState struct {
 	Until           time.Time
+	ClearGeneration int64
 	Cooling         bool
 	Due             bool
 	ProbeInFlight   bool
@@ -241,14 +260,15 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 	if !ok {
 		return false
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
+	until, clearGeneration, valid := parseNonOpenAIPoolDeadline(value)
+	if !valid {
 		r.deadlines.Delete(key)
 		return false
 	}
 	if time.Now().Before(until) {
 		state := r.state(account.ID, account.Platform, kind)
 		state.Until = until
+		state.ClearGeneration = clearGeneration
 		state.Cooling = true
 		state.Due = false
 		state.ProbeInFlight = false
@@ -261,6 +281,7 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 	}
 	state := r.state(account.ID, account.Platform, kind)
 	state.Until = until
+	state.ClearGeneration = clearGeneration
 	state.Cooling = true
 	state.Due = true
 	r.states.Store(key, state)
@@ -285,8 +306,8 @@ func (r *NonOpenAIPoolRuntime) candidateBlockedForKind(settings NonOpenAIPoolSet
 	}
 	key := nonOpenAIPoolKey(account, kind)
 	value, ok := r.deadlines.Load(key)
-	until, valid := value.(time.Time)
-	if !ok || !valid || until.IsZero() {
+	until, _, valid := parseNonOpenAIPoolDeadline(value)
+	if !ok || !valid {
 		return false
 	}
 	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
@@ -325,7 +346,7 @@ func (r *NonOpenAIPoolRuntime) maybeStartRecoveryProbe(settings NonOpenAIPoolSet
 	}
 	key := nonOpenAIPoolKey(account, kind)
 	current, ok := r.deadlines.Load(key)
-	deadline, valid := current.(time.Time)
+	deadline, clearGeneration, valid := parseNonOpenAIPoolDeadline(current)
 	if !ok || !valid || !deadline.Equal(expectedDeadline) {
 		return
 	}
@@ -360,6 +381,7 @@ func (r *NonOpenAIPoolRuntime) maybeStartRecoveryProbe(settings NonOpenAIPoolSet
 	}
 	state := r.state(account.ID, account.Platform, kind)
 	state.Until = expectedDeadline
+	state.ClearGeneration = clearGeneration
 	state.Cooling = true
 	state.Due = true
 	state.ProbeInFlight = true
@@ -400,7 +422,7 @@ func (r *NonOpenAIPoolRuntime) maybeKickFromAdmin(settings NonOpenAIPoolSettings
 			continue
 		}
 		value, ok := r.deadlines.Load(nonOpenAIPoolKey(account, kind))
-		deadline, valid := value.(time.Time)
+		deadline, _, valid := parseNonOpenAIPoolDeadline(value)
 		if ok && valid && !time.Now().Before(deadline) {
 			r.maybeStartRecoveryProbe(settings, account, kind, deadline)
 		}
@@ -416,7 +438,7 @@ func (r *NonOpenAIPoolRuntime) finishRecoveryProbe(settings NonOpenAIPoolSetting
 	}
 	defer r.probes.CompareAndDelete(key, loaded)
 	deadlineValue, ok := r.deadlines.Load(key)
-	deadline, valid := deadlineValue.(time.Time)
+	deadline, clearGeneration, valid := parseNonOpenAIPoolDeadline(deadlineValue)
 	if !ok || !valid || !deadline.Equal(lease.Deadline) {
 		return
 	}
@@ -465,7 +487,8 @@ func (r *NonOpenAIPoolRuntime) finishRecoveryProbe(settings NonOpenAIPoolSetting
 		seconds = 1
 	}
 	newDeadline := time.Now().Add(time.Duration(seconds) * time.Second)
-	if !r.deadlines.CompareAndSwap(key, deadlineValue, newDeadline) {
+	nextDeadline := nonOpenAIPoolDeadline{Until: newDeadline, ClearGeneration: clearGeneration}
+	if !r.deadlines.CompareAndSwap(key, deadlineValue, nextDeadline) {
 		return
 	}
 	reason := truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(result.Reason)), 256)
@@ -475,6 +498,7 @@ func (r *NonOpenAIPoolRuntime) finishRecoveryProbe(settings NonOpenAIPoolSetting
 	}
 	state := r.state(account.ID, account.Platform, kind)
 	state.Until = newDeadline
+	state.ClearGeneration = clearGeneration
 	state.Cooling = true
 	state.Due = false
 	state.ProbeInFlight = false
@@ -598,9 +622,10 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 		return
 	}
 	if value, ok := r.deadlines.Load(key); ok {
-		if activeUntil, valid := value.(time.Time); valid {
+		if activeUntil, clearGeneration, valid := parseNonOpenAIPoolDeadline(value); valid {
 			state := r.state(account.ID, account.Platform, kind)
 			state.Until = activeUntil
+			state.ClearGeneration = clearGeneration
 			state.Cooling = true
 			state.Due = !time.Now().Before(activeUntil)
 			state.ProbeInFlight = false
@@ -633,9 +658,10 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 	account.nonOpenAIPoolProbeKind = ""
 	r.probes.Delete(key)
 	until := time.Now().Add(time.Duration(seconds) * time.Second)
-	r.deadlines.Store(key, until)
+	clearGeneration := r.clearGeneration(account.ID)
+	r.deadlines.Store(key, nonOpenAIPoolDeadline{Until: until, ClearGeneration: clearGeneration})
 	r.states.Store(key, NonOpenAIPoolRuntimeState{
-		Until: until, Cooling: true, StatusCode: statusCode,
+		Until: until, ClearGeneration: clearGeneration, Cooling: true, StatusCode: statusCode,
 		Reason: truncateString(strings.TrimSpace(reason), 256), CooldownSource: truncateString(strings.TrimSpace(source), 64),
 		ProbeModel: bucket.RecoveryProbeModel, ProbeKind: kind,
 	})
@@ -760,6 +786,104 @@ func (r *NonOpenAIPoolRuntime) clearAccountID(accountID int64) {
 			r.consecutiveFailures.Delete(key)
 			r.probeFailures.Delete(key)
 			r.states.Delete(key)
+		}
+	}
+}
+
+// noteClearGeneration records the newest full scheduling-clear fence observed
+// by this shared runtime. New cooldowns created after the fence carry this
+// generation and are protected from the in-flight clear.
+func (r *NonOpenAIPoolRuntime) noteClearGeneration(accountID, generation int64) {
+	if r == nil || accountID <= 0 || generation <= 0 {
+		return
+	}
+	for {
+		current, loaded := r.clearGenerations.Load(accountID)
+		if !loaded {
+			if _, stored := r.clearGenerations.LoadOrStore(accountID, generation); !stored {
+				return
+			}
+			continue
+		}
+		currentGeneration, ok := current.(int64)
+		if ok && currentGeneration >= generation {
+			return
+		}
+		if r.clearGenerations.CompareAndSwap(accountID, current, generation) {
+			return
+		}
+	}
+}
+
+func (r *NonOpenAIPoolRuntime) clearGeneration(accountID int64) int64 {
+	if r == nil || accountID <= 0 {
+		return 0
+	}
+	if value, ok := r.clearGenerations.Load(accountID); ok {
+		if generation, ok := value.(int64); ok {
+			return generation
+		}
+	}
+	return 0
+}
+
+// clearAccountIDBefore removes only state created before clearGeneration.
+// The unconditional clearAccountID API remains the runtime-only behavior.
+func (r *NonOpenAIPoolRuntime) clearAccountIDBefore(accountID, clearGeneration int64) {
+	if r == nil || accountID <= 0 {
+		return
+	}
+	suffix := ":" + formatInt64(accountID)
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+		for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
+			r.clearKeyBefore(strings.ToLower(platform)+":"+kind+suffix, clearGeneration)
+		}
+	}
+}
+
+func (r *NonOpenAIPoolRuntime) clearKeyBefore(key string, clearGeneration int64) {
+	if key == "" {
+		return
+	}
+	if clearGeneration > 0 {
+		if value, ok := r.deadlines.Load(key); ok {
+			if _, deadlineGeneration, valid := parseNonOpenAIPoolDeadline(value); valid && deadlineGeneration >= clearGeneration {
+				return
+			}
+		}
+	}
+	if value, ok := r.deadlines.Load(key); ok {
+		if !r.deadlines.CompareAndDelete(key, value) {
+			return
+		}
+	}
+	// The deadline CAS above can remove an older value immediately before a
+	// newer generation is installed. Re-check before touching probe metadata so
+	// a cooldown created by the recovery event is not partially reset.
+	if clearGeneration > 0 {
+		if value, ok := r.deadlines.Load(key); ok {
+			if _, deadlineGeneration, valid := parseNonOpenAIPoolDeadline(value); valid && deadlineGeneration >= clearGeneration {
+				return
+			}
+		}
+	}
+	for _, stateMap := range []*sync.Map{&r.probes, &r.consecutiveFailures, &r.probeFailures} {
+		if value, ok := stateMap.Load(key); ok {
+			stateMap.CompareAndDelete(key, value)
+		}
+	}
+	for {
+		value, ok := r.states.Load(key)
+		if !ok {
+			return
+		}
+		if clearGeneration > 0 {
+			if state, valid := value.(NonOpenAIPoolRuntimeState); valid && state.ClearGeneration >= clearGeneration {
+				return
+			}
+		}
+		if r.states.CompareAndDelete(key, value) {
+			return
 		}
 	}
 }

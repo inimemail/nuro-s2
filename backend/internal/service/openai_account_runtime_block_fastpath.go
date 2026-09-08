@@ -287,6 +287,10 @@ func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID,
 		s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
 		s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
 	}
+	if s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.noteClearGeneration(accountID, clearGeneration)
+		s.nonOpenAIPoolRuntime.clearAccountIDBefore(accountID, clearGeneration)
+	}
 }
 
 func (s *OpenAIGatewayService) currentAccountRuntimeClearGeneration(accountID int64) int64 {

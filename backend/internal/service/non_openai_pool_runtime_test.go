@@ -568,7 +568,9 @@ func TestNonOpenAIPoolRuntimeProbeFailureUsesMinimumBackoff(t *testing.T) {
 	if _, loaded := runtime.probes.Load(key); loaded {
 		t.Fatal("completed probe lease should be removed")
 	}
-	if value, loaded := runtime.deadlines.Load(key); !loaded || !value.(time.Time).After(time.Now()) {
+	if value, loaded := runtime.deadlines.Load(key); !loaded {
+		t.Fatal("failed probe should retain a future retry deadline")
+	} else if until, _, valid := parseNonOpenAIPoolDeadline(value); !valid || !until.After(time.Now()) {
 		t.Fatal("failed probe should retain a future retry deadline")
 	}
 }
@@ -584,6 +586,49 @@ func TestNonOpenAIPoolRuntimeDisabledClearsState(t *testing.T) {
 	}
 	if state := runtime.stateForAccount(account); state.Cooling {
 		t.Fatal("disabled runtime should clear existing state")
+	}
+}
+
+func TestNonOpenAIPoolRuntimeFencedClearRemovesOldBucketsAndPreservesNewGeneration(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	account := nonOpenAIPoolTestAccount(910, PlatformGemini)
+	textKey := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindText)
+	imageKey := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindImage)
+	runtime.noteClearGeneration(account.ID, 7)
+	runtime.deadlines.Store(textKey, time.Now().Add(time.Minute))
+	runtime.states.Store(textKey, NonOpenAIPoolRuntimeState{Until: time.Now().Add(time.Minute), Cooling: true, ClearGeneration: 6})
+	runtime.deadlines.Store(imageKey, time.Now().Add(time.Minute))
+	runtime.states.Store(imageKey, NonOpenAIPoolRuntimeState{Until: time.Now().Add(time.Minute), Cooling: true, ClearGeneration: 6})
+
+	runtime.clearAccountIDBefore(account.ID, 7)
+	if _, ok := runtime.deadlines.Load(textKey); ok {
+		t.Fatal("old text cooldown was not cleared")
+	}
+	if _, ok := runtime.deadlines.Load(imageKey); ok {
+		t.Fatal("old image cooldown was not cleared")
+	}
+
+	newUntil := time.Now().Add(time.Minute)
+	runtime.deadlines.Store(textKey, nonOpenAIPoolDeadline{Until: newUntil, ClearGeneration: 7})
+	runtime.states.Store(textKey, NonOpenAIPoolRuntimeState{Until: newUntil, Cooling: true, ClearGeneration: 7})
+	runtime.clearAccountIDBefore(account.ID, 7)
+	if _, ok := runtime.deadlines.Load(textKey); !ok {
+		t.Fatal("new-generation text cooldown was incorrectly cleared")
+	}
+}
+
+func TestOpenAIFullClearHandlerAlsoClearsSharedDomesticRuntime(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	account := nonOpenAIPoolTestAccount(911, PlatformGrok)
+	key := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindText)
+	deadline := time.Now().Add(time.Minute)
+	runtime.deadlines.Store(key, deadline)
+	runtime.states.Store(key, NonOpenAIPoolRuntimeState{Until: deadline, Cooling: true, ClearGeneration: 0})
+
+	openAI := &OpenAIGatewayService{nonOpenAIPoolRuntime: runtime}
+	openAI.clearLocalAccountSchedulingBlockBefore(account.ID, 1)
+	if _, ok := runtime.deadlines.Load(key); ok {
+		t.Fatal("OpenAI full clear handler left shared domestic cooldown")
 	}
 }
 

@@ -349,7 +349,7 @@ func (b *CompositeAccountRuntimeBlocker) clearAccountSchedulingBlockAcrossReplic
 				err = errors.Join(err, clearErr)
 			}
 		case *GatewayService:
-			service.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
+			service.clearAccountSchedulingBlockBefore(accountID, generation)
 		default:
 			blocker.ClearAccountSchedulingBlock(accountID)
 		}

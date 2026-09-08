@@ -330,6 +330,22 @@ func TestRateLimitService_RecoverAccountState_OtherPlatformsKeepLocalClear(t *te
 	require.Empty(t, blocker.clearedAcrossIDs)
 }
 
+func TestRateLimitService_RecoverAccountState_FullClearUsesCrossReplicaForOtherPlatforms(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount: &Account{ID: 12, Platform: PlatformGemini, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true},
+	}
+	blocker := &crossReplicaRuntimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	result, err := svc.RecoverAccountState(context.Background(), 12, AccountRecoveryOptions{FullSchedulingClear: true})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []int64{12}, blocker.clearedAcrossIDs)
+	require.Empty(t, blocker.clearedIDs)
+}
+
 func TestRateLimitService_RecoverAccountAfterSuccessfulTest_NoRecoverableStateIsNoop(t *testing.T) {
 	repo := &rateLimitClearRepoStub{
 		getByIDAccount: &Account{

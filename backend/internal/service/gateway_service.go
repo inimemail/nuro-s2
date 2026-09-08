@@ -995,7 +995,7 @@ func NewGatewayService(
 		svc.initDebugGatewayBodyFile(path)
 	}
 	if schedulerSnapshot != nil {
-		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearAnthropicPoolSoftCooldownBefore)
+		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearAccountSchedulingBlockBefore)
 		schedulerSnapshot.RegisterAccountRuntimeOnlyClearHandler(func(accountID, _ int64) {
 			svc.ClearAccountRuntimeBlockOnly(accountID)
 		})

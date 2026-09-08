@@ -1807,12 +1807,14 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 		s.ResetOpenAI403Counter(ctx, accountID)
 	}
 	if !options.DeferSchedulingClear {
-		if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
-			clear := s.notifyAccountRuntimeBlockClearedAcrossReplicas
-			if options.FullSchedulingClear {
-				clear = s.notifyAccountSchedulingBlockClearedAcrossReplicas
+		if options.FullSchedulingClear {
+			// Explicit recovery clears pool scheduling state on every replica,
+			// including domestic/Gemini runtimes owned by GatewayService.
+			if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
+				return result, err
 			}
-			if err := clear(ctx, accountID); err != nil {
+		} else if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
+			if err := s.notifyAccountRuntimeBlockClearedAcrossReplicas(ctx, accountID); err != nil {
 				return result, err
 			}
 		} else {
@@ -1860,7 +1862,9 @@ func (s *RateLimitService) FinalizeDeferredAccountRecovery(ctx context.Context, 
 // RecoverAccountAfterSuccessfulTest 将一次成功测试视为正常请求，
 // 按需恢复 error / rate-limit / overload / temp-unsched / model-rate-limit 等运行时状态。
 func (s *RateLimitService) RecoverAccountAfterSuccessfulTest(ctx context.Context, accountID int64) (*SuccessfulTestRecoveryResult, error) {
-	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{})
+	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{
+		FullSchedulingClear: true,
+	})
 }
 
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {
