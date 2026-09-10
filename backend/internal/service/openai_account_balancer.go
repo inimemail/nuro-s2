@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,29 @@ func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, ses
 		})
 		i = j
 	}
+}
+
+// balanceAdaptiveOpenAIAccountTies preserves load spreading and prompt-cache
+// affinity without allowing either operation to cross an upstream cost tier.
+func balanceAdaptiveOpenAIAccountTies(accounts []accountWithLoad, sessionHash string, includeReset bool, now time.Time) {
+	for i := 0; i < len(accounts); {
+		j := i + 1
+		for j < len(accounts) && sameAdaptiveOpenAIUpstreamCostTier(accounts[i].account, accounts[j].account, now) {
+			j++
+		}
+		shuffleOpenAIAccountLoadTiesWithReset(accounts[i:j], includeReset)
+		prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts[i:j], sessionHash, includeReset)
+		i = j
+	}
+}
+
+func sameAdaptiveOpenAIUpstreamCostTier(a, b *Account, now time.Time) bool {
+	aRate, aKnown := accountEffectiveUpstreamMultiplier(a, now)
+	bRate, bKnown := accountEffectiveUpstreamMultiplier(b, now)
+	if aKnown != bKnown {
+		return false
+	}
+	return !aKnown || math.Abs(aRate-bRate) <= accountHealthCostTierEpsilon
 }
 
 func sameOpenAIAccountLoadTie(a, b accountWithLoad, includeReset bool) bool {

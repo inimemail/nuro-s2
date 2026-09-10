@@ -2933,9 +2933,18 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue upstream billing observation transition failed: account=%d err=%v", account.ID, err)
 		}
+	}
+	// Probe payload and freshness are scheduler inputs even when the numeric
+	// multiplier did not change. Refresh only this account after each successful
+	// observation; failures preserve the existing fresh snapshot in cache.
+	if shouldSyncSchedulerSnapshotForUpstreamProbe(snapshot, changed) {
 		r.syncSchedulerAccountSnapshot(ctx, account.ID)
 	}
 	return changed, nil
+}
+
+func shouldSyncSchedulerSnapshotForUpstreamProbe(snapshot *service.UpstreamBillingProbeSnapshot, changed bool) bool {
+	return changed || snapshot != nil && snapshot.Status == service.UpstreamBillingProbeStatusOK
 }
 
 func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Context, id int64, enabled bool) error {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -1907,26 +1908,43 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			plan    *AccountWaitPlan
 		}
 		var fallbackWaitCandidates []fallbackWaitCandidate
+		waitTierRate, waitTierKnown := 0.0, false
 		returnFallbackWait := func() (*AccountSelectionResult, error) {
 			for _, candidate := range fallbackWaitCandidates {
 				if candidate.account == nil || candidate.plan == nil {
 					continue
+				}
+				if groupUsesHealthFirst(group) && s.concurrencyService != nil {
+					if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, candidate.account.ID); waitErr == nil && waiting >= candidate.plan.MaxWaiting {
+						continue
+					}
 				}
 				if !s.checkAndRegisterSession(ctx, candidate.account, sessionHash) {
 					continue
 				}
 				return s.newSelectionResult(ctx, candidate.account, false, nil, candidate.plan)
 			}
-			return nil, ErrNoAvailableAccounts
+			return nil, nil
 		}
 
 		for {
 			account, err := s.SelectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, localExcluded)
 			if err != nil {
 				if len(fallbackWaitCandidates) > 0 && errors.Is(err, ErrNoAvailableAccounts) {
-					return returnFallbackWait()
+					if waitSelection, waitErr := returnFallbackWait(); waitErr != nil || waitSelection != nil {
+						return waitSelection, waitErr
+					}
 				}
 				return nil, err
+			}
+			if len(fallbackWaitCandidates) > 0 && groupUsesHealthFirst(group) {
+				rate, known := accountEffectiveUpstreamMultiplier(account, time.Now())
+				if known != waitTierKnown || (known && math.Abs(rate-waitTierRate) > accountHealthCostTierEpsilon) {
+					if waitSelection, waitErr := returnFallbackWait(); waitErr != nil || waitSelection != nil {
+						return waitSelection, waitErr
+					}
+					fallbackWaitCandidates = nil
+				}
 			}
 
 			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.Platform)
@@ -1950,6 +1968,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					MaxWaiting:     cfg.FallbackMaxWaiting,
 				},
 			})
+			if len(fallbackWaitCandidates) == 1 && groupUsesHealthFirst(group) {
+				waitTierRate, waitTierKnown = accountEffectiveUpstreamMultiplier(account, time.Now())
+			}
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
 				if waitingCount < cfg.StickySessionMaxWaiting {
@@ -2205,20 +2226,26 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			routingLoadMap, _ := s.concurrencyService.GetAccountsLoadBatch(ctx, routingLoads)
 
 			// 3. 按负载感知排序
-			var routingAvailable []accountWithLoad
+			var routingAll, routingAvailable []accountWithLoad
 			for _, acc := range routingCandidates {
 				loadInfo := routingLoadMap[acc.ID]
 				loadInfoMissing := loadInfo == nil
 				if loadInfo == nil {
 					loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 				}
-				if loadInfo.LoadRate < 100 {
-					routingAvailable = append(routingAvailable, accountWithLoad{
-						account:         acc,
-						loadInfo:        loadInfo,
-						loadInfoMissing: loadInfoMissing,
-					})
+				item := accountWithLoad{
+					account:         acc,
+					loadInfo:        loadInfo,
+					loadInfoMissing: loadInfoMissing,
 				}
+				routingAll = append(routingAll, item)
+				if loadInfo.LoadRate < 100 {
+					routingAvailable = append(routingAvailable, item)
+				}
+			}
+			if groupUsesHealthFirst(group) {
+				history := s.loadAdaptiveAccountTTFTHistory(ctx, routingCandidates)
+				routingAvailable = filterAdaptiveAccountsToPolicyTier(routingAll, routingAvailable, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history)
 			}
 
 			if len(routingAvailable) > 0 {
@@ -2525,20 +2552,26 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			return result, nil
 		}
 	} else {
-		var available []accountWithLoad
+		var allWithLoad, available []accountWithLoad
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
 			loadInfoMissing := loadInfo == nil
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
-			if loadInfo.LoadRate < 100 {
-				available = append(available, accountWithLoad{
-					account:         acc,
-					loadInfo:        loadInfo,
-					loadInfoMissing: loadInfoMissing,
-				})
+			item := accountWithLoad{
+				account:         acc,
+				loadInfo:        loadInfo,
+				loadInfoMissing: loadInfoMissing,
 			}
+			allWithLoad = append(allWithLoad, item)
+			if loadInfo.LoadRate < 100 {
+				available = append(available, item)
+			}
+		}
+		if groupUsesHealthFirst(group) {
+			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
+			available = filterAdaptiveAccountsToPolicyTier(allWithLoad, available, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history)
 		}
 
 		// 分层过滤选择：优先级 → 非池优先 → 健康带宽 → 可选快重置 → LRU
@@ -2575,13 +2608,41 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
+	adaptiveFallbackTier := make(map[int64]struct{})
 	if groupUsesHealthFirst(group) {
 		history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
 		s.sortAdaptiveCandidatesForFallbackWithHistory(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID), group.AccountSchedulingStrategy, history)
+		items := accountPointersToNeutralLoads(candidates)
+		for _, item := range filterAdaptiveAccountsToPolicyTier(items, items, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history) {
+			if item.account != nil {
+				adaptiveFallbackTier[item.account.ID] = struct{}{}
+			}
+		}
 	} else {
 		s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
 	}
 	for _, acc := range candidates {
+		if groupUsesHealthFirst(group) && s.concurrencyService != nil {
+			if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, acc.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
+				continue
+			}
+			if _, primary := adaptiveFallbackTier[acc.ID]; !primary {
+				result, acquireErr := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.Platform)
+				if acquireErr != nil {
+					return nil, acquireErr
+				}
+				if result != nil && result.Acquired {
+					if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+						if result.ReleaseFunc != nil {
+							result.ReleaseFunc()
+						}
+						continue
+					}
+					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
+					return s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
+				}
+			}
+		}
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 			continue // 会话限制已满，尝试下一个账号
@@ -2684,6 +2745,9 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 	history := map[int64]AccountTTFTHistory(nil)
 	if healthFirst {
 		history = s.loadAdaptiveAccountTTFTHistory(ctx, ordered)
+		items := accountPointersToNeutralLoads(ordered)
+		items = filterAdaptiveAccountsToPolicyTier(items, items, s.accountHealthStats.Load(), strategy, time.Now(), history)
+		ordered = accountWithLoadPointers(items)
 	}
 	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
 	anthropicAffinityActive := anthropicAffinityHash != ""
@@ -3926,7 +3990,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 		preferredIDs[candidates[index].item.account.ID] = struct{}{}
 	}
 	if len(preferred) == 0 {
-		return selectHealthFirstColdStart(candidates, preferOAuth)
+		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
 
 	// Unknown low-cost accounts receive bounded evaluation, but never dominate
@@ -3938,8 +4002,8 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 				continue
 			}
 			lowest := adaptiveLowestMultiplier(profiles, preferredIndexes, now)
-			rate, _ := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
-			if rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap {
+			rate, declared := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
+			if !declared || lowest == math.MaxFloat64 || (costBalanced && math.Abs(rate-lowest) > accountHealthCostTierEpsilon) || (!costBalanced && (rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap)) {
 				continue
 			}
 			healthStats.markWarmingUp(groupID, candidate.item.account.ID, now)
@@ -3954,7 +4018,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 				}
 			}
 		}
-		return selectHealthFirstColdStart(candidates, preferOAuth)
+		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
 	// A low-cost account that was unhealthy or seriously slow must be able to
 	// recover eventually. The probe is sparse and cannot cross the current
@@ -3969,9 +4033,9 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 			if _, ok := preferredIDs[candidate.item.account.ID]; ok || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 				continue
 			}
-			rate, _ := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
+			rate, declared := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
 			delay := accountHealthAdaptiveRecoveryDelay(*candidate)
-			if rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !healthStats.healthFirstProbeDue(groupID, candidate.item.account.ID, now, delay) {
+			if !declared || rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !healthStats.healthFirstProbeDue(groupID, candidate.item.account.ID, now, delay) {
 				continue
 			}
 			healthStats.markHealthFirstProbe(groupID, candidate.item.account.ID, now)
@@ -4057,28 +4121,31 @@ func adaptiveCandidateMateriallySlower(candidate accountHealthCandidate, pool []
 	if !candidate.hasTTFT || candidate.ttft <= 0 {
 		return false
 	}
-	bestP50, bestP90 := candidate.ttft, candidate.ttftP90
 	for _, other := range pool {
-		if !other.hasTTFT || other.ttft <= 0 {
+		if !other.hasTTFT || other.ttft <= 0 || other.item.account == candidate.item.account {
 			continue
 		}
-		if other.ttft < bestP50 {
-			bestP50 = other.ttft
-		}
-		if other.ttftP90 > 0 && (bestP90 <= 0 || other.ttftP90 < bestP90) {
-			bestP90 = other.ttftP90
+		if adaptiveTTFTMateriallyWorseInAnyDimension(candidate.ttft, candidate.ttftP90, other.ttft, other.ttftP90) {
+			return true
 		}
 	}
-	return candidate.ttft > bestP50*accountHealthSeriousP50Ratio && candidate.ttft-bestP50 > accountHealthSeriousTTFTAbsoluteGapMs ||
-		bestP90 > 0 && candidate.ttftP90 > bestP90*accountHealthSeriousP90Ratio && candidate.ttftP90-bestP90 > accountHealthSeriousP90AbsoluteGapMs
+	return false
 }
 
-func selectHealthFirstColdStart(candidates []accountHealthCandidate, preferOAuth bool) *accountWithLoad {
+func selectHealthFirstColdStart(candidates []accountHealthCandidate, preferOAuth bool, now time.Time) *accountWithLoad {
 	if len(candidates) == 0 {
 		return nil
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].item, candidates[j].item
+		aRate, aKnown := accountEffectiveUpstreamMultiplier(a.account, now)
+		bRate, bKnown := accountEffectiveUpstreamMultiplier(b.account, now)
+		if aKnown != bKnown {
+			return aKnown
+		}
+		if aKnown && aRate != bRate {
+			return aRate < bRate
+		}
 		pa, pb := accountPriority(a.account), accountPriority(b.account)
 		if pa != pb {
 			return pa < pb
@@ -4128,12 +4195,15 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 		return 0, false
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot != nil && snapshot.Status == UpstreamBillingProbeStatusOK && snapshot.FreshUntil != nil && snapshot.FreshUntil.After(now) {
+	// Probe failures retain the last trusted payload. Use it only while its
+	// original freshness window is valid; local billing configuration must not
+	// masquerade as an upstream declared multiplier for adaptive scheduling.
+	if snapshot != nil && snapshot.FreshUntil != nil && snapshot.FreshUntil.After(now) {
 		if value, ok := billingMultiplierFromProbeData(snapshot.Data); ok {
 			return value, true
 		}
 	}
-	return account.BillingRateMultiplier(), true
+	return 0, false
 }
 
 func groupUsesHealthFirst(group *Group) bool {

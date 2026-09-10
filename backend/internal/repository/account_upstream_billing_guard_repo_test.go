@@ -108,6 +108,12 @@ func TestUpdateUpstreamBillingProbeSnapshotDoesNotSyncSchedulerWithoutGuardTrans
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSuccessfulUpstreamBillingProbeRefreshesSchedulerSnapshotWithoutTransition(t *testing.T) {
+	require.True(t, shouldSyncSchedulerSnapshotForUpstreamProbe(&service.UpstreamBillingProbeSnapshot{Status: service.UpstreamBillingProbeStatusOK}, false))
+	require.False(t, shouldSyncSchedulerSnapshotForUpstreamProbe(&service.UpstreamBillingProbeSnapshot{Status: "failed"}, false))
+	require.True(t, shouldSyncSchedulerSnapshotForUpstreamProbe(&service.UpstreamBillingProbeSnapshot{Status: "failed"}, true))
+}
+
 func TestUpdateUpstreamBillingGuardGroupLimitsReplacesOnlyBindingPolicies(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := newAccountRepositoryWithSQL(nil, db, nil)

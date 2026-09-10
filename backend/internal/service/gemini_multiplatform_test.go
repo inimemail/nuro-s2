@@ -327,11 +327,12 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiP
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_UsesGroupAdaptiveStrategy(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(8)
-	cheapRate, expensiveRate := 0.5, 1.5
+	now := time.Now()
+	localRate := 1.0
 	repo := &mockAccountRepoForGemini{
 		accounts: []Account{
-			{ID: 11, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true, RateMultiplier: &expensiveRate},
-			{ID: 12, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 5, Status: StatusActive, Schedulable: true, RateMultiplier: &cheapRate},
+			*withOpenAIUpstreamProbeMultiplier(&Account{ID: 11, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true, RateMultiplier: &localRate}, 1.5, now.Add(time.Hour)),
+			*withOpenAIUpstreamProbeMultiplier(&Account{ID: 12, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 5, Status: StatusActive, Schedulable: true, RateMultiplier: &localRate}, 0.5, now.Add(time.Hour)),
 		},
 		accountsByID: map[int64]*Account{},
 	}

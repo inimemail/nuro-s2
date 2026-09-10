@@ -732,7 +732,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 				selection = nil
 			}
 		}
-		if selection != nil && selection.Account != nil {
+		if selection != nil && selection.Account != nil && !IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 			if s.service.hasHigherPriorityOpenAIAccountAvailable(ctx, req.GroupID, selection.Account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport, req.RequestPlatform) {
 				if selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
@@ -740,7 +740,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 				selection = nil
 			}
 		}
-		if selection != nil && selection.Account != nil {
+		if selection != nil && selection.Account != nil && !IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 			if s.service.hasSamePriorityNonPoolOpenAIAccountAvailable(ctx, req.GroupID, selection.Account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport, req.RequestPlatform) {
 				if selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
@@ -1265,11 +1265,13 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 		}
 		ttftP90 := 0.0
 		if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
-			if summary, ok := validAccountTTFTHistory(history[account.ID]); ok && ttftSampleCount < accountHealthUnknownMinSamples {
-				ttft = summary.P50Ms
+			if summary, ok := validAccountTTFTHistory(history[account.ID]); ok {
 				ttftP90 = summary.P90Ms
-				hasTTFT = true
-				ttftSampleCount = summary.SampleCount
+				if ttftSampleCount < accountHealthUnknownMinSamples {
+					ttft = summary.P50Ms
+					hasTTFT = true
+					ttftSampleCount = summary.SampleCount
+				}
 				if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 					lastUpdated = summary.LatestAt
 				}
@@ -1458,13 +1460,47 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	return buildSelectionOrder(plan.candidates)
 }
 
+func filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered []openAIAccountCandidateScore, strategy string, now time.Time) []openAIAccountCandidateScore {
+	if len(ordered) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
+		return ordered
+	}
+	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
+	for i, candidate := range ordered {
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+	}
+	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now)
+	allowed := make(map[int64]struct{}, len(indexes))
+	maxRate := adaptiveHighestMultiplier(profiles, indexes, now)
+	for _, index := range indexes {
+		if ordered[index].account != nil {
+			allowed[ordered[index].account.ID] = struct{}{}
+		}
+	}
+	// Preserve the existing sparse recovery probe when it is inside the chosen
+	// upstream cost layer. Higher-cost fallbacks remain available only to the
+	// later queue-overflow path.
+	if ordered[0].account != nil {
+		if rate, known := accountEffectiveUpstreamMultiplier(ordered[0].account, now); known && rate <= maxRate {
+			allowed[ordered[0].account.ID] = struct{}{}
+		}
+	}
+	filtered := make([]openAIAccountCandidateScore, 0, len(ordered))
+	for _, candidate := range ordered {
+		if candidate.account != nil {
+			if _, ok := allowed[candidate.account.ID]; ok {
+				filtered = append(filtered, candidate)
+			}
+		}
+	}
+	return filtered
+}
+
 func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) []openAIAccountCandidateScore {
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	if len(ordered) <= 1 {
 		return ordered
 	}
 	now := time.Now()
-	known := hasKnownOpenAIHealthSample(ordered)
 	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
 	groupID := int64(0)
 	if req.GroupID != nil {
@@ -1487,8 +1523,8 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 				continue
 			}
 			lowest := adaptiveLowestMultiplier(profiles, preferredIndexes, now)
-			rate, _ := accountEffectiveUpstreamMultiplier(candidate.account, now)
-			if rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap {
+			rate, declared := accountEffectiveUpstreamMultiplier(candidate.account, now)
+			if !declared || lowest == math.MaxFloat64 || (costBalanced && math.Abs(rate-lowest) > accountHealthCostTierEpsilon) || (!costBalanced && (rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap)) {
 				continue
 			}
 			s.stats.markWarmingUp(groupID, candidate.account.ID, now)
@@ -1498,22 +1534,6 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			result[0] = selected
 			return result
 		}
-	}
-	// Cold start protection: retain a valid sticky account, otherwise begin with
-	// the configured priority order until runtime samples are available.
-	if !known {
-		if req.StickyAccountID > 0 {
-			for i := range ordered {
-				if ordered[i].account != nil && ordered[i].account.ID == req.StickyAccountID {
-					result := append([]openAIAccountCandidateScore(nil), ordered...)
-					selected := result[i]
-					copy(result[1:i+1], result[:i])
-					result[0] = selected
-					return result
-				}
-			}
-		}
-		return sortOpenAIStrictPriorityCandidatesWithResetAndSession(ordered, false, "")
 	}
 	probeAccountID := int64(0)
 	if s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.healthFirstProbeTurn(groupID) {
@@ -1526,9 +1546,9 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			if _, ok := preferred[candidate.account.ID]; ok || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 				continue
 			}
-			rate, _ := accountEffectiveUpstreamMultiplier(candidate.account, now)
+			rate, declared := accountEffectiveUpstreamMultiplier(candidate.account, now)
 			delay := accountHealthAdaptiveRecoveryDelay(accountHealthCandidate{errorRate: candidate.errorRate})
-			if rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !s.stats.healthFirstProbeDue(groupID, candidate.account.ID, now, delay) {
+			if !declared || rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !s.stats.healthFirstProbeDue(groupID, candidate.account.ID, now, delay) {
 				continue
 			}
 			s.stats.markHealthFirstProbe(groupID, candidate.account.ID, now)
@@ -1558,9 +1578,12 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 				return a.errorRate < b.errorRate
 			}
 		} else {
-			aRate, _ := accountEffectiveUpstreamMultiplier(a.account, now)
-			bRate, _ := accountEffectiveUpstreamMultiplier(b.account, now)
-			if aRate != bRate {
+			aRate, aKnown := accountEffectiveUpstreamMultiplier(a.account, now)
+			bRate, bKnown := accountEffectiveUpstreamMultiplier(b.account, now)
+			if aKnown != bKnown {
+				return aKnown
+			}
+			if aKnown && aRate != bRate {
 				return aRate < bRate
 			}
 		}
@@ -1611,20 +1634,15 @@ func adaptiveOpenAICandidateMateriallySlower(candidate openAIAccountCandidateSco
 	if !candidate.hasTTFT || candidate.ttft <= 0 {
 		return false
 	}
-	bestP50, bestP90 := candidate.ttft, candidate.ttftP90
 	for _, other := range pool {
-		if _, ok := preferred[other.account.ID]; !ok || !other.hasTTFT || other.ttft <= 0 {
+		if _, ok := preferred[other.account.ID]; !ok || !other.hasTTFT || other.ttft <= 0 || other.account.ID == candidate.account.ID {
 			continue
 		}
-		if other.ttft < bestP50 {
-			bestP50 = other.ttft
-		}
-		if other.ttftP90 > 0 && (bestP90 <= 0 || other.ttftP90 < bestP90) {
-			bestP90 = other.ttftP90
+		if adaptiveTTFTMateriallyWorseInAnyDimension(candidate.ttft, candidate.ttftP90, other.ttft, other.ttftP90) {
+			return true
 		}
 	}
-	return candidate.ttft > bestP50*accountHealthSeriousP50Ratio && candidate.ttft-bestP50 > accountHealthSeriousTTFTAbsoluteGapMs ||
-		bestP90 > 0 && candidate.ttftP90 > bestP90*accountHealthSeriousP90Ratio && candidate.ttftP90-bestP90 > accountHealthSeriousP90AbsoluteGapMs
+	return false
 }
 
 func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore, requestedModel string) []openAIAccountCandidateScore {
@@ -2274,7 +2292,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, req.RequireCompact && len(plan.allCandidates) > 0)
 	}
 
-	result, compactBlocked, acquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, selectionOrder)
+	acquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTier(selectionOrder, req.AccountSchedulingStrategy, time.Now())
+	result, compactBlocked, acquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, acquireOrder)
 	if acquireErr != nil {
 		return nil, candidateCount, topK, loadSkew, acquireErr
 	}
@@ -2290,7 +2309,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			freshPlan := s.buildOpenAIAccountLoadPlanWithHistory(req, filtered, freshLoadMap, history)
 			if len(freshPlan.selectionOrder) > 0 {
 				freshSelectionOrder := s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, freshPlan.selectionOrder)
-				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshSelectionOrder)
+				freshAcquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTier(freshSelectionOrder, req.AccountSchedulingStrategy, time.Now())
+				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshAcquireOrder)
 				if freshAcquireErr != nil {
 					return nil, candidateCount, topK, loadSkew, freshAcquireErr
 				}
@@ -2307,6 +2327,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	cfg := s.service.schedulingConfig()
+	adaptivePrimaryTier := make(map[int64]struct{})
+	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
+		for _, candidate := range filterOpenAIAdaptiveCandidateScoresToPolicyTier(selectionOrder, req.AccountSchedulingStrategy, time.Now()) {
+			if candidate.account != nil {
+				adaptivePrimaryTier[candidate.account.ID] = struct{}{}
+			}
+		}
+	}
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	for _, candidate := range selectionOrder {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
@@ -2323,6 +2351,21 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
+		}
+		if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) && s.service.concurrencyService != nil {
+			if waiting, waitErr := s.service.concurrencyService.GetAccountWaitingCount(ctx, fresh.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
+				continue
+			}
+			if _, primary := adaptivePrimaryTier[fresh.ID]; !primary {
+				upgraded, upgradedCompactBlocked, upgradedErr := s.tryAcquireOpenAISelectionOrder(ctx, req, []openAIAccountCandidateScore{candidate})
+				if upgradedErr != nil {
+					return nil, candidateCount, topK, loadSkew, upgradedErr
+				}
+				compactBlocked = compactBlocked || upgradedCompactBlocked
+				if upgraded != nil {
+					return upgraded, candidateCount, topK, loadSkew, nil
+				}
+			}
 		}
 		return &AccountSelectionResult{
 			Account: fresh,

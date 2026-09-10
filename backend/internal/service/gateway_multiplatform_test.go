@@ -2014,6 +2014,77 @@ func (m *mockConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users []Us
 func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("自适应成本层-低价排队未满则等待且队列满后才升级", func(t *testing.T) {
+		groupID := int64(8806)
+		now := time.Now()
+		localRate := 1.0
+		cheap := withOpenAIUpstreamProbeMultiplier(&Account{
+			ID: 88061, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+		}, 0.07, now.Add(time.Hour))
+		expensive := withOpenAIUpstreamProbeMultiplier(&Account{
+			ID: 88062, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+		}, 0.2, now.Add(time.Hour))
+		group := &Group{
+			ID: groupID, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true,
+			AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+		}
+		groupCtx := context.WithValue(ctx, ctxkey.Group, group)
+
+		selectAccount := func(loadBatch bool, cheapWaiting int) *AccountSelectionResult {
+			t.Helper()
+			repo := &mockAccountRepoForPlatform{
+				accounts:     []Account{*expensive, *cheap},
+				accountsByID: map[int64]*Account{},
+			}
+			for i := range repo.accounts {
+				repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+			}
+			cfg := testConfig()
+			cfg.Gateway.Scheduling.LoadBatchEnabled = loadBatch
+			cfg.Gateway.Scheduling.FallbackWaitTimeout = 250 * time.Millisecond
+			cfg.Gateway.Scheduling.FallbackMaxWaiting = 2
+			svc := &GatewayService{
+				accountRepo: repo,
+				groupRepo:   &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: group}},
+				cache:       &mockGatewayCacheForPlatform{},
+				cfg:         cfg,
+				concurrencyService: NewConcurrencyService(&mockConcurrencyCache{
+					loadMap: map[int64]*AccountLoadInfo{
+						cheap.ID:     {AccountID: cheap.ID, LoadRate: 100},
+						expensive.ID: {AccountID: expensive.ID, LoadRate: 0},
+					},
+					acquireResults: map[int64]bool{cheap.ID: false, expensive.ID: true},
+					waitCounts:     map[int64]int{cheap.ID: cheapWaiting, expensive.ID: 0},
+				}),
+			}
+			selection, err := svc.SelectAccountWithLoadAwareness(groupCtx, &groupID, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			return selection
+		}
+
+		for _, loadBatch := range []bool{false, true} {
+			mode := "no_batch"
+			if loadBatch {
+				mode = "batch"
+			}
+			t.Run(mode+"_waits_on_cheap", func(t *testing.T) {
+				selection := selectAccount(loadBatch, 1)
+				require.False(t, selection.Acquired)
+				require.NotNil(t, selection.WaitPlan)
+				require.Equal(t, cheap.ID, selection.Account.ID)
+			})
+			t.Run(mode+"_acquires_expensive_after_cheap_queue_full", func(t *testing.T) {
+				selection := selectAccount(loadBatch, 2)
+				require.True(t, selection.Acquired)
+				require.Nil(t, selection.WaitPlan)
+				require.Equal(t, expensive.ID, selection.Account.ID)
+			})
+		}
+	})
+
 	t.Run("禁用负载批量查询-降级到传统选择", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{

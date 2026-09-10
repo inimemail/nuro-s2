@@ -2684,7 +2684,27 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
 		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
-		var fallbackWaitAccount *Account
+		var fallbackWaitAccounts []*Account
+		waitTierRate, waitTierKnown := 0.0, false
+		returnFallbackWait := func() (*AccountSelectionResult, error) {
+			for _, candidate := range fallbackWaitAccounts {
+				if candidate == nil {
+					continue
+				}
+				if healthFirst && s.concurrencyService != nil {
+					if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, candidate.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
+						continue
+					}
+				}
+				return s.newSelectionResult(ctx, candidate, false, nil, &AccountWaitPlan{
+					AccountID:      candidate.ID,
+					MaxConcurrency: candidate.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				})
+			}
+			return nil, nil
+		}
 		for {
 			selectionSessionHash := sessionHash
 			if stickyBusyPreserve {
@@ -2692,18 +2712,21 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			account, err := s.selectAccountForModelWithExclusions(ctx, groupID, selectionSessionHash, requestedModel, effectiveExcludedIDs, requireCompact, stickyAccountID, requiredCapability, requiredImageCapability, requestPlatform)
 			if err != nil {
-				if fallbackWaitAccount != nil && errors.Is(err, ErrNoAvailableAccounts) {
-					return s.newSelectionResult(ctx, fallbackWaitAccount, false, nil, &AccountWaitPlan{
-						AccountID:      fallbackWaitAccount.ID,
-						MaxConcurrency: fallbackWaitAccount.Concurrency,
-						Timeout:        cfg.FallbackWaitTimeout,
-						MaxWaiting:     cfg.FallbackMaxWaiting,
-					})
+				if len(fallbackWaitAccounts) > 0 && errors.Is(err, ErrNoAvailableAccounts) {
+					if waitSelection, waitErr := returnFallbackWait(); waitErr != nil || waitSelection != nil {
+						return waitSelection, waitErr
+					}
 				}
 				return nil, err
 			}
-			if fallbackWaitAccount == nil {
-				fallbackWaitAccount = account
+			if len(fallbackWaitAccounts) > 0 && healthFirst {
+				rate, known := accountEffectiveUpstreamMultiplier(account, time.Now())
+				if known != waitTierKnown || (known && math.Abs(rate-waitTierRate) > accountHealthCostTierEpsilon) {
+					if waitSelection, waitErr := returnFallbackWait(); waitErr != nil || waitSelection != nil {
+						return waitSelection, waitErr
+					}
+					fallbackWaitAccounts = nil
+				}
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.Platform)
 			if err == nil && result != nil && result.Acquired {
@@ -2724,6 +2747,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			if s.nonOpenAIPoolRuntime != nil {
 				s.nonOpenAIPoolRuntime.releaseProbe(account)
+			}
+			fallbackWaitAccounts = append(fallbackWaitAccounts, account)
+			if len(fallbackWaitAccounts) == 1 && healthFirst {
+				waitTierRate, waitTierKnown = accountEffectiveUpstreamMultiplier(account, time.Now())
 			}
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				stickyBusyPreserve = true
@@ -2915,20 +2942,25 @@ openAIGroupGuardFallback:
 	}
 
 	tryAcquireFromLoadMap := func(loadMap map[int64]*AccountLoadInfo) (*AccountSelectionResult, bool, error) {
-		var available []accountWithLoad
+		var allWithLoad, available []accountWithLoad
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
 			loadInfoMissing := loadInfo == nil
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
-			if loadInfo.LoadRate < 100 {
-				available = append(available, accountWithLoad{
-					account:         acc,
-					loadInfo:        loadInfo,
-					loadInfoMissing: loadInfoMissing,
-				})
+			item := accountWithLoad{
+				account:         acc,
+				loadInfo:        loadInfo,
+				loadInfoMissing: loadInfoMissing,
 			}
+			allWithLoad = append(allWithLoad, item)
+			if loadInfo.LoadRate < 100 {
+				available = append(available, item)
+			}
+		}
+		if healthFirst {
+			available = s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, allWithLoad, available, requestedModel, strategy)
 		}
 
 		if len(available) == 0 {
@@ -2946,8 +2978,12 @@ openAIGroupGuardFallback:
 			stickyAccountID,
 		)
 		preferSoonestReset := cfg.PreferSoonestReset
-		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
-		prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
+		if healthFirst {
+			balanceAdaptiveOpenAIAccountTies(available, sessionHash, preferSoonestReset, time.Now())
+		} else {
+			shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
+			prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
+		}
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
@@ -3015,6 +3051,11 @@ openAIGroupGuardFallback:
 		// used by the normal path instead of silently reverting to an older
 		// priority-only sorter when the batch query is unavailable.
 		ordered := s.orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx, candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+		if healthFirst && len(ordered) > 0 {
+			items := accountPointersToNeutralLoads(ordered)
+			items = s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, items, items, requestedModel, strategy)
+			ordered = accountWithLoadPointers(items)
+		}
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
@@ -3069,6 +3110,15 @@ openAIGroupGuardFallback:
 
 	// ============ Layer 3: Fallback wait ============
 	candidates = s.orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx, candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+	adaptiveFallbackTier := make(map[int64]struct{})
+	if healthFirst {
+		items := accountPointersToNeutralLoads(candidates)
+		for _, item := range s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, items, items, requestedModel, strategy) {
+			if item.account != nil {
+				adaptiveFallbackTier[item.account.ID] = struct{}{}
+			}
+		}
+	}
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
@@ -3086,6 +3136,29 @@ openAIGroupGuardFallback:
 		}
 		if s.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
+		}
+		if healthFirst && s.concurrencyService != nil {
+			if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, fresh.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
+				continue
+			}
+			if _, primary := adaptiveFallbackTier[fresh.ID]; !primary {
+				result, acquireErr := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
+				if acquireErr != nil {
+					return nil, acquireErr
+				}
+				if result != nil && result.Acquired {
+					if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+						if s.nonOpenAIPoolRuntime != nil {
+							s.nonOpenAIPoolRuntime.releaseProbe(fresh)
+						}
+						if result.ReleaseFunc != nil {
+							result.ReleaseFunc()
+						}
+						continue
+					}
+					return s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+				}
+			}
 		}
 		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
 			AccountID:      fresh.ID,
@@ -3247,6 +3320,34 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 	return available
 }
 
+func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTier(ctx context.Context, all, available []accountWithLoad, requestedModel, strategy string) []accountWithLoad {
+	if len(all) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
+		return available
+	}
+	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all))
+	candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(all, requestedModel, history)
+	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
+	for i, candidate := range candidates {
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+	}
+	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), time.Now())
+	allowed := make(map[int64]struct{}, len(indexes))
+	for _, index := range indexes {
+		if candidates[index].account != nil {
+			allowed[candidates[index].account.ID] = struct{}{}
+		}
+	}
+	filtered := make([]accountWithLoad, 0, len(available))
+	for _, item := range available {
+		if item.account != nil {
+			if _, ok := allowed[item.account.ID]; ok {
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
 // orderOpenAIWaitCandidatesForStrategy preserves the pre-existing internal
 // helper signature for callers that only distinguish strict vs adaptive health.
 // New scheduling paths should use the strategy-aware variant below.
@@ -3367,11 +3468,13 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidatesWithHistory(
 			}
 		}
 		ttftP90 := 0.0
-		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok && ttftSampleCount < accountHealthUnknownMinSamples {
-			ttft = summary.P50Ms
+		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok {
 			ttftP90 = summary.P90Ms
-			hasTTFT = true
-			ttftSampleCount = summary.SampleCount
+			if ttftSampleCount < accountHealthUnknownMinSamples {
+				ttft = summary.P50Ms
+				hasTTFT = true
+				ttftSampleCount = summary.SampleCount
+			}
 			if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 				lastUpdated = summary.LatestAt
 			}

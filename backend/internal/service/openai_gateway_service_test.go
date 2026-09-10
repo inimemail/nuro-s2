@@ -75,9 +75,10 @@ func TestOpenAILegacyLoadStrategyPropagatesHealthCostBalanced(t *testing.T) {
 
 func TestOpenAILegacyAndWaitAdaptivePathsUseHistoryWithoutAffectingStrict(t *testing.T) {
 	groupID := int64(8803)
-	cheapRate, expensiveRate := 0.5, 1.5
-	cheap := &Account{ID: 88031, Platform: PlatformOpenAI, Priority: 5, RateMultiplier: &cheapRate}
-	expensive := &Account{ID: 88032, Platform: PlatformOpenAI, Priority: 1, RateMultiplier: &expensiveRate}
+	now := time.Now()
+	localRate := 1.0
+	cheap := withOpenAIUpstreamProbeMultiplier(&Account{ID: 88031, Platform: PlatformOpenAI, Priority: 5, RateMultiplier: &localRate}, 0.5, now.Add(time.Hour))
+	expensive := withOpenAIUpstreamProbeMultiplier(&Account{ID: 88032, Platform: PlatformOpenAI, Priority: 1, RateMultiplier: &localRate}, 1.5, now.Add(time.Hour))
 	repo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
 		cheap.ID:     {AccountID: cheap.ID, SampleCount: 20, P50Ms: 500, P90Ms: 800},
 		expensive.ID: {AccountID: expensive.ID, SampleCount: 20, P50Ms: 100, P90Ms: 180},
@@ -99,6 +100,114 @@ func TestOpenAILegacyAndWaitAdaptivePathsUseHistoryWithoutAffectingStrict(t *tes
 	strict := service.orderOpenAIWaitCandidatesForStrategy(candidates, "gpt-5.1", false, config.GatewaySchedulingConfig{}, false, &groupID, 0)
 	require.Equal(t, expensive.ID, strict[0].ID)
 	require.Equal(t, 1, repo.calls, "strict priority must neither load nor reuse persisted TTFT")
+}
+
+func TestOpenAINoBatchAdaptiveWaitsForLowestUpstreamCostUntilItsQueueIsFull(t *testing.T) {
+	groupID := int64(8804)
+	now := time.Now()
+	localRate := 1.0
+	cheap := withOpenAIUpstreamProbeMultiplier(&Account{
+		ID: 88041, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+	}, 0.07, now.Add(time.Hour))
+	expensive := withOpenAIUpstreamProbeMultiplier(&Account{
+		ID: 88042, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+	}, 0.2, now.Add(time.Hour))
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+	})
+
+	selectAccount := func(cheapWaiting int) *AccountSelectionResult {
+		t.Helper()
+		cfg := &config.Config{}
+		cfg.Gateway.Scheduling.LoadBatchEnabled = false
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 250 * time.Millisecond
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 2
+		svc := &OpenAIGatewayService{
+			accountRepo: stubOpenAIAccountRepo{accounts: []Account{*expensive, *cheap}},
+			cfg:         cfg,
+			concurrencyService: NewConcurrencyService(stubConcurrencyCache{
+				acquireResults: map[int64]bool{cheap.ID: false, expensive.ID: true},
+				waitCounts:     map[int64]int{cheap.ID: cheapWaiting, expensive.ID: 0},
+			}),
+		}
+		selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		return selection
+	}
+
+	t.Run("waits on cheap tier while queue has capacity", func(t *testing.T) {
+		selection := selectAccount(1)
+		require.False(t, selection.Acquired)
+		require.NotNil(t, selection.WaitPlan)
+		require.Equal(t, cheap.ID, selection.Account.ID)
+	})
+
+	t.Run("acquires expensive tier only after cheap queue is full", func(t *testing.T) {
+		selection := selectAccount(2)
+		require.True(t, selection.Acquired)
+		require.Nil(t, selection.WaitPlan)
+		require.Equal(t, expensive.ID, selection.Account.ID)
+	})
+}
+
+func TestOpenAILegacyBatchAdaptiveWaitsForLowestUpstreamCostUntilItsQueueIsFull(t *testing.T) {
+	groupID := int64(8805)
+	now := time.Now()
+	localRate := 1.0
+	cheap := withOpenAIUpstreamProbeMultiplier(&Account{
+		ID: 88051, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+	}, 0.07, now.Add(time.Hour))
+	expensive := withOpenAIUpstreamProbeMultiplier(&Account{
+		ID: 88052, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &localRate,
+	}, 0.2, now.Add(time.Hour))
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+	})
+
+	selectAccount := func(cheapWaiting int) *AccountSelectionResult {
+		t.Helper()
+		cfg := &config.Config{}
+		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 250 * time.Millisecond
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 2
+		svc := &OpenAIGatewayService{
+			accountRepo: stubOpenAIAccountRepo{accounts: []Account{*expensive, *cheap}},
+			cfg:         cfg,
+			concurrencyService: NewConcurrencyService(stubConcurrencyCache{
+				loadMap: map[int64]*AccountLoadInfo{
+					cheap.ID:     {AccountID: cheap.ID, LoadRate: 100},
+					expensive.ID: {AccountID: expensive.ID, LoadRate: 0},
+				},
+				acquireResults: map[int64]bool{cheap.ID: false, expensive.ID: true},
+				waitCounts:     map[int64]int{cheap.ID: cheapWaiting, expensive.ID: 0},
+			}),
+		}
+		selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		return selection
+	}
+
+	t.Run("waits on cheap tier while queue has capacity", func(t *testing.T) {
+		selection := selectAccount(1)
+		require.False(t, selection.Acquired)
+		require.NotNil(t, selection.WaitPlan)
+		require.Equal(t, cheap.ID, selection.Account.ID)
+	})
+
+	t.Run("acquires expensive tier only after cheap queue is full", func(t *testing.T) {
+		selection := selectAccount(2)
+		require.True(t, selection.Acquired)
+		require.Nil(t, selection.WaitPlan)
+		require.Equal(t, expensive.ID, selection.Account.ID)
+	})
 }
 
 type stubOpenAIAccountRepo struct {

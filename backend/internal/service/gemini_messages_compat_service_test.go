@@ -27,9 +27,10 @@ type geminiCompatHTTPUpstreamStub struct {
 
 func TestGeminiMessagesCompatAdaptiveStrategyUsesHistoryAndStrictStaysIsolated(t *testing.T) {
 	groupID := int64(9901)
-	cheapRate, expensiveRate := 0.5, 1.5
-	cheap := Account{ID: 99011, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &cheapRate}
-	expensive := Account{ID: 99012, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &expensiveRate}
+	now := time.Now()
+	localRate := 1.0
+	cheap := *withOpenAIUpstreamProbeMultiplier(&Account{ID: 99011, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &localRate}, 0.5, now.Add(time.Hour))
+	expensive := *withOpenAIUpstreamProbeMultiplier(&Account{ID: 99012, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &localRate}, 1.5, now.Add(time.Hour))
 	repo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
 		cheap.ID:     {AccountID: cheap.ID, SampleCount: 20, P50Ms: 500, P90Ms: 800},
 		expensive.ID: {AccountID: expensive.ID, SampleCount: 20, P50Ms: 100, P90Ms: 180},

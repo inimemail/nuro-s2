@@ -65,13 +65,36 @@ func adaptiveAccountPolicyIndexes(profiles []adaptiveAccountHealthProfile, costB
 	return adaptiveHealthFirstCostBand(profiles, errorQualified, now)
 }
 
+func filterAdaptiveAccountsToPolicyTier(accounts, available []accountWithLoad, stats *accountRuntimeHealthStats, strategy string, now time.Time, history map[int64]AccountTTFTHistory) []accountWithLoad {
+	if len(accounts) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
+		return available
+	}
+	candidates := buildAccountHealthCandidatesWithHistory(accounts, stats, history)
+	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
+	for i, candidate := range candidates {
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.item.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+	}
+	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now)
+	allowed := make(map[int64]struct{}, len(indexes))
+	for _, index := range indexes {
+		if account := candidates[index].item.account; account != nil {
+			allowed[account.ID] = struct{}{}
+		}
+	}
+	filtered := make([]accountWithLoad, 0, len(available))
+	for _, item := range available {
+		if item.account != nil {
+			if _, ok := allowed[item.account.ID]; ok {
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
 func adaptiveErrorQualifiedIndexes(profiles []adaptiveAccountHealthProfile) []int {
 	best, known := 0.0, false
-	hasObservedProfile := false
 	for _, profile := range profiles {
-		if profile.errorSamples >= accountHealthUnknownMinSamples || profile.ttftSamples >= accountHealthUnknownMinSamples {
-			hasObservedProfile = true
-		}
 		if profile.errorSamples < accountHealthUnknownMinSamples {
 			continue
 		}
@@ -85,8 +108,9 @@ func adaptiveErrorQualifiedIndexes(profiles []adaptiveAccountHealthProfile) []in
 	}
 	result := make([]int, 0, len(profiles))
 	for i, profile := range profiles {
-		observed := profile.errorSamples >= accountHealthUnknownMinSamples || profile.ttftSamples >= accountHealthUnknownMinSamples
-		if profile.account != nil && (!hasObservedProfile || observed) && (profile.errorSamples < accountHealthUnknownMinSamples || profile.errorRate <= ceiling) {
+		// Unknown runtime health is not an error. Keep such accounts eligible so
+		// a newly discovered low-cost upstream can receive bounded evaluation.
+		if profile.account != nil && (profile.errorSamples < accountHealthUnknownMinSamples || profile.errorRate <= ceiling) {
 			result = append(result, i)
 		}
 	}
@@ -97,11 +121,14 @@ func adaptiveHealthFirstCostBand(profiles []adaptiveAccountHealthProfile, indexe
 	remaining := append([]int(nil), indexes...)
 	for len(remaining) > 0 {
 		lowest := adaptiveLowestMultiplier(profiles, remaining, now)
+		if lowest == math.MaxFloat64 {
+			return remaining
+		}
 		band := make([]int, 0, len(remaining))
 		next := make([]int, 0, len(remaining))
 		for _, index := range remaining {
-			rate, _ := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
-			if rate <= lowest*accountHealthFirstCostRatio && rate-lowest <= accountHealthFirstCostAbsoluteGap {
+			rate, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
+			if declared && rate <= lowest*accountHealthFirstCostRatio && rate-lowest <= accountHealthFirstCostAbsoluteGap {
 				band = append(band, index)
 			} else {
 				next = append(next, index)
@@ -119,11 +146,14 @@ func adaptiveLowestUsableCostTier(profiles []adaptiveAccountHealthProfile, index
 	remaining := append([]int(nil), indexes...)
 	for len(remaining) > 0 {
 		lowest := adaptiveLowestMultiplier(profiles, remaining, now)
+		if lowest == math.MaxFloat64 {
+			return remaining
+		}
 		tier := make([]int, 0, len(remaining))
 		next := make([]int, 0, len(remaining))
 		for _, index := range remaining {
-			rate, _ := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
-			if math.Abs(rate-lowest) <= accountHealthCostTierEpsilon {
+			rate, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
+			if declared && math.Abs(rate-lowest) <= accountHealthCostTierEpsilon {
 				tier = append(tier, index)
 			} else {
 				next = append(next, index)
@@ -138,38 +168,61 @@ func adaptiveLowestUsableCostTier(profiles []adaptiveAccountHealthProfile, index
 }
 
 func adaptiveTierIsSeriouslySlow(profiles []adaptiveAccountHealthProfile, tier, all []int) bool {
-	tierP50, tierP90, tierKnown := adaptiveBestTTFT(profiles, tier)
-	bestP50, bestP90, bestKnown := adaptiveBestTTFT(profiles, all)
-	if !tierKnown || !bestKnown || bestP50 <= 0 {
-		return false
+	tierIDs := make(map[int64]struct{}, len(tier))
+	for _, index := range tier {
+		if profiles[index].account != nil {
+			tierIDs[profiles[index].account.ID] = struct{}{}
+		}
 	}
-	p50Slow := tierP50 > bestP50*accountHealthSeriousP50Ratio && tierP50-bestP50 > accountHealthSeriousTTFTAbsoluteGapMs
-	p90Slow := bestP90 > 0 && tierP90 > bestP90*accountHealthSeriousP90Ratio && tierP90-bestP90 > accountHealthSeriousP90AbsoluteGapMs
-	return p50Slow || p90Slow
+	compared := false
+	for _, tierIndex := range tier {
+		candidate := profiles[tierIndex]
+		if !candidate.hasTTFT || candidate.p50 <= 0 {
+			return false
+		}
+		candidateSlow := false
+		for _, otherIndex := range all {
+			alternative := profiles[otherIndex]
+			if alternative.account == nil || !alternative.hasTTFT || alternative.p50 <= 0 {
+				continue
+			}
+			if _, sameTier := tierIDs[alternative.account.ID]; sameTier {
+				continue
+			}
+			compared = true
+			if adaptiveTTFTMateriallySlowerThan(candidate.p50, candidate.p90, alternative.p50, alternative.p90) {
+				candidateSlow = true
+				break
+			}
+		}
+		if !candidateSlow {
+			return false
+		}
+	}
+	return compared
 }
 
-func adaptiveBestTTFT(profiles []adaptiveAccountHealthProfile, indexes []int) (p50, p90 float64, found bool) {
-	for _, index := range indexes {
-		profile := profiles[index]
-		if !profile.hasTTFT || profile.p50 <= 0 {
-			continue
-		}
-		if !found || profile.p50 < p50 {
-			p50 = profile.p50
-		}
-		if profile.p90 > 0 && (!found || p90 <= 0 || profile.p90 < p90) {
-			p90 = profile.p90
-		}
-		found = true
+func adaptiveTTFTMateriallySlowerThan(candidateP50, candidateP90, alternativeP50, alternativeP90 float64) bool {
+	if candidateP50 <= 0 || alternativeP50 <= 0 || candidateP50 <= alternativeP50*accountHealthSeriousP50Ratio || candidateP50-alternativeP50 <= accountHealthSeriousTTFTAbsoluteGapMs {
+		return false
 	}
-	return p50, p90, found
+	if candidateP90 > 0 && alternativeP90 > 0 {
+		return candidateP90 > alternativeP90*accountHealthSeriousP90Ratio && candidateP90-alternativeP90 > accountHealthSeriousP90AbsoluteGapMs
+	}
+	return true
+}
+
+func adaptiveTTFTMateriallyWorseInAnyDimension(candidateP50, candidateP90, alternativeP50, alternativeP90 float64) bool {
+	p50Slow := candidateP50 > 0 && alternativeP50 > 0 && candidateP50 > alternativeP50*accountHealthSeriousP50Ratio && candidateP50-alternativeP50 > accountHealthSeriousTTFTAbsoluteGapMs
+	p90Slow := candidateP90 > 0 && alternativeP90 > 0 && candidateP90 > alternativeP90*accountHealthSeriousP90Ratio && candidateP90-alternativeP90 > accountHealthSeriousP90AbsoluteGapMs
+	return p50Slow || p90Slow
 }
 
 func adaptiveLowestMultiplier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) float64 {
 	lowest := math.MaxFloat64
 	for _, index := range indexes {
-		rate, _ := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
-		if rate < lowest {
+		rate, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
+		if declared && rate < lowest {
 			lowest = rate
 		}
 	}
@@ -179,8 +232,8 @@ func adaptiveLowestMultiplier(profiles []adaptiveAccountHealthProfile, indexes [
 func adaptiveHighestMultiplier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) float64 {
 	highest := 0.0
 	for _, index := range indexes {
-		rate, _ := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
-		if rate > highest {
+		rate, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
+		if declared && rate > highest {
 			highest = rate
 		}
 	}
@@ -366,11 +419,13 @@ func buildAccountHealthCandidatesWithHistory(accounts []accountWithLoad, stats *
 		}
 		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated := stats.snapshotWithMeta(item.account.ID)
 		ttftP90 := 0.0
-		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok && ttftSampleCount < accountHealthUnknownMinSamples {
-			ttft = summary.P50Ms
+		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok {
 			ttftP90 = summary.P90Ms
-			hasTTFT = true
-			ttftSampleCount = summary.SampleCount
+			if ttftSampleCount < accountHealthUnknownMinSamples {
+				ttft = summary.P50Ms
+				hasTTFT = true
+				ttftSampleCount = summary.SampleCount
+			}
 			if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 				lastUpdated = summary.LatestAt
 			}
