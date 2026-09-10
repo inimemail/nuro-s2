@@ -491,8 +491,19 @@ type OpenAIGatewayService struct {
 	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
 	openaiFirstTokenTimeoutPlaceholderGuard      openAIFirstTokenTimeoutPlaceholderGuard
 	openaiStreamProgressLearner                  openAIStreamProgressLearner
+	accountTTFTHistory                           *accountTTFTHistoryCache
 	agentIdentityTaskMu                          sync.Mutex
 	codexModelsManifestCache                     codexModelsManifestCache
+}
+
+// loadAdaptiveOpenAIAccountTTFTHistory supplies persisted latency only to the
+// current adaptive selection. It must never update shared runtime stats, since
+// strict-priority scheduling intentionally remains independent of this seed.
+func (s *OpenAIGatewayService) loadAdaptiveOpenAIAccountTTFTHistory(ctx context.Context, accounts []*Account) map[int64]AccountTTFTHistory {
+	if s == nil || s.accountTTFTHistory == nil || len(accounts) == 0 {
+		return nil
+	}
+	return s.accountTTFTHistory.load(ctx, accounts, time.Now())
 }
 
 type promptCacheBoostGroupAvailability struct {
@@ -559,6 +570,7 @@ func NewOpenAIGatewayService(
 		settingService:        settingService,
 		tlsFPProfileService:   tlsFPProfileService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		accountTTFTHistory:    newAccountTTFTHistoryCache(usageLogRepo),
 		liveAttestation:       liveattestation.NewProvider(),
 		liveAttestationCipher: newLiveAttestationCipher(cfg),
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
@@ -2493,8 +2505,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 			items = append(items, accountWithLoad{account: candidate, loadInfo: &AccountLoadInfo{AccountID: candidate.ID}})
 		}
+		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(items))
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
-		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidates(items, requestedModel), OpenAIAccountScheduleRequest{
+		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidatesWithHistory(items, requestedModel, history), OpenAIAccountScheduleRequest{
 			GroupID:                   groupID,
 			RequestedModel:            requestedModel,
 			AccountSchedulingStrategy: strategy,
@@ -2922,7 +2935,8 @@ openAIGroupGuardFallback:
 			return nil, false, nil
 		}
 
-		available = s.orderOpenAIAvailableCandidatesForStrategy(
+		available = s.orderOpenAIAvailableCandidatesForStrategyWithContext(
+			ctx,
 			available,
 			requestedModel,
 			cfg,
@@ -3000,7 +3014,7 @@ openAIGroupGuardFallback:
 		// Load data is optional. Preserve the same strategy-aware ordering
 		// used by the normal path instead of silently reverting to an older
 		// priority-only sorter when the batch query is unavailable.
-		ordered := s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+		ordered := s.orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx, candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
@@ -3054,7 +3068,7 @@ openAIGroupGuardFallback:
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	candidates = s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+	candidates = s.orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx, candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
@@ -3143,12 +3157,26 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategy(
 	groupID *int64,
 	stickyAccountID int64,
 ) []accountWithLoad {
+	return s.orderOpenAIAvailableCandidatesForStrategyWithContext(context.Background(), available, requestedModel, cfg, healthFirst, strategy, groupID, stickyAccountID)
+}
+
+func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithContext(
+	ctx context.Context,
+	available []accountWithLoad,
+	requestedModel string,
+	cfg config.GatewaySchedulingConfig,
+	healthFirst bool,
+	strategy string,
+	groupID *int64,
+	stickyAccountID int64,
+) []accountWithLoad {
 	if len(available) <= 1 {
 		return available
 	}
 
 	if healthFirst {
-		candidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
+		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(available))
+		candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(available, requestedModel, history)
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(candidates, OpenAIAccountScheduleRequest{
 			GroupID:                   groupID,
@@ -3227,10 +3255,10 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategy(candidates [
 	if healthFirst {
 		strategy = AccountSchedulingStrategyHealthFirst
 	}
-	return s.orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
+	return s.orderOpenAIWaitCandidatesForStrategyWithStrategy(context.Background(), candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 }
 
-func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string, groupID *int64, stickyAccountID int64) []*Account {
+func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx context.Context, candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string, groupID *int64, stickyAccountID int64) []*Account {
 	if healthFirst && len(candidates) > 1 {
 		items := make([]accountWithLoad, 0, len(candidates))
 		for _, account := range candidates {
@@ -3238,7 +3266,7 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(
 				items = append(items, accountWithLoad{account: account, loadInfo: &AccountLoadInfo{AccountID: account.ID}})
 			}
 		}
-		orderedItems := s.orderOpenAIAvailableCandidatesForStrategy(items, requestedModel, cfg, true, strategy, groupID, stickyAccountID)
+		orderedItems := s.orderOpenAIAvailableCandidatesForStrategyWithContext(ctx, items, requestedModel, cfg, true, strategy, groupID, stickyAccountID)
 		ordered := make([]*Account, 0, len(orderedItems))
 		for _, item := range orderedItems {
 			ordered = append(ordered, item.account)
@@ -3318,6 +3346,10 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthScores(accounts []acco
 }
 
 func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidates(accounts []accountWithLoad, requestedModel string) []openAIAccountCandidateScore {
+	return s.openAIAccountWithLoadHealthCandidatesWithHistory(accounts, requestedModel, nil)
+}
+
+func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidatesWithHistory(accounts []accountWithLoad, requestedModel string, history map[int64]AccountTTFTHistory) []openAIAccountCandidateScore {
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -3334,12 +3366,23 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidates(accounts []
 				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = stats.snapshotForRouteWithMeta(item.account.ID, requestedModel, transport)
 			}
 		}
+		ttftP90 := 0.0
+		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok && ttftSampleCount < accountHealthUnknownMinSamples {
+			ttft = summary.P50Ms
+			ttftP90 = summary.P90Ms
+			hasTTFT = true
+			ttftSampleCount = summary.SampleCount
+			if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
+				lastUpdated = summary.LatestAt
+			}
+		}
 		candidates = append(candidates, openAIAccountCandidateScore{
 			account:         item.account,
 			loadInfo:        item.loadInfo,
 			loadInfoMissing: item.loadInfoMissing,
 			errorRate:       errorRate,
 			ttft:            ttft,
+			ttftP90:         ttftP90,
 			hasTTFT:         hasTTFT,
 			sampleCount:     sampleCount,
 			ttftSampleCount: ttftSampleCount,

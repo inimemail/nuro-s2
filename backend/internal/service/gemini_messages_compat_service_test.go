@@ -25,6 +25,30 @@ type geminiCompatHTTPUpstreamStub struct {
 	lastReq  *http.Request
 }
 
+func TestGeminiMessagesCompatAdaptiveStrategyUsesHistoryAndStrictStaysIsolated(t *testing.T) {
+	groupID := int64(9901)
+	cheapRate, expensiveRate := 0.5, 1.5
+	cheap := Account{ID: 99011, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}, RateMultiplier: &cheapRate}
+	expensive := Account{ID: 99012, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 1, GroupIDs: []int64{groupID}, RateMultiplier: &expensiveRate}
+	repo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
+		cheap.ID:     {AccountID: cheap.ID, SampleCount: 20, P50Ms: 500, P90Ms: 800},
+		expensive.ID: {AccountID: expensive.ID, SampleCount: 20, P50Ms: 100, P90Ms: 180},
+	}}
+	svc := &GeminiMessagesCompatService{accountTTFTHistory: newAccountTTFTHistoryCache(repo)}
+	svc.accountHealthStats.Store(newAccountRuntimeHealthStats())
+	accounts := []Account{expensive, cheap}
+
+	adaptive := svc.selectBestGeminiAccount(context.Background(), &groupID, accounts, "", nil, PlatformGemini, true, AccountSchedulingStrategyHealthCostBalanced, 0)
+	require.NotNil(t, adaptive)
+	require.Equal(t, cheap.ID, adaptive.ID)
+	require.Equal(t, 1, repo.calls)
+
+	strict := svc.selectBestGeminiAccount(context.Background(), &groupID, accounts, "", nil, PlatformGemini, true, AccountSchedulingStrategyStrictPriority, 0)
+	require.NotNil(t, strict)
+	require.Equal(t, expensive.ID, strict.ID)
+	require.Equal(t, 1, repo.calls, "strict priority must not load persisted TTFT")
+}
+
 func TestCleanToolSchemaNormalizesGeminiEnumsAndDropsDeprecated(t *testing.T) {
 	schema := map[string]any{
 		"type":       "object",

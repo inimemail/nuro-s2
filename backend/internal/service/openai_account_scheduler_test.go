@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -699,29 +700,36 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 
 	ctx := context.Background()
 	groupID := int64(10107)
+	ctx = context.WithValue(ctx, ctxkey.Group, &Group{
+		ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+	})
+	expensiveRate, cheapRate := 1.5, 0.5
 	accounts := []Account{
 		{
-			ID:          37001,
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    5,
-			GroupIDs:    []int64{groupID},
+			ID:             37001,
+			Platform:       PlatformOpenAI,
+			Type:           AccountTypeAPIKey,
+			Status:         StatusActive,
+			Schedulable:    true,
+			Concurrency:    1,
+			Priority:       5,
+			RateMultiplier: &expensiveRate,
+			GroupIDs:       []int64{groupID},
 			Extra: map[string]any{
 				"openai_apikey_responses_websockets_v2_enabled": true,
 			},
 		},
 		{
-			ID:          37002,
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    5,
-			GroupIDs:    []int64{groupID},
+			ID:             37002,
+			Platform:       PlatformOpenAI,
+			Type:           AccountTypeAPIKey,
+			Status:         StatusActive,
+			Schedulable:    true,
+			Concurrency:    1,
+			Priority:       5,
+			RateMultiplier: &cheapRate,
+			GroupIDs:       []int64{groupID},
 		},
 	}
 	cfg := &config.Config{}
@@ -4140,7 +4148,7 @@ func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationCrossesPoolModeA
 func TestBuildStrictPrioritySelectionOrder_HealthProbeUsesProbeExploration(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
-	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{cfg: &config.Config{}}, stats: stats}
 	candidates := []openAIAccountCandidateScore{
 		{
 			account:         &Account{ID: 5267, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 0},
@@ -4205,6 +4213,91 @@ func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryHasCooldown(t *tes
 
 	ordered = prioritizeOpenAIHealthProbeCandidate(candidates, stats, now.Add(accountHealthDegradedRecoveryDelay+time.Second))
 	require.Equal(t, int64(5256), ordered[0].account.ID)
+}
+
+func TestBuildOpenAIAdaptiveSelectionUsesCostTiersAndTTFT(t *testing.T) {
+	rateA, rateB, rateC := 0.5, 0.6, 1.5
+	pool := []openAIAccountCandidateScore{
+		{account: &Account{ID: 5271, RateMultiplier: &rateA}, loadInfo: &AccountLoadInfo{}, ttft: 500, ttftP90: 700, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: &Account{ID: 5272, RateMultiplier: &rateB}, loadInfo: &AccountLoadInfo{}, ttft: 200, ttftP90: 300, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: &Account{ID: 5273, RateMultiplier: &rateC}, loadInfo: &AccountLoadInfo{}, ttft: 100, ttftP90: 150, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+	healthFirst := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst})
+	require.Equal(t, int64(5272), healthFirst[0].account.ID)
+	balanced := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced})
+	require.Equal(t, int64(5271), balanced[0].account.ID)
+}
+
+func TestBuildOpenAIAdaptiveSelectionStickyCannotEscapeCostTier(t *testing.T) {
+	cheapRate, expensiveRate := 0.5, 1.5
+	pool := []openAIAccountCandidateScore{
+		{account: &Account{ID: 5281, RateMultiplier: &cheapRate}, loadInfo: &AccountLoadInfo{}, ttft: 500, ttftP90: 700, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: &Account{ID: 5282, RateMultiplier: &expensiveRate}, loadInfo: &AccountLoadInfo{}, ttft: 100, ttftP90: 150, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+	ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced, StickyAccountID: 5282})
+	require.Equal(t, int64(5281), ordered[0].account.ID)
+}
+
+func TestBuildOpenAIAdaptiveSelectionDoesNotKeepStickyAccountWithSevereP90Tail(t *testing.T) {
+	rate := 0.5
+	pool := []openAIAccountCandidateScore{
+		{account: &Account{ID: 5283, RateMultiplier: &rate}, loadInfo: &AccountLoadInfo{}, ttft: 300, ttftP90: 5000, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: &Account{ID: 5284, RateMultiplier: &rate}, loadInfo: &AccountLoadInfo{}, ttft: 350, ttftP90: 500, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+	ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst, StickyAccountID: 5283})
+	require.Equal(t, int64(5284), ordered[0].account.ID)
+}
+
+func TestBuildOpenAIAdaptiveSelectionUsesAccountHistoryWithoutWarmup(t *testing.T) {
+	cheapRate, expensiveRate := 0.5, 1.5
+	cheap := &Account{ID: 5291, RateMultiplier: &cheapRate}
+	expensive := &Account{ID: 5292, RateMultiplier: &expensiveRate}
+	stats := newOpenAIAccountRuntimeStats()
+	history := map[int64]AccountTTFTHistory{
+		5291: {AccountID: 5291, SampleCount: 20, P50Ms: 450, P90Ms: 700},
+		5292: {AccountID: 5292, SampleCount: 20, P50Ms: 100, P90Ms: 180},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{cfg: &config.Config{}}, stats: stats}
+	plan := scheduler.buildOpenAIAccountLoadPlanWithHistory(
+		OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced},
+		[]*Account{expensive, cheap},
+		map[int64]*AccountLoadInfo{},
+		history,
+	)
+	require.Equal(t, int64(5291), plan.selectionOrder[0].account.ID)
+	require.Equal(t, int64(20), plan.selectionOrder[0].ttftSampleCount)
+}
+
+func TestBuildOpenAIAdaptiveHistoryDoesNotLeakIntoStrictPriority(t *testing.T) {
+	rate := 1.0
+	first := &Account{ID: 5293, Priority: 0, RateMultiplier: &rate}
+	second := &Account{ID: 5294, Priority: 0, RateMultiplier: &rate}
+	now := time.Now()
+	older, newer := now.Add(-time.Minute), now
+	first.LastUsedAt = &older
+	second.LastUsedAt = &newer
+	stats := newOpenAIAccountRuntimeStats()
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{cfg: &config.Config{}}, stats: stats}
+	history := map[int64]AccountTTFTHistory{
+		5293: {AccountID: 5293, SampleCount: 20, P50Ms: 900, P90Ms: 1200},
+		5294: {AccountID: 5294, SampleCount: 20, P50Ms: 100, P90Ms: 180},
+	}
+
+	adaptive := scheduler.buildOpenAIAccountLoadPlanWithHistory(
+		OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst},
+		[]*Account{first, second}, map[int64]*AccountLoadInfo{}, history,
+	)
+	require.Equal(t, int64(5294), adaptive.selectionOrder[0].account.ID)
+
+	strict := scheduler.buildOpenAIAccountLoadPlan(
+		OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyStrictPriority},
+		[]*Account{first, second}, map[int64]*AccountLoadInfo{},
+	)
+	require.Equal(t, int64(5293), strict.selectionOrder[0].account.ID)
+	require.Zero(t, strict.selectionOrder[0].ttftSampleCount)
 }
 
 func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryWaitsForFreshSampleToAge(t *testing.T) {

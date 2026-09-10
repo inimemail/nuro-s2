@@ -126,6 +126,23 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetAccountTTFTHistoryBatchIsAccountWideAndBounded(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+	now := time.Now().UTC()
+	mock.ExpectQuery("(?s)WITH account_ids AS.*UNNEST.*CROSS JOIN LATERAL.*ORDER BY created_at DESC.*LIMIT \\$3.*GROUP BY account_id").
+		WithArgs(sqlmock.AnyArg(), now.Add(-24*time.Hour), 50).
+		WillReturnRows(sqlmock.NewRows([]string{"account_id", "sample_count", "p50_ms", "p90_ms", "latest_at"}).
+			AddRow(int64(11), int64(12), 250.0, 480.0, now))
+
+	result, err := repo.GetAccountTTFTHistoryBatch(context.Background(), []int64{11, 12}, now.Add(-24*time.Hour), 50)
+	require.NoError(t, err)
+	require.Equal(t, int64(12), result[11].SampleCount)
+	require.Equal(t, 250.0, result[11].P50Ms)
+	require.Equal(t, 480.0, result[11].P90Ms)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}

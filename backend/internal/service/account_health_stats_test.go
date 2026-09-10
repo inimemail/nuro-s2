@@ -49,6 +49,11 @@ func withProbeMultiplier(account accountWithLoad, multiplier float64, freshUntil
 	return account
 }
 
+func withConfiguredMultiplier(account accountWithLoad, multiplier float64) accountWithLoad {
+	account.account.RateMultiplier = &multiplier
+	return account
+}
+
 func TestNormalizeAccountSchedulingStrategyDefaultsToStrict(t *testing.T) {
 	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy(""))
 	require.Equal(t, AccountSchedulingStrategyStrictPriority, NormalizeAccountSchedulingStrategy("invalid"))
@@ -341,23 +346,135 @@ func TestSelectLayeredAccountWithLoad_BusinessSamplesWithoutTTFTAreKnown(t *test
 	require.Equal(t, int64(1), selected.account.ID)
 }
 
-func TestSelectHealthCostBalancedAccountWithLoad_LowerMultiplierWithinHealthyGapWins(t *testing.T) {
+func TestAdaptiveStrategiesControlCostAtDifferentStrengths(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
-	fast := 100
-	acceptable := 220
-	reportHealthSamples(stats, 1, true, &fast, 3)
-	reportHealthSamples(stats, 2, true, &acceptable, 3)
+	ttftA, ttftB, ttftC := 500, 200, 100
+	reportHealthSamples(stats, 1, true, &ttftA, 3)
+	reportHealthSamples(stats, 2, true, &ttftB, 3)
+	reportHealthSamples(stats, 3, true, &ttftC, 3)
 	now := time.Now()
-	leading := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.5, now.Add(time.Hour))
-	cheaper := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.5, now.Add(time.Hour))
+	a := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5, now.Add(time.Hour))
+	b := withProbeMultiplier(makeHealthTestAccount(2, 10, 0, true), 0.6, now.Add(time.Hour))
+	c := withProbeMultiplier(makeHealthTestAccount(3, 20, 0, true), 1.5, now.Add(time.Hour))
 
-	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{leading, cheaper}, stats, config.GatewaySchedulingConfig{}, false, now, 101, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{a, b, c}, stats, config.GatewaySchedulingConfig{}, false, now, 101, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+
+	selectedLeading := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{a, b, c}, stats, config.GatewaySchedulingConfig{}, false, now, 102, 0, false, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, selectedLeading)
+	require.Equal(t, int64(2), selectedLeading.account.ID)
+}
+
+func TestHealthCostBalancedEscalatesWhenCheapestTierIsSeriouslySlow(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	verySlow, fast := 7000, 300
+	reportHealthSamples(stats, 1, true, &verySlow, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+	now := time.Now()
+	cheap := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5, now.Add(time.Hour))
+	usable := withProbeMultiplier(makeHealthTestAccount(2, 2, 0, true), 0.7, now.Add(time.Hour))
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{cheap, usable}, stats, config.GatewaySchedulingConfig{}, false, now, 106, 0, false, AccountSchedulingStrategyHealthCostBalanced)
 	require.NotNil(t, selected)
 	require.Equal(t, int64(2), selected.account.ID)
+}
 
-	selectedLeading := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{leading, cheaper}, stats, config.GatewaySchedulingConfig{}, false, now, 102, 0, false, AccountSchedulingStrategyHealthFirst)
-	require.NotNil(t, selectedLeading)
-	require.Equal(t, int64(1), selectedLeading.account.ID)
+func TestHealthCostBalancedTreatsSustainedModerateRatioWithLargeGapAsSeriouslySlow(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	slow, fast := 3000, 1000
+	reportHealthSamples(stats, 1, true, &slow, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+	now := time.Now()
+	cheap := withConfiguredMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5)
+	usable := withConfiguredMultiplier(makeHealthTestAccount(2, 2, 0, true), 0.7)
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{cheap, usable}, stats, config.GatewaySchedulingConfig{}, false, now, 112, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestAdaptiveSelectionConfiguredMultiplierFallbackAndFreshProbeOverride(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	ttft := 200
+	reportHealthSamples(stats, 1, true, &ttft, 3)
+	reportHealthSamples(stats, 2, true, &ttft, 3)
+	now := time.Now()
+	configuredCheap := withConfiguredMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5)
+	configuredExpensive := withConfiguredMultiplier(makeHealthTestAccount(2, 2, 0, true), 1.5)
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{configuredCheap, configuredExpensive}, stats, config.GatewaySchedulingConfig{}, false, now, 107, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.Equal(t, int64(1), selected.account.ID)
+
+	observedExpensive := withProbeMultiplier(configuredCheap, 2.0, now.Add(time.Hour))
+	selected = selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{observedExpensive, configuredExpensive}, stats, config.GatewaySchedulingConfig{}, false, now, 108, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestAdaptiveSelectionHistoryMakesAccountKnownAndBlocksStickyCostEscape(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	history := map[int64]AccountTTFTHistory{
+		1: {AccountID: 1, SampleCount: 12, P50Ms: 500, P90Ms: 800, LatestAt: now},
+		2: {AccountID: 2, SampleCount: 12, P50Ms: 100, P90Ms: 180, LatestAt: now},
+	}
+	cheap := withConfiguredMultiplier(makeHealthTestAccount(1, 5, 0, true), 0.5)
+	expensiveSticky := withConfiguredMultiplier(makeHealthTestAccount(2, 1, 0, true), 1.5)
+	selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory([]accountWithLoad{cheap, expensiveSticky}, stats, config.GatewaySchedulingConfig{}, false, now, 109, 2, true, AccountSchedulingStrategyHealthCostBalanced, history)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+}
+
+func TestAdaptiveSelectionHistoryDoesNotKeepStickyAccountWithSevereP90Tail(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	history := map[int64]AccountTTFTHistory{
+		1: {AccountID: 1, SampleCount: 12, P50Ms: 300, P90Ms: 5000, LatestAt: now},
+		2: {AccountID: 2, SampleCount: 12, P50Ms: 350, P90Ms: 500, LatestAt: now},
+	}
+	sticky := withConfiguredMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5)
+	stable := withConfiguredMultiplier(makeHealthTestAccount(2, 2, 0, true), 0.5)
+	selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory([]accountWithLoad{sticky, stable}, stats, config.GatewaySchedulingConfig{}, false, now, 113, 1, true, AccountSchedulingStrategyHealthFirst, history)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestAdaptiveHistoryDoesNotLeakIntoStrictPrioritySelection(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	first := withConfiguredMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.0)
+	second := withConfiguredMultiplier(makeHealthTestAccount(2, 1, 0, true), 1.0)
+	older, newer := now.Add(-time.Minute), now
+	first.account.LastUsedAt = &older
+	second.account.LastUsedAt = &newer
+	accounts := []accountWithLoad{first, second}
+
+	adaptive := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(accounts, stats, config.GatewaySchedulingConfig{}, false, now, 110, 0, false, AccountSchedulingStrategyHealthFirst, map[int64]AccountTTFTHistory{
+		1: {AccountID: 1, SampleCount: 10, P50Ms: 900, P90Ms: 1200, LatestAt: now},
+		2: {AccountID: 2, SampleCount: 10, P50Ms: 100, P90Ms: 180, LatestAt: now},
+	})
+	require.NotNil(t, adaptive)
+	require.Equal(t, int64(2), adaptive.account.ID)
+
+	strict := selectLayeredAccountWithLoad(accounts, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, strict)
+	require.Equal(t, int64(1), strict.account.ID)
+}
+
+func TestAdaptiveFallbackOrderingUsesHistory(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	cheap := withConfiguredMultiplier(makeHealthTestAccount(1, 5, 100, true), 0.5).account
+	expensive := withConfiguredMultiplier(makeHealthTestAccount(2, 1, 100, true), 1.5).account
+	accounts := []*Account{expensive, cheap}
+	history := map[int64]AccountTTFTHistory{
+		cheap.ID:     {AccountID: cheap.ID, SampleCount: 20, P50Ms: 500, P90Ms: 800, LatestAt: now},
+		expensive.ID: {AccountID: expensive.ID, SampleCount: 20, P50Ms: 100, P90Ms: 180, LatestAt: now},
+	}
+	svc := &GatewayService{}
+
+	svc.sortAdaptiveCandidatesForFallbackWithHistory(accounts, stats, config.GatewaySchedulingConfig{}, false, 111, AccountSchedulingStrategyHealthCostBalanced, history)
+	require.Equal(t, cheap.ID, accounts[0].ID)
+
+	strict := selectLayeredAccount([]*Account{expensive, cheap}, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.Equal(t, expensive.ID, strict.ID)
 }
 
 func TestSelectHealthCostBalancedAccountWithLoad_PreferSoonestResetKeepsWideHealthBand(t *testing.T) {

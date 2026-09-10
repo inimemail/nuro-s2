@@ -2328,10 +2328,10 @@ export default {
         ,healthFirst: 'Adaptive health'
         ,healthLeading: 'Health first'
         ,healthLeadingShortHint: 'Prefer healthy accounts'
-        ,healthLeadingHint: 'Prioritize health score; sample-starved accounts receive bounded evaluation opportunities, then multiplier, affinity, and load break close ties.'
+        ,healthLeadingHint: 'Control the cost range, then prefer fewer errors and faster first-token latency; continuations stay on their bound account.'
         ,healthCostBalanced: 'Health cost balanced'
         ,healthCostBalancedShortHint: 'Balance health and cost'
-        ,healthCostBalancedHint: 'Exclude clearly unhealthy accounts first; among healthy accounts prefer a valid lower multiplier with load protection and bounded rotation.'
+        ,healthCostBalancedHint: 'Lock to the lowest healthy cost tier; raise cost only when it is seriously slow, while continuations keep their binding.'
         ,strictPriorityShortHint: 'Use account priority'
       },
       enterGroupName: 'Enter group name',

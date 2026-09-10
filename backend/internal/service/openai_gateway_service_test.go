@@ -73,6 +73,34 @@ func TestOpenAILegacyLoadStrategyPropagatesHealthCostBalanced(t *testing.T) {
 	require.Equal(t, int64(88022), balanced[0].account.ID)
 }
 
+func TestOpenAILegacyAndWaitAdaptivePathsUseHistoryWithoutAffectingStrict(t *testing.T) {
+	groupID := int64(8803)
+	cheapRate, expensiveRate := 0.5, 1.5
+	cheap := &Account{ID: 88031, Platform: PlatformOpenAI, Priority: 5, RateMultiplier: &cheapRate}
+	expensive := &Account{ID: 88032, Platform: PlatformOpenAI, Priority: 1, RateMultiplier: &expensiveRate}
+	repo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
+		cheap.ID:     {AccountID: cheap.ID, SampleCount: 20, P50Ms: 500, P90Ms: 800},
+		expensive.ID: {AccountID: expensive.ID, SampleCount: 20, P50Ms: 100, P90Ms: 180},
+	}}
+	service := &OpenAIGatewayService{
+		cfg:                &config.Config{},
+		openaiAccountStats: newOpenAIAccountRuntimeStats(),
+		accountTTFTHistory: newAccountTTFTHistoryCache(repo),
+	}
+	candidates := []*Account{expensive, cheap}
+
+	adaptive := service.orderOpenAIWaitCandidatesForStrategyWithStrategy(
+		context.Background(), candidates, "gpt-5.1", false, config.GatewaySchedulingConfig{}, true,
+		AccountSchedulingStrategyHealthCostBalanced, &groupID, 0,
+	)
+	require.Equal(t, cheap.ID, adaptive[0].ID)
+	require.Equal(t, 1, repo.calls)
+
+	strict := service.orderOpenAIWaitCandidatesForStrategy(candidates, "gpt-5.1", false, config.GatewaySchedulingConfig{}, false, &groupID, 0)
+	require.Equal(t, expensive.ID, strict[0].ID)
+	require.Equal(t, 1, repo.calls, "strict priority must neither load nor reuse persisted TTFT")
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account

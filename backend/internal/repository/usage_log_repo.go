@@ -2387,6 +2387,56 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 	return result, nil
 }
 
+// GetAccountTTFTHistoryBatch returns a bounded, account-wide latency summary.
+// It deliberately does not filter by group: scheduling health belongs to the
+// upstream account, while group eligibility remains enforced by the caller.
+func (r *usageLogRepository) GetAccountTTFTHistoryBatch(ctx context.Context, accountIDs []int64, startTime time.Time, sampleLimit int) (map[int64]service.AccountTTFTHistory, error) {
+	result := make(map[int64]service.AccountTTFTHistory, len(accountIDs))
+	if r == nil || r.sql == nil || len(accountIDs) == 0 || sampleLimit <= 0 {
+		return result, nil
+	}
+	const query = `
+		WITH account_ids AS (
+			SELECT UNNEST($1::bigint[]) AS account_id
+		), recent AS (
+			SELECT ids.account_id, sample.first_token_ms, sample.created_at
+			FROM account_ids ids
+			CROSS JOIN LATERAL (
+				SELECT first_token_ms, created_at
+				FROM usage_logs
+				WHERE account_id = ids.account_id
+					AND created_at >= $2
+					AND first_token_ms IS NOT NULL
+					AND first_token_ms > 0
+				ORDER BY created_at DESC
+				LIMIT $3
+			) sample
+		)
+		SELECT account_id,
+			COUNT(*) AS sample_count,
+			PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY first_token_ms) AS p50_ms,
+			PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY first_token_ms) AS p90_ms,
+			MAX(created_at) AS latest_at
+		FROM recent
+		GROUP BY account_id`
+	rows, err := r.sql.QueryContext(ctx, query, pq.Array(accountIDs), startTime, sampleLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var summary service.AccountTTFTHistory
+		if err := rows.Scan(&summary.AccountID, &summary.SampleCount, &summary.P50Ms, &summary.P90Ms, &summary.LatestAt); err != nil {
+			return nil, err
+		}
+		result[summary.AccountID] = summary
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetGeminiUsageTotalsBatch 批量聚合 Gemini 账号在窗口内的 Pro/Flash 请求与用量。
 // 模型分类规则与 service.geminiModelClassFromName 一致：model 包含 flash/lite 视为 flash，其余视为 pro。
 func (r *usageLogRepository) GetGeminiUsageTotalsBatch(ctx context.Context, accountIDs []int64, startTime, endTime time.Time) (map[int64]service.GeminiUsageTotals, error) {

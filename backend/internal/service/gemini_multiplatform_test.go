@@ -324,6 +324,42 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiP
 	require.Equal(t, PlatformGemini, acc.Platform, "无分组时应只返回 gemini 平台账户")
 }
 
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_UsesGroupAdaptiveStrategy(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(8)
+	cheapRate, expensiveRate := 0.5, 1.5
+	repo := &mockAccountRepoForGemini{
+		accounts: []Account{
+			{ID: 11, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true, RateMultiplier: &expensiveRate},
+			{ID: 12, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 5, Status: StatusActive, Schedulable: true, RateMultiplier: &cheapRate},
+		},
+		accountsByID: map[int64]*Account{},
+	}
+	for i := range repo.accounts {
+		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+	}
+	groupRepo := &mockGroupRepoForGemini{groups: map[int64]*Group{
+		groupID: {ID: groupID, Platform: PlatformGemini, AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced},
+	}}
+	historyRepo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
+		11: {AccountID: 11, SampleCount: 20, P50Ms: 100, P90Ms: 180},
+		12: {AccountID: 12, SampleCount: 20, P50Ms: 500, P90Ms: 800},
+	}}
+	svc := &GeminiMessagesCompatService{
+		accountRepo:        repo,
+		groupRepo:          groupRepo,
+		cache:              &mockGatewayCacheForGemini{},
+		accountTTFTHistory: newAccountTTFTHistoryCache(historyRepo),
+	}
+	svc.accountHealthStats.Store(newAccountRuntimeHealthStats())
+
+	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "gemini-2.5-flash", nil)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, int64(12), account.ID)
+	require.Equal(t, 1, historyRepo.calls)
+}
+
 func TestGeminiMessagesCompatService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(7)

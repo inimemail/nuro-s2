@@ -58,6 +58,7 @@ type GeminiMessagesCompatService struct {
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 	accountHealthStats        atomic.Pointer[accountRuntimeHealthStats]
+	accountTTFTHistory        *accountTTFTHistoryCache
 	nonOpenAIPoolRuntime      *NonOpenAIPoolRuntime
 	settingService            *SettingService
 }
@@ -73,6 +74,7 @@ func NewGeminiMessagesCompatService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	antigravityGatewayService *AntigravityGatewayService,
 	settingService *SettingService,
+	usageLogRepo UsageLogRepository,
 	cfg *config.Config,
 ) *GeminiMessagesCompatService {
 	svc := &GeminiMessagesCompatService{
@@ -87,6 +89,7 @@ func NewGeminiMessagesCompatService(
 		antigravityGatewayService: antigravityGatewayService,
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
+		accountTTFTHistory:        newAccountTTFTHistoryCache(usageLogRepo),
 		nonOpenAIPoolRuntime:      settingService.sharedNonOpenAIPoolRuntime(),
 		settingService:            settingService,
 	}
@@ -141,7 +144,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 	}
 	// 1. 确定目标平台和调度模式
 	// Determine target platform and scheduling mode
-	platform, useMixedScheduling, hasForcePlatform, err := s.resolvePlatformAndSchedulingMode(ctx, groupID)
+	platform, useMixedScheduling, hasForcePlatform, strategy, err := s.resolvePlatformAndSchedulingMode(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +153,12 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
+	stickyAccountID := int64(0)
 	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); account != nil {
-		return account, nil
+		if !IsAdaptiveHealthSchedulingStrategy(strategy) {
+			return account, nil
+		}
+		stickyAccountID = account.ID
 	}
 
 	// 3. 查询可调度账户（强制平台模式：优先按分组查找，找不到再查全部）
@@ -171,7 +178,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 4. 按优先级 + LRU 选择最佳账号
 	// Select best account by priority + LRU
-	selected := s.selectBestGeminiAccount(ctx, groupID, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
+	selected := s.selectBestGeminiAccount(ctx, groupID, accounts, requestedModel, excludedIDs, platform, useMixedScheduling, strategy, stickyAccountID)
 
 	if selected == nil {
 		if requestedModel != "" {
@@ -193,31 +200,41 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 // 返回：平台名称、是否使用混合调度、是否强制平台、错误。
 //
 // resolvePlatformAndSchedulingMode resolves target platform and scheduling mode.
-// Returns: platform name, whether to use mixed scheduling, whether force platform, error.
-func (s *GeminiMessagesCompatService) resolvePlatformAndSchedulingMode(ctx context.Context, groupID *int64) (platform string, useMixedScheduling bool, hasForcePlatform bool, err error) {
+// Returns: platform name, whether to use mixed scheduling, whether force
+// platform, normalized account scheduling strategy, error.
+func (s *GeminiMessagesCompatService) resolvePlatformAndSchedulingMode(ctx context.Context, groupID *int64) (platform string, useMixedScheduling bool, hasForcePlatform bool, strategy string, err error) {
+	strategy = AccountSchedulingStrategyStrictPriority
+	var contextGroup *Group
+	if groupID != nil {
+		if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
+			contextGroup = group
+			strategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+		}
+	}
 	// 优先检查 context 中的强制平台（/antigravity 路由）
 	forcePlatform, hasForcePlatform := ctx.Value(ctxkey.ForcePlatform).(string)
 	if hasForcePlatform && forcePlatform != "" {
-		return forcePlatform, false, true, nil
+		return forcePlatform, false, true, strategy, nil
 	}
 
 	if groupID != nil {
 		// 根据分组 platform 决定查询哪种账号
 		var group *Group
-		if ctxGroup, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(ctxGroup) && ctxGroup.ID == *groupID {
-			group = ctxGroup
+		if contextGroup != nil {
+			group = contextGroup
 		} else {
 			group, err = s.groupRepo.GetByIDLite(ctx, *groupID)
 			if err != nil {
-				return "", false, false, fmt.Errorf("get group failed: %w", err)
+				return "", false, false, strategy, fmt.Errorf("get group failed: %w", err)
 			}
 		}
+		strategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
 		// gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
-		return group.Platform, group.Platform == PlatformGemini, false, nil
+		return group.Platform, group.Platform == PlatformGemini, false, strategy, nil
 	}
 
 	// 无分组时只使用原生 gemini 平台
-	return PlatformGemini, true, false, nil
+	return PlatformGemini, true, false, strategy, nil
 }
 
 // tryStickySessionHit 尝试从粘性会话获取账号。
@@ -394,6 +411,8 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	excludedIDs map[int64]struct{},
 	platform string,
 	useMixedScheduling bool,
+	strategy string,
+	stickyAccountID int64,
 ) *Account {
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
 	candidates := make([]*Account, 0, len(accounts))
@@ -421,6 +440,29 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 		return nil
 	}
 
+	if IsAdaptiveHealthSchedulingStrategy(strategy) {
+		history := map[int64]AccountTTFTHistory(nil)
+		if s.accountTTFTHistory != nil {
+			history = s.accountTTFTHistory.load(ctx, candidates, time.Now())
+		}
+		items := accountPointersToNeutralLoads(candidates)
+		selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(
+			items,
+			s.getAccountHealthStats(),
+			s.schedulingConfig(),
+			true,
+			time.Now(),
+			derefGroupID(groupID),
+			stickyAccountID,
+			stickyAccountID > 0,
+			strategy,
+			history,
+		)
+		if selected != nil {
+			return selected.account
+		}
+		return nil
+	}
 	return s.selectBestGeminiCandidate(candidates)
 }
 
