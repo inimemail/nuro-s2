@@ -2337,10 +2337,23 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
-	// 1. 尝试粘性会话命中
-	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, requiredImageCapability, requestPlatform); account != nil {
-		return account, nil
+	adaptiveHealth := s.openAIGroupUsesHealthFirst(ctx, groupID)
+	// Health strategies retain the binding only as an ordering hint. Read it
+	// without returning early so the whole candidate pool still receives a new
+	// health/cost evaluation.
+	if adaptiveHealth && stickyAccountID <= 0 && sessionHash != "" && s.cache != nil {
+		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
+			stickyAccountID = accountID
+		}
+	}
+
+	// Strict-priority can use a direct sticky-session hit. Adaptive health
+	// strategies must rank the whole eligible pool on every request so a stale
+	// affinity cannot bypass health, cost, or soft-cooldown protection.
+	if !adaptiveHealth {
+		if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, requiredImageCapability, requestPlatform); account != nil {
+			return account, nil
+		}
 	}
 
 	// 2. 获取可调度的 OpenAI 账号
@@ -2352,7 +2365,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
-	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
+	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, requiredImageCapability, requestPlatform)
 
 	if selected == nil {
 		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked)
@@ -2485,7 +2498,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // Returns nil if no available account. The second return reports whether at
 // least one candidate was filtered out solely because it lacks compact support
 // (only meaningful when requireCompact=true).
-func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) (*Account, bool) {
+func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) (*Account, bool) {
 	var selected *Account
 	selectedCompactTier := -1
 	compactBlocked := false
@@ -2509,6 +2522,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidatesWithHistory(items, requestedModel, history), OpenAIAccountScheduleRequest{
 			GroupID:                   groupID,
+			StickyAccountID:           stickyAccountID,
 			RequestedModel:            requestedModel,
 			AccountSchedulingStrategy: strategy,
 		})
@@ -2787,7 +2801,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 1: Sticky session ============
-	if sessionHash != "" || stickyAccountID > 0 {
+	// Adaptive policies evaluate their affinity in the strategy-aware ordering
+	// below. A direct hit here would bypass the freshly rebuilt health tier.
+	if !healthFirst && (sessionHash != "" || stickyAccountID > 0) {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)

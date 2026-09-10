@@ -525,6 +525,60 @@ func TestAdaptiveSelectionHistoryMakesAccountKnownAndBlocksStickyCostEscape(t *t
 	require.Equal(t, int64(1), selected.account.ID)
 }
 
+func TestHealthFirstKeepsStickyWithinCostBandAgainstUnknown(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	cheapUnknown := withProbeMultiplier(makeHealthTestAccount(1141, 1, 0, true), 0.07, now.Add(time.Hour))
+	stickyMeasured := withProbeMultiplier(makeHealthTestAccount(1142, 1, 0, true), 0.08, now.Add(time.Hour))
+	ttft := 150
+	reportHealthSamples(stats, stickyMeasured.account.ID, true, &ttft, int(accountHealthUnknownMinSamples))
+
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(
+		[]accountWithLoad{stickyMeasured, cheapUnknown},
+		stats,
+		config.GatewaySchedulingConfig{},
+		false,
+		now,
+		114,
+		stickyMeasured.account.ID,
+		true,
+		AccountSchedulingStrategyHealthFirst,
+	)
+	require.NotNil(t, selected)
+	require.Equal(t, stickyMeasured.account.ID, selected.account.ID)
+}
+
+func TestHealthFirstDoesNotKeepStickyAccountAfterItBecomesUnhealthy(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	sticky := withProbeMultiplier(makeHealthTestAccount(1143, 1, 0, true), 0.08, now.Add(time.Hour))
+	healthy := withProbeMultiplier(makeHealthTestAccount(1144, 1, 0, true), 0.08, now.Add(time.Hour))
+	fast := 150
+	reportHealthSamples(stats, healthy.account.ID, true, &fast, int(accountHealthUnknownMinSamples))
+	reportHealthSamples(stats, sticky.account.ID, false, nil, int(accountHealthUnknownMinSamples))
+
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(
+		[]accountWithLoad{sticky, healthy},
+		stats,
+		config.GatewaySchedulingConfig{},
+		false,
+		now,
+		115,
+		sticky.account.ID,
+		true,
+		AccountSchedulingStrategyHealthFirst,
+	)
+	require.NotNil(t, selected)
+	require.Equal(t, healthy.account.ID, selected.account.ID)
+}
+
+func TestAdaptiveSameHealthFirstCostBand(t *testing.T) {
+	require.True(t, adaptiveSameHealthFirstCostBand(0, 0))
+	require.False(t, adaptiveSameHealthFirstCostBand(0, 0.01))
+	require.True(t, adaptiveSameHealthFirstCostBand(0.07, 0.08))
+	require.False(t, adaptiveSameHealthFirstCostBand(0.07, 0.2))
+}
+
 func TestAdaptiveSelectionHistoryDoesNotKeepStickyAccountWithSevereP90Tail(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	now := time.Now()

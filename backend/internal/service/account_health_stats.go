@@ -142,6 +142,24 @@ func adaptiveHealthFirstCostBand(profiles []adaptiveAccountHealthProfile, indexe
 	return indexes
 }
 
+// adaptiveSameHealthFirstCostBand reports whether two declared upstream rates
+// belong to the same cost band used by the health-first policy. A session
+// affinity may be retained only inside this band; a materially cheaper account
+// must remain free to replace an expensive affinity.
+func adaptiveSameHealthFirstCostBand(a, b float64) bool {
+	if a < 0 || b < 0 {
+		return false
+	}
+	if a == 0 || b == 0 {
+		return a == 0 && b == 0
+	}
+	lower, higher := a, b
+	if lower > higher {
+		lower, higher = higher, lower
+	}
+	return higher <= lower*accountHealthFirstCostRatio && higher-lower <= accountHealthFirstCostAbsoluteGap
+}
+
 func adaptiveLowestUsableCostTier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) []int {
 	remaining := append([]int(nil), indexes...)
 	for len(remaining) > 0 {

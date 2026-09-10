@@ -861,6 +861,68 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyAccountIDWithoutSessionHash(
 	require.Nil(t, selection)
 }
 
+func TestOpenAIHealthAdaptiveLegacyPathsDoNotDirectlyReuseStickyAccount(t *testing.T) {
+	groupID := int64(8101)
+	now := time.Now()
+	sticky := withProbeMultiplier(makeHealthTestAccount(81011, 1, 0, true), 0.2, now.Add(time.Hour)).account
+	cheap := withProbeMultiplier(makeHealthTestAccount(81012, 1, 0, true), 0.07, now.Add(time.Hour)).account
+	sticky.Platform, sticky.Concurrency = PlatformOpenAI, 1
+	cheap.Platform, cheap.Concurrency = PlatformOpenAI, 1
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID:                        groupID,
+		Platform:                  PlatformOpenAI,
+		Status:                    StatusActive,
+		Hydrated:                  true,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+	})
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{*sticky, *cheap}},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		cfg:                &config.Config{},
+	}
+
+	selected, err := svc.selectAccountForModelWithExclusions(ctx, &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "", PlatformOpenAI)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, cheap.ID, selected.ID)
+
+	selection, err := svc.selectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "", PlatformOpenAI, -1)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, cheap.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIHealthFirstLegacyFallbackKeepsStickyWithinCostBand(t *testing.T) {
+	groupID := int64(8102)
+	sessionHash := "health-first-legacy-fallback"
+	now := time.Now()
+	sticky := withProbeMultiplier(makeHealthTestAccount(81013, 1, 0, true), 0.08, now.Add(time.Hour)).account
+	cheap := withProbeMultiplier(makeHealthTestAccount(81014, 1, 0, true), 0.07, now.Add(time.Hour)).account
+	sticky.Platform, sticky.Concurrency = PlatformOpenAI, 1
+	cheap.Platform, cheap.Concurrency = PlatformOpenAI, 1
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID:                        groupID,
+		Platform:                  PlatformOpenAI,
+		Status:                    StatusActive,
+		Hydrated:                  true,
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+	})
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{*sticky, *cheap}},
+		cache:       &stubGatewayCache{sessionBindings: map[string]int64{"openai:" + sessionHash: sticky.ID}},
+		cfg:         &config.Config{},
+	}
+
+	selected, err := svc.selectAccountForModelWithExclusions(ctx, &groupID, sessionHash, "gpt-5.2", nil, false, 0, "", "", PlatformOpenAI)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, sticky.ID, selected.ID)
+}
+
 func TestOpenAISelectAccountForModelWithExclusions_SkipsCoolingPoolAccounts(t *testing.T) {
 	groupID := int64(1)
 	account := Account{

@@ -1515,24 +1515,21 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	for _, index := range preferredIndexes {
 		preferred[ordered[index].account.ID] = struct{}{}
 	}
-	// Truly unknown low-cost accounts still receive bounded evaluation.
-	if s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.warmingUpTurn(groupID) {
-		for i := range ordered {
-			candidate := &ordered[i]
-			if candidate.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || !s.stats.warmingUpDue(groupID, candidate.account.ID, now) {
-				continue
-			}
-			lowest := adaptiveLowestMultiplier(profiles, preferredIndexes, now)
-			rate, declared := accountEffectiveUpstreamMultiplier(candidate.account, now)
-			if !declared || lowest == math.MaxFloat64 || (costBalanced && math.Abs(rate-lowest) > accountHealthCostTierEpsilon) || (!costBalanced && (rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap)) {
-				continue
-			}
-			s.stats.markWarmingUp(groupID, candidate.account.ID, now)
+	// Unknown accounts are optimistically eligible. Give them a direct,
+	// per-account first-use turn instead of a group-wide every-N probe. This
+	// keeps large pools from starving low-cost accounts. Health-first retains
+	// an active affinity only inside its policy cost band.
+	if s != nil && s.stats != nil {
+		if selected, ok := selectOpenAIUnknownAdaptiveCandidate(ordered, preferred, s.stats, now, groupID, req.StickyAccountID, costBalanced); ok {
 			result := append([]openAIAccountCandidateScore(nil), ordered...)
-			selected := result[i]
-			copy(result[1:i+1], result[:i])
-			result[0] = selected
-			return result
+			for i := range result {
+				if result[i].account != nil && result[i].account.ID == selected {
+					candidate := result[i]
+					copy(result[1:i+1], result[:i])
+					result[0] = candidate
+					return result
+				}
+			}
 		}
 	}
 	probeAccountID := int64(0)
@@ -1571,10 +1568,21 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			return aInBestBand
 		}
 		if aInBestBand {
-			if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
+			aHasHealth := accountHealthHasKnownSamples(a.sampleCount, a.ttftSampleCount, a.errorRate)
+			bHasHealth := accountHealthHasKnownSamples(b.sampleCount, b.ttftSampleCount, b.errorRate)
+			// Unknown health is optimistic eligibility, not a reason to starve
+			// an account. If either side has no samples, prefer the lower
+			// effective upstream rate before measured latency.
+			if !aHasHealth || !bHasHealth {
+				aRate, aKnown := accountEffectiveUpstreamMultiplier(a.account, now)
+				bRate, bKnown := accountEffectiveUpstreamMultiplier(b.account, now)
+				if aKnown && bKnown && aRate != bRate {
+					return aRate < bRate
+				}
+			} else if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
 				return less
 			}
-			if a.errorRate != b.errorRate {
+			if aHasHealth && bHasHealth && a.errorRate != b.errorRate {
 				return a.errorRate < b.errorRate
 			}
 		} else {
@@ -1620,7 +1628,7 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			if candidate.account.ID != req.StickyAccountID {
 				continue
 			}
-			if _, ok := preferred[candidate.account.ID]; ok && !adaptiveOpenAICandidateMateriallySlower(candidate, ordered, preferred) {
+			if _, ok := preferred[candidate.account.ID]; ok && adaptiveOpenAIStickyCanLead(candidate, ordered, preferred, costBalanced, now) {
 				copy(ordered[1:i+1], ordered[:i])
 				ordered[0] = candidate
 			}
@@ -1628,6 +1636,88 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 		}
 	}
 	return ordered
+}
+
+func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced bool) (int64, bool) {
+	if len(ordered) == 0 || stats == nil {
+		return 0, false
+	}
+	affinityRate, affinityRateKnown := float64(0), false
+	_, affinityInPreferred := preferred[affinityAccountID]
+	if affinityAccountID > 0 {
+		for _, candidate := range ordered {
+			if candidate.account != nil && candidate.account.ID == affinityAccountID {
+				affinityRate, affinityRateKnown = accountEffectiveUpstreamMultiplier(candidate.account, now)
+				break
+			}
+		}
+	}
+	selectedID := int64(0)
+	selectedRate, selectedRateKnown := float64(0), false
+	for _, candidate := range ordered {
+		if candidate.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || !stats.warmingUpDue(groupID, candidate.account.ID, now) {
+			continue
+		}
+		if _, ok := preferred[candidate.account.ID]; !ok {
+			continue
+		}
+		rate, rateKnown := accountEffectiveUpstreamMultiplier(candidate.account, now)
+		if affinityAccountID > 0 && affinityRateKnown {
+			if !rateKnown || rate >= affinityRate-accountHealthCostTierEpsilon {
+				continue
+			}
+			if !costBalanced && affinityInPreferred && adaptiveSameHealthFirstCostBand(rate, affinityRate) {
+				continue
+			}
+		}
+		if selectedID == 0 || (rateKnown && !selectedRateKnown) || (rateKnown == selectedRateKnown && rateKnown && rate < selectedRate) || (rateKnown == selectedRateKnown && (!rateKnown || rate == selectedRate) && candidate.account.ID < selectedID) {
+			selectedID = candidate.account.ID
+			selectedRate, selectedRateKnown = rate, rateKnown
+		}
+	}
+	if selectedID <= 0 {
+		return 0, false
+	}
+	stats.markWarmingUp(groupID, selectedID, now)
+	return selectedID, true
+}
+
+// adaptiveOpenAIStickyCanLead keeps an active healthy/cache affinity inside
+// the current policy tier, but never lets it outrank a materially cheaper
+// candidate merely because it was selected on an earlier request. A sticky
+// account may still lead when the cheaper candidate is demonstrably slower;
+// this preserves health-first semantics while preventing cost-balanced
+// sessions from staying pinned to an expensive account forever.
+func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}, costBalanced bool, now time.Time) bool {
+	if adaptiveOpenAICandidateMateriallySlower(sticky, pool, preferred) {
+		return false
+	}
+	stickyRate, stickyKnown := accountEffectiveUpstreamMultiplier(sticky.account, now)
+	if !stickyKnown {
+		return true
+	}
+	for _, other := range pool {
+		if other.account == nil || other.account.ID == sticky.account.ID {
+			continue
+		}
+		if _, ok := preferred[other.account.ID]; !ok {
+			continue
+		}
+		otherRate, otherKnown := accountEffectiveUpstreamMultiplier(other.account, now)
+		if !otherKnown || otherRate >= stickyRate-accountHealthCostTierEpsilon {
+			continue
+		}
+		if !costBalanced && adaptiveSameHealthFirstCostBand(otherRate, stickyRate) {
+			continue
+		}
+		// Health-first may keep a more expensive sticky account only when the
+		// cheaper candidate is materially slower. Otherwise the cheaper account
+		// owns the next request and refreshes the session binding.
+		if !adaptiveOpenAICandidateMateriallySlower(other, pool, preferred) {
+			return false
+		}
+	}
+	return true
 }
 
 func adaptiveOpenAICandidateMateriallySlower(candidate openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}) bool {

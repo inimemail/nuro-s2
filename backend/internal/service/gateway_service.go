@@ -3992,32 +3992,23 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 	if len(preferred) == 0 {
 		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
-
-	// Unknown low-cost accounts receive bounded evaluation, but never dominate
-	// known accounts merely because the process has just restarted.
-	if allowWarmup && healthStats != nil && !affinityActive && healthStats.warmingUpTurn(groupID) {
-		for i := range candidates {
-			candidate := &candidates[i]
-			if candidate.item.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || !healthStats.warmingUpDue(groupID, candidate.item.account.ID, now) {
-				continue
-			}
-			lowest := adaptiveLowestMultiplier(profiles, preferredIndexes, now)
-			rate, declared := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
-			if !declared || lowest == math.MaxFloat64 || (costBalanced && math.Abs(rate-lowest) > accountHealthCostTierEpsilon) || (!costBalanced && (rate > lowest*accountHealthFirstCostRatio || rate-lowest > accountHealthFirstCostAbsoluteGap)) {
-				continue
-			}
-			healthStats.markWarmingUp(groupID, candidate.item.account.ID, now)
-			return &candidate.item
+	// Unknown accounts are optimistically eligible. Give them a direct,
+	// per-account first-use turn instead of waiting for a global every-N
+	// cadence; this lets large account pools build evidence without allowing a
+	// single unknown account to be selected repeatedly. In health-first, an
+	// active affinity remains inside its policy cost band; a lower-cost account
+	// outside that band can still replace it.
+	if allowWarmup && healthStats != nil {
+		if selected := selectUnknownAdaptiveCandidate(candidates, preferredIDs, healthStats, now, groupID, affinityAccountID, affinityActive, costBalanced, preferOAuth); selected != nil {
+			return selected
 		}
 	}
+
 	if !hasKnownAccountHealthSample(candidates) {
-		if affinityActive && affinityAccountID > 0 {
-			for i := range candidates {
-				if candidates[i].item.account != nil && candidates[i].item.account.ID == affinityAccountID {
-					return &candidates[i].item
-				}
-			}
-		}
+		// No sample is not a negative health signal. Let the normal cold-start
+		// ordering use effective upstream cost and LRU so every non-cooling
+		// account can receive a first real request; affinity must not pin a
+		// higher-cost account over a cheaper eligible one.
 		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
 	// A low-cost account that was unhealthy or seriously slow must be able to
@@ -4049,7 +4040,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 		if _, ok := preferredIDs[affinityAccountID]; ok {
 			for i := range preferred {
 				candidate := &preferred[i]
-				if candidate.item.account.ID == affinityAccountID && !adaptiveCandidateMateriallySlower(*candidate, preferred) {
+				if candidate.item.account.ID == affinityAccountID && adaptiveGenericStickyCanLead(*candidate, preferred, costBalanced, now) {
 					return &candidate.item
 				}
 			}
@@ -4078,10 +4069,22 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 	}
 	sort.SliceStable(preferred, func(i, j int) bool {
 		a, b := preferred[i], preferred[j]
-		if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
+		aHasHealth := accountHealthHasKnownSamples(a.sampleCount, a.ttftSampleCount, a.errorRate)
+		bHasHealth := accountHealthHasKnownSamples(b.sampleCount, b.ttftSampleCount, b.errorRate)
+		// An account without health samples is optimistically eligible. When
+		// comparing it with a measured account, cost decides before latency;
+		// this prevents a measured high-cost account from starving cheaper
+		// accounts that have not received their first request yet.
+		if !aHasHealth || !bHasHealth {
+			aRate, aKnown := accountEffectiveUpstreamMultiplier(a.item.account, now)
+			bRate, bKnown := accountEffectiveUpstreamMultiplier(b.item.account, now)
+			if aKnown && bKnown && aRate != bRate {
+				return aRate < bRate
+			}
+		} else if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
 			return less
 		}
-		if a.errorRate != b.errorRate {
+		if aHasHealth && bHasHealth && a.errorRate != b.errorRate {
 			return a.errorRate < b.errorRate
 		}
 		if affinityActive && affinityAccountID > 0 {
@@ -4115,6 +4118,83 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 		return nil
 	}
 	return &preferred[0].item
+}
+
+func selectUnknownAdaptiveCandidate(candidates []accountHealthCandidate, preferredIDs map[int64]struct{}, stats *accountRuntimeHealthStats, now time.Time, groupID, affinityAccountID int64, affinityActive, costBalanced bool, preferOAuth bool) *accountWithLoad {
+	if len(candidates) == 0 || stats == nil {
+		return nil
+	}
+	affinityRate, affinityRateKnown := float64(0), false
+	_, affinityInPreferred := preferredIDs[affinityAccountID]
+	if affinityActive && affinityAccountID > 0 {
+		for _, candidate := range candidates {
+			if candidate.item.account != nil && candidate.item.account.ID == affinityAccountID {
+				affinityRate, affinityRateKnown = accountEffectiveUpstreamMultiplier(candidate.item.account, now)
+				break
+			}
+		}
+	}
+	var selected *accountHealthCandidate
+	selectedRate, selectedRateKnown := float64(0), false
+	for i := range candidates {
+		candidate := &candidates[i]
+		if candidate.item.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || !stats.warmingUpDue(groupID, candidate.item.account.ID, now) {
+			continue
+		}
+		if _, preferred := preferredIDs[candidate.item.account.ID]; !preferred {
+			continue
+		}
+		rate, rateKnown := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
+		if affinityActive && affinityRateKnown {
+			if !rateKnown || rate >= affinityRate-accountHealthCostTierEpsilon {
+				continue
+			}
+			// Health-first retains a proven ongoing session within its policy cost
+			// band. Cost-balanced has no such exception: any lower rate wins.
+			if !costBalanced && affinityInPreferred && adaptiveSameHealthFirstCostBand(rate, affinityRate) {
+				continue
+			}
+		}
+		if selected == nil || (rateKnown && !selectedRateKnown) || (rateKnown == selectedRateKnown && rateKnown && rate < selectedRate) || (rateKnown == selectedRateKnown && (!rateKnown || rate == selectedRate) && lruAccountBefore(candidate.item.account, selected.item.account, preferOAuth)) {
+			selected = candidate
+			selectedRate, selectedRateKnown = rate, rateKnown
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	stats.markWarmingUp(groupID, selected.item.account.ID, now)
+	return &selected.item
+}
+
+func adaptiveGenericStickyCanLead(sticky accountHealthCandidate, pool []accountHealthCandidate, costBalanced bool, now time.Time) bool {
+	if adaptiveCandidateMateriallySlower(sticky, pool) {
+		return false
+	}
+	stickyRate, stickyKnown := accountEffectiveUpstreamMultiplier(sticky.item.account, now)
+	if !stickyKnown {
+		return true
+	}
+	for _, other := range pool {
+		if other.item.account == nil || other.item.account.ID == sticky.item.account.ID {
+			continue
+		}
+		otherRate, otherKnown := accountEffectiveUpstreamMultiplier(other.item.account, now)
+		if !otherKnown || otherRate >= stickyRate-accountHealthCostTierEpsilon {
+			continue
+		}
+		if !costBalanced && adaptiveSameHealthFirstCostBand(otherRate, stickyRate) {
+			continue
+		}
+		// A sticky account can survive a cheaper candidate only when that
+		// candidate is demonstrably slower. In the cost-balanced mode this is
+		// the strict rule; in health-first it preserves a genuinely healthier
+		// ongoing session without letting a merely sticky expensive account win.
+		if !adaptiveCandidateMateriallySlower(other, pool) {
+			return false
+		}
+	}
+	return true
 }
 
 func adaptiveCandidateMateriallySlower(candidate accountHealthCandidate, pool []accountHealthCandidate) bool {
