@@ -504,6 +504,47 @@
             </button>
           </div>
           <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+            <div class="rounded-md border border-gray-200/80 bg-gray-50/70 p-3 dark:border-dark-700 dark:bg-dark-800/40">
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div class="min-w-0">
+                  <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.adaptiveSchedulingFactor') }}</label>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.accounts.upstreamBilling.adaptiveSchedulingFactorHint') }}
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5 sm:flex-none">
+                  <button
+                    v-for="preset in [1, 0.1, 0.01]"
+                    :key="preset"
+                    type="button"
+                    class="rounded border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-600 hover:border-primary-300 hover:text-primary-700 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
+                    @click="adaptiveUpstreamMultiplierFactor = preset"
+                  >×{{ preset }}</button>
+                </div>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <span class="sr-only">{{ t('admin.accounts.upstreamBilling.adaptiveSchedulingFactor') }}</span>
+                <input
+                  v-model.number="adaptiveUpstreamMultiplierFactor"
+                  data-testid="adaptive-upstream-multiplier-factor"
+                  :aria-label="t('admin.accounts.upstreamBilling.adaptiveSchedulingFactor')"
+                  type="number"
+                  min="0.001"
+                  max="100"
+                  step="0.001"
+                  class="input w-28 text-sm"
+                />
+                <span class="text-xs text-gray-500 dark:text-gray-400">×</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.upstreamBilling.adaptiveSchedulingObserved', { rate: formatAdaptiveSchedulingRate(upstreamBillingObservedRate) }) }}
+                </span>
+                <span class="text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                  {{ t('admin.accounts.upstreamBilling.adaptiveSchedulingEffective', { rate: formatAdaptiveSchedulingRate(adaptiveUpstreamSchedulingRate) }) }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.guard') }}</label>
@@ -4264,6 +4305,9 @@ const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibility
 }
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingRateSyncEnabled = ref(false)
+const ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY = 'adaptive_upstream_multiplier_factor'
+const adaptiveUpstreamMultiplierFactor = ref(1)
+const initialAdaptiveUpstreamMultiplierFactor = ref(1)
 const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
 const upstreamBillingGuardGroupOverrides = ref<Record<string, number | string | null>>({})
@@ -5082,8 +5126,27 @@ const configuredUpstreamBillingGuardGroupCount = computed(() =>
 
 const upstreamBillingGuardObservedRate = computed(() => {
   const value = props.account?.upstream_billing_guard_observed_multiplier
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  return value * adaptiveFactorFromValue(props.account?.extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY])
 })
+
+const adaptiveFactorFromValue = (value: unknown): number => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0.001 && parsed <= 100 ? parsed : 1
+}
+
+const upstreamBillingObservedRate = computed<number | null>(() => {
+  const raw = props.account?.extra?.upstream_billing_probe?.data?.effective_rate_multiplier
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : null
+})
+
+const adaptiveUpstreamSchedulingRate = computed<number | null>(() => {
+  const observed = upstreamBillingObservedRate.value
+  return observed == null ? null : observed * adaptiveFactorFromValue(adaptiveUpstreamMultiplierFactor.value)
+})
+
+const formatAdaptiveSchedulingRate = (value: number | null): string => value == null ? '-' : `${Number(value.toPrecision(6))}x`
 
 const upstreamBillingGuardGroupSummaries = computed(() =>
   selectedUpstreamBillingGuardGroups.value.map((group) => {
@@ -5359,6 +5422,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
   upstreamBillingRateSyncEnabled.value =
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
+  adaptiveUpstreamMultiplierFactor.value = adaptiveFactorFromValue(extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY])
+  initialAdaptiveUpstreamMultiplierFactor.value = adaptiveUpstreamMultiplierFactor.value
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   const overrides: Record<string, number | string | null> = {}
@@ -7295,16 +7360,30 @@ const handleSubmit = async () => {
     }
 
     if (showUpstreamBillingProbeConfig.value) {
+      const factor = Number(adaptiveUpstreamMultiplierFactor.value)
+      if (!Number.isFinite(factor) || factor < 0.001 || factor > 100) {
+        appStore.showError(t('admin.accounts.upstreamBilling.adaptiveSchedulingFactorInvalid'))
+        return
+      }
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
       if (upstreamBillingRateSyncEnabled.value) {
         delete updatePayload.rate_multiplier
       }
-      if (updatePayload.extra && typeof updatePayload.extra === 'object') {
-        const extra = { ...(updatePayload.extra as Record<string, unknown>) }
+      const factorChanged = factor !== initialAdaptiveUpstreamMultiplierFactor.value
+      if (factorChanged || (updatePayload.extra && typeof updatePayload.extra === 'object')) {
+        const currentExtra = updatePayload.extra && typeof updatePayload.extra === 'object'
+          ? updatePayload.extra as Record<string, unknown>
+          : (props.account.extra as Record<string, unknown> || {})
+        const extra = { ...currentExtra }
         delete extra.upstream_billing_probe
         delete extra.upstream_billing_probe_enabled
         delete extra.upstream_billing_rate_sync_enabled
+        // Explicit null tells the backend's full-update path to clear a prior
+        // non-default factor; a numeric value is used only for non-defaults.
+        if (factorChanged) {
+          extra[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY] = factor === 1 ? null : factor
+        }
         updatePayload.extra = extra
       }
       if (upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) {

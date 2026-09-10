@@ -4200,7 +4200,10 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 	// masquerade as an upstream declared multiplier for adaptive scheduling.
 	if snapshot != nil && snapshot.FreshUntil != nil && snapshot.FreshUntil.After(now) {
 		if value, ok := billingMultiplierFromProbeData(snapshot.Data); ok {
-			return value, true
+			adjusted := value * accountAdaptiveUpstreamMultiplierFactor(account)
+			if adjusted >= 0 && !math.IsNaN(adjusted) && !math.IsInf(adjusted, 0) {
+				return adjusted, true
+			}
 		}
 	}
 	return 0, false

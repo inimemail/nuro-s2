@@ -50,6 +50,7 @@ export const buildUpstreamBillingGuardRefreshKey = (
   return [
     account.upstream_billing_guard_enabled,
     account.upstream_billing_guard_observed_multiplier,
+    account.extra?.adaptive_upstream_multiplier_factor,
     account.extra?.upstream_billing_probe_enabled,
     ...bindings
   ].map(normalizeUsageRefreshValue).join('|')

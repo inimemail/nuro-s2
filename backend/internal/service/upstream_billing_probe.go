@@ -28,7 +28,12 @@ const (
 	UpstreamBillingProbeExtraKey           = "upstream_billing_probe"
 	UpstreamBillingProbeEnabledExtraKey    = "upstream_billing_probe_enabled"
 	UpstreamBillingRateSyncEnabledExtraKey = "upstream_billing_rate_sync_enabled"
-	UpstreamBillingProbeMaxBatchSize       = 20
+	// AdaptiveUpstreamMultiplierFactorExtraKey corrects a provider-specific
+	// billing unit for adaptive scheduling and the matching group guard
+	// comparison. It never changes billing, probe snapshots, or upstream rate
+	// synchronization.
+	AdaptiveUpstreamMultiplierFactorExtraKey = "adaptive_upstream_multiplier_factor"
+	UpstreamBillingProbeMaxBatchSize         = 20
 
 	upstreamBillingProbeDefaultIntervalSeconds = 5
 	upstreamBillingProbeMinIntervalSeconds     = 1
@@ -43,6 +48,8 @@ const (
 	upstreamBillingRateSyncMaxMultiplier       = 100.0
 	upstreamBillingProbeSettingsPollInterval   = 5 * time.Second
 	upstreamBillingProbeLeaderLockKey          = "upstream:billing:probe:leader"
+	adaptiveUpstreamMultiplierFactorMin        = 0.001
+	adaptiveUpstreamMultiplierFactorMax        = 100.0
 )
 
 const (
@@ -721,6 +728,17 @@ func billingMultiplierFromProbeData(data map[string]any) (float64, bool) {
 	}
 	value, ok := data["effective_rate_multiplier"].(float64)
 	return value, ok && value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func accountAdaptiveUpstreamMultiplierFactor(account *Account) float64 {
+	if account == nil {
+		return 1
+	}
+	factor, ok := resolveAccountExtraNumber(account.Extra, AdaptiveUpstreamMultiplierFactorExtraKey)
+	if !ok || factor < adaptiveUpstreamMultiplierFactorMin || factor > adaptiveUpstreamMultiplierFactorMax || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		return 1
+	}
+	return factor
 }
 
 func upstreamBillingProbeSyncRate(data map[string]any) (float64, bool) {

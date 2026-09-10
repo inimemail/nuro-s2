@@ -37,6 +37,24 @@ func TestAccountUpstreamBillingGuardIsScopedToBinding(t *testing.T) {
 	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&group10), "a lower successful probe must restore scheduling")
 }
 
+func TestAccountUpstreamBillingGuardUsesAdaptiveFactorForGroupBounds(t *testing.T) {
+	observed := 1.6
+	limit := 0.2
+	groupID := int64(10)
+	account := &Account{
+		Platform:                               PlatformOpenAI,
+		Type:                                   AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled:            true,
+		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true, AdaptiveUpstreamMultiplierFactorExtraKey: 0.1},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		AccountGroups:                          []AccountGroup{{GroupID: groupID, UpstreamBillingGuardMaxMultiplier: &limit}},
+	}
+
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "1.6x raw becomes 0.16x for group protection")
+	account.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = 1
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "without correction the raw 1.6x exceeds the limit")
+}
+
 func TestAccountUpstreamBillingGuardRequiresAutoProbeOnlyWhenConfigured(t *testing.T) {
 	limit := 1.0
 	groupID := int64(10)

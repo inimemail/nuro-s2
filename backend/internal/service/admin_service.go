@@ -11,6 +11,7 @@ import (
 	"maps"
 	"math"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -3367,6 +3368,83 @@ func ValidateOpenAILongContextBillingExtra(platform string, extra map[string]any
 	return nil
 }
 
+func normalizeAdaptiveUpstreamMultiplierFactorExtra(extra map[string]any) (map[string]any, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	normalized := maps.Clone(extra)
+	raw, exists := normalized[AdaptiveUpstreamMultiplierFactorExtraKey]
+	if !exists || raw == nil {
+		delete(normalized, AdaptiveUpstreamMultiplierFactorExtraKey)
+		return normalized, nil
+	}
+	factor, ok := resolveAccountExtraNumber(normalized, AdaptiveUpstreamMultiplierFactorExtraKey)
+	if !ok || factor < adaptiveUpstreamMultiplierFactorMin || factor > adaptiveUpstreamMultiplierFactorMax || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		return nil, infraerrors.BadRequest(
+			"INVALID_ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR",
+			"adaptive_upstream_multiplier_factor must be a finite number between 0.001 and 100",
+		)
+	}
+	if factor == 1 {
+		// Keep an explicit 1 for JSONB key-level updates. The repository merge
+		// path cannot delete a key, but 1 is the canonical no-op value.
+		normalized[AdaptiveUpstreamMultiplierFactorExtraKey] = float64(1)
+	} else {
+		normalized[AdaptiveUpstreamMultiplierFactorExtraKey] = factor
+	}
+	return normalized, nil
+}
+
+// normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra applies partial-update
+// semantics to the scheduler-only factor. An omitted key keeps the existing
+// administrator setting; an explicit null clears it back to the default.
+func normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account *Account, extra map[string]any, provided bool, raw any) (map[string]any, error) {
+	normalized, err := normalizeAdaptiveUpstreamMultiplierFactorExtra(extra)
+	if err != nil || account == nil || extra == nil {
+		return normalized, err
+	}
+	if !provided {
+		if current, exists := account.Extra[AdaptiveUpstreamMultiplierFactorExtraKey]; exists {
+			normalized[AdaptiveUpstreamMultiplierFactorExtraKey] = current
+		}
+	} else if raw == nil {
+		delete(normalized, AdaptiveUpstreamMultiplierFactorExtraKey)
+	}
+	return normalized, nil
+}
+
+// adaptiveFactorOnlyExtraChange reports whether an account edit changed no
+// persisted Extra value other than the scheduler-only factor. Probe flags and
+// the probe snapshot are runtime-owned and are intentionally ignored because
+// they are stripped from the normal account-update payload below. Keeping this
+// distinction prevents changing a scheduling preference from clearing an
+// unrelated soft cooldown/runtime block.
+func adaptiveFactorOnlyExtraChange(current, next map[string]any) bool {
+	left := maps.Clone(current)
+	right := maps.Clone(next)
+	for _, key := range []string{
+		AdaptiveUpstreamMultiplierFactorExtraKey,
+		UpstreamBillingProbeEnabledExtraKey,
+		UpstreamBillingRateSyncEnabledExtraKey,
+		UpstreamBillingProbeExtraKey,
+	} {
+		delete(left, key)
+		delete(right, key)
+	}
+	// OpenAI's long-context normalizer materializes its legacy default as
+	// false on full account updates. Treat that synthetic key as unchanged
+	// when an older account did not persist it; otherwise changing only the
+	// scheduler factor would unnecessarily clear runtime soft-cooldown state.
+	if _, existed := left[openAILongContextBillingEnabledKey]; !existed {
+		if value, present := right[openAILongContextBillingEnabledKey]; present {
+			if enabled, ok := value.(bool); ok && !enabled {
+				delete(right, openAILongContextBillingEnabledKey)
+			}
+		}
+	}
+	return reflect.DeepEqual(left, right)
+}
+
 func normalizeOpenAILongContextBillingExtra(platform string, extra map[string]any) (map[string]any, error) {
 	if platform != PlatformOpenAI {
 		return extra, nil
@@ -3649,6 +3727,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	accountExtra, err = normalizeAdaptiveUpstreamMultiplierFactorExtra(accountExtra)
+	if err != nil {
+		return nil, err
+	}
 	accountExtra, input.Credentials = normalizeCNProviderStoredConfig(input.Platform, accountExtra, input.Credentials)
 	// Quota and billing observations are runtime-owned. Never accept a
 	// client-provided snapshot on create; only the tri-state override is
@@ -3833,6 +3915,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		desiredGuardEnabled = guardCapableAccount && *input.UpstreamBillingGuardEnabled
 	}
 	var normalizedExtra map[string]any
+	var rawFactor any
+	factorProvided := false
+	adaptiveFactorOnlyExtraUpdate := false
 	if input.Extra != nil {
 		if hasAnyOpenAIFirstTokenTimeoutUpdate(input.Extra) {
 			candidate := *account
@@ -3850,6 +3935,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		normalizedExtra, err = normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(account.Platform, effectiveAccountType, normalizedExtra)
+		if err != nil {
+			return nil, err
+		}
+		rawFactor, factorProvided = input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey]
+		normalizedExtra, err = normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account, normalizedExtra, factorProvided, rawFactor)
 		if err != nil {
 			return nil, err
 		}
@@ -3876,6 +3966,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
+		if factorProvided {
+			requestedFactor := float64(1)
+			if rawFactor != nil {
+				requestedFactor, _ = resolveAccountExtraNumber(normalizedExtra, AdaptiveUpstreamMultiplierFactorExtraKey)
+			}
+			probeSettingsUnchanged := (requestedProbeEnabledUpdate == nil || *requestedProbeEnabledUpdate == currentProbeEnabled) &&
+				(requestedRateSyncEnabledUpdate == nil || *requestedRateSyncEnabledUpdate == currentRateSyncEnabled)
+			adaptiveFactorOnlyExtraUpdate = probeSettingsUnchanged &&
+				math.Abs(requestedFactor-accountAdaptiveUpstreamMultiplierFactor(account)) > 1e-12 &&
+				adaptiveFactorOnlyExtraChange(account.Extra, normalizedExtra)
+		}
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
 	clearRuntimeBlock := false
@@ -3927,7 +4028,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
 	if input.Extra != nil {
-		clearRuntimeBlock = true
+		if !adaptiveFactorOnlyExtraUpdate {
+			clearRuntimeBlock = true
+		}
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{
 			"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start",
@@ -4375,6 +4478,14 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(updates, UpstreamBillingProbeExtraKey)
+	var err error
+	if raw, exists := updates[AdaptiveUpstreamMultiplierFactorExtraKey]; exists && raw == nil {
+		updates[AdaptiveUpstreamMultiplierFactorExtraKey] = float64(1)
+	}
+	updates, err = normalizeAdaptiveUpstreamMultiplierFactorExtra(updates)
+	if err != nil {
+		return err
+	}
 	if hasCNProviderStoredConfigUpdate(updates, nil, nil) {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -4459,6 +4570,14 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	var err error
+	if raw, exists := input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey]; exists && raw == nil {
+		input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = float64(1)
+	}
+	input.Extra, err = normalizeAdaptiveUpstreamMultiplierFactorExtra(input.Extra)
+	if err != nil {
+		return nil, err
+	}
 	_, hasStages := input.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
 	_, hasOAuthStages := input.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]
 	hasAPIKeyFirstTokenTimeoutUpdate := hasOpenAIAPIKeyFirstTokenTimeoutUpdate(input.Extra)

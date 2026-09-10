@@ -1078,6 +1078,17 @@ type groupAccountCounts struct {
 }
 
 const (
+	// Guard thresholds are expressed in the same effective scheduling units as
+	// adaptive selection. The raw observed probe value remains stored for
+	// diagnostics; this SQL applies the optional per-account correction factor
+	// at read time and fails safe to 1 for malformed legacy values.
+	upstreamBillingGuardEffectiveObservedMultiplierSQL = `a.upstream_billing_guard_observed_multiplier * CASE
+			WHEN (a.extra ->> 'adaptive_upstream_multiplier_factor') ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+				AND (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision BETWEEN 0.001 AND 100
+			THEN (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision
+			ELSE 1.0
+		END`
+
 	// Binding overrides can only tighten a configured side of the group policy.
 	// PostgreSQL's GREATEST/LEAST ignore NULL arguments, so each comparison must
 	// explicitly require the corresponding group bound to avoid reviving a stale
@@ -1093,12 +1104,12 @@ const (
 				g.upstream_billing_guard_max_multiplier
 			))
 		OR (g.upstream_billing_guard_min_multiplier IS NOT NULL
-			AND a.upstream_billing_guard_observed_multiplier < GREATEST(
+			AND (` + upstreamBillingGuardEffectiveObservedMultiplierSQL + `) < GREATEST(
 				COALESCE(ag.upstream_billing_guard_min_multiplier, g.upstream_billing_guard_min_multiplier),
 				g.upstream_billing_guard_min_multiplier
 			))
 		OR (g.upstream_billing_guard_max_multiplier IS NOT NULL
-			AND a.upstream_billing_guard_observed_multiplier > LEAST(
+			AND (` + upstreamBillingGuardEffectiveObservedMultiplierSQL + `) > LEAST(
 				COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
 				g.upstream_billing_guard_max_multiplier
 			))

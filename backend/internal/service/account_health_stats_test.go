@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,6 +154,30 @@ func TestAccountEffectiveUpstreamMultiplierKeepsFreshLastKnownAfterProbeFailure(
 	rate, ok := accountEffectiveUpstreamMultiplier(account, now)
 	require.True(t, ok)
 	require.Equal(t, 0.07, rate)
+}
+
+func TestAccountEffectiveUpstreamMultiplierAppliesAdaptiveFactorOnlyToSchedulingValue(t *testing.T) {
+	now := time.Now()
+	account := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.6, now.Add(time.Minute)).account
+	account.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = 0.1
+
+	rate, ok := accountEffectiveUpstreamMultiplier(account, now)
+	require.True(t, ok)
+	require.InDelta(t, 0.16, rate, 1e-9)
+	require.Equal(t, 1.6, account.Extra[UpstreamBillingProbeExtraKey].(map[string]any)["data"].(map[string]any)["effective_rate_multiplier"])
+}
+
+func TestAccountAdaptiveUpstreamMultiplierFactorDefaultsSafely(t *testing.T) {
+	account := makeHealthTestAccount(1, 1, 0, true).account
+	account.Extra = map[string]any{}
+	for _, value := range []any{nil, 0, 100.1, "invalid", math.Inf(1)} {
+		if value == nil {
+			delete(account.Extra, AdaptiveUpstreamMultiplierFactorExtraKey)
+		} else {
+			account.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = value
+		}
+		require.Equal(t, float64(1), accountAdaptiveUpstreamMultiplierFactor(account))
+	}
 }
 
 func TestHealthCostBalancedKeepsUnknownHealthCheapestUpstreamEligible(t *testing.T) {

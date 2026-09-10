@@ -2809,6 +2809,9 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
 		}
+		if _, changed := updates[service.AdaptiveUpstreamMultiplierFactorExtraKey]; changed {
+			r.syncSchedulerAccountSnapshot(ctx, id)
+		}
 	} else {
 		// 观测型 extra 字段不需要触发 bucket 重建，但仍同步单账号快照，
 		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
@@ -3262,6 +3265,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			shouldSync = true
 		}
 		if updates.Priority != nil {
+			shouldSync = true
+		}
+		if _, changed := updates.Extra[service.AdaptiveUpstreamMultiplierFactorExtraKey]; changed {
 			shouldSync = true
 		}
 		if shouldSync {

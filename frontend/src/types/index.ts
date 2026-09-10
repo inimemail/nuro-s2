@@ -1049,6 +1049,7 @@ export interface Account {
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
+    adaptive_upstream_multiplier_factor?: number
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
     grok_media_eligible?: boolean | null
     grok_billing_snapshot?: GrokBillingSummary | null

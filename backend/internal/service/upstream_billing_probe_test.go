@@ -556,3 +556,47 @@ func TestNormalizeAccountUpdateExtraPreservesProbeRuntimeState(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestNormalizeAdaptiveUpstreamMultiplierFactorUpdateExtraPreservesAndClearsExplicitly(t *testing.T) {
+	account := &Account{Extra: map[string]any{AdaptiveUpstreamMultiplierFactorExtraKey: 0.1}}
+
+	normalized, err := normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account, map[string]any{"unrelated": true}, false, nil)
+	require.NoError(t, err)
+	require.Equal(t, 0.1, normalized[AdaptiveUpstreamMultiplierFactorExtraKey])
+
+	normalized, err = normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account, map[string]any{AdaptiveUpstreamMultiplierFactorExtraKey: nil}, true, nil)
+	require.NoError(t, err)
+	_, exists := normalized[AdaptiveUpstreamMultiplierFactorExtraKey]
+	require.False(t, exists)
+
+	_, err = normalizeAdaptiveUpstreamMultiplierFactorExtra(map[string]any{AdaptiveUpstreamMultiplierFactorExtraKey: 0})
+	require.Error(t, err)
+}
+
+func TestAdaptiveFactorOnlyExtraChangeIgnoresProbeRuntimeKeys(t *testing.T) {
+	current := map[string]any{
+		AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+		UpstreamBillingProbeEnabledExtraKey:      true,
+		UpstreamBillingRateSyncEnabledExtraKey:   false,
+		UpstreamBillingProbeExtraKey:             map[string]any{"status": "ok"},
+		"custom_setting":                         true,
+	}
+	next := map[string]any{
+		AdaptiveUpstreamMultiplierFactorExtraKey: 0.01,
+		"custom_setting":                         true,
+	}
+	require.True(t, adaptiveFactorOnlyExtraChange(current, next))
+	next["custom_setting"] = false
+	require.False(t, adaptiveFactorOnlyExtraChange(current, next))
+}
+
+func TestAdaptiveFactorOnlyExtraChangeIgnoresSyntheticOpenAILongContextDefault(t *testing.T) {
+	current := map[string]any{AdaptiveUpstreamMultiplierFactorExtraKey: 0.1}
+	next := map[string]any{
+		AdaptiveUpstreamMultiplierFactorExtraKey: 0.01,
+		openAILongContextBillingEnabledKey:       false,
+	}
+	require.True(t, adaptiveFactorOnlyExtraChange(current, next))
+	next[openAILongContextBillingEnabledKey] = true
+	require.False(t, adaptiveFactorOnlyExtraChange(current, next))
+}

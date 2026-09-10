@@ -102,7 +102,10 @@ const observedRate = computed(() => {
 })
 const guardObservedRate = computed(() => {
   const value = props.account.upstream_billing_guard_observed_multiplier
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  const rawFactor = Number(props.account.extra?.adaptive_upstream_multiplier_factor)
+  const factor = Number.isFinite(rawFactor) && rawFactor >= 0.001 && rawFactor <= 100 ? rawFactor : 1
+  return value * factor
 })
 const autoProbeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
 const globalProbeDisabled = computed(() => props.globalProbeEnabled === false)

@@ -852,6 +852,31 @@ describe('EditAccountModal', () => {
     expect(payload?.extra).not.toHaveProperty('upstream_billing_rate_sync_enabled')
   })
 
+  it('persists the adaptive scheduling factor without changing the account billing rate', async () => {
+    const account = buildAccount()
+    account.extra = {
+      adaptive_upstream_multiplier_factor: 0.1,
+      upstream_billing_probe_enabled: true,
+      upstream_billing_probe: {
+        status: 'ok',
+        data: { effective_rate_multiplier: 1.6 }
+      }
+    } as any
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const factor = wrapper.get<HTMLInputElement>('[data-testid="adaptive-upstream-multiplier-factor"]')
+    expect(factor.element.value).toBe('0.1')
+    await factor.setValue('1')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.rate_multiplier).toBe(1)
+    expect((payload?.extra as Record<string, unknown>)?.adaptive_upstream_multiplier_factor).toBeNull()
+  })
+
   it('enables rate sync explicitly and leaves the managed multiplier out of the update', async () => {
     const account = buildAnthropicAPIKeyAccount()
     updateAccountMock.mockReset().mockResolvedValue(account)

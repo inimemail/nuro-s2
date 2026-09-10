@@ -71,6 +71,7 @@ func TestGuardAvailabilitySQLIgnoresOverridesForClearedGroupBounds(t *testing.T)
 	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL,
 		"g.upstream_billing_guard_max_multiplier IS NOT NULL")
 	require.Contains(t, groupAccountAvailableSQL, upstreamBillingGuardObservedOutOfBoundsSQL)
+	require.Contains(t, upstreamBillingGuardObservedOutOfBoundsSQL, "adaptive_upstream_multiplier_factor")
 }
 
 func TestGuardAvailabilitySQLFailsClosedForCrossedEffectiveBounds(t *testing.T) {

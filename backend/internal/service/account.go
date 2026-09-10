@@ -589,7 +589,10 @@ func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
 	if a.UpstreamBillingGuardObservedMultiplier == nil {
 		return false
 	}
-	observed := *a.UpstreamBillingGuardObservedMultiplier
+	// Group protection uses the same effective upstream units as adaptive
+	// scheduling. The raw probe value remains available in the snapshot; only
+	// this decision applies the optional per-account correction factor.
+	observed := *a.UpstreamBillingGuardObservedMultiplier * accountAdaptiveUpstreamMultiplierFactor(a)
 	return (min != nil && observed < *min) || (max != nil && observed > *max)
 }
 
