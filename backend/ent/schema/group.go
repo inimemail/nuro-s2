@@ -259,6 +259,13 @@ func (Group) Fields() []ent.Field {
 			MaxLen(30).
 			Default("strict_priority").
 			Comment("账号调度策略：strict_priority 保持原有优先级调度，health_first 健康领先，health_cost_balanced 健康成本均衡"),
+		field.Bool("adaptive_ttft_switch_enabled").
+			Default(true).
+			Comment("自适应健康调度是否允许因首 Token 过慢切换账号；不影响错误、冷却和严格优先级"),
+		field.Int("adaptive_ttft_switch_threshold_seconds").
+			Default(60).
+			Range(1, 3600).
+			Comment("自适应健康调度首 Token 慢速切换阈值（秒）"),
 
 		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
 		field.Int("rpm_limit").

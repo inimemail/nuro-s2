@@ -1175,6 +1175,41 @@ func (_u *GroupUpdate) SetNillableAccountSchedulingStrategy(v *string) *GroupUpd
 	return _u
 }
 
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (_u *GroupUpdate) SetAdaptiveTtftSwitchEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetAdaptiveTtftSwitchEnabled(v)
+	return _u
+}
+
+// SetNillableAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableAdaptiveTtftSwitchEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetAdaptiveTtftSwitchEnabled(*v)
+	}
+	return _u
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (_u *GroupUpdate) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpdate {
+	_u.mutation.ResetAdaptiveTtftSwitchThresholdSeconds()
+	_u.mutation.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	return _u
+}
+
+// SetNillableAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableAdaptiveTtftSwitchThresholdSeconds(v *int) *GroupUpdate {
+	if v != nil {
+		_u.SetAdaptiveTtftSwitchThresholdSeconds(*v)
+	}
+	return _u
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds value to the "adaptive_ttft_switch_threshold_seconds" field.
+func (_u *GroupUpdate) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpdate {
+	_u.mutation.AddAdaptiveTtftSwitchThresholdSeconds(v)
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdate) SetRpmLimit(v int) *GroupUpdate {
 	_u.mutation.ResetRpmLimit()
@@ -1575,6 +1610,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		if err := group.AdaptiveTtftSwitchThresholdSecondsValidator(v); err != nil {
+			return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_ttft_switch_threshold_seconds": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -1942,6 +1982,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AccountSchedulingStrategy(); ok {
 		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.AdaptiveTtftSwitchEnabled(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAdaptiveTtftSwitchThresholdSeconds(); ok {
+		_spec.AddField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -3418,6 +3467,41 @@ func (_u *GroupUpdateOne) SetNillableAccountSchedulingStrategy(v *string) *Group
 	return _u
 }
 
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (_u *GroupUpdateOne) SetAdaptiveTtftSwitchEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetAdaptiveTtftSwitchEnabled(v)
+	return _u
+}
+
+// SetNillableAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableAdaptiveTtftSwitchEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetAdaptiveTtftSwitchEnabled(*v)
+	}
+	return _u
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (_u *GroupUpdateOne) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpdateOne {
+	_u.mutation.ResetAdaptiveTtftSwitchThresholdSeconds()
+	_u.mutation.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	return _u
+}
+
+// SetNillableAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableAdaptiveTtftSwitchThresholdSeconds(v *int) *GroupUpdateOne {
+	if v != nil {
+		_u.SetAdaptiveTtftSwitchThresholdSeconds(*v)
+	}
+	return _u
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds value to the "adaptive_ttft_switch_threshold_seconds" field.
+func (_u *GroupUpdateOne) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpdateOne {
+	_u.mutation.AddAdaptiveTtftSwitchThresholdSeconds(v)
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdateOne) SetRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.ResetRpmLimit()
@@ -3831,6 +3915,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		if err := group.AdaptiveTtftSwitchThresholdSecondsValidator(v); err != nil {
+			return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_ttft_switch_threshold_seconds": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -4215,6 +4304,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AccountSchedulingStrategy(); ok {
 		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.AdaptiveTtftSwitchEnabled(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAdaptiveTtftSwitchThresholdSeconds(); ok {
+		_spec.AddField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

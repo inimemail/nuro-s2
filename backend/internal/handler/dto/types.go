@@ -146,6 +146,8 @@ type Group struct {
 	RequirePrivacySet                  bool   `json:"require_privacy_set"`
 	StrictModelPriorityOnModelMismatch bool   `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          string `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled          bool   `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds int    `json:"adaptive_ttft_switch_threshold_seconds"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit                    int                              `json:"rpm_limit"`

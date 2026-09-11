@@ -1889,7 +1889,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if !affinityActive && stickyAccountID > 0 {
 				affinityID, affinityActive = stickyAccountID, true
 			}
-			return selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), affinityID, affinityActive, group.AccountSchedulingStrategy, history)
+			return selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), affinityID, affinityActive, group.AccountSchedulingStrategy, true, history, adaptiveTTFTSwitchPolicyForGroup(group))
 		}
 		if anthropicAffinityActive {
 			return selectLayeredAccountWithLoadAndAnthropicAffinity(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
@@ -2245,7 +2245,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 			if groupUsesHealthFirst(group) {
 				history := s.loadAdaptiveAccountTTFTHistory(ctx, routingCandidates)
-				routingAvailable = filterAdaptiveAccountsToPolicyTier(routingAll, routingAvailable, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history)
+				routingAvailable = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(routingAll, routingAvailable, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group))
 			}
 
 			if len(routingAvailable) > 0 {
@@ -2546,7 +2546,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group), group.AccountSchedulingStrategy); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group), group.AccountSchedulingStrategy, adaptiveTTFTSwitchPolicyForGroup(group)); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -2571,7 +2571,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 		if groupUsesHealthFirst(group) {
 			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
-			available = filterAdaptiveAccountsToPolicyTier(allWithLoad, available, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history)
+			available = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(allWithLoad, available, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group))
 		}
 
 		// 分层过滤选择：优先级 → 非池优先 → 健康带宽 → 可选快重置 → LRU
@@ -2611,9 +2611,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	adaptiveFallbackTier := make(map[int64]struct{})
 	if groupUsesHealthFirst(group) {
 		history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
-		s.sortAdaptiveCandidatesForFallbackWithHistory(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID), group.AccountSchedulingStrategy, history)
+		s.sortAdaptiveCandidatesForFallbackWithPolicyAndHistory(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID), group.AccountSchedulingStrategy, history, adaptiveTTFTSwitchPolicyForGroup(group))
 		items := accountPointersToNeutralLoads(candidates)
-		for _, item := range filterAdaptiveAccountsToPolicyTier(items, items, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history) {
+		for _, item := range filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(items, items, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group)) {
 			if item.account != nil {
 				adaptiveFallbackTier[item.account.ID] = struct{}{}
 			}
@@ -2740,13 +2740,13 @@ func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
 	})
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string, policy adaptiveTTFTSwitchPolicy) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	history := map[int64]AccountTTFTHistory(nil)
 	if healthFirst {
 		history = s.loadAdaptiveAccountTTFTHistory(ctx, ordered)
 		items := accountPointersToNeutralLoads(ordered)
-		items = filterAdaptiveAccountsToPolicyTier(items, items, s.accountHealthStats.Load(), strategy, time.Now(), history)
+		items = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(items, items, s.accountHealthStats.Load(), strategy, time.Now(), history, policy)
 		ordered = accountWithLoadPointers(items)
 	}
 	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
@@ -2760,7 +2760,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 		var acc *Account
 		if healthFirst {
 			items := accountPointersToNeutralLoads(ordered)
-			if selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), anthropicAffinityAccountID, anthropicAffinityActive, strategy, history); selected != nil {
+			if selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), anthropicAffinityAccountID, anthropicAffinityActive, strategy, true, history, policy); selected != nil {
 				acc = selected.account
 			}
 		} else {
@@ -3936,7 +3936,7 @@ func selectHealthFirstAccountWithLoad(accounts []accountWithLoad, healthStats *a
 }
 
 func selectHealthCostBalancedAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
-	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, true, nil)
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, true, nil, defaultAdaptiveTTFTSwitchPolicy())
 }
 
 func selectAdaptiveAccountWithLoadForGroupStrategy(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string) *accountWithLoad {
@@ -3944,7 +3944,7 @@ func selectAdaptiveAccountWithLoadForGroupStrategy(accounts []accountWithLoad, h
 }
 
 func selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string, history map[int64]AccountTTFTHistory) *accountWithLoad {
-	return selectAdaptiveAccountWithLoadForGroupStrategyWarmupAndHistory(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, strategy, true, history)
+	return selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, strategy, true, history, defaultAdaptiveTTFTSwitchPolicy())
 }
 
 func selectAdaptiveAccountWithLoadForGroupStrategyWarmup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string, allowWarmup bool) *accountWithLoad {
@@ -3952,20 +3952,24 @@ func selectAdaptiveAccountWithLoadForGroupStrategyWarmup(accounts []accountWithL
 }
 
 func selectAdaptiveAccountWithLoadForGroupStrategyWarmupAndHistory(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string, allowWarmup bool, history map[int64]AccountTTFTHistory) *accountWithLoad {
+	return selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, strategy, allowWarmup, history, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, strategy string, allowWarmup bool, history map[int64]AccountTTFTHistory, policy adaptiveTTFTSwitchPolicy) *accountWithLoad {
 	if IsHealthCostBalancedSchedulingStrategy(strategy) {
-		return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, allowWarmup, history)
+		return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, true, allowWarmup, history, policy)
 	}
-	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, allowWarmup, history)
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, allowWarmup, history, policy)
 }
 
 // selectHealthFirstAccountWithLoadForGroup applies the opt-in adaptive policy.
 // The group id is used only to isolate recovery sampling state; all hard
 // eligibility and capacity checks remain in the caller.
 func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
-	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, true, nil)
+	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, true, nil, defaultAdaptiveTTFTSwitchPolicy())
 }
 
-func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, costBalanced bool, allowWarmup bool, history map[int64]AccountTTFTHistory) *accountWithLoad {
+func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool, costBalanced bool, allowWarmup bool, history map[int64]AccountTTFTHistory, policy adaptiveTTFTSwitchPolicy) *accountWithLoad {
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -3982,7 +3986,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 			ttftSamples:  candidate.ttftSampleCount,
 		}
 	}
-	preferredIndexes := adaptiveAccountPolicyIndexes(profiles, costBalanced, now)
+	preferredIndexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, policy)
 	preferred := make([]accountHealthCandidate, 0, len(preferredIndexes))
 	preferredIDs := make(map[int64]struct{}, len(preferredIndexes))
 	for _, index := range preferredIndexes {
@@ -4040,7 +4044,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 		if _, ok := preferredIDs[affinityAccountID]; ok {
 			for i := range preferred {
 				candidate := &preferred[i]
-				if candidate.item.account.ID == affinityAccountID && adaptiveGenericStickyCanLead(*candidate, preferred, costBalanced, now) {
+				if candidate.item.account.ID == affinityAccountID && adaptiveGenericStickyCanLead(*candidate, preferred, costBalanced, now, policy) {
 					return &candidate.item
 				}
 			}
@@ -4069,23 +4073,15 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 	}
 	sort.SliceStable(preferred, func(i, j int) bool {
 		a, b := preferred[i], preferred[j]
-		aHasHealth := accountHealthHasKnownSamples(a.sampleCount, a.ttftSampleCount, a.errorRate)
-		bHasHealth := accountHealthHasKnownSamples(b.sampleCount, b.ttftSampleCount, b.errorRate)
-		// An account without health samples is optimistically eligible. When
-		// comparing it with a measured account, cost decides before latency;
-		// this prevents a measured high-cost account from starving cheaper
-		// accounts that have not received their first request yet.
-		if !aHasHealth || !bHasHealth {
-			aRate, aKnown := accountEffectiveUpstreamMultiplier(a.item.account, now)
-			bRate, bKnown := accountEffectiveUpstreamMultiplier(b.item.account, now)
-			if aKnown && bKnown && aRate != bRate {
-				return aRate < bRate
-			}
-		} else if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
+		aProfile := adaptiveAccountHealthProfile{account: a.item.account, errorRate: a.errorRate, errorSamples: a.sampleCount, p50: a.ttft, p90: a.ttftP90, hasTTFT: a.hasTTFT, ttftSamples: a.ttftSampleCount}
+		bProfile := adaptiveAccountHealthProfile{account: b.item.account, errorRate: b.errorRate, errorSamples: b.sampleCount, p50: b.ttft, p90: b.ttftP90, hasTTFT: b.hasTTFT, ttftSamples: b.ttftSampleCount}
+		if less, decided := adaptiveProfileHealthLess(aProfile, bProfile, costBalanced, policy); decided {
 			return less
 		}
-		if aHasHealth && bHasHealth && a.errorRate != b.errorRate {
-			return a.errorRate < b.errorRate
+		aRate, aRateKnown := accountEffectiveUpstreamMultiplier(a.item.account, now)
+		bRate, bRateKnown := accountEffectiveUpstreamMultiplier(b.item.account, now)
+		if aRateKnown && bRateKnown && aRate != bRate {
+			return aRate < bRate
 		}
 		if affinityActive && affinityAccountID > 0 {
 			aAffinity := a.item.account != nil && a.item.account.ID == affinityAccountID
@@ -4122,6 +4118,9 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 
 func selectUnknownAdaptiveCandidate(candidates []accountHealthCandidate, preferredIDs map[int64]struct{}, stats *accountRuntimeHealthStats, now time.Time, groupID, affinityAccountID int64, affinityActive, costBalanced bool, preferOAuth bool) *accountWithLoad {
 	if len(candidates) == 0 || stats == nil {
+		return nil
+	}
+	if affinityActive && !costBalanced {
 		return nil
 	}
 	affinityRate, affinityRateKnown := float64(0), false
@@ -4167,9 +4166,12 @@ func selectUnknownAdaptiveCandidate(candidates []accountHealthCandidate, preferr
 	return &selected.item
 }
 
-func adaptiveGenericStickyCanLead(sticky accountHealthCandidate, pool []accountHealthCandidate, costBalanced bool, now time.Time) bool {
-	if adaptiveCandidateMateriallySlower(sticky, pool) {
+func adaptiveGenericStickyCanLead(sticky accountHealthCandidate, pool []accountHealthCandidate, costBalanced bool, now time.Time, policy adaptiveTTFTSwitchPolicy) bool {
+	if adaptiveCandidateTooSlowForTTFTPolicy(sticky, pool, policy) {
 		return false
+	}
+	if !costBalanced {
+		return true
 	}
 	stickyRate, stickyKnown := accountEffectiveUpstreamMultiplier(sticky.item.account, now)
 	if !stickyKnown {
@@ -4183,13 +4185,8 @@ func adaptiveGenericStickyCanLead(sticky accountHealthCandidate, pool []accountH
 		if !otherKnown || otherRate >= stickyRate-accountHealthCostTierEpsilon {
 			continue
 		}
-		if !costBalanced && adaptiveSameHealthFirstCostBand(otherRate, stickyRate) {
-			continue
-		}
-		// A sticky account can survive a cheaper candidate only when that
-		// candidate is demonstrably slower. In the cost-balanced mode this is
-		// the strict rule; in health-first it preserves a genuinely healthier
-		// ongoing session without letting a merely sticky expensive account win.
+		// In cost-balanced mode, a cheaper preferred candidate replaces the
+		// sticky account unless that candidate is demonstrably slower.
 		if !adaptiveCandidateMateriallySlower(other, pool) {
 			return false
 		}
@@ -4197,12 +4194,32 @@ func adaptiveGenericStickyCanLead(sticky accountHealthCandidate, pool []accountH
 	return true
 }
 
-func adaptiveCandidateMateriallySlower(candidate accountHealthCandidate, pool []accountHealthCandidate) bool {
-	if !candidate.hasTTFT || candidate.ttft <= 0 {
+func adaptiveCandidateTooSlowForTTFTPolicy(candidate accountHealthCandidate, pool []accountHealthCandidate, policy adaptiveTTFTSwitchPolicy) bool {
+	profile := adaptiveAccountHealthProfile{account: candidate.item.account, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+	if !adaptiveProfileExceedsTTFTThreshold(profile, policy) {
 		return false
 	}
 	for _, other := range pool {
-		if !other.hasTTFT || other.ttft <= 0 || other.item.account == candidate.item.account {
+		if other.item.account == candidate.item.account {
+			continue
+		}
+		otherProfile := adaptiveAccountHealthProfile{account: other.item.account, p50: other.ttft, p90: other.ttftP90, hasTTFT: other.hasTTFT, ttftSamples: other.ttftSampleCount}
+		if !adaptiveProfileExceedsTTFTThreshold(otherProfile, policy) {
+			return true
+		}
+		if adaptiveTierClearlyFaster([]adaptiveAccountHealthProfile{profile, otherProfile}, []int{0}, []int{1}) {
+			return true
+		}
+	}
+	return false
+}
+
+func adaptiveCandidateMateriallySlower(candidate accountHealthCandidate, pool []accountHealthCandidate) bool {
+	if !adaptiveTrustedTTFT(candidate.hasTTFT, candidate.ttftSampleCount, candidate.ttft) {
+		return false
+	}
+	for _, other := range pool {
+		if !adaptiveTrustedTTFT(other.hasTTFT, other.ttftSampleCount, other.ttft) || other.item.account == candidate.item.account {
 			continue
 		}
 		if adaptiveTTFTMateriallyWorseInAnyDimension(candidate.ttft, candidate.ttftP90, other.ttft, other.ttftP90) {
@@ -4650,13 +4667,17 @@ func (s *GatewayService) sortAdaptiveCandidatesForFallback(accounts []*Account, 
 }
 
 func (s *GatewayService) sortAdaptiveCandidatesForFallbackWithHistory(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, groupID int64, strategy string, history map[int64]AccountTTFTHistory) {
+	s.sortAdaptiveCandidatesForFallbackWithPolicyAndHistory(accounts, healthStats, cfg, preferOAuth, groupID, strategy, history, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func (s *GatewayService) sortAdaptiveCandidatesForFallbackWithPolicyAndHistory(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, groupID int64, strategy string, history map[int64]AccountTTFTHistory, policy adaptiveTTFTSwitchPolicy) {
 	if len(accounts) <= 1 {
 		return
 	}
 	remaining := accountPointersToNeutralLoads(accounts)
 	ordered := make([]*Account, 0, len(remaining))
 	for len(remaining) > 0 {
-		selected := selectAdaptiveAccountWithLoadForGroupStrategyWarmupAndHistory(remaining, healthStats, cfg, preferOAuth, time.Now(), groupID, 0, false, strategy, false, history)
+		selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(remaining, healthStats, cfg, preferOAuth, time.Now(), groupID, 0, false, strategy, false, history, policy)
 		if selected == nil || selected.account == nil {
 			break
 		}
@@ -4750,7 +4771,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if groupUsesHealthFirst(schedGroup) {
 			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, history)
+			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, true, history, adaptiveTTFTSwitchPolicyForGroup(schedGroup))
 			if selected != nil {
 				return selected.account
 			}
@@ -5034,7 +5055,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if groupUsesHealthFirst(schedGroup) {
 			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
 			items := accountPointersToNeutralLoads(candidates)
-			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, history)
+			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, true, history, adaptiveTTFTSwitchPolicyForGroup(schedGroup))
 			if selected != nil {
 				return selected.account
 			}

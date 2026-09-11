@@ -23387,128 +23387,131 @@ func (m *ErrorPassthroughRuleMutation) ResetEdge(name string) error {
 // GroupMutation represents an operation that mutates the Group nodes in the graph.
 type GroupMutation struct {
 	config
-	op                                       Op
-	typ                                      string
-	id                                       *int64
-	created_at                               *time.Time
-	updated_at                               *time.Time
-	deleted_at                               *time.Time
-	name                                     *string
-	description                              *string
-	rate_multiplier                          *float64
-	addrate_multiplier                       *float64
-	upstream_billing_guard_max_multiplier    *float64
-	addupstream_billing_guard_max_multiplier *float64
-	upstream_billing_guard_min_multiplier    *float64
-	addupstream_billing_guard_min_multiplier *float64
-	peak_rate_enabled                        *bool
-	peak_start                               *string
-	peak_end                                 *string
-	peak_rate_multiplier                     *float64
-	addpeak_rate_multiplier                  *float64
-	is_exclusive                             *bool
-	status                                   *string
-	duplicate_operation_id                   *string
-	platform                                 *string
-	subscription_type                        *string
-	daily_limit_usd                          *float64
-	adddaily_limit_usd                       *float64
-	weekly_limit_usd                         *float64
-	addweekly_limit_usd                      *float64
-	monthly_limit_usd                        *float64
-	addmonthly_limit_usd                     *float64
-	default_validity_days                    *int
-	adddefault_validity_days                 *int
-	allow_image_generation                   *bool
-	allow_batch_image_generation             *bool
-	allow_live                               *bool
-	edge_protection_enabled                  *bool
-	image_rate_independent                   *bool
-	image_rate_multiplier                    *float64
-	addimage_rate_multiplier                 *float64
-	image_price_1k                           *float64
-	addimage_price_1k                        *float64
-	image_price_2k                           *float64
-	addimage_price_2k                        *float64
-	image_price_4k                           *float64
-	addimage_price_4k                        *float64
-	batch_image_discount_multiplier          *float64
-	addbatch_image_discount_multiplier       *float64
-	batch_image_hold_multiplier              *float64
-	addbatch_image_hold_multiplier           *float64
-	video_rate_independent                   *bool
-	video_rate_multiplier                    *float64
-	addvideo_rate_multiplier                 *float64
-	video_price_480p                         *float64
-	addvideo_price_480p                      *float64
-	video_price_720p                         *float64
-	addvideo_price_720p                      *float64
-	video_price_1080p                        *float64
-	addvideo_price_1080p                     *float64
-	video_model_prices                       *map[string]map[string]float64
-	web_search_price_per_call                *float64
-	addweb_search_price_per_call             *float64
-	search_price_per_1k                      *float64
-	addsearch_price_per_1k                   *float64
-	audio_realtime_price_per_min             *float64
-	addaudio_realtime_price_per_min          *float64
-	audio_tts_price_per_million_chars        *float64
-	addaudio_tts_price_per_million_chars     *float64
-	audio_stt_price_per_hour                 *float64
-	addaudio_stt_price_per_hour              *float64
-	long_context_pricing_enabled             *bool
-	model_pricing                            *json.RawMessage
-	appendmodel_pricing                      json.RawMessage
-	claude_code_only                         *bool
-	fallback_group_id                        *int64
-	addfallback_group_id                     *int64
-	fallback_group_id_on_invalid_request     *int64
-	addfallback_group_id_on_invalid_request  *int64
-	model_routing                            *map[string][]int64
-	model_routing_enabled                    *bool
-	mcp_xml_inject                           *bool
-	supported_model_scopes                   *[]string
-	appendsupported_model_scopes             []string
-	sort_order                               *int
-	addsort_order                            *int
-	allow_messages_dispatch                  *bool
-	require_oauth_only                       *bool
-	require_privacy_set                      *bool
-	default_mapped_model                     *string
-	messages_dispatch_model_config           *domain.OpenAIMessagesDispatchModelConfig
-	models_list_config                       *domain.GroupModelsListConfig
-	codex_models_manifest_config             *domain.GroupCodexModelsManifestConfig
-	strict_model_priority_on_model_mismatch  *bool
-	account_scheduling_strategy              *string
-	rpm_limit                                *int
-	addrpm_limit                             *int
-	force_openai_fast                        *bool
-	max_reasoning_effort                     *string
-	max_reasoning_effort_over_limit          *string
-	reasoning_effort_mappings                *[]domain.ReasoningEffortMapping
-	appendreasoning_effort_mappings          []domain.ReasoningEffortMapping
-	clearedFields                            map[string]struct{}
-	api_keys                                 map[int64]struct{}
-	removedapi_keys                          map[int64]struct{}
-	clearedapi_keys                          bool
-	redeem_codes                             map[int64]struct{}
-	removedredeem_codes                      map[int64]struct{}
-	clearedredeem_codes                      bool
-	subscriptions                            map[int64]struct{}
-	removedsubscriptions                     map[int64]struct{}
-	clearedsubscriptions                     bool
-	usage_logs                               map[int64]struct{}
-	removedusage_logs                        map[int64]struct{}
-	clearedusage_logs                        bool
-	accounts                                 map[int64]struct{}
-	removedaccounts                          map[int64]struct{}
-	clearedaccounts                          bool
-	allowed_users                            map[int64]struct{}
-	removedallowed_users                     map[int64]struct{}
-	clearedallowed_users                     bool
-	done                                     bool
-	oldValue                                 func(context.Context) (*Group, error)
-	predicates                               []predicate.Group
+	op                                        Op
+	typ                                       string
+	id                                        *int64
+	created_at                                *time.Time
+	updated_at                                *time.Time
+	deleted_at                                *time.Time
+	name                                      *string
+	description                               *string
+	rate_multiplier                           *float64
+	addrate_multiplier                        *float64
+	upstream_billing_guard_max_multiplier     *float64
+	addupstream_billing_guard_max_multiplier  *float64
+	upstream_billing_guard_min_multiplier     *float64
+	addupstream_billing_guard_min_multiplier  *float64
+	peak_rate_enabled                         *bool
+	peak_start                                *string
+	peak_end                                  *string
+	peak_rate_multiplier                      *float64
+	addpeak_rate_multiplier                   *float64
+	is_exclusive                              *bool
+	status                                    *string
+	duplicate_operation_id                    *string
+	platform                                  *string
+	subscription_type                         *string
+	daily_limit_usd                           *float64
+	adddaily_limit_usd                        *float64
+	weekly_limit_usd                          *float64
+	addweekly_limit_usd                       *float64
+	monthly_limit_usd                         *float64
+	addmonthly_limit_usd                      *float64
+	default_validity_days                     *int
+	adddefault_validity_days                  *int
+	allow_image_generation                    *bool
+	allow_batch_image_generation              *bool
+	allow_live                                *bool
+	edge_protection_enabled                   *bool
+	image_rate_independent                    *bool
+	image_rate_multiplier                     *float64
+	addimage_rate_multiplier                  *float64
+	image_price_1k                            *float64
+	addimage_price_1k                         *float64
+	image_price_2k                            *float64
+	addimage_price_2k                         *float64
+	image_price_4k                            *float64
+	addimage_price_4k                         *float64
+	batch_image_discount_multiplier           *float64
+	addbatch_image_discount_multiplier        *float64
+	batch_image_hold_multiplier               *float64
+	addbatch_image_hold_multiplier            *float64
+	video_rate_independent                    *bool
+	video_rate_multiplier                     *float64
+	addvideo_rate_multiplier                  *float64
+	video_price_480p                          *float64
+	addvideo_price_480p                       *float64
+	video_price_720p                          *float64
+	addvideo_price_720p                       *float64
+	video_price_1080p                         *float64
+	addvideo_price_1080p                      *float64
+	video_model_prices                        *map[string]map[string]float64
+	web_search_price_per_call                 *float64
+	addweb_search_price_per_call              *float64
+	search_price_per_1k                       *float64
+	addsearch_price_per_1k                    *float64
+	audio_realtime_price_per_min              *float64
+	addaudio_realtime_price_per_min           *float64
+	audio_tts_price_per_million_chars         *float64
+	addaudio_tts_price_per_million_chars      *float64
+	audio_stt_price_per_hour                  *float64
+	addaudio_stt_price_per_hour               *float64
+	long_context_pricing_enabled              *bool
+	model_pricing                             *json.RawMessage
+	appendmodel_pricing                       json.RawMessage
+	claude_code_only                          *bool
+	fallback_group_id                         *int64
+	addfallback_group_id                      *int64
+	fallback_group_id_on_invalid_request      *int64
+	addfallback_group_id_on_invalid_request   *int64
+	model_routing                             *map[string][]int64
+	model_routing_enabled                     *bool
+	mcp_xml_inject                            *bool
+	supported_model_scopes                    *[]string
+	appendsupported_model_scopes              []string
+	sort_order                                *int
+	addsort_order                             *int
+	allow_messages_dispatch                   *bool
+	require_oauth_only                        *bool
+	require_privacy_set                       *bool
+	default_mapped_model                      *string
+	messages_dispatch_model_config            *domain.OpenAIMessagesDispatchModelConfig
+	models_list_config                        *domain.GroupModelsListConfig
+	codex_models_manifest_config              *domain.GroupCodexModelsManifestConfig
+	strict_model_priority_on_model_mismatch   *bool
+	account_scheduling_strategy               *string
+	adaptive_ttft_switch_enabled              *bool
+	adaptive_ttft_switch_threshold_seconds    *int
+	addadaptive_ttft_switch_threshold_seconds *int
+	rpm_limit                                 *int
+	addrpm_limit                              *int
+	force_openai_fast                         *bool
+	max_reasoning_effort                      *string
+	max_reasoning_effort_over_limit           *string
+	reasoning_effort_mappings                 *[]domain.ReasoningEffortMapping
+	appendreasoning_effort_mappings           []domain.ReasoningEffortMapping
+	clearedFields                             map[string]struct{}
+	api_keys                                  map[int64]struct{}
+	removedapi_keys                           map[int64]struct{}
+	clearedapi_keys                           bool
+	redeem_codes                              map[int64]struct{}
+	removedredeem_codes                       map[int64]struct{}
+	clearedredeem_codes                       bool
+	subscriptions                             map[int64]struct{}
+	removedsubscriptions                      map[int64]struct{}
+	clearedsubscriptions                      bool
+	usage_logs                                map[int64]struct{}
+	removedusage_logs                         map[int64]struct{}
+	clearedusage_logs                         bool
+	accounts                                  map[int64]struct{}
+	removedaccounts                           map[int64]struct{}
+	clearedaccounts                           bool
+	allowed_users                             map[int64]struct{}
+	removedallowed_users                      map[int64]struct{}
+	clearedallowed_users                      bool
+	done                                      bool
+	oldValue                                  func(context.Context) (*Group, error)
+	predicates                                []predicate.Group
 }
 
 var _ ent.Mutation = (*GroupMutation)(nil)
@@ -26735,6 +26738,98 @@ func (m *GroupMutation) ResetAccountSchedulingStrategy() {
 	m.account_scheduling_strategy = nil
 }
 
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (m *GroupMutation) SetAdaptiveTtftSwitchEnabled(b bool) {
+	m.adaptive_ttft_switch_enabled = &b
+}
+
+// AdaptiveTtftSwitchEnabled returns the value of the "adaptive_ttft_switch_enabled" field in the mutation.
+func (m *GroupMutation) AdaptiveTtftSwitchEnabled() (r bool, exists bool) {
+	v := m.adaptive_ttft_switch_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAdaptiveTtftSwitchEnabled returns the old "adaptive_ttft_switch_enabled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldAdaptiveTtftSwitchEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAdaptiveTtftSwitchEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAdaptiveTtftSwitchEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAdaptiveTtftSwitchEnabled: %w", err)
+	}
+	return oldValue.AdaptiveTtftSwitchEnabled, nil
+}
+
+// ResetAdaptiveTtftSwitchEnabled resets all changes to the "adaptive_ttft_switch_enabled" field.
+func (m *GroupMutation) ResetAdaptiveTtftSwitchEnabled() {
+	m.adaptive_ttft_switch_enabled = nil
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (m *GroupMutation) SetAdaptiveTtftSwitchThresholdSeconds(i int) {
+	m.adaptive_ttft_switch_threshold_seconds = &i
+	m.addadaptive_ttft_switch_threshold_seconds = nil
+}
+
+// AdaptiveTtftSwitchThresholdSeconds returns the value of the "adaptive_ttft_switch_threshold_seconds" field in the mutation.
+func (m *GroupMutation) AdaptiveTtftSwitchThresholdSeconds() (r int, exists bool) {
+	v := m.adaptive_ttft_switch_threshold_seconds
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAdaptiveTtftSwitchThresholdSeconds returns the old "adaptive_ttft_switch_threshold_seconds" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldAdaptiveTtftSwitchThresholdSeconds(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAdaptiveTtftSwitchThresholdSeconds is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAdaptiveTtftSwitchThresholdSeconds requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAdaptiveTtftSwitchThresholdSeconds: %w", err)
+	}
+	return oldValue.AdaptiveTtftSwitchThresholdSeconds, nil
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds i to the "adaptive_ttft_switch_threshold_seconds" field.
+func (m *GroupMutation) AddAdaptiveTtftSwitchThresholdSeconds(i int) {
+	if m.addadaptive_ttft_switch_threshold_seconds != nil {
+		*m.addadaptive_ttft_switch_threshold_seconds += i
+	} else {
+		m.addadaptive_ttft_switch_threshold_seconds = &i
+	}
+}
+
+// AddedAdaptiveTtftSwitchThresholdSeconds returns the value that was added to the "adaptive_ttft_switch_threshold_seconds" field in this mutation.
+func (m *GroupMutation) AddedAdaptiveTtftSwitchThresholdSeconds() (r int, exists bool) {
+	v := m.addadaptive_ttft_switch_threshold_seconds
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetAdaptiveTtftSwitchThresholdSeconds resets all changes to the "adaptive_ttft_switch_threshold_seconds" field.
+func (m *GroupMutation) ResetAdaptiveTtftSwitchThresholdSeconds() {
+	m.adaptive_ttft_switch_threshold_seconds = nil
+	m.addadaptive_ttft_switch_threshold_seconds = nil
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (m *GroupMutation) SetRpmLimit(i int) {
 	m.rpm_limit = &i
@@ -27308,7 +27403,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 67)
+	fields := make([]string, 0, 69)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -27495,6 +27590,12 @@ func (m *GroupMutation) Fields() []string {
 	if m.account_scheduling_strategy != nil {
 		fields = append(fields, group.FieldAccountSchedulingStrategy)
 	}
+	if m.adaptive_ttft_switch_enabled != nil {
+		fields = append(fields, group.FieldAdaptiveTtftSwitchEnabled)
+	}
+	if m.adaptive_ttft_switch_threshold_seconds != nil {
+		fields = append(fields, group.FieldAdaptiveTtftSwitchThresholdSeconds)
+	}
 	if m.rpm_limit != nil {
 		fields = append(fields, group.FieldRpmLimit)
 	}
@@ -27642,6 +27743,10 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.StrictModelPriorityOnModelMismatch()
 	case group.FieldAccountSchedulingStrategy:
 		return m.AccountSchedulingStrategy()
+	case group.FieldAdaptiveTtftSwitchEnabled:
+		return m.AdaptiveTtftSwitchEnabled()
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		return m.AdaptiveTtftSwitchThresholdSeconds()
 	case group.FieldRpmLimit:
 		return m.RpmLimit()
 	case group.FieldForceOpenaiFast:
@@ -27785,6 +27890,10 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldStrictModelPriorityOnModelMismatch(ctx)
 	case group.FieldAccountSchedulingStrategy:
 		return m.OldAccountSchedulingStrategy(ctx)
+	case group.FieldAdaptiveTtftSwitchEnabled:
+		return m.OldAdaptiveTtftSwitchEnabled(ctx)
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		return m.OldAdaptiveTtftSwitchThresholdSeconds(ctx)
 	case group.FieldRpmLimit:
 		return m.OldRpmLimit(ctx)
 	case group.FieldForceOpenaiFast:
@@ -28238,6 +28347,20 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetAccountSchedulingStrategy(v)
 		return nil
+	case group.FieldAdaptiveTtftSwitchEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAdaptiveTtftSwitchEnabled(v)
+		return nil
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAdaptiveTtftSwitchThresholdSeconds(v)
+		return nil
 	case group.FieldRpmLimit:
 		v, ok := value.(int)
 		if !ok {
@@ -28359,6 +28482,9 @@ func (m *GroupMutation) AddedFields() []string {
 	if m.addsort_order != nil {
 		fields = append(fields, group.FieldSortOrder)
 	}
+	if m.addadaptive_ttft_switch_threshold_seconds != nil {
+		fields = append(fields, group.FieldAdaptiveTtftSwitchThresholdSeconds)
+	}
 	if m.addrpm_limit != nil {
 		fields = append(fields, group.FieldRpmLimit)
 	}
@@ -28422,6 +28548,8 @@ func (m *GroupMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedFallbackGroupIDOnInvalidRequest()
 	case group.FieldSortOrder:
 		return m.AddedSortOrder()
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		return m.AddedAdaptiveTtftSwitchThresholdSeconds()
 	case group.FieldRpmLimit:
 		return m.AddedRpmLimit()
 	}
@@ -28614,6 +28742,13 @@ func (m *GroupMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddSortOrder(v)
+		return nil
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddAdaptiveTtftSwitchThresholdSeconds(v)
 		return nil
 	case group.FieldRpmLimit:
 		v, ok := value.(int)
@@ -28987,6 +29122,12 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldAccountSchedulingStrategy:
 		m.ResetAccountSchedulingStrategy()
+		return nil
+	case group.FieldAdaptiveTtftSwitchEnabled:
+		m.ResetAdaptiveTtftSwitchEnabled()
+		return nil
+	case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+		m.ResetAdaptiveTtftSwitchThresholdSeconds()
 		return nil
 	case group.FieldRpmLimit:
 		m.ResetRpmLimit()

@@ -330,6 +330,16 @@ func AccountSchedulingStrategy(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldAccountSchedulingStrategy, v))
 }
 
+// AdaptiveTtftSwitchEnabled applies equality check predicate on the "adaptive_ttft_switch_enabled" field. It's identical to AdaptiveTtftSwitchEnabledEQ.
+func AdaptiveTtftSwitchEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveTtftSwitchEnabled, v))
+}
+
+// AdaptiveTtftSwitchThresholdSeconds applies equality check predicate on the "adaptive_ttft_switch_threshold_seconds" field. It's identical to AdaptiveTtftSwitchThresholdSecondsEQ.
+func AdaptiveTtftSwitchThresholdSeconds(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
@@ -2568,6 +2578,56 @@ func AccountSchedulingStrategyEqualFold(v string) predicate.Group {
 // AccountSchedulingStrategyContainsFold applies the ContainsFold predicate on the "account_scheduling_strategy" field.
 func AccountSchedulingStrategyContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldAccountSchedulingStrategy, v))
+}
+
+// AdaptiveTtftSwitchEnabledEQ applies the EQ predicate on the "adaptive_ttft_switch_enabled" field.
+func AdaptiveTtftSwitchEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveTtftSwitchEnabled, v))
+}
+
+// AdaptiveTtftSwitchEnabledNEQ applies the NEQ predicate on the "adaptive_ttft_switch_enabled" field.
+func AdaptiveTtftSwitchEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldAdaptiveTtftSwitchEnabled, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsEQ applies the EQ predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsNEQ applies the NEQ predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsNEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsIn applies the In predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldAdaptiveTtftSwitchThresholdSeconds, vs...))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsNotIn applies the NotIn predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsNotIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldAdaptiveTtftSwitchThresholdSeconds, vs...))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsGT applies the GT predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsGT(v int) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsGTE applies the GTE predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsGTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsLT applies the LT predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsLT(v int) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveTtftSwitchThresholdSecondsLTE applies the LTE predicate on the "adaptive_ttft_switch_threshold_seconds" field.
+func AdaptiveTtftSwitchThresholdSecondsLTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldAdaptiveTtftSwitchThresholdSeconds, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

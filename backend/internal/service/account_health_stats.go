@@ -8,19 +8,14 @@ import (
 )
 
 const (
-	accountHealthErrorCeiling             = 0.20
-	accountHealthErrorGap                 = 0.15
-	accountHealthFirstCostRatio           = 1.25
-	accountHealthFirstCostAbsoluteGap     = 0.20
-	accountHealthCostTierEpsilon          = 1e-9
-	accountHealthSeriousP50Ratio          = 1.80
-	accountHealthSeriousP90Ratio          = 2.0
-	accountHealthSeriousTTFTAbsoluteGapMs = 1500.0
-	accountHealthSeriousP90AbsoluteGapMs  = 2000.0
-	accountHealthTTFTTieRatio             = 1.20
-	accountHealthTTFTTieAbsoluteMs        = 100.0
-	accountHealthP90TieRatio              = 1.25
-	accountHealthP90TieAbsoluteMs         = 200.0
+	accountHealthErrorCeiling         = 0.20
+	accountHealthErrorGap             = 0.15
+	accountHealthFirstCostRatio       = 1.25
+	accountHealthFirstCostAbsoluteGap = 0.20
+	accountHealthCostTierEpsilon      = 1e-9
+	accountHealthTTFTBand15sMs        = 15_000.0
+	accountHealthTTFTBand30sMs        = 30_000.0
+	accountHealthTTFTBand60sMs        = 60_000.0
 	// accountHealthScoreBandThreshold 是"健康相近视为同带"的容差。带越窄，
 	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
 	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
@@ -49,7 +44,49 @@ type adaptiveAccountHealthProfile struct {
 	ttftSamples  int64
 }
 
+type adaptiveTTFTSwitchPolicy struct {
+	enabled     bool
+	thresholdMs float64
+}
+
+func defaultAdaptiveTTFTSwitchPolicy() adaptiveTTFTSwitchPolicy {
+	return adaptiveTTFTSwitchPolicy{
+		enabled:     true,
+		thresholdMs: float64(DefaultAdaptiveTTFTSwitchThresholdSeconds) * 1000,
+	}
+}
+
+func adaptiveTTFTSwitchPolicyForGroup(group *Group) adaptiveTTFTSwitchPolicy {
+	policy := defaultAdaptiveTTFTSwitchPolicy()
+	if group == nil {
+		return policy
+	}
+	// A zero threshold identifies legacy in-memory/cache values that predate
+	// this setting. Preserve the migration default instead of interpreting the
+	// zero-value bool as an explicit disable.
+	if group.AdaptiveTTFTSwitchThresholdSeconds == 0 {
+		return policy
+	}
+	policy.enabled = group.AdaptiveTTFTSwitchEnabled
+	policy.thresholdMs = float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(group.AdaptiveTTFTSwitchThresholdSeconds)) * 1000
+	return policy
+}
+
+func adaptiveTTFTSwitchPolicyFromValues(enabled bool, thresholdSeconds int) adaptiveTTFTSwitchPolicy {
+	if thresholdSeconds == 0 {
+		return defaultAdaptiveTTFTSwitchPolicy()
+	}
+	return adaptiveTTFTSwitchPolicy{
+		enabled:     enabled,
+		thresholdMs: float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(thresholdSeconds)) * 1000,
+	}
+}
+
 func adaptiveAccountPolicyIndexes(profiles []adaptiveAccountHealthProfile, costBalanced bool, now time.Time) []int {
+	return adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles []adaptiveAccountHealthProfile, costBalanced bool, now time.Time, policy adaptiveTTFTSwitchPolicy) []int {
 	if len(profiles) == 0 {
 		return nil
 	}
@@ -60,12 +97,16 @@ func adaptiveAccountPolicyIndexes(profiles []adaptiveAccountHealthProfile, costB
 		}
 	}
 	if costBalanced {
-		return adaptiveLowestUsableCostTier(profiles, errorQualified, now)
+		return adaptiveLowestUsableCostTierWithTTFTPolicy(profiles, errorQualified, now, policy)
 	}
-	return adaptiveHealthFirstCostBand(profiles, errorQualified, now)
+	return adaptiveHealthFirstIndexesWithTTFTPolicy(profiles, errorQualified, policy)
 }
 
 func filterAdaptiveAccountsToPolicyTier(accounts, available []accountWithLoad, stats *accountRuntimeHealthStats, strategy string, now time.Time, history map[int64]AccountTTFTHistory) []accountWithLoad {
+	return filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(accounts, available, stats, strategy, now, history, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(accounts, available []accountWithLoad, stats *accountRuntimeHealthStats, strategy string, now time.Time, history map[int64]AccountTTFTHistory, policy adaptiveTTFTSwitchPolicy) []accountWithLoad {
 	if len(accounts) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return available
 	}
@@ -74,7 +115,7 @@ func filterAdaptiveAccountsToPolicyTier(accounts, available []accountWithLoad, s
 	for i, candidate := range candidates {
 		profiles[i] = adaptiveAccountHealthProfile{account: candidate.item.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
 	}
-	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now)
+	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
 	for _, index := range indexes {
 		if account := candidates[index].item.account; account != nil {
@@ -118,28 +159,31 @@ func adaptiveErrorQualifiedIndexes(profiles []adaptiveAccountHealthProfile) []in
 }
 
 func adaptiveHealthFirstCostBand(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) []int {
-	remaining := append([]int(nil), indexes...)
-	for len(remaining) > 0 {
-		lowest := adaptiveLowestMultiplier(profiles, remaining, now)
-		if lowest == math.MaxFloat64 {
-			return remaining
-		}
-		band := make([]int, 0, len(remaining))
-		next := make([]int, 0, len(remaining))
-		for _, index := range remaining {
-			rate, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now)
-			if declared && rate <= lowest*accountHealthFirstCostRatio && rate-lowest <= accountHealthFirstCostAbsoluteGap {
-				band = append(band, index)
-			} else {
-				next = append(next, index)
-			}
-		}
-		if len(next) == 0 || !adaptiveTierIsSeriouslySlow(profiles, band, remaining) {
-			return band
-		}
-		remaining = next
+	_ = now
+	return adaptiveHealthFirstIndexesWithTTFTPolicy(profiles, indexes, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func adaptiveHealthFirstIndexesWithTTFTPolicy(profiles []adaptiveAccountHealthProfile, indexes []int, policy adaptiveTTFTSwitchPolicy) []int {
+	if !policy.enabled {
+		return append([]int(nil), indexes...)
 	}
-	return indexes
+	hasAcceptable := false
+	for _, index := range indexes {
+		if !adaptiveProfileExceedsTTFTThreshold(profiles[index], policy) {
+			hasAcceptable = true
+			break
+		}
+	}
+	if !hasAcceptable {
+		return append([]int(nil), indexes...)
+	}
+	result := make([]int, 0, len(indexes))
+	for _, index := range indexes {
+		if !adaptiveProfileExceedsTTFTThreshold(profiles[index], policy) {
+			result = append(result, index)
+		}
+	}
+	return result
 }
 
 // adaptiveSameHealthFirstCostBand reports whether two declared upstream rates
@@ -161,7 +205,12 @@ func adaptiveSameHealthFirstCostBand(a, b float64) bool {
 }
 
 func adaptiveLowestUsableCostTier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) []int {
+	return adaptiveLowestUsableCostTierWithTTFTPolicy(profiles, indexes, now, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func adaptiveLowestUsableCostTierWithTTFTPolicy(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time, policy adaptiveTTFTSwitchPolicy) []int {
 	remaining := append([]int(nil), indexes...)
+	var lowestTier []int
 	for len(remaining) > 0 {
 		lowest := adaptiveLowestMultiplier(profiles, remaining, now)
 		if lowest == math.MaxFloat64 {
@@ -177,12 +226,75 @@ func adaptiveLowestUsableCostTier(profiles []adaptiveAccountHealthProfile, index
 				next = append(next, index)
 			}
 		}
-		if len(next) == 0 || !adaptiveTierIsSeriouslySlow(profiles, tier, remaining) {
+		if lowestTier == nil {
+			lowestTier = append([]int(nil), tier...)
+			if !policy.enabled || !adaptiveTierAllExceedTTFTThreshold(profiles, tier, policy) {
+				return tier
+			}
+			if len(next) == 0 {
+				return tier
+			}
+			remaining = next
+			continue
+		}
+		// Unknown accounts are default-healthy and must receive normal traffic in
+		// the next exact multiplier layer. A measured layer is selected only when
+		// it clears the configured limit or is clearly faster than the cheapest
+		// degraded layer; proven equally-slow expensive layers are skipped.
+		if adaptiveTierHasUntrustedTTFT(profiles, tier) || !adaptiveTierAllExceedTTFTThreshold(profiles, tier, policy) || adaptiveTierClearlyFaster(profiles, lowestTier, tier) {
 			return tier
 		}
 		remaining = next
 	}
-	return indexes
+	return lowestTier
+}
+
+func adaptiveProfileExceedsTTFTThreshold(profile adaptiveAccountHealthProfile, policy adaptiveTTFTSwitchPolicy) bool {
+	return policy.enabled && adaptiveTrustedTTFT(profile.hasTTFT, profile.ttftSamples, profile.p50) && profile.p50 >= policy.thresholdMs
+}
+
+func adaptiveTierAllExceedTTFTThreshold(profiles []adaptiveAccountHealthProfile, tier []int, policy adaptiveTTFTSwitchPolicy) bool {
+	if !policy.enabled || len(tier) == 0 {
+		return false
+	}
+	for _, index := range tier {
+		if !adaptiveProfileExceedsTTFTThreshold(profiles[index], policy) {
+			return false
+		}
+	}
+	return true
+}
+
+func adaptiveTierHasUntrustedTTFT(profiles []adaptiveAccountHealthProfile, tier []int) bool {
+	for _, index := range tier {
+		profile := profiles[index]
+		if !adaptiveTrustedTTFT(profile.hasTTFT, profile.ttftSamples, profile.p50) {
+			return true
+		}
+	}
+	return false
+}
+
+func adaptiveTierClearlyFaster(profiles []adaptiveAccountHealthProfile, baseline, candidate []int) bool {
+	for _, baselineIndex := range baseline {
+		base := profiles[baselineIndex]
+		improved := false
+		for _, candidateIndex := range candidate {
+			alternative := profiles[candidateIndex]
+			if !adaptiveTrustedTTFT(alternative.hasTTFT, alternative.ttftSamples, alternative.p50) {
+				continue
+			}
+			if adaptiveTTFTMateriallySlowerThan(base.p50, base.p90, alternative.p50, alternative.p90) ||
+				(base.p50-alternative.p50 >= 5_000 && alternative.p50 <= base.p50*0.75) {
+				improved = true
+				break
+			}
+		}
+		if !improved {
+			return false
+		}
+	}
+	return len(baseline) > 0
 }
 
 func adaptiveTierIsSeriouslySlow(profiles []adaptiveAccountHealthProfile, tier, all []int) bool {
@@ -195,13 +307,13 @@ func adaptiveTierIsSeriouslySlow(profiles []adaptiveAccountHealthProfile, tier, 
 	compared := false
 	for _, tierIndex := range tier {
 		candidate := profiles[tierIndex]
-		if !candidate.hasTTFT || candidate.p50 <= 0 {
+		if !adaptiveTrustedTTFT(candidate.hasTTFT, candidate.ttftSamples, candidate.p50) {
 			return false
 		}
 		candidateSlow := false
 		for _, otherIndex := range all {
 			alternative := profiles[otherIndex]
-			if alternative.account == nil || !alternative.hasTTFT || alternative.p50 <= 0 {
+			if alternative.account == nil || !adaptiveTrustedTTFT(alternative.hasTTFT, alternative.ttftSamples, alternative.p50) {
 				continue
 			}
 			if _, sameTier := tierIDs[alternative.account.ID]; sameTier {
@@ -221,19 +333,90 @@ func adaptiveTierIsSeriouslySlow(profiles []adaptiveAccountHealthProfile, tier, 
 }
 
 func adaptiveTTFTMateriallySlowerThan(candidateP50, candidateP90, alternativeP50, alternativeP90 float64) bool {
-	if candidateP50 <= 0 || alternativeP50 <= 0 || candidateP50 <= alternativeP50*accountHealthSeriousP50Ratio || candidateP50-alternativeP50 <= accountHealthSeriousTTFTAbsoluteGapMs {
+	if candidateP50 <= 0 || alternativeP50 <= 0 {
 		return false
 	}
-	if candidateP90 > 0 && alternativeP90 > 0 {
-		return candidateP90 > alternativeP90*accountHealthSeriousP90Ratio && candidateP90-alternativeP90 > accountHealthSeriousP90AbsoluteGapMs
+	// TTFT is evaluated in broad, stable bands. Small samples and ordinary
+	// jitter must not promote a more expensive account.
+	candidateP50Band := adaptiveTTFTBand(candidateP50)
+	alternativeP50Band := adaptiveTTFTBand(alternativeP50)
+	if candidateP50Band != alternativeP50Band {
+		return candidateP50Band > alternativeP50Band
 	}
-	return true
+	// P90 is only a tail-latency tie breaker after P50 lands in the same band.
+	return candidateP90 > 0 && alternativeP90 > 0 &&
+		adaptiveTTFTBand(candidateP90) >= adaptiveTTFTBand(alternativeP90)+2
+}
+
+func adaptiveTTFTBand(ms float64) int {
+	if ms <= 0 || ms <= accountHealthTTFTBand15sMs {
+		return 0
+	}
+	if ms <= accountHealthTTFTBand30sMs {
+		return 1
+	}
+	if ms <= accountHealthTTFTBand60sMs {
+		return 2
+	}
+	return 3
+}
+
+func adaptiveTrustedTTFT(hasTTFT bool, samples int64, p50 float64) bool {
+	return hasTTFT && samples >= accountHealthUnknownMinSamples && p50 > 0
+}
+
+// adaptiveProfileHealthLess compares only adaptive health dimensions. It is a
+// strict, transitive ordering even when some candidates still have incomplete
+// evidence. Unknown error/TTFT evidence is treated optimistically as healthy;
+// the caller applies multiplier, affinity and load tie-breakers afterwards.
+func adaptiveProfileHealthLess(a, b adaptiveAccountHealthProfile, costBalanced bool, policy adaptiveTTFTSwitchPolicy) (bool, bool) {
+	aError, bError := adaptiveEffectiveErrorRate(a), adaptiveEffectiveErrorRate(b)
+	if !costBalanced {
+		if aError != bError {
+			return aError < bError, true
+		}
+		aTTFTBand := adaptiveHealthFirstTTFTOrderBand(a, policy)
+		bTTFTBand := adaptiveHealthFirstTTFTOrderBand(b, policy)
+		if aTTFTBand != bTTFTBand {
+			return aTTFTBand < bTTFTBand, true
+		}
+		return false, false
+	}
+
+	aTTFTBand := adaptiveCostBalancedTTFTOrderBand(a)
+	bTTFTBand := adaptiveCostBalancedTTFTOrderBand(b)
+	if aTTFTBand != bTTFTBand {
+		return aTTFTBand < bTTFTBand, true
+	}
+	if aError != bError {
+		return aError < bError, true
+	}
+	return false, false
+}
+
+func adaptiveEffectiveErrorRate(profile adaptiveAccountHealthProfile) float64 {
+	if profile.errorSamples < accountHealthUnknownMinSamples {
+		return 0
+	}
+	return profile.errorRate
+}
+
+func adaptiveHealthFirstTTFTOrderBand(profile adaptiveAccountHealthProfile, policy adaptiveTTFTSwitchPolicy) int {
+	if !adaptiveProfileExceedsTTFTThreshold(profile, policy) {
+		return 0
+	}
+	return adaptiveTTFTBand(profile.p50) + 1
+}
+
+func adaptiveCostBalancedTTFTOrderBand(profile adaptiveAccountHealthProfile) int {
+	if !adaptiveTrustedTTFT(profile.hasTTFT, profile.ttftSamples, profile.p50) {
+		return 0
+	}
+	return adaptiveTTFTBand(profile.p50)
 }
 
 func adaptiveTTFTMateriallyWorseInAnyDimension(candidateP50, candidateP90, alternativeP50, alternativeP90 float64) bool {
-	p50Slow := candidateP50 > 0 && alternativeP50 > 0 && candidateP50 > alternativeP50*accountHealthSeriousP50Ratio && candidateP50-alternativeP50 > accountHealthSeriousTTFTAbsoluteGapMs
-	p90Slow := candidateP90 > 0 && alternativeP90 > 0 && candidateP90 > alternativeP90*accountHealthSeriousP90Ratio && candidateP90-alternativeP90 > accountHealthSeriousP90AbsoluteGapMs
-	return p50Slow || p90Slow
+	return adaptiveTTFTMateriallySlowerThan(candidateP50, candidateP90, alternativeP50, alternativeP90)
 }
 
 func adaptiveLowestMultiplier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) float64 {
@@ -259,30 +442,16 @@ func adaptiveHighestMultiplier(profiles []adaptiveAccountHealthProfile, indexes 
 }
 
 func adaptiveLatencyLess(aP50, aP90 float64, aKnown bool, bP50, bP90 float64, bKnown bool) (bool, bool) {
-	if aKnown != bKnown {
-		return aKnown, true
-	}
-	if !aKnown {
+	if !aKnown || !bKnown {
 		return false, false
 	}
-	if adaptiveLatencyDifferenceIsMeaningful(aP50, bP50, accountHealthTTFTTieRatio, accountHealthTTFTTieAbsoluteMs) {
-		return aP50 < bP50, true
+	if adaptiveTTFTMateriallySlowerThan(aP50, aP90, bP50, bP90) {
+		return false, true
 	}
-	if aP90 > 0 && bP90 > 0 && adaptiveLatencyDifferenceIsMeaningful(aP90, bP90, accountHealthP90TieRatio, accountHealthP90TieAbsoluteMs) {
-		return aP90 < bP90, true
+	if adaptiveTTFTMateriallySlowerThan(bP50, bP90, aP50, aP90) {
+		return true, true
 	}
 	return false, false
-}
-
-func adaptiveLatencyDifferenceIsMeaningful(a, b, ratio, absoluteMs float64) bool {
-	if a <= 0 || b <= 0 || a == b {
-		return false
-	}
-	lower, higher := a, b
-	if lower > higher {
-		lower, higher = higher, lower
-	}
-	return higher > lower*ratio && higher-lower > absoluteMs
 }
 
 type accountRuntimeHealthStats struct {

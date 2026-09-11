@@ -4228,7 +4228,7 @@ func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryHasCooldown(t *tes
 	require.Equal(t, int64(5256), ordered[0].account.ID)
 }
 
-func TestBuildOpenAIAdaptiveSelectionUsesCostTiersAndTTFT(t *testing.T) {
+func TestBuildOpenAIAdaptiveSelectionUsesCostTiersAndTTFTBands(t *testing.T) {
 	now := time.Now()
 	pool := []openAIAccountCandidateScore{
 		{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 5271}, 0.5, now.Add(time.Hour)), loadInfo: &AccountLoadInfo{}, ttft: 500, ttftP90: 700, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
@@ -4237,7 +4237,7 @@ func TestBuildOpenAIAdaptiveSelectionUsesCostTiersAndTTFT(t *testing.T) {
 	}
 	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
 	healthFirst := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst})
-	require.Equal(t, int64(5272), healthFirst[0].account.ID)
+	require.Equal(t, int64(5271), healthFirst[0].account.ID)
 	balanced := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced})
 	require.Equal(t, int64(5271), balanced[0].account.ID)
 }
@@ -4396,6 +4396,65 @@ func TestBuildOpenAIAdaptiveSelectionUnknownCheaperAccountBreaksSticky(t *testin
 	require.Equal(t, cheapUnknown.ID, ordered[0].account.ID)
 }
 
+func TestBuildOpenAIHealthCostBalancedKeepsCheaperAccountWithInsufficientTTFTSamples(t *testing.T) {
+	for _, sampleCount := range []int64{1, 2} {
+		t.Run(fmt.Sprintf("%d samples", sampleCount), func(t *testing.T) {
+			now := time.Now()
+			cheap := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52823}, 1.6, now.Add(time.Hour))
+			cheap.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = 0.1
+			expensive := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52824}, 0.2, now.Add(time.Hour))
+			pool := []openAIAccountCandidateScore{
+				{account: expensive, loadInfo: &AccountLoadInfo{}, ttft: 100, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+				{account: cheap, loadInfo: &AccountLoadInfo{}, ttft: 60_000, hasTTFT: true, sampleCount: sampleCount, ttftSampleCount: sampleCount},
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+
+			ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+				AccountSchedulingStrategy: AccountSchedulingStrategyHealthCostBalanced,
+			})
+			require.Equal(t, cheap.ID, ordered[0].account.ID)
+		})
+	}
+}
+
+func TestBuildOpenAIHealthFirstDoesNotUseInsufficientTTFTSamplesAgainstCheaperAccount(t *testing.T) {
+	for _, ttftSampleCount := range []int64{1, 2} {
+		t.Run(fmt.Sprintf("%d ttft samples", ttftSampleCount), func(t *testing.T) {
+			now := time.Now()
+			cheap := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52827, Priority: 10}, 1.6, now.Add(time.Hour))
+			cheap.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = 0.1
+			expensive := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52828, Priority: 1}, 0.2, now.Add(time.Hour))
+			pool := []openAIAccountCandidateScore{
+				{account: expensive, loadInfo: &AccountLoadInfo{}, ttft: 100, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+				{account: cheap, loadInfo: &AccountLoadInfo{}, ttft: 60_000, hasTTFT: true, sampleCount: 3, ttftSampleCount: ttftSampleCount},
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+
+			ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+				AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+			})
+			require.Equal(t, cheap.ID, ordered[0].account.ID)
+		})
+	}
+}
+
+func TestBuildOpenAIHealthFirstKeepsStickyWithInsufficientTTFTSamples(t *testing.T) {
+	now := time.Now()
+	sticky := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52825}, 0.16, now.Add(time.Hour))
+	healthy := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52826}, 0.16, now.Add(time.Hour))
+	pool := []openAIAccountCandidateScore{
+		{account: sticky, loadInfo: &AccountLoadInfo{}, ttft: 60_000, ttftP90: 60_000, hasTTFT: true, sampleCount: 2, ttftSampleCount: 2},
+		{account: healthy, loadInfo: &AccountLoadInfo{}, ttft: 100, ttftP90: 150, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+
+	ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+		StickyAccountID:           sticky.ID,
+	})
+	require.Equal(t, sticky.ID, ordered[0].account.ID)
+}
+
 func TestBuildOpenAIHealthFirstKeepsStickyWithinCostBandAgainstUnknown(t *testing.T) {
 	now := time.Now()
 	cheapUnknown := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52831}, 0.07, now.Add(time.Hour))
@@ -4410,6 +4469,86 @@ func TestBuildOpenAIHealthFirstKeepsStickyWithinCostBandAgainstUnknown(t *testin
 		StickyAccountID:           stickyMeasured.ID,
 	})
 	require.Equal(t, stickyMeasured.ID, ordered[0].account.ID)
+}
+
+func TestBuildOpenAIHealthFirstTTFTSwitchThreshold(t *testing.T) {
+	now := time.Now()
+	cheap := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52833}, 0.05, now.Add(time.Hour))
+	expensive := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52834}, 0.20, now.Add(time.Hour))
+	pool := []openAIAccountCandidateScore{
+		{account: expensive, loadInfo: &AccountLoadInfo{}, ttft: 5_000, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: cheap, loadInfo: &AccountLoadInfo{}, ttft: 45_000, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+
+	defaultThreshold := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+	})
+	require.Equal(t, cheap.ID, defaultThreshold[0].account.ID)
+
+	customThreshold := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+		AdaptiveTTFTSwitchEnabled: true,
+		AdaptiveTTFTThresholdSecs: 30,
+	})
+	require.Equal(t, expensive.ID, customThreshold[0].account.ID)
+
+	disabled := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+		AdaptiveTTFTSwitchEnabled: false,
+		AdaptiveTTFTThresholdSecs: 60,
+	})
+	require.Equal(t, cheap.ID, disabled[0].account.ID)
+}
+
+func TestBuildOpenAIHealthFirstSelectionWithIncompleteHealthIsStable(t *testing.T) {
+	now := time.Now()
+	accounts := map[int64]*Account{
+		1: withOpenAIUpstreamProbeMultiplier(&Account{ID: 1}, 0.20, now.Add(time.Hour)),
+		2: withOpenAIUpstreamProbeMultiplier(&Account{ID: 2}, 0.05, now.Add(time.Hour)),
+		3: withOpenAIUpstreamProbeMultiplier(&Account{ID: 3}, 0.10, now.Add(time.Hour)),
+	}
+	scores := map[int64]openAIAccountCandidateScore{
+		1: {account: accounts[1], loadInfo: &AccountLoadInfo{}, errorRate: 0, ttft: 500, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		2: {account: accounts[2], loadInfo: &AccountLoadInfo{}, errorRate: 0.16, ttft: 500, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		3: {account: accounts[3], loadInfo: &AccountLoadInfo{}, errorRate: 0, ttft: 500, hasTTFT: true, sampleCount: 1, ttftSampleCount: 1},
+	}
+	permutations := [][]int64{
+		{1, 2, 3}, {1, 3, 2}, {2, 1, 3},
+		{2, 3, 1}, {3, 1, 2}, {3, 2, 1},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{}
+
+	for _, order := range permutations {
+		pool := []openAIAccountCandidateScore{scores[order[0]], scores[order[1]], scores[order[2]]}
+		ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+			AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+		})
+		require.NotEmpty(t, ordered)
+		require.Equal(t, int64(3), ordered[0].account.ID, "input order %v", order)
+	}
+}
+
+func TestBuildOpenAIUnknownWarmupStillSortsFallbackCandidates(t *testing.T) {
+	now := time.Now()
+	unknown := withOpenAIUpstreamProbeMultiplier(&Account{ID: 45101}, 0.05, now.Add(time.Hour))
+	knownLessHealthy := withOpenAIUpstreamProbeMultiplier(&Account{ID: 45102}, 0.10, now.Add(time.Hour))
+	knownHealthy := withOpenAIUpstreamProbeMultiplier(&Account{ID: 45103}, 0.20, now.Add(time.Hour))
+	pool := []openAIAccountCandidateScore{
+		{account: knownLessHealthy, loadInfo: &AccountLoadInfo{}, errorRate: 0.10, sampleCount: 3, ttft: 500, hasTTFT: true, ttftSampleCount: 3},
+		{account: knownHealthy, loadInfo: &AccountLoadInfo{}, errorRate: 0, sampleCount: 3, ttft: 500, hasTTFT: true, ttftSampleCount: 3},
+		{account: unknown, loadInfo: &AccountLoadInfo{}},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+
+	ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{
+		AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
+	})
+
+	require.Len(t, ordered, 3)
+	require.Equal(t, unknown.ID, ordered[0].account.ID)
+	require.Equal(t, knownHealthy.ID, ordered[1].account.ID)
+	require.Equal(t, knownLessHealthy.ID, ordered[2].account.ID)
 }
 
 func TestBuildOpenAIHealthFirstDoesNotKeepStickyAccountAfterItBecomesUnhealthy(t *testing.T) {
@@ -4428,15 +4567,15 @@ func TestBuildOpenAIHealthFirstDoesNotKeepStickyAccountAfterItBecomesUnhealthy(t
 	require.Equal(t, healthy.ID, ordered[0].account.ID)
 }
 
-func TestBuildOpenAIAdaptiveSelectionDoesNotKeepStickyAccountWithSevereP90Tail(t *testing.T) {
+func TestBuildOpenAIAdaptiveSelectionDoesNotBreakStickyFromP90Alone(t *testing.T) {
 	now := time.Now()
 	pool := []openAIAccountCandidateScore{
-		{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 5283}, 0.5, now.Add(time.Hour)), loadInfo: &AccountLoadInfo{}, ttft: 300, ttftP90: 5000, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
+		{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 5283}, 0.5, now.Add(time.Hour)), loadInfo: &AccountLoadInfo{}, ttft: 300, ttftP90: 70_000, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
 		{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 5284}, 0.5, now.Add(time.Hour)), loadInfo: &AccountLoadInfo{}, ttft: 350, ttftP90: 500, hasTTFT: true, sampleCount: 3, ttftSampleCount: 3},
 	}
 	scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
 	ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst, StickyAccountID: 5283})
-	require.Equal(t, int64(5284), ordered[0].account.ID)
+	require.Equal(t, int64(5283), ordered[0].account.ID)
 }
 
 func TestBuildOpenAIAdaptiveSelectionUsesAccountHistoryWithoutWarmup(t *testing.T) {
@@ -4470,7 +4609,7 @@ func TestBuildOpenAIAdaptiveHistoryDoesNotLeakIntoStrictPriority(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{cfg: &config.Config{}}, stats: stats}
 	history := map[int64]AccountTTFTHistory{
-		5293: {AccountID: 5293, SampleCount: 20, P50Ms: 900, P90Ms: 1200},
+		5293: {AccountID: 5293, SampleCount: 20, P50Ms: 60_000, P90Ms: 70_000},
 		5294: {AccountID: 5294, SampleCount: 20, P50Ms: 100, P90Ms: 180},
 	}
 

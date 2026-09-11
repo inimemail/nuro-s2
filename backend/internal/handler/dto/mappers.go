@@ -221,6 +221,8 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequirePrivacySet:                  g.RequirePrivacySet,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
+		AdaptiveTTFTSwitchEnabled:          g.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds: service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(g.AdaptiveTTFTSwitchThresholdSeconds),
 		RPMLimit:                           g.RPMLimit,
 		ForceOpenAIFast:                    g.ForceOpenAIFast,
 		MaxReasoningEffort:                 g.MaxReasoningEffort,

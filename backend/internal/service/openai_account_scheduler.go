@@ -62,6 +62,8 @@ type OpenAIAccountScheduleRequest struct {
 	LockedPriority            int
 	PreserveStickyBinding     bool
 	AccountSchedulingStrategy string
+	AdaptiveTTFTSwitchEnabled bool
+	AdaptiveTTFTThresholdSecs int
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -666,12 +668,16 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(req.AccountSchedulingStrategy)
 	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && (req.GroupID == nil || group.ID == *req.GroupID) {
 		req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+		req.AdaptiveTTFTSwitchEnabled = group.AdaptiveTTFTSwitchEnabled
+		req.AdaptiveTTFTThresholdSecs = group.AdaptiveTTFTSwitchThresholdSeconds
 	} else if req.GroupID != nil && s != nil && s.service != nil && s.service.schedulerSnapshot != nil {
 		// Internal/service callers may provide only GroupID. Resolve the snapshot
 		// before sticky/previous-response shortcuts so health-first is honored for
 		// the complete scheduler path, not just load balancing.
 		if group, err := s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID); err == nil && group != nil {
 			req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
+			req.AdaptiveTTFTSwitchEnabled = group.AdaptiveTTFTSwitchEnabled
+			req.AdaptiveTTFTThresholdSecs = group.AdaptiveTTFTSwitchThresholdSeconds
 		}
 	}
 	decision := OpenAIAccountScheduleDecision{}
@@ -1461,6 +1467,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 }
 
 func filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered []openAIAccountCandidateScore, strategy string, now time.Time) []openAIAccountCandidateScore {
+	return filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered, strategy, now, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []openAIAccountCandidateScore, strategy string, now time.Time, policy adaptiveTTFTSwitchPolicy) []openAIAccountCandidateScore {
 	if len(ordered) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return ordered
 	}
@@ -1468,7 +1478,7 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered []openAIAccountCand
 	for i, candidate := range ordered {
 		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
 	}
-	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now)
+	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
 	maxRate := adaptiveHighestMultiplier(profiles, indexes, now)
 	for _, index := range indexes {
@@ -1502,6 +1512,7 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	}
 	now := time.Now()
 	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
+	policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs)
 	groupID := int64(0)
 	if req.GroupID != nil {
 		groupID = *req.GroupID
@@ -1510,7 +1521,7 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	for i, candidate := range ordered {
 		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
 	}
-	preferredIndexes := adaptiveAccountPolicyIndexes(profiles, costBalanced, now)
+	preferredIndexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, policy)
 	preferred := make(map[int64]struct{}, len(preferredIndexes))
 	for _, index := range preferredIndexes {
 		preferred[ordered[index].account.ID] = struct{}{}
@@ -1519,21 +1530,14 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	// per-account first-use turn instead of a group-wide every-N probe. This
 	// keeps large pools from starving low-cost accounts. Health-first retains
 	// an active affinity only inside its policy cost band.
+	warmupAccountID := int64(0)
 	if s != nil && s.stats != nil {
 		if selected, ok := selectOpenAIUnknownAdaptiveCandidate(ordered, preferred, s.stats, now, groupID, req.StickyAccountID, costBalanced); ok {
-			result := append([]openAIAccountCandidateScore(nil), ordered...)
-			for i := range result {
-				if result[i].account != nil && result[i].account.ID == selected {
-					candidate := result[i]
-					copy(result[1:i+1], result[:i])
-					result[0] = candidate
-					return result
-				}
-			}
+			warmupAccountID = selected
 		}
 	}
 	probeAccountID := int64(0)
-	if s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.healthFirstProbeTurn(groupID) {
+	if warmupAccountID == 0 && s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.healthFirstProbeTurn(groupID) {
 		maxRate := adaptiveHighestMultiplier(profiles, preferredIndexes, now)
 		for i := range ordered {
 			candidate := &ordered[i]
@@ -1555,6 +1559,13 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
+		if warmupAccountID > 0 {
+			aWarmup := a.account.ID == warmupAccountID
+			bWarmup := b.account.ID == warmupAccountID
+			if aWarmup != bWarmup {
+				return aWarmup
+			}
+		}
 		if probeAccountID > 0 {
 			aProbe := a.account.ID == probeAccountID
 			bProbe := b.account.ID == probeAccountID
@@ -1568,22 +1579,15 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			return aInBestBand
 		}
 		if aInBestBand {
-			aHasHealth := accountHealthHasKnownSamples(a.sampleCount, a.ttftSampleCount, a.errorRate)
-			bHasHealth := accountHealthHasKnownSamples(b.sampleCount, b.ttftSampleCount, b.errorRate)
-			// Unknown health is optimistic eligibility, not a reason to starve
-			// an account. If either side has no samples, prefer the lower
-			// effective upstream rate before measured latency.
-			if !aHasHealth || !bHasHealth {
-				aRate, aKnown := accountEffectiveUpstreamMultiplier(a.account, now)
-				bRate, bKnown := accountEffectiveUpstreamMultiplier(b.account, now)
-				if aKnown && bKnown && aRate != bRate {
-					return aRate < bRate
-				}
-			} else if less, decided := adaptiveLatencyLess(a.ttft, a.ttftP90, a.hasTTFT, b.ttft, b.ttftP90, b.hasTTFT); decided {
+			aProfile := adaptiveAccountHealthProfile{account: a.account, errorRate: a.errorRate, errorSamples: a.sampleCount, p50: a.ttft, p90: a.ttftP90, hasTTFT: a.hasTTFT, ttftSamples: a.ttftSampleCount}
+			bProfile := adaptiveAccountHealthProfile{account: b.account, errorRate: b.errorRate, errorSamples: b.sampleCount, p50: b.ttft, p90: b.ttftP90, hasTTFT: b.hasTTFT, ttftSamples: b.ttftSampleCount}
+			if less, decided := adaptiveProfileHealthLess(aProfile, bProfile, costBalanced, policy); decided {
 				return less
 			}
-			if aHasHealth && bHasHealth && a.errorRate != b.errorRate {
-				return a.errorRate < b.errorRate
+			aRate, aRateKnown := accountEffectiveUpstreamMultiplier(a.account, now)
+			bRate, bRateKnown := accountEffectiveUpstreamMultiplier(b.account, now)
+			if aRateKnown && bRateKnown && aRate != bRate {
+				return aRate < bRate
 			}
 		} else {
 			aRate, aKnown := accountEffectiveUpstreamMultiplier(a.account, now)
@@ -1628,7 +1632,7 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			if candidate.account.ID != req.StickyAccountID {
 				continue
 			}
-			if _, ok := preferred[candidate.account.ID]; ok && adaptiveOpenAIStickyCanLead(candidate, ordered, preferred, costBalanced, now) {
+			if _, ok := preferred[candidate.account.ID]; ok && adaptiveOpenAIStickyCanLead(candidate, ordered, preferred, costBalanced, now, policy) {
 				copy(ordered[1:i+1], ordered[:i])
 				ordered[0] = candidate
 			}
@@ -1640,6 +1644,9 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 
 func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced bool) (int64, bool) {
 	if len(ordered) == 0 || stats == nil {
+		return 0, false
+	}
+	if affinityAccountID > 0 && !costBalanced {
 		return 0, false
 	}
 	affinityRate, affinityRateKnown := float64(0), false
@@ -1688,9 +1695,12 @@ func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore,
 // account may still lead when the cheaper candidate is demonstrably slower;
 // this preserves health-first semantics while preventing cost-balanced
 // sessions from staying pinned to an expensive account forever.
-func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}, costBalanced bool, now time.Time) bool {
-	if adaptiveOpenAICandidateMateriallySlower(sticky, pool, preferred) {
+func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}, costBalanced bool, now time.Time, policy adaptiveTTFTSwitchPolicy) bool {
+	if adaptiveOpenAICandidateTooSlowForTTFTPolicy(sticky, pool, preferred, policy) {
 		return false
+	}
+	if !costBalanced {
+		return true
 	}
 	stickyRate, stickyKnown := accountEffectiveUpstreamMultiplier(sticky.account, now)
 	if !stickyKnown {
@@ -1707,12 +1717,8 @@ func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []open
 		if !otherKnown || otherRate >= stickyRate-accountHealthCostTierEpsilon {
 			continue
 		}
-		if !costBalanced && adaptiveSameHealthFirstCostBand(otherRate, stickyRate) {
-			continue
-		}
-		// Health-first may keep a more expensive sticky account only when the
-		// cheaper candidate is materially slower. Otherwise the cheaper account
-		// owns the next request and refreshes the session binding.
+		// In cost-balanced mode, a cheaper preferred candidate replaces the
+		// sticky account unless that candidate is demonstrably slower.
 		if !adaptiveOpenAICandidateMateriallySlower(other, pool, preferred) {
 			return false
 		}
@@ -1720,12 +1726,35 @@ func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []open
 	return true
 }
 
-func adaptiveOpenAICandidateMateriallySlower(candidate openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}) bool {
-	if !candidate.hasTTFT || candidate.ttft <= 0 {
+func adaptiveOpenAICandidateTooSlowForTTFTPolicy(candidate openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}, policy adaptiveTTFTSwitchPolicy) bool {
+	profile := adaptiveAccountHealthProfile{account: candidate.account, p50: candidate.ttft, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+	if !adaptiveProfileExceedsTTFTThreshold(profile, policy) {
 		return false
 	}
 	for _, other := range pool {
-		if _, ok := preferred[other.account.ID]; !ok || !other.hasTTFT || other.ttft <= 0 || other.account.ID == candidate.account.ID {
+		if other.account == nil || other.account.ID == candidate.account.ID {
+			continue
+		}
+		if _, ok := preferred[other.account.ID]; !ok {
+			continue
+		}
+		otherProfile := adaptiveAccountHealthProfile{account: other.account, p50: other.ttft, hasTTFT: other.hasTTFT, ttftSamples: other.ttftSampleCount}
+		if !adaptiveProfileExceedsTTFTThreshold(otherProfile, policy) {
+			return true
+		}
+		if adaptiveTierClearlyFaster([]adaptiveAccountHealthProfile{profile, otherProfile}, []int{0}, []int{1}) {
+			return true
+		}
+	}
+	return false
+}
+
+func adaptiveOpenAICandidateMateriallySlower(candidate openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}) bool {
+	if !adaptiveTrustedTTFT(candidate.hasTTFT, candidate.ttftSampleCount, candidate.ttft) {
+		return false
+	}
+	for _, other := range pool {
+		if _, ok := preferred[other.account.ID]; !ok || !adaptiveTrustedTTFT(other.hasTTFT, other.ttftSampleCount, other.ttft) || other.account.ID == candidate.account.ID {
 			continue
 		}
 		if adaptiveTTFTMateriallyWorseInAnyDimension(candidate.ttft, candidate.ttftP90, other.ttft, other.ttftP90) {
@@ -2382,7 +2411,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, req.RequireCompact && len(plan.allCandidates) > 0)
 	}
 
-	acquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTier(selectionOrder, req.AccountSchedulingStrategy, time.Now())
+	ttftPolicy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs)
+	acquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(selectionOrder, req.AccountSchedulingStrategy, time.Now(), ttftPolicy)
 	result, compactBlocked, acquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, acquireOrder)
 	if acquireErr != nil {
 		return nil, candidateCount, topK, loadSkew, acquireErr
@@ -2399,7 +2429,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			freshPlan := s.buildOpenAIAccountLoadPlanWithHistory(req, filtered, freshLoadMap, history)
 			if len(freshPlan.selectionOrder) > 0 {
 				freshSelectionOrder := s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, freshPlan.selectionOrder)
-				freshAcquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTier(freshSelectionOrder, req.AccountSchedulingStrategy, time.Now())
+				freshAcquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(freshSelectionOrder, req.AccountSchedulingStrategy, time.Now(), ttftPolicy)
 				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshAcquireOrder)
 				if freshAcquireErr != nil {
 					return nil, candidateCount, topK, loadSkew, freshAcquireErr
@@ -2419,7 +2449,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	cfg := s.service.schedulingConfig()
 	adaptivePrimaryTier := make(map[int64]struct{})
 	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
-		for _, candidate := range filterOpenAIAdaptiveCandidateScoresToPolicyTier(selectionOrder, req.AccountSchedulingStrategy, time.Now()) {
+		for _, candidate := range filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(selectionOrder, req.AccountSchedulingStrategy, time.Now(), ttftPolicy) {
 			if candidate.account != nil {
 				adaptivePrimaryTier[candidate.account.ID] = struct{}{}
 			}

@@ -121,6 +121,8 @@ type APIKeyAuthGroupSnapshot struct {
 	CodexModelsManifestConfig          GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config,omitempty"`
 	StrictModelPriorityOnModelMismatch bool                              `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          string                            `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled          bool                              `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds int                               `json:"adaptive_ttft_switch_threshold_seconds"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 级联判断。
 	RPMLimit                    int                      `json:"rpm_limit"`

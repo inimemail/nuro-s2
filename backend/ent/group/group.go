@@ -140,6 +140,10 @@ const (
 	FieldStrictModelPriorityOnModelMismatch = "strict_model_priority_on_model_mismatch"
 	// FieldAccountSchedulingStrategy holds the string denoting the account_scheduling_strategy field in the database.
 	FieldAccountSchedulingStrategy = "account_scheduling_strategy"
+	// FieldAdaptiveTtftSwitchEnabled holds the string denoting the adaptive_ttft_switch_enabled field in the database.
+	FieldAdaptiveTtftSwitchEnabled = "adaptive_ttft_switch_enabled"
+	// FieldAdaptiveTtftSwitchThresholdSeconds holds the string denoting the adaptive_ttft_switch_threshold_seconds field in the database.
+	FieldAdaptiveTtftSwitchThresholdSeconds = "adaptive_ttft_switch_threshold_seconds"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
 	// FieldForceOpenaiFast holds the string denoting the force_openai_fast field in the database.
@@ -287,6 +291,8 @@ var Columns = []string{
 	FieldCodexModelsManifestConfig,
 	FieldStrictModelPriorityOnModelMismatch,
 	FieldAccountSchedulingStrategy,
+	FieldAdaptiveTtftSwitchEnabled,
+	FieldAdaptiveTtftSwitchThresholdSeconds,
 	FieldRpmLimit,
 	FieldForceOpenaiFast,
 	FieldMaxReasoningEffort,
@@ -421,6 +427,12 @@ var (
 	DefaultAccountSchedulingStrategy string
 	// AccountSchedulingStrategyValidator is a validator for the "account_scheduling_strategy" field. It is called by the builders before save.
 	AccountSchedulingStrategyValidator func(string) error
+	// DefaultAdaptiveTtftSwitchEnabled holds the default value on creation for the "adaptive_ttft_switch_enabled" field.
+	DefaultAdaptiveTtftSwitchEnabled bool
+	// DefaultAdaptiveTtftSwitchThresholdSeconds holds the default value on creation for the "adaptive_ttft_switch_threshold_seconds" field.
+	DefaultAdaptiveTtftSwitchThresholdSeconds int
+	// AdaptiveTtftSwitchThresholdSecondsValidator is a validator for the "adaptive_ttft_switch_threshold_seconds" field. It is called by the builders before save.
+	AdaptiveTtftSwitchThresholdSecondsValidator func(int) error
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
 	// DefaultForceOpenaiFast holds the default value on creation for the "force_openai_fast" field.
@@ -718,6 +730,16 @@ func ByStrictModelPriorityOnModelMismatch(opts ...sql.OrderTermOption) OrderOpti
 // ByAccountSchedulingStrategy orders the results by the account_scheduling_strategy field.
 func ByAccountSchedulingStrategy(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAccountSchedulingStrategy, opts...).ToFunc()
+}
+
+// ByAdaptiveTtftSwitchEnabled orders the results by the adaptive_ttft_switch_enabled field.
+func ByAdaptiveTtftSwitchEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAdaptiveTtftSwitchEnabled, opts...).ToFunc()
+}
+
+// ByAdaptiveTtftSwitchThresholdSeconds orders the results by the adaptive_ttft_switch_threshold_seconds field.
+func ByAdaptiveTtftSwitchThresholdSeconds(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAdaptiveTtftSwitchThresholdSeconds, opts...).ToFunc()
 }
 
 // ByRpmLimit orders the results by the rpm_limit field.

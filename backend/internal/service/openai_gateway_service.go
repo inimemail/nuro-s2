@@ -2547,6 +2547,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	strategy := s.openAIGroupSchedulingStrategy(ctx, groupID)
+	ttftPolicy := s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID)
 	adaptiveRank := make(map[int64]int)
 	if IsAdaptiveHealthSchedulingStrategy(strategy) && len(accounts) > 1 {
 		items := make([]accountWithLoad, 0, len(accounts))
@@ -2568,6 +2569,8 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			StickyAccountID:           stickyAccountID,
 			RequestedModel:            requestedModel,
 			AccountSchedulingStrategy: strategy,
+			AdaptiveTTFTSwitchEnabled: ttftPolicy.enabled,
+			AdaptiveTTFTThresholdSecs: int(ttftPolicy.thresholdMs / 1000),
 		})
 		for rank, candidate := range ordered {
 			if candidate.account != nil {
@@ -3019,7 +3022,7 @@ openAIGroupGuardFallback:
 			}
 		}
 		if healthFirst {
-			available = s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, allWithLoad, available, requestedModel, strategy)
+			available = s.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx, allWithLoad, available, requestedModel, strategy, s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID))
 		}
 
 		if len(available) == 0 {
@@ -3112,7 +3115,7 @@ openAIGroupGuardFallback:
 		ordered := s.orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx, candidates, requestedModel, requireCompact, cfg, healthFirst, strategy, groupID, stickyAccountID)
 		if healthFirst && len(ordered) > 0 {
 			items := accountPointersToNeutralLoads(ordered)
-			items = s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, items, items, requestedModel, strategy)
+			items = s.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx, items, items, requestedModel, strategy, s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID))
 			ordered = accountWithLoadPointers(items)
 		}
 		for _, acc := range ordered {
@@ -3172,7 +3175,7 @@ openAIGroupGuardFallback:
 	adaptiveFallbackTier := make(map[int64]struct{})
 	if healthFirst {
 		items := accountPointersToNeutralLoads(candidates)
-		for _, item := range s.filterOpenAIAvailableToAdaptivePolicyTier(ctx, items, items, requestedModel, strategy) {
+		for _, item := range s.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx, items, items, requestedModel, strategy, s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID)) {
 			if item.account != nil {
 				adaptiveFallbackTier[item.account.ID] = struct{}{}
 			}
@@ -3276,6 +3279,24 @@ func (s *OpenAIGatewayService) openAIGroupSchedulingStrategy(ctx context.Context
 	return AccountSchedulingStrategyStrictPriority
 }
 
+func (s *OpenAIGatewayService) openAIGroupAdaptiveTTFTSwitchPolicy(ctx context.Context, groupID *int64) adaptiveTTFTSwitchPolicy {
+	if groupID == nil {
+		return defaultAdaptiveTTFTSwitchPolicy()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
+		return adaptiveTTFTSwitchPolicyForGroup(group)
+	}
+	if s != nil && s.schedulerSnapshot != nil {
+		if group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); err == nil && group != nil {
+			return adaptiveTTFTSwitchPolicyForGroup(group)
+		}
+	}
+	return defaultAdaptiveTTFTSwitchPolicy()
+}
+
 func (s *OpenAIGatewayService) openAIGroupUsesHealthFirst(ctx context.Context, groupID *int64) bool {
 	return IsAdaptiveHealthSchedulingStrategy(s.openAIGroupSchedulingStrategy(ctx, groupID))
 }
@@ -3307,6 +3328,7 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 	}
 
 	if healthFirst {
+		ttftPolicy := s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID)
 		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(available))
 		candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(available, requestedModel, history)
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
@@ -3315,6 +3337,8 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 			StickyAccountID:           stickyAccountID,
 			RequestedModel:            requestedModel,
 			AccountSchedulingStrategy: strategy,
+			AdaptiveTTFTSwitchEnabled: ttftPolicy.enabled,
+			AdaptiveTTFTThresholdSecs: int(ttftPolicy.thresholdMs / 1000),
 		})
 		byID := make(map[int64]accountWithLoad, len(available))
 		for _, item := range available {
@@ -3380,6 +3404,10 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 }
 
 func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTier(ctx context.Context, all, available []accountWithLoad, requestedModel, strategy string) []accountWithLoad {
+	return s.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx, all, available, requestedModel, strategy, defaultAdaptiveTTFTSwitchPolicy())
+}
+
+func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx context.Context, all, available []accountWithLoad, requestedModel, strategy string, policy adaptiveTTFTSwitchPolicy) []accountWithLoad {
 	if len(all) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return available
 	}
@@ -3389,7 +3417,7 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTier(ctx con
 	for i, candidate := range candidates {
 		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
 	}
-	indexes := adaptiveAccountPolicyIndexes(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), time.Now())
+	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), time.Now(), policy)
 	allowed := make(map[int64]struct{}, len(indexes))
 	for _, index := range indexes {
 		if candidates[index].account != nil {

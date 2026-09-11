@@ -112,6 +112,8 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetCodexModelsManifestConfig(groupIn.CodexModelsManifestConfig).
 		SetStrictModelPriorityOnModelMismatch(groupIn.StrictModelPriorityOnModelMismatch).
 		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
+		SetAdaptiveTtftSwitchEnabled(groupIn.AdaptiveTTFTSwitchEnabled).
+		SetAdaptiveTtftSwitchThresholdSeconds(service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(groupIn.AdaptiveTTFTSwitchThresholdSeconds)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
@@ -289,6 +291,8 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetCodexModelsManifestConfig(groupIn.CodexModelsManifestConfig).
 		SetStrictModelPriorityOnModelMismatch(groupIn.StrictModelPriorityOnModelMismatch).
 		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
+		SetAdaptiveTtftSwitchEnabled(groupIn.AdaptiveTTFTSwitchEnabled).
+		SetAdaptiveTtftSwitchThresholdSeconds(service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(groupIn.AdaptiveTTFTSwitchThresholdSeconds)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).

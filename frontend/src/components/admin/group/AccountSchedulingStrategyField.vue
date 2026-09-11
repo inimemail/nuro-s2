@@ -33,6 +33,45 @@
       <Icon name="infoCircle" size="sm" class="mt-px flex-none" :stroke-width="2" />
       <p class="min-w-0">{{ t(selectedOption.hint) }}</p>
     </div>
+    <div v-if="modelValue !== 'strict_priority'" class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-gray-100 pt-2.5 dark:border-dark-700">
+      <div class="flex min-w-0 flex-1 items-center gap-2.5">
+        <button
+          type="button"
+          data-testid="adaptive-ttft-switch"
+          class="relative inline-flex h-5 w-9 flex-none rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60"
+          :class="ttftSwitchEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-dark-600'"
+          role="switch"
+          :aria-checked="ttftSwitchEnabled"
+          :aria-label="t('admin.groups.form.adaptiveTTFTSwitch')"
+          @click="emit('update:ttftSwitchEnabled', !ttftSwitchEnabled)"
+        >
+          <span
+            class="mt-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform"
+            :class="ttftSwitchEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+          />
+        </button>
+        <div class="min-w-0">
+          <p class="text-xs font-medium text-gray-700 dark:text-gray-200">{{ t('admin.groups.form.adaptiveTTFTSwitch') }}</p>
+          <p class="text-[11px] leading-4 text-gray-500 dark:text-gray-400">{{ t(ttftSwitchHint) }}</p>
+        </div>
+      </div>
+      <label class="flex flex-none items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+        <span>{{ t('admin.groups.form.adaptiveTTFTThreshold') }}</span>
+        <input
+          data-testid="adaptive-ttft-threshold"
+          type="number"
+          inputmode="numeric"
+          min="1"
+          max="3600"
+          step="1"
+          class="h-8 w-20 rounded-md border border-gray-300 bg-white px-2 text-right text-sm text-gray-900 outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-dark-600 dark:bg-dark-800 dark:text-white dark:disabled:bg-dark-700"
+          :disabled="!ttftSwitchEnabled"
+          :value="ttftSwitchThresholdSeconds"
+          @input="updateThreshold"
+        />
+        <span>{{ t('admin.groups.form.seconds') }}</span>
+      </label>
+    </div>
   </div>
 </template>
 
@@ -42,8 +81,20 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 
 type Strategy = 'strict_priority' | 'health_first' | 'health_cost_balanced'
-const props = withDefaults(defineProps<{ modelValue?: Strategy }>(), { modelValue: 'strict_priority' })
-const emit = defineEmits<{ (event: 'update:modelValue', value: Strategy): void }>()
+const props = withDefaults(defineProps<{
+  modelValue?: Strategy
+  ttftSwitchEnabled?: boolean
+  ttftSwitchThresholdSeconds?: number
+}>(), {
+  modelValue: 'strict_priority',
+  ttftSwitchEnabled: true,
+  ttftSwitchThresholdSeconds: 60,
+})
+const emit = defineEmits<{
+  (event: 'update:modelValue', value: Strategy): void
+  (event: 'update:ttftSwitchEnabled', value: boolean): void
+  (event: 'update:ttftSwitchThresholdSeconds', value: number): void
+}>()
 const { t } = useI18n()
 const options = [
   { value: 'strict_priority' as const, icon: 'shield' as const, label: 'admin.groups.form.strictPriority', shortHint: 'admin.groups.form.strictPriorityShortHint', hint: 'admin.groups.form.strictPriorityHint', activeClass: 'border-emerald-300 bg-emerald-50/75 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-100', iconClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200' },
@@ -51,4 +102,14 @@ const options = [
   { value: 'health_cost_balanced' as const, icon: 'chartBar' as const, label: 'admin.groups.form.healthCostBalanced', shortHint: 'admin.groups.form.healthCostBalancedShortHint', hint: 'admin.groups.form.healthCostBalancedHint', activeClass: 'border-emerald-300 bg-emerald-50/75 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-100', iconClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200' },
 ]
 const selectedOption = computed(() => options.find(option => option.value === props.modelValue) ?? options[0])
+const ttftSwitchHint = computed(() => props.modelValue === 'health_cost_balanced'
+  ? 'admin.groups.form.adaptiveTTFTCostBalancedHint'
+  : 'admin.groups.form.adaptiveTTFTHealthFirstHint')
+
+const updateThreshold = (event: Event) => {
+  const value = Number((event.target as HTMLInputElement).value)
+  if (Number.isInteger(value) && value >= 1 && value <= 3600) {
+    emit('update:ttftSwitchThresholdSeconds', value)
+  }
+}
 </script>

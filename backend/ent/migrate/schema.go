@@ -970,6 +970,8 @@ var (
 		{Name: "codex_models_manifest_config", Type: field.TypeJSON, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "strict_model_priority_on_model_mismatch", Type: field.TypeBool, Default: false},
 		{Name: "account_scheduling_strategy", Type: field.TypeString, Size: 30, Default: "strict_priority"},
+		{Name: "adaptive_ttft_switch_enabled", Type: field.TypeBool, Default: true},
+		{Name: "adaptive_ttft_switch_threshold_seconds", Type: field.TypeInt, Default: 60},
 		{Name: "rpm_limit", Type: field.TypeInt, Default: 0},
 		{Name: "force_openai_fast", Type: field.TypeBool, Default: false},
 		{Name: "max_reasoning_effort", Type: field.TypeString, Size: 20, Default: ""},

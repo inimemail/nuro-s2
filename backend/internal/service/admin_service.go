@@ -265,6 +265,8 @@ type CreateGroupInput struct {
 	CodexModelsManifestConfig          GroupCodexModelsManifestConfig
 	StrictModelPriorityOnModelMismatch bool
 	AccountSchedulingStrategy          string
+	AdaptiveTTFTSwitchEnabled          *bool
+	AdaptiveTTFTSwitchThresholdSeconds *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int
 	ForceOpenAIFast             bool
@@ -339,6 +341,8 @@ type UpdateGroupInput struct {
 	CodexModelsManifestConfig          *GroupCodexModelsManifestConfig
 	StrictModelPriorityOnModelMismatch *bool
 	AccountSchedulingStrategy          *string
+	AdaptiveTTFTSwitchEnabled          *bool
+	AdaptiveTTFTSwitchThresholdSeconds *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit                    *int
 	ForceOpenAIFast             *bool
@@ -2114,6 +2118,17 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if input.RateMultiplier <= 0 {
 		return nil, errors.New("rate_multiplier must be > 0")
 	}
+	adaptiveTTFTSwitchEnabled := true
+	if input.AdaptiveTTFTSwitchEnabled != nil {
+		adaptiveTTFTSwitchEnabled = *input.AdaptiveTTFTSwitchEnabled
+	}
+	adaptiveTTFTSwitchThresholdSeconds := DefaultAdaptiveTTFTSwitchThresholdSeconds
+	if input.AdaptiveTTFTSwitchThresholdSeconds != nil {
+		if *input.AdaptiveTTFTSwitchThresholdSeconds < MinAdaptiveTTFTSwitchThresholdSeconds || *input.AdaptiveTTFTSwitchThresholdSeconds > MaxAdaptiveTTFTSwitchThresholdSeconds {
+			return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_TTFT_SWITCH_THRESHOLD", "adaptive_ttft_switch_threshold_seconds must be between 1 and 3600")
+		}
+		adaptiveTTFTSwitchThresholdSeconds = *input.AdaptiveTTFTSwitchThresholdSeconds
+	}
 
 	platform := input.Platform
 	if platform == "" {
@@ -2332,6 +2347,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		CodexModelsManifestConfig:          codexManifestConfig,
 		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
+		AdaptiveTTFTSwitchEnabled:          adaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds: adaptiveTTFTSwitchThresholdSeconds,
 		RPMLimit:                           input.RPMLimit,
 		ForceOpenAIFast:                    input.ForceOpenAIFast,
 		MaxReasoningEffort:                 maxReasoningEffort,
@@ -2773,6 +2790,15 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.AccountSchedulingStrategy != nil {
 		group.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(*input.AccountSchedulingStrategy)
+	}
+	if input.AdaptiveTTFTSwitchEnabled != nil {
+		group.AdaptiveTTFTSwitchEnabled = *input.AdaptiveTTFTSwitchEnabled
+	}
+	if input.AdaptiveTTFTSwitchThresholdSeconds != nil {
+		if *input.AdaptiveTTFTSwitchThresholdSeconds < MinAdaptiveTTFTSwitchThresholdSeconds || *input.AdaptiveTTFTSwitchThresholdSeconds > MaxAdaptiveTTFTSwitchThresholdSeconds {
+			return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_TTFT_SWITCH_THRESHOLD", "adaptive_ttft_switch_threshold_seconds must be between 1 and 3600")
+		}
+		group.AdaptiveTTFTSwitchThresholdSeconds = *input.AdaptiveTTFTSwitchThresholdSeconds
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit

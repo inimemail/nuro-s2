@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"testing"
@@ -142,6 +143,84 @@ func TestAdminService_ListGroups_PassesSortParams(t *testing.T) {
 		SortBy:    "account_count",
 		SortOrder: "ASC",
 	}, repo.listWithFiltersParams)
+}
+
+func TestAdminServiceCreateGroupDefaultsAdaptiveTTFTSwitch(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "adaptive-defaults",
+		Platform:       PlatformAnthropic,
+		RateMultiplier: 1,
+	})
+
+	require.NoError(t, err)
+	require.True(t, group.AdaptiveTTFTSwitchEnabled)
+	require.Equal(t, DefaultAdaptiveTTFTSwitchThresholdSeconds, group.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Same(t, group, repo.created)
+}
+
+func TestAdminServiceCreateGroupAcceptsAdaptiveTTFTSwitchOverride(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	enabled := false
+	threshold := 30
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                               "adaptive-override",
+		Platform:                           PlatformAnthropic,
+		RateMultiplier:                     1,
+		AdaptiveTTFTSwitchEnabled:          &enabled,
+		AdaptiveTTFTSwitchThresholdSeconds: &threshold,
+	})
+
+	require.NoError(t, err)
+	require.False(t, group.AdaptiveTTFTSwitchEnabled)
+	require.Equal(t, threshold, group.AdaptiveTTFTSwitchThresholdSeconds)
+}
+
+func TestAdminServiceRejectsInvalidAdaptiveTTFTSwitchThreshold(t *testing.T) {
+	for _, threshold := range []int{0, MaxAdaptiveTTFTSwitchThresholdSeconds + 1} {
+		t.Run(fmt.Sprintf("threshold_%d", threshold), func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+				Name:                               "adaptive-invalid",
+				Platform:                           PlatformAnthropic,
+				RateMultiplier:                     1,
+				AdaptiveTTFTSwitchThresholdSeconds: &threshold,
+			})
+
+			statusCode, status := infraerrors.ToHTTP(err)
+			require.Equal(t, http.StatusBadRequest, statusCode)
+			require.Equal(t, "INVALID_ADAPTIVE_TTFT_SWITCH_THRESHOLD", status.Reason)
+			require.Nil(t, repo.created)
+		})
+	}
+}
+
+func TestAdminServiceUpdateGroupPreservesAdaptiveTTFTSwitchWhenOmitted(t *testing.T) {
+	group := &Group{
+		ID:                                 7,
+		Name:                               "adaptive-existing",
+		Platform:                           PlatformAnthropic,
+		RateMultiplier:                     1,
+		Status:                             StatusActive,
+		SubscriptionType:                   SubscriptionTypeStandard,
+		AdaptiveTTFTSwitchEnabled:          false,
+		AdaptiveTTFTSwitchThresholdSeconds: 30,
+	}
+	repo := &groupRepoStubForAdmin{getByID: group}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{})
+
+	require.NoError(t, err)
+	require.False(t, updated.AdaptiveTTFTSwitchEnabled)
+	require.Equal(t, 30, updated.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Same(t, updated, repo.updated)
 }
 
 func TestAdminServiceCreateOpenAIGroupAllowsZeroUpstreamGuardLimit(t *testing.T) {

@@ -249,6 +249,8 @@ type CreateGroupRequest struct {
 	CodexModelsManifestConfig          service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
 	StrictModelPriorityOnModelMismatch bool                                      `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          string                                    `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled          *bool                                     `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds *int                                      `json:"adaptive_ttft_switch_threshold_seconds"`
 	// 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int                              `json:"rpm_limit"`
 	ForceOpenAIFast             bool                             `json:"force_openai_fast"`
@@ -321,6 +323,8 @@ type UpdateGroupRequest struct {
 	CodexModelsManifestConfig          *service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
 	StrictModelPriorityOnModelMismatch *bool                                      `json:"strict_model_priority_on_model_mismatch"`
 	AccountSchedulingStrategy          *string                                    `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled          *bool                                      `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds *int                                       `json:"adaptive_ttft_switch_threshold_seconds"`
 	// 分组 RPM 上限（0 = 不限制）；nil 表示未提供不改动
 	RPMLimit                    *int                              `json:"rpm_limit"`
 	ForceOpenAIFast             *bool                             `json:"force_openai_fast"`
@@ -497,6 +501,8 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
+		AdaptiveTTFTSwitchEnabled:          req.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds: req.AdaptiveTTFTSwitchThresholdSeconds,
 		RPMLimit:                           req.RPMLimit,
 		ForceOpenAIFast:                    req.ForceOpenAIFast,
 		MaxReasoningEffort:                 req.MaxReasoningEffort,
@@ -584,6 +590,8 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
 		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
+		AdaptiveTTFTSwitchEnabled:          req.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds: req.AdaptiveTTFTSwitchThresholdSeconds,
 		RPMLimit:                           req.RPMLimit,
 		ForceOpenAIFast:                    req.ForceOpenAIFast,
 		MaxReasoningEffort:                 req.MaxReasoningEffort,

@@ -29,3 +29,20 @@ func TestMigration228AddsHealthCostBalancedSchedulingStrategy(t *testing.T) {
 	require.Contains(t, sql, "COMMENT ON COLUMN groups.account_scheduling_strategy")
 	require.NotContains(t, sql, "ALTER TABLE groups")
 }
+
+func TestMigration230AddsAdaptiveTTFTSwitchAndInvalidatesAuthCache(t *testing.T) {
+	content, err := FS.ReadFile("230_group_adaptive_ttft_switch.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "ADD COLUMN IF NOT EXISTS adaptive_ttft_switch_enabled")
+	require.Contains(t, sql, "ADD COLUMN IF NOT EXISTS adaptive_ttft_switch_threshold_seconds")
+	require.Contains(t, sql, "DEFAULT TRUE")
+	require.Contains(t, sql, "DEFAULT 60")
+	require.Contains(t, sql, "adaptive_ttft_switch_threshold_seconds < 1")
+	require.Contains(t, sql, "adaptive_ttft_switch_threshold_seconds > 3600")
+	require.Contains(t, sql, "AFTER UPDATE OF account_scheduling_strategy")
+	require.Contains(t, sql, "adaptive_ttft_switch_enabled")
+	require.Contains(t, sql, "adaptive_ttft_switch_threshold_seconds ON groups")
+	require.NotContains(t, sql, "DROP COLUMN")
+}

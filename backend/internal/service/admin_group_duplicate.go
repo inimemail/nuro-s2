@@ -167,6 +167,8 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		ModelsListConfig:                   GroupModelsListConfig{Enabled: source.ModelsListConfig.Enabled, Models: append([]string(nil), source.ModelsListConfig.Models...)},
 		StrictModelPriorityOnModelMismatch: source.StrictModelPriorityOnModelMismatch,
 		AccountSchedulingStrategy:          source.AccountSchedulingStrategy,
+		AdaptiveTTFTSwitchEnabled:          source.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds: source.AdaptiveTTFTSwitchThresholdSeconds,
 		RPMLimit:                           source.RPMLimit,
 		MaxReasoningEffort:                 source.MaxReasoningEffort,
 		ReasoningEffortMappings:            append([]ReasoningEffortMapping(nil), source.ReasoningEffortMappings...),

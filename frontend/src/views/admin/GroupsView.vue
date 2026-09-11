@@ -1778,7 +1778,11 @@
           </div>
         </div>
 
-        <AccountSchedulingStrategyField v-model="createForm.account_scheduling_strategy" />
+        <AccountSchedulingStrategyField
+          v-model="createForm.account_scheduling_strategy"
+          v-model:ttft-switch-enabled="createForm.adaptive_ttft_switch_enabled"
+          v-model:ttft-switch-threshold-seconds="createForm.adaptive_ttft_switch_threshold_seconds"
+        />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
@@ -3398,7 +3402,11 @@
           </div>
         </div>
 
-        <AccountSchedulingStrategyField v-model="editForm.account_scheduling_strategy" />
+        <AccountSchedulingStrategyField
+          v-model="editForm.account_scheduling_strategy"
+          v-model:ttft-switch-enabled="editForm.adaptive_ttft_switch_enabled"
+          v-model:ttft-switch-threshold-seconds="editForm.adaptive_ttft_switch_threshold_seconds"
+        />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
@@ -4317,6 +4325,8 @@ const createForm = reactive({
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
   account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
+  adaptive_ttft_switch_enabled: true,
+  adaptive_ttft_switch_threshold_seconds: 60,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4679,6 +4689,8 @@ const editForm = reactive({
   require_privacy_set: false,
   strict_model_priority_on_model_mismatch: false,
   account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
+  adaptive_ttft_switch_enabled: true,
+  adaptive_ttft_switch_threshold_seconds: 60,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5126,6 +5138,8 @@ const closeCreateModal = () => {
   createForm.require_privacy_set = false;
   createForm.strict_model_priority_on_model_mismatch = false;
   createForm.account_scheduling_strategy = "strict_priority";
+  createForm.adaptive_ttft_switch_enabled = true;
+  createForm.adaptive_ttft_switch_threshold_seconds = 60;
   createForm.supported_model_scopes = ["claude", "gemini_text", "gemini_image"];
   createForm.mcp_xml_inject = true;
   createForm.copy_accounts_from_group_ids = [];
@@ -5362,6 +5376,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.account_scheduling_strategy = group.account_scheduling_strategy === "health_cost_balanced"
     ? "health_cost_balanced"
     : group.account_scheduling_strategy === "health_first" ? "health_first" : "strict_priority";
+  editForm.adaptive_ttft_switch_enabled = group.adaptive_ttft_switch_enabled ?? true;
+  editForm.adaptive_ttft_switch_threshold_seconds = group.adaptive_ttft_switch_threshold_seconds ?? 60;
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",
@@ -5444,6 +5460,8 @@ const closeEditModal = () => {
   editForm.allow_live = false;
   editForm.strict_model_priority_on_model_mismatch = false;
   editForm.account_scheduling_strategy = "strict_priority";
+  editForm.adaptive_ttft_switch_enabled = true;
+  editForm.adaptive_ttft_switch_threshold_seconds = 60;
   resetModelsListState(editModelsListState);
   Object.assign(editCodexManifestConfig, createCodexManifestDefaults());
   editCodexManifestAccountNames.value = {};

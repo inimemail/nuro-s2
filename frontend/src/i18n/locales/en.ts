@@ -2329,11 +2329,16 @@ export default {
         ,healthFirst: 'Adaptive health'
         ,healthLeading: 'Health first'
         ,healthLeadingShortHint: 'Prefer healthy accounts'
-        ,healthLeadingHint: 'Control the cost range, then prefer fewer errors and faster first-token latency; continuations stay on their bound account.'
+        ,healthLeadingHint: 'Prefer healthy accounts with fewer errors. Below the slow first-token threshold, cost is the tie-breaker and continuations keep their binding.'
         ,healthCostBalanced: 'Health cost balanced'
         ,healthCostBalancedShortHint: 'Balance health and cost'
         ,healthCostBalancedHint: 'Lock to the lowest healthy cost tier; raise cost only when it is seriously slow, while continuations keep their binding.'
         ,strictPriorityShortHint: 'Use account priority'
+        ,adaptiveTTFTSwitch: 'Slow first-token switching'
+        ,adaptiveTTFTThreshold: 'Threshold'
+        ,adaptiveTTFTHealthFirstHint: 'A measured account may switch for speed only after its first-token P50 reaches this threshold.'
+        ,adaptiveTTFTCostBalancedHint: 'The scheduler tries the next exact multiplier tier only after every account in the cheapest tier reaches this threshold.'
+        ,seconds: 'sec'
       },
       enterGroupName: 'Enter group name',
       optionalDescription: 'Optional description',

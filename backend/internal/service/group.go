@@ -21,7 +21,17 @@ const (
 	// AccountSchedulingStrategyHealthCostBalanced keeps the adaptive health
 	// model, but admits healthy lower-cost accounts after a bounded warm-up.
 	AccountSchedulingStrategyHealthCostBalanced = "health_cost_balanced"
+	DefaultAdaptiveTTFTSwitchThresholdSeconds   = 60
+	MinAdaptiveTTFTSwitchThresholdSeconds       = 1
+	MaxAdaptiveTTFTSwitchThresholdSeconds       = 3600
 )
+
+func NormalizeAdaptiveTTFTSwitchThresholdSeconds(value int) int {
+	if value < MinAdaptiveTTFTSwitchThresholdSeconds || value > MaxAdaptiveTTFTSwitchThresholdSeconds {
+		return DefaultAdaptiveTTFTSwitchThresholdSeconds
+	}
+	return value
+}
 
 func NormalizeAccountSchedulingStrategy(value string) string {
 	if value == AccountSchedulingStrategyHealthFirst || value == AccountSchedulingStrategyHealthCostBalanced {
@@ -128,6 +138,8 @@ type Group struct {
 	// priorities; false keeps the highest eligible priority layer strict.
 	StrictModelPriorityOnModelMismatch bool
 	AccountSchedulingStrategy          string
+	AdaptiveTTFTSwitchEnabled          bool
+	AdaptiveTTFTSwitchThresholdSeconds int
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。

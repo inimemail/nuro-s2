@@ -143,6 +143,10 @@ type Group struct {
 	StrictModelPriorityOnModelMismatch bool `json:"strict_model_priority_on_model_mismatch,omitempty"`
 	// 账号调度策略：strict_priority 保持原有优先级调度，health_first 健康领先，health_cost_balanced 健康成本均衡
 	AccountSchedulingStrategy string `json:"account_scheduling_strategy,omitempty"`
+	// 自适应健康调度是否允许因首 Token 过慢切换账号；不影响错误、冷却和严格优先级
+	AdaptiveTtftSwitchEnabled bool `json:"adaptive_ttft_switch_enabled,omitempty"`
+	// 自适应健康调度首 Token 慢速切换阈值（秒）
+	AdaptiveTtftSwitchThresholdSeconds int `json:"adaptive_ttft_switch_threshold_seconds,omitempty"`
 	// 分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流
 	RpmLimit int `json:"rpm_limit,omitempty"`
 	// 是否强制此 OpenAI/Composite 分组请求使用 service_tier=priority
@@ -261,11 +265,11 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case group.FieldVideoModelPrices, group.FieldModelPricing, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig, group.FieldModelsListConfig, group.FieldCodexModelsManifestConfig, group.FieldReasoningEffortMappings:
 			values[i] = new([]byte)
-		case group.FieldPeakRateEnabled, group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldAllowBatchImageGeneration, group.FieldAllowLive, group.FieldEdgeProtectionEnabled, group.FieldImageRateIndependent, group.FieldVideoRateIndependent, group.FieldLongContextPricingEnabled, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldStrictModelPriorityOnModelMismatch, group.FieldForceOpenaiFast:
+		case group.FieldPeakRateEnabled, group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldAllowBatchImageGeneration, group.FieldAllowLive, group.FieldEdgeProtectionEnabled, group.FieldImageRateIndependent, group.FieldVideoRateIndependent, group.FieldLongContextPricingEnabled, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldStrictModelPriorityOnModelMismatch, group.FieldAdaptiveTtftSwitchEnabled, group.FieldForceOpenaiFast:
 			values[i] = new(sql.NullBool)
 		case group.FieldRateMultiplier, group.FieldUpstreamBillingGuardMaxMultiplier, group.FieldUpstreamBillingGuardMinMultiplier, group.FieldPeakRateMultiplier, group.FieldDailyLimitUsd, group.FieldWeeklyLimitUsd, group.FieldMonthlyLimitUsd, group.FieldImageRateMultiplier, group.FieldImagePrice1k, group.FieldImagePrice2k, group.FieldImagePrice4k, group.FieldBatchImageDiscountMultiplier, group.FieldBatchImageHoldMultiplier, group.FieldVideoRateMultiplier, group.FieldVideoPrice480p, group.FieldVideoPrice720p, group.FieldVideoPrice1080p, group.FieldWebSearchPricePerCall, group.FieldSearchPricePer1k, group.FieldAudioRealtimePricePerMin, group.FieldAudioTtsPricePerMillionChars, group.FieldAudioSttPricePerHour:
 			values[i] = new(sql.NullFloat64)
-		case group.FieldID, group.FieldDefaultValidityDays, group.FieldFallbackGroupID, group.FieldFallbackGroupIDOnInvalidRequest, group.FieldSortOrder, group.FieldRpmLimit:
+		case group.FieldID, group.FieldDefaultValidityDays, group.FieldFallbackGroupID, group.FieldFallbackGroupIDOnInvalidRequest, group.FieldSortOrder, group.FieldAdaptiveTtftSwitchThresholdSeconds, group.FieldRpmLimit:
 			values[i] = new(sql.NullInt64)
 		case group.FieldName, group.FieldDescription, group.FieldPeakStart, group.FieldPeakEnd, group.FieldStatus, group.FieldDuplicateOperationID, group.FieldPlatform, group.FieldSubscriptionType, group.FieldDefaultMappedModel, group.FieldAccountSchedulingStrategy, group.FieldMaxReasoningEffort, group.FieldMaxReasoningEffortOverLimit:
 			values[i] = new(sql.NullString)
@@ -700,6 +704,18 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.AccountSchedulingStrategy = value.String
 			}
+		case group.FieldAdaptiveTtftSwitchEnabled:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field adaptive_ttft_switch_enabled", values[i])
+			} else if value.Valid {
+				_m.AdaptiveTtftSwitchEnabled = value.Bool
+			}
+		case group.FieldAdaptiveTtftSwitchThresholdSeconds:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field adaptive_ttft_switch_threshold_seconds", values[i])
+			} else if value.Valid {
+				_m.AdaptiveTtftSwitchThresholdSeconds = int(value.Int64)
+			}
 		case group.FieldRpmLimit:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field rpm_limit", values[i])
@@ -1037,6 +1053,12 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("account_scheduling_strategy=")
 	builder.WriteString(_m.AccountSchedulingStrategy)
+	builder.WriteString(", ")
+	builder.WriteString("adaptive_ttft_switch_enabled=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AdaptiveTtftSwitchEnabled))
+	builder.WriteString(", ")
+	builder.WriteString("adaptive_ttft_switch_threshold_seconds=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AdaptiveTtftSwitchThresholdSeconds))
 	builder.WriteString(", ")
 	builder.WriteString("rpm_limit=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RpmLimit))

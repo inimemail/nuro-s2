@@ -858,6 +858,34 @@ func (_c *GroupCreate) SetNillableAccountSchedulingStrategy(v *string) *GroupCre
 	return _c
 }
 
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (_c *GroupCreate) SetAdaptiveTtftSwitchEnabled(v bool) *GroupCreate {
+	_c.mutation.SetAdaptiveTtftSwitchEnabled(v)
+	return _c
+}
+
+// SetNillableAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableAdaptiveTtftSwitchEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetAdaptiveTtftSwitchEnabled(*v)
+	}
+	return _c
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (_c *GroupCreate) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupCreate {
+	_c.mutation.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	return _c
+}
+
+// SetNillableAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableAdaptiveTtftSwitchThresholdSeconds(v *int) *GroupCreate {
+	if v != nil {
+		_c.SetAdaptiveTtftSwitchThresholdSeconds(*v)
+	}
+	return _c
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_c *GroupCreate) SetRpmLimit(v int) *GroupCreate {
 	_c.mutation.SetRpmLimit(v)
@@ -1197,6 +1225,14 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultAccountSchedulingStrategy
 		_c.mutation.SetAccountSchedulingStrategy(v)
 	}
+	if _, ok := _c.mutation.AdaptiveTtftSwitchEnabled(); !ok {
+		v := group.DefaultAdaptiveTtftSwitchEnabled
+		_c.mutation.SetAdaptiveTtftSwitchEnabled(v)
+	}
+	if _, ok := _c.mutation.AdaptiveTtftSwitchThresholdSeconds(); !ok {
+		v := group.DefaultAdaptiveTtftSwitchThresholdSeconds
+		_c.mutation.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		v := group.DefaultRpmLimit
 		_c.mutation.SetRpmLimit(v)
@@ -1396,6 +1432,17 @@ func (_c *GroupCreate) check() error {
 	if v, ok := _c.mutation.AccountSchedulingStrategy(); ok {
 		if err := group.AccountSchedulingStrategyValidator(v); err != nil {
 			return &ValidationError{Name: "account_scheduling_strategy", err: fmt.Errorf(`ent: validator failed for field "Group.account_scheduling_strategy": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.AdaptiveTtftSwitchEnabled(); !ok {
+		return &ValidationError{Name: "adaptive_ttft_switch_enabled", err: errors.New(`ent: missing required field "Group.adaptive_ttft_switch_enabled"`)}
+	}
+	if _, ok := _c.mutation.AdaptiveTtftSwitchThresholdSeconds(); !ok {
+		return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: errors.New(`ent: missing required field "Group.adaptive_ttft_switch_threshold_seconds"`)}
+	}
+	if v, ok := _c.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		if err := group.AdaptiveTtftSwitchThresholdSecondsValidator(v); err != nil {
+			return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_ttft_switch_threshold_seconds": %w`, err)}
 		}
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
@@ -1697,6 +1744,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.AccountSchedulingStrategy(); ok {
 		_spec.SetField(group.FieldAccountSchedulingStrategy, field.TypeString, value)
 		_node.AccountSchedulingStrategy = value
+	}
+	if value, ok := _c.mutation.AdaptiveTtftSwitchEnabled(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchEnabled, field.TypeBool, value)
+		_node.AdaptiveTtftSwitchEnabled = value
+	}
+	if value, ok := _c.mutation.AdaptiveTtftSwitchThresholdSeconds(); ok {
+		_spec.SetField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
+		_node.AdaptiveTtftSwitchThresholdSeconds = value
 	}
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -2891,6 +2946,36 @@ func (u *GroupUpsert) SetAccountSchedulingStrategy(v string) *GroupUpsert {
 // UpdateAccountSchedulingStrategy sets the "account_scheduling_strategy" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateAccountSchedulingStrategy() *GroupUpsert {
 	u.SetExcluded(group.FieldAccountSchedulingStrategy)
+	return u
+}
+
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (u *GroupUpsert) SetAdaptiveTtftSwitchEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldAdaptiveTtftSwitchEnabled, v)
+	return u
+}
+
+// UpdateAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateAdaptiveTtftSwitchEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldAdaptiveTtftSwitchEnabled)
+	return u
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsert) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsert {
+	u.Set(group.FieldAdaptiveTtftSwitchThresholdSeconds, v)
+	return u
+}
+
+// UpdateAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateAdaptiveTtftSwitchThresholdSeconds() *GroupUpsert {
+	u.SetExcluded(group.FieldAdaptiveTtftSwitchThresholdSeconds)
+	return u
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds v to the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsert) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsert {
+	u.Add(group.FieldAdaptiveTtftSwitchThresholdSeconds, v)
 	return u
 }
 
@@ -4195,6 +4280,41 @@ func (u *GroupUpsertOne) SetAccountSchedulingStrategy(v string) *GroupUpsertOne 
 func (u *GroupUpsertOne) UpdateAccountSchedulingStrategy() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAccountSchedulingStrategy()
+	})
+}
+
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (u *GroupUpsertOne) SetAdaptiveTtftSwitchEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAdaptiveTtftSwitchEnabled(v)
+	})
+}
+
+// UpdateAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateAdaptiveTtftSwitchEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAdaptiveTtftSwitchEnabled()
+	})
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsertOne) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	})
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds v to the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsertOne) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddAdaptiveTtftSwitchThresholdSeconds(v)
+	})
+}
+
+// UpdateAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateAdaptiveTtftSwitchThresholdSeconds() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAdaptiveTtftSwitchThresholdSeconds()
 	})
 }
 
@@ -5676,6 +5796,41 @@ func (u *GroupUpsertBulk) SetAccountSchedulingStrategy(v string) *GroupUpsertBul
 func (u *GroupUpsertBulk) UpdateAccountSchedulingStrategy() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAccountSchedulingStrategy()
+	})
+}
+
+// SetAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field.
+func (u *GroupUpsertBulk) SetAdaptiveTtftSwitchEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAdaptiveTtftSwitchEnabled(v)
+	})
+}
+
+// UpdateAdaptiveTtftSwitchEnabled sets the "adaptive_ttft_switch_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateAdaptiveTtftSwitchEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAdaptiveTtftSwitchEnabled()
+	})
+}
+
+// SetAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsertBulk) SetAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAdaptiveTtftSwitchThresholdSeconds(v)
+	})
+}
+
+// AddAdaptiveTtftSwitchThresholdSeconds adds v to the "adaptive_ttft_switch_threshold_seconds" field.
+func (u *GroupUpsertBulk) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddAdaptiveTtftSwitchThresholdSeconds(v)
+	})
+}
+
+// UpdateAdaptiveTtftSwitchThresholdSeconds sets the "adaptive_ttft_switch_threshold_seconds" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateAdaptiveTtftSwitchThresholdSeconds() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAdaptiveTtftSwitchThresholdSeconds()
 	})
 }
 

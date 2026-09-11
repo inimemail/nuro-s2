@@ -471,6 +471,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 	}
 	if apiKey.Group != nil {
 		s.cacheAPIKeyAuthGroupPricing(apiKey.Group)
+		adaptiveTTFTPolicy := adaptiveTTFTSwitchPolicyForGroup(apiKey.Group)
 		snapshot.Group = &APIKeyAuthGroupSnapshot{
 			ID:                                apiKey.Group.ID,
 			Name:                              apiKey.Group.Name,
@@ -533,6 +534,8 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			CodexModelsManifestConfig:          apiKey.Group.CodexModelsManifestConfig,
 			StrictModelPriorityOnModelMismatch: apiKey.Group.StrictModelPriorityOnModelMismatch,
 			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy),
+			AdaptiveTTFTSwitchEnabled:          adaptiveTTFTPolicy.enabled,
+			AdaptiveTTFTSwitchThresholdSeconds: int(adaptiveTTFTPolicy.thresholdMs / 1000),
 			RPMLimit:                           apiKey.Group.RPMLimit,
 			ForceOpenAIFast:                    apiKey.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 apiKey.Group.MaxReasoningEffort,
@@ -582,6 +585,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		},
 	}
 	if snapshot.Group != nil {
+		adaptiveTTFTPolicy := adaptiveTTFTSwitchPolicyFromValues(snapshot.Group.AdaptiveTTFTSwitchEnabled, snapshot.Group.AdaptiveTTFTSwitchThresholdSeconds)
 		apiKey.Group = &Group{
 			ID:                                 snapshot.Group.ID,
 			Name:                               snapshot.Group.Name,
@@ -638,6 +642,8 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			CodexModelsManifestConfig:          snapshot.Group.CodexModelsManifestConfig,
 			StrictModelPriorityOnModelMismatch: snapshot.Group.StrictModelPriorityOnModelMismatch,
 			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(snapshot.Group.AccountSchedulingStrategy),
+			AdaptiveTTFTSwitchEnabled:          adaptiveTTFTPolicy.enabled,
+			AdaptiveTTFTSwitchThresholdSeconds: int(adaptiveTTFTPolicy.thresholdMs / 1000),
 			RPMLimit:                           snapshot.Group.RPMLimit,
 			ForceOpenAIFast:                    snapshot.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 snapshot.Group.MaxReasoningEffort,
