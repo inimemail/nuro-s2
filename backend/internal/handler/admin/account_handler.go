@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 
@@ -2529,6 +2530,34 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
+		response.Success(c, models)
+		return
+	}
+
+	// Grok OAuth accounts do not carry a static model_mapping. Keep the admin
+	// test picker on the native xAI catalog instead of Claude's fallback list.
+	if account.Platform == service.PlatformGrok && account.IsOAuth() {
+		response.Success(c, xai.DefaultModels())
+		return
+	}
+
+	// Domestic OpenAI-compatible accounts use their explicit mapping when one
+	// exists; otherwise expose a small provider-native catalog for testing.
+	if service.IsCNProvider(account.Platform) {
+		mapping := account.GetModelMapping()
+		if len(mapping) == 0 {
+			models := make([]openai.Model, 0, len(service.DefaultCNModelIDs(account.Platform)))
+			for _, modelID := range service.DefaultCNModelIDs(account.Platform) {
+				models = append(models, openai.Model{ID: modelID, Object: "model", Type: "model", DisplayName: modelID})
+			}
+			response.Success(c, models)
+			return
+		}
+		models := make([]openai.Model, 0, len(mapping))
+		for requestedModel := range mapping {
+			models = append(models, openai.Model{ID: requestedModel, Object: "model", Type: "model", DisplayName: requestedModel})
+		}
+		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 		response.Success(c, models)
 		return
 	}

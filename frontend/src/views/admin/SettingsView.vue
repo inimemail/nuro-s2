@@ -8765,6 +8765,7 @@ const platformQuotaLabels: Record<PlatformType, string> = {
   kimi: "Kimi",
   zhipu: "Zhipu",
   deepseek: "DeepSeek",
+  minimax: "MiniMax",
 };
 
 function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {
@@ -8854,6 +8855,7 @@ const nonOpenAIPoolPlatforms = [
   { key: "kimi", label: "Kimi", image: false },
   { key: "zhipu", label: "Zhipu", image: false },
   { key: "deepseek", label: "DeepSeek", image: false },
+  { key: "minimax", label: "MiniMax", image: false },
 ] as const;
 
 const nonOpenAIPoolProbeModelDefaults: Record<string, string> = {
@@ -8863,6 +8865,7 @@ const nonOpenAIPoolProbeModelDefaults: Record<string, string> = {
   kimi: "kimi-k2",
   zhipu: "glm-4.7",
   deepseek: "deepseek-chat",
+  minimax: "MiniMax-M2.5",
 };
 
 const nonOpenAIPoolImageProbeModelDefaults: Record<string, string> = {

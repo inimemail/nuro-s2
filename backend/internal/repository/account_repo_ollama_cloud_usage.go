@@ -8,7 +8,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-const ollamaCloudUsagePlatformsSQL = "'openai', 'anthropic', 'kimi', 'zhipu', 'deepseek'"
+const ollamaCloudUsagePlatformsSQL = "'openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax'"
 
 const ollamaCloudUsageEligibleSQL = `
 		platform IN (` + ollamaCloudUsagePlatformsSQL + `)

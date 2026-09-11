@@ -135,6 +135,53 @@ func TestCNProviderResponsesSupportedByKimiAndDeepSeek(t *testing.T) {
 	require.Equal(t, DefaultDeepSeekResponsesBaseURL, account.GetCNProtocolBaseURL(APIProtocolResponses))
 }
 
+func TestMiniMaxSupportsAllDomesticProtocolsAndDefaults(t *testing.T) {
+	account := &Account{Platform: PlatformMiniMax, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": DefaultMiniMaxCNBaseURL}, Extra: map[string]any{"cn_api_mode": APIProtocolResponses}}
+	require.True(t, account.IsCNProvider())
+	require.Equal(t, APIProtocolResponses, account.GetAPIProtocol())
+	require.Equal(t, DefaultMiniMaxCNBaseURL, account.GetCNProtocolBaseURL(APIProtocolResponses))
+	require.Equal(t, DefaultMiniMaxCNAnthropicBaseURL, account.GetCNProtocolBaseURL(APIProtocolAnthropic))
+}
+
+func TestCNAdaptiveDerivationFollowsPrimaryUnlessExplicitlyOverridden(t *testing.T) {
+	extra, _ := normalizeCNProviderStoredConfig(PlatformMiniMax, map[string]any{
+		cnAPIProtocolExtraKey: APIProtocolAdaptive,
+		cnAPIBaseURLsExtraKey: map[string]any{
+			APIProtocolChatCompletions: "https://old.example/v1",
+			APIProtocolAnthropic:       "https://old.example/anthropic",
+			APIProtocolResponses:       "https://old.example/v1",
+		},
+	}, map[string]any{"base_url": "https://new.example/v1"})
+	urls := cnStringMap(extra[cnAPIBaseURLsExtraKey])
+	require.Equal(t, "https://new.example/v1", urls[APIProtocolChatCompletions])
+	require.Equal(t, "https://new.example/anthropic", urls[APIProtocolAnthropic])
+	require.Equal(t, "https://new.example/v1", urls[APIProtocolResponses])
+
+	extra[cnAPIBaseURLOverridesExtraKey] = map[string]any{APIProtocolAnthropic: true}
+	extra[cnAPIBaseURLsExtraKey] = map[string]any{APIProtocolAnthropic: "https://manual.example/messages"}
+	extra, _ = normalizeCNProviderStoredConfig(PlatformMiniMax, extra, map[string]any{"base_url": "https://newer.example/v1"})
+	urls = cnStringMap(extra[cnAPIBaseURLsExtraKey])
+	require.Equal(t, "https://manual.example/messages", urls[APIProtocolAnthropic])
+	require.Equal(t, "https://newer.example/v1", urls[APIProtocolChatCompletions])
+}
+
+func TestNormalizeBulkUpdateForNonCNAccountDropsDomesticEndpointConfig(t *testing.T) {
+	updates := normalizeBulkUpdateForAccount(&Account{Platform: PlatformOpenAI}, AccountBulkUpdate{
+		Extra: map[string]any{
+			cnAPIProtocolExtraKey:         APIProtocolAdaptive,
+			cnAPIBaseURLsExtraKey:         map[string]any{APIProtocolChatCompletions: "https://example.test/v1"},
+			cnAPIBaseURLOverridesExtraKey: map[string]any{APIProtocolAnthropic: true},
+		},
+		ExtraRemoveKeys: []string{cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey, cnAPIBaseURLOverridesExtraKey},
+	})
+	require.NotContains(t, updates.Extra, cnAPIProtocolExtraKey)
+	require.NotContains(t, updates.Extra, cnAPIBaseURLsExtraKey)
+	require.NotContains(t, updates.Extra, cnAPIBaseURLOverridesExtraKey)
+	require.NotContains(t, updates.ExtraRemoveKeys, cnAPIProtocolExtraKey)
+	require.NotContains(t, updates.ExtraRemoveKeys, cnAPIBaseURLsExtraKey)
+	require.NotContains(t, updates.ExtraRemoveKeys, cnAPIBaseURLOverridesExtraKey)
+}
+
 func TestDeepSeekResponsesUsesConfiguredResponsesBaseURL(t *testing.T) {
 	account := &Account{
 		Platform: PlatformDeepSeek,
@@ -153,6 +200,8 @@ func TestCNProtocolControlsChatCompletionsResponsesBridge(t *testing.T) {
 
 	kimi := &Account{Platform: PlatformKimi, Type: AccountTypeAPIKey, Extra: map[string]any{cnAPIProtocolExtraKey: APIProtocolChatCompletions}}
 	require.False(t, shouldForwardAPIKeyChatViaResponses(kimi))
+	minimax := &Account{Platform: PlatformMiniMax, Type: AccountTypeAPIKey, Extra: map[string]any{cnAPIProtocolExtraKey: APIProtocolResponses}}
+	require.True(t, shouldForwardAPIKeyChatViaResponses(minimax))
 }
 
 func TestNormalizeCNProviderStoredConfigPreservesOnlySupportedResponses(t *testing.T) {
@@ -234,6 +283,19 @@ func TestCNProviderQuotaParsers(t *testing.T) {
 	require.InDelta(t, 11, zhipu[0].UsedPercent, 1e-9)
 	require.Equal(t, "weekly", zhipu[1].Window)
 	require.InDelta(t, 22, zhipu[1].UsedPercent, 1e-9)
+
+	minimax := parseMiniMaxUsageTiers([]byte(`{
+		"current_subscribe_title":"MiniMax Coding Plan",
+		"model_remains":[
+			{"model_name":"other","current_interval_remaining_percent":99},
+			{"model_name":"general","current_interval_remaining_percent":25,"current_weekly_status":1,"current_weekly_remaining_percent":60}
+		]
+	}`))
+	require.Len(t, minimax, 2)
+	require.Equal(t, "5h", minimax[0].Window)
+	require.InDelta(t, 75, minimax[0].UsedPercent, 1e-9)
+	require.Equal(t, "weekly", minimax[1].Window)
+	require.InDelta(t, 40, minimax[1].UsedPercent, 1e-9)
 }
 
 func TestParseKimiBalanceResponseRejectsBusinessErrorsAndMissingValues(t *testing.T) {

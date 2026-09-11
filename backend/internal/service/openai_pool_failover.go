@@ -67,7 +67,7 @@ func isOpenAIResponseHeaderTimeoutError(message string) bool {
 func shouldImmediatelyCoolOpenAITextPool(upstreamReq *http.Request, message string) bool {
 	if upstreamReq != nil {
 		profile := HTTPUpstreamProfileFromContext(upstreamReq.Context())
-		if profile == HTTPUpstreamProfileMedia || profile == HTTPUpstreamProfileOpenAIMedia {
+		if profile == HTTPUpstreamProfileMedia || profile == HTTPUpstreamProfileOpenAIMedia || profile == HTTPUpstreamProfileLongStream {
 			return false
 		}
 		if upstreamReq.URL != nil {

@@ -51,6 +51,8 @@ const (
 	providerZhipuPath = "/api/paas/v4/chat/completions"
 	// providerDeepSeekPath DeepSeek Chat Completions 路径。
 	providerDeepSeekPath = "/chat/completions"
+	// providerMiniMaxPath MiniMax OpenAI-compatible Chat Completions 路径。
+	providerMiniMaxPath = "/v1/chat/completions"
 	// providerOpenAIResponsesPath OpenAI Responses API 路径。
 	providerOpenAIResponsesPath = "/v1/responses"
 	// providerAnthropicPath Anthropic Messages 路径。
@@ -67,6 +69,7 @@ const (
 	MonitorProviderKimi        = "kimi"
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepSeek    = "deepseek"
+	MonitorProviderMiniMax     = "minimax"
 
 	MonitorCheckModeProbe      = "probe"
 	MonitorCheckModeQuota      = "quota"
@@ -133,7 +136,7 @@ var (
 		"CHANNEL_MONITOR_NOT_FOUND", "channel monitor not found",
 	)
 	ErrChannelMonitorInvalidProvider = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek",
+		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek/minimax",
 	)
 	ErrChannelMonitorInvalidCheckMode = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_CHECK_MODE", "check_mode must be one of probe/quota/quota_probe; antigravity only supports quota",

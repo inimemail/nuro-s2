@@ -289,12 +289,15 @@ func DetectCompositeModelPlatform(model string) (string, bool) {
 	if strings.HasPrefix(m, "deepseek-") || strings.HasPrefix(m, "deepseek/") {
 		return PlatformDeepSeek, true
 	}
+	if strings.HasPrefix(m, "minimax-") || strings.HasPrefix(m, "minimax/") || strings.HasPrefix(m, "abab") {
+		return PlatformMiniMax, true
+	}
 	return "", false
 }
 
 func isCompositeConcretePlatform(platform string) bool {
 	switch platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		return true
 	default:
 		return false

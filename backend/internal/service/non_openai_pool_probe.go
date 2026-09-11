@@ -60,7 +60,7 @@ func (s *AccountTestService) runNonOpenAIPoolProbe(ctx context.Context, accountI
 		resp, err = s.probeAntigravityOnce(ctx, account, model)
 	case PlatformGrok:
 		resp, err = s.probeGrokOnce(ctx, account, kind, model)
-	case PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		resp, err = s.probeCNProviderOnce(ctx, account, model)
 	default:
 		err = fmt.Errorf("unsupported recovery probe platform: %s", account.Platform)
@@ -405,7 +405,7 @@ func nonOpenAIPoolProbeJSONResponseValid(account *Account, trimmed []byte) bool 
 		return hasNestedCandidates() || hasArray("content") || hasString("id")
 	case PlatformGrok:
 		return hasArrayField("output")
-	case PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		switch account.GetAPIProtocol() {
 		case APIProtocolAnthropic, APIProtocolAdaptive:
 			return hasArray("content")

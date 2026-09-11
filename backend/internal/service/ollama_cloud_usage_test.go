@@ -22,6 +22,8 @@ func TestOllamaCloudUsageEligibilityAndCookieSanitization(t *testing.T) {
 	require.False(t, IsOllamaCloudUsageAccount(a))
 	a.Platform = PlatformKimi
 	require.True(t, IsOllamaCloudUsageAccount(a))
+	a.Platform = PlatformMiniMax
+	require.True(t, IsOllamaCloudUsageAccount(a))
 
 	for _, raw := range []string{"", "session=abc\r\nX-Leak: 1", "session=abc; Path=/"} {
 		_, err := normalizeOllamaCloudCookie(raw)

@@ -45,3 +45,10 @@ func TestWithHTTPUpstreamProfile_MediaProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestWithHTTPUpstreamProfile_LongStreamIsDistinct(t *testing.T) {
+	ctx := WithHTTPUpstreamProfile(context.Background(), HTTPUpstreamProfileLongStream)
+	if got := HTTPUpstreamProfileFromContext(ctx); got != HTTPUpstreamProfileLongStream {
+		t.Fatalf("long stream profile = %q, want %q", got, HTTPUpstreamProfileLongStream)
+	}
+}

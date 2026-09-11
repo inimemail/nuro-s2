@@ -239,7 +239,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok || g.Platform == PlatformKimi || g.Platform == PlatformZhipu || g.Platform == PlatformDeepSeek) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok || g.Platform == PlatformKimi || g.Platform == PlatformZhipu || g.Platform == PlatformDeepSeek || g.Platform == PlatformMiniMax) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}
@@ -355,7 +355,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok || g.Platform == PlatformKimi || g.Platform == PlatformZhipu || g.Platform == PlatformDeepSeek) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok || g.Platform == PlatformKimi || g.Platform == PlatformZhipu || g.Platform == PlatformDeepSeek || g.Platform == PlatformMiniMax) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}
@@ -478,7 +478,7 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformGemini:
 		// TODO: 测试Gemini API凭证
 		return nil
-	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		// TODO: 测试 OpenAI-compatible provider 凭证
 		return nil
 	default:

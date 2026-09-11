@@ -150,7 +150,7 @@ func (r *NonOpenAIPoolRuntime) currentSettings(fallback NonOpenAIPoolSettings) N
 
 func nonOpenAIPoolPlatform(platform string) bool {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		return true
 	default:
 		return false
@@ -778,7 +778,7 @@ func (r *NonOpenAIPoolRuntime) clearAccountID(accountID int64) {
 		return
 	}
 	suffix := ":" + formatInt64(accountID)
-	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax} {
 		for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
 			key := strings.ToLower(platform) + ":" + kind + suffix
 			r.deadlines.Delete(key)
@@ -834,7 +834,7 @@ func (r *NonOpenAIPoolRuntime) clearAccountIDBefore(accountID, clearGeneration i
 		return
 	}
 	suffix := ":" + formatInt64(accountID)
-	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax} {
 		for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
 			r.clearKeyBefore(strings.ToLower(platform)+":"+kind+suffix, clearGeneration)
 		}

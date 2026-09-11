@@ -18,7 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// 国产供应商 Coding Plan 滚动窗口额度探测服务（Kimi For Coding / 智谱 GLM Coding Plan）。
+// 国产供应商 Coding Plan 滚动窗口额度探测服务（Kimi、智谱、MiniMax）。
 //
 // 与 grok_quota_service 不同：CN 供应商走数据面 API Key（无 OAuth token provider），
 // 额度端点为只读 GET，解析 5h + weekly 两档滚动窗口并落 account.Extra 快照，
@@ -62,7 +62,7 @@ type CNProviderQuotaProbeResult struct {
 	Error           string        `json:"error,omitempty"`
 }
 
-// CNProviderQuotaService 探测 Kimi / Zhipu Coding Plan 的滚动窗口用量。
+// CNProviderQuotaService 探测国产 Coding Plan 的滚动窗口用量。
 type CNProviderQuotaService struct {
 	accountRepo  AccountRepository
 	proxyRepo    ProxyRepository
@@ -132,8 +132,8 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 
 func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, account *Account) (*CNProviderQuotaProbeResult, error) {
 	provider := account.GetCodingPlanProvider()
-	if provider != PlatformKimi && provider != PlatformZhipu {
-		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a kimi/zhipu coding plan account")
+	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax {
+		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a supported coding plan account")
 	}
 
 	apiKey := strings.TrimSpace(account.GetCNAPIKey())
@@ -158,6 +158,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		if zhipuOrg != "" {
 			targetURL += "?type=2"
 		}
+	case PlatformMiniMax:
+		targetURL = miniMaxQuotaURL(baseURL)
+		authHeader = "Bearer " + apiKey
 	}
 
 	// 探测发起前过出站 URL 安全策略（与网关转发/Grok 探测同一套校验）：
@@ -214,6 +217,16 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		result.Error = fmt.Sprintf("API error (HTTP %d): %s", resp.StatusCode, truncate(strings.TrimSpace(string(bodyBytes)), 240))
 		return result, nil
 	}
+	if provider == PlatformMiniMax {
+		if statusCode := gjson.GetBytes(bodyBytes, "base_resp.status_code"); statusCode.Exists() && statusCode.Int() != 0 {
+			message := strings.TrimSpace(gjson.GetBytes(bodyBytes, "base_resp.status_msg").String())
+			if message == "" {
+				message = "unknown minimax quota error"
+			}
+			result.Error = "API error: " + message
+			return result, nil
+		}
+	}
 
 	// 智谱业务级错误（HTTP 2xx 但 success=false）。
 	if provider == PlatformZhipu {
@@ -234,6 +247,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	case PlatformZhipu:
 		tiers = parseZhipuTokenTiers(gjson.GetBytes(bodyBytes, "data"))
 		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "data.level").String())
+	case PlatformMiniMax:
+		tiers = parseMiniMaxUsageTiers(bodyBytes)
+		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "current_subscribe_title").String())
 	}
 	if len(tiers) == 0 {
 		result.Error = "Invalid quota response: no valid quota windows"
@@ -307,6 +323,52 @@ func zhipuQuotaURL(baseURL string) string {
 func kimiQuotaURL(baseURL string) string {
 	base := strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 	return base + "/v1/usages"
+}
+
+// miniMaxQuotaURL derives the Coding Plan endpoint from the data-plane host.
+// MiniMax has CN and international domains with an otherwise identical path.
+func miniMaxQuotaURL(baseURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.Contains(strings.ToLower(base), "api.minimax.io") {
+		return "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
+	}
+	return "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+}
+
+// parseMiniMaxUsageTiers parses only the general plan bucket. MiniMax returns
+// remaining percentages, unlike Kimi/Zhipu's used values.
+func parseMiniMaxUsageTiers(body []byte) []CNQuotaTier {
+	var tiers []CNQuotaTier
+	var general gjson.Result
+	models := gjson.GetBytes(body, "model_remains")
+	if models.IsArray() {
+		models.ForEach(func(_, item gjson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(item.Get("model_name").String()), "general") {
+				general = item
+				return false
+			}
+			return true
+		})
+	}
+	if !general.Exists() {
+		return tiers
+	}
+	if remaining, ok := cnParseF64(general.Get("current_interval_remaining_percent").Value()); ok {
+		tiers = append(tiers, CNQuotaTier{Window: "5h", UsedPercent: maxFloat64(0, 100-remaining), ResetAt: cnNormalizeResetTime(general.Get("current_interval_reset_time").Value())})
+	}
+	if general.Get("current_weekly_status").Int() == 1 {
+		if remaining, ok := cnParseF64(general.Get("current_weekly_remaining_percent").Value()); ok {
+			tiers = append(tiers, CNQuotaTier{Window: "weekly", UsedPercent: maxFloat64(0, 100-remaining), ResetAt: cnNormalizeResetTime(general.Get("current_weekly_reset_time").Value())})
+		}
+	}
+	return tiers
+}
+
+func maxFloat64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func zhipuQuotaHost(baseURL string) string {

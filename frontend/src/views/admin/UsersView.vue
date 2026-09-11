@@ -572,6 +572,10 @@
             <PlatformCostCell :usage="getPlatformUsage(row.id, 'deepseek')" />
           </template>
 
+          <template #cell-usage_minimax="{ row }">
+            <PlatformCostCell :usage="getPlatformUsage(row.id, 'minimax')" />
+          </template>
+
           <template #cell-concurrency="{ row }">
             <UserConcurrencyCell
               :current="row.current_concurrency ?? 0"
@@ -884,6 +888,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'usage_kimi', label: t('admin.users.columns.usageKimi'), sortable: false },
   { key: 'usage_zhipu', label: t('admin.users.columns.usageZhipu'), sortable: false },
   { key: 'usage_deepseek', label: t('admin.users.columns.usageDeepSeek'), sortable: false },
+  { key: 'usage_minimax', label: t('admin.users.columns.usageMiniMax'), sortable: false },
   { key: 'concurrency', label: t('admin.users.columns.concurrency'), sortable: true },
   { key: 'status', label: t('admin.users.columns.status'), sortable: true },
   { key: 'last_active_at', label: t('admin.users.columns.lastActive'), sortable: true },
@@ -905,7 +910,7 @@ const hiddenColumns = reactive<Set<string>>(new Set())
 const DEFAULT_HIDDEN_COLUMNS = [
   'notes', 'groups', 'subscriptions', 'usage', 'concurrency',
   'usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity', 'usage_grok',
-  'usage_kimi', 'usage_zhipu', 'usage_deepseek',
+  'usage_kimi', 'usage_zhipu', 'usage_deepseek', 'usage_minimax',
   'balance_platform_quota'
 ]
 const REMOVED_COLUMNS = new Set(['last_login_at'])
@@ -919,12 +924,13 @@ const HIDDEN_COLUMNS_KEY = 'user-hidden-columns'
 // 并在 VERSION_NEW_HIDDEN_COLUMNS 中登记该版本新增的 key。
 // 这样老用户升级后这些新列会被自动隐藏一次，而不会影响他们对其它老列的偏好。
 const COLUMN_SETTINGS_VERSION_KEY = 'user-column-settings-version'
-const COLUMN_SETTINGS_VERSION = 5
+const COLUMN_SETTINGS_VERSION = 6
 const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
   2: ['usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity'],
   3: ['balance_platform_quota'],
   4: ['usage_grok'],
-  5: ['usage_kimi', 'usage_zhipu', 'usage_deepseek']
+  5: ['usage_kimi', 'usage_zhipu', 'usage_deepseek'],
+  6: ['usage_minimax']
 }
 
 // Load saved column settings
@@ -1004,7 +1010,7 @@ const isColumnVisible = (key: string) => !hiddenColumns.has(key)
 // 列 key → 平台名（'usage' 主列汇总所有平台时为 null）
 // 显式数组取代 Object.keys()：保证迭代顺序（决定列头排序按钮渲染顺序）
 // 不会因 JS 引擎差异或 USAGE_COLUMN_PLATFORMS 属性顺序调整而静默变化。
-const USAGE_COLUMN_KEYS: readonly string[] = ['usage', 'usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity', 'usage_grok', 'usage_kimi', 'usage_zhipu', 'usage_deepseek']
+const USAGE_COLUMN_KEYS: readonly string[] = ['usage', 'usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity', 'usage_grok', 'usage_kimi', 'usage_zhipu', 'usage_deepseek', 'usage_minimax']
 const USAGE_COLUMN_PLATFORMS: Record<string, string | null> = {
   usage: null,
   usage_anthropic: 'anthropic',
@@ -1014,7 +1020,8 @@ const USAGE_COLUMN_PLATFORMS: Record<string, string | null> = {
   usage_grok: 'grok',
   usage_kimi: 'kimi',
   usage_zhipu: 'zhipu',
-  usage_deepseek: 'deepseek'
+  usage_deepseek: 'deepseek',
+  usage_minimax: 'minimax'
 }
 const PLATFORM_USAGE_COLUMNS = USAGE_COLUMN_KEYS.filter((k) => k !== 'usage')
 const hasVisibleUsageColumn = computed(

@@ -27,6 +27,10 @@ const (
 	// Billing probes use a separate connection pool so a short probe cadence
 	// cannot consume production first-token connections.
 	HTTPUpstreamProfileBillingProbe HTTPUpstreamProfile = "billing_probe"
+	// Long streams use a dedicated pool and intentionally omit ordinary
+	// response-header deadlines. Configuration refreshes cannot evict an active
+	// stream because this profile has its own cache/pool key.
+	HTTPUpstreamProfileLongStream HTTPUpstreamProfile = "long_stream"
 )
 
 type httpUpstreamProfileContextKey struct{}
@@ -57,7 +61,7 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 	switch profile {
-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileOpenAIHealthProbe, HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia, HTTPUpstreamProfileBillingProbe:
+	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileOpenAIHealthProbe, HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia, HTTPUpstreamProfileBillingProbe, HTTPUpstreamProfileLongStream:
 		return profile
 	default:
 		return HTTPUpstreamProfileDefault

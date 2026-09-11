@@ -12,7 +12,7 @@ import (
 var monitorProviders = map[string]struct{}{
 	MonitorProviderOpenAI: {}, MonitorProviderAnthropic: {}, MonitorProviderGemini: {},
 	MonitorProviderGrok: {}, MonitorProviderAntigravity: {}, MonitorProviderKimi: {},
-	MonitorProviderZhipu: {}, MonitorProviderDeepSeek: {},
+	MonitorProviderZhipu: {}, MonitorProviderDeepSeek: {}, MonitorProviderMiniMax: {},
 }
 
 // validateProvider 校验 provider 字符串。Antigravity 仅支持配额，因此不在探活 adapter 表中。
@@ -159,14 +159,14 @@ func monitorAccountQuotaCapability(account *Account) error {
 		return ErrChannelMonitorAccountRequired
 	}
 	switch account.Platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		if account.IsCodingPlan() {
 			if account.GetCodingPlanProvider() == "" {
 				return ErrChannelMonitorAccountNotSupportable
 			}
 			return nil
 		}
-		if account.Platform == PlatformZhipu {
+		if account.Platform == PlatformZhipu || account.Platform == PlatformMiniMax {
 			return ErrChannelMonitorAccountNotSupportable
 		}
 	case PlatformAnthropic:

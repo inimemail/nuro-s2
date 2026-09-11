@@ -155,6 +155,32 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.Contains(t, ids, "gpt-5.5")
 }
 
+func TestAccountHandlerGetAvailableModels_GrokOAuthUsesNativeCatalog(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account:          service.Account{ID: 45, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth, Status: service.StatusActive},
+	}
+	router := setupAvailableModelsRouter(svc)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"grok-4.5"`)
+	require.NotContains(t, rec.Body.String(), `"claude-sonnet`)
+}
+
+func TestAccountHandlerGetAvailableModels_MiniMaxUsesNativeFallbackCatalog(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account:          service.Account{ID: 46, Platform: service.PlatformMiniMax, Type: service.AccountTypeAPIKey, Status: service.StatusActive},
+	}
+	router := setupAvailableModelsRouter(svc)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/46/models", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"MiniMax-M2.5"`)
+	require.NotContains(t, rec.Body.String(), `"claude-sonnet`)
+}
+
 func TestAccountHandlerSyncUpstreamModels_ConfigErrorReturnsBadRequest(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),

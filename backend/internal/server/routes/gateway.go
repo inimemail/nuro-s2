@@ -21,7 +21,7 @@ func isOpenAIMessagesGatewayPlatform(platform string) bool {
 
 func isOpenAIChatCompletionsGatewayPlatform(platform string) bool {
 	switch platform {
-	case service.PlatformOpenAI, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
+	case service.PlatformOpenAI, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax:
 		return true
 	default:
 		return false

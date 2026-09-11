@@ -417,6 +417,8 @@ func TestUpstreamBillingProbeOfficialDomainSuppression(t *testing.T) {
 		"https://api.anthropic.com",
 		"https://generativelanguage.googleapis.com/v1beta",
 		"https://api.x.ai",
+		"https://api.minimaxi.com/v1",
+		"https://api.minimax.io/v1",
 		"https://ollama.com/api",
 	} {
 		require.True(t, upstreamBillingProbeTargetIsOfficialAPI(target), target)

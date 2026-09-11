@@ -1880,7 +1880,7 @@ func openAICompactSupportTier(account *Account) int {
 // compact-support checks used during account selection.
 func normalizeOpenAICompatibleRequestPlatform(platform string) string {
 	switch strings.TrimSpace(platform) {
-	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		return strings.TrimSpace(platform)
 	default:
 		return PlatformOpenAI
@@ -1900,6 +1900,12 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 		platform = requestPlatform[0]
 	}
 	if account == nil || !isOpenAICompatibleRequestPlatformAccount(account, platform) || !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
+		return false
+	}
+	// Group model allowlists are a routing policy, not an upstream failure.
+	// Apply them before capability/cooldown checks so a rejected model never
+	// changes account health, sticky state, usage, or billing.
+	if group, ok := groupFromRoutingContext(ctx); ok && group.CustomModelsListEnabled() && !groupModelAllowed(group.ModelsListConfig.Models, requestedModel) {
 		return false
 	}
 	if paused, reason := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
@@ -1934,6 +1940,33 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 		return false
 	}
 	return true
+}
+
+func groupFromRoutingContext(ctx context.Context) (*Group, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	group, ok := ctx.Value(ctxkey.Group).(*Group)
+	return group, ok && group != nil
+}
+
+func groupModelAllowed(patterns []string, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || len(patterns) == 0 {
+		return true
+	}
+	hasPattern := false
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		hasPattern = true
+		if matchModelPattern(pattern, model) {
+			return true
+		}
+	}
+	return !hasPattern
 }
 
 func (s *OpenAIGatewayService) parentAccountLookup(ctx context.Context) func(int64) *Account {
@@ -2330,6 +2363,16 @@ func (s *OpenAIGatewayService) resolveOpenAICompactForwardModel(account *Account
 }
 
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform string) (*Account, error) {
+	// Make the group policy available to the shared eligibility predicate. The
+	// scheduler snapshot is already the authoritative low-latency source used by
+	// health-first routing, so this does not add a database round trip.
+	if groupID != nil && s != nil && s.schedulerSnapshot != nil {
+		if _, ok := groupFromRoutingContext(ctx); !ok {
+			if group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); err == nil && group != nil {
+				ctx = context.WithValue(ctx, ctxkey.Group, group)
+			}
+		}
+	}
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -3820,7 +3863,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", fmt.Errorf("unsupported grok account type: %s", account.Type)
 		}
 	}
-	if account != nil && (account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek) {
+	if account != nil && (account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek || account.Platform == PlatformMiniMax) {
 		if account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream {
 			return "", "", fmt.Errorf("unsupported %s account type: %s", account.Platform, account.Type)
 		}
@@ -6107,7 +6150,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		trackOpenAIRequestBody(req, ctx)
 		applyOpenAIStableClientRequestID(req, ctx)
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	profile := HTTPUpstreamProfileOpenAI
+	if gjson.GetBytes(body, "stream").Bool() {
+		profile = HTTPUpstreamProfileLongStream
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), profile))
 
 	// 透传客户端请求头（安全白名单）。
 	allowTimeoutHeaders := s.isOpenAIPassthroughTimeoutHeadersAllowed()
@@ -8254,7 +8301,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		trackOpenAIRequestBody(req, ctx)
 		applyOpenAIStableClientRequestID(req, ctx)
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	profile := HTTPUpstreamProfileOpenAI
+	if isStream {
+		profile = HTTPUpstreamProfileLongStream
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), profile))
 
 	// Set authentication header. This is a pure Bearer replacement for normal
 	// OAuth/API-key accounts and an assertion only for Agent Identity.

@@ -34,6 +34,7 @@
             v-model="editBaseUrl"
             type="text"
             class="input"
+            @input="syncCNChatBaseUrl"
             :placeholder="
               account.platform === 'openai'
                 ? 'https://api.openai.com'
@@ -49,6 +50,8 @@
                           ? 'https://open.bigmodel.cn/api/paas/v4'
                           : account.platform === 'deepseek'
                             ? cnApiMode === 'responses' ? 'https://api.deepseek.com' : 'https://api.deepseek.com/v1'
+                            : account.platform === 'minimax'
+                              ? 'https://api.minimaxi.com/v1'
                             : 'https://api.anthropic.com'
             "
           />
@@ -83,7 +86,10 @@
           <div class="grid gap-3 sm:grid-cols-2">
             <label v-for="option in cnAdaptiveProtocolOptions" :key="option.value" class="min-w-0">
               <span class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">{{ option.label }}</span>
-              <input v-model="adaptiveBaseUrls[option.value]" type="url" class="input text-sm" :placeholder="option.url" :data-testid="`cn-adaptive-base-url-${option.value}`" />
+              <div class="flex items-center gap-2">
+                <input v-model="adaptiveBaseUrls[option.value]" @input="markAdaptiveUrlOverride(option.value)" type="url" class="input min-w-0 flex-1 text-sm" :placeholder="option.url" :data-testid="`cn-adaptive-base-url-${option.value}`" />
+                <button v-if="adaptiveBaseUrlOverrides[option.value]" type="button" class="shrink-0 rounded-md border border-sky-200 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-900/30" title="恢复主 URL 联动" @click="restoreAdaptiveUrlLink(option.value, option.url)">联动</button>
+              </div>
             </label>
           </div>
         </div>
@@ -160,8 +166,10 @@
                         ? 'sk-...'
                         : account.platform === 'zhipu'
                           ? 'id.secret'
-                          : account.platform === 'deepseek'
-                            ? 'sk-...'
+                            : account.platform === 'deepseek'
+                              ? 'sk-...'
+                            : account.platform === 'minimax'
+                              ? 'sk-...'
                             : 'sk-ant-...'
             "
           />
@@ -4796,6 +4804,7 @@ const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'kimi') return 'https://api.moonshot.cn/v1'
   if (props.account?.platform === 'zhipu') return 'https://open.bigmodel.cn/api/paas/v4'
   if (props.account?.platform === 'deepseek') return 'https://api.deepseek.com/v1'
+  if (props.account?.platform === 'minimax') return 'https://api.minimaxi.com/v1'
   return 'https://api.anthropic.com'
 })
 
@@ -4804,10 +4813,11 @@ type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 const cnBillingMode = ref<CNBillingMode>('payg')
 const cnApiMode = ref<CNApiMode>('adaptive')
 const adaptiveBaseUrls = ref<Record<string, string>>({})
+const adaptiveBaseUrlOverrides = ref<Record<string, boolean>>({})
 const editZhipuOrganization = ref('')
 const editZhipuProject = ref('')
-const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account?.platform || ''))
-const cnBillingPlanSupported = computed(() => props.account?.platform === 'kimi' || props.account?.platform === 'zhipu')
+const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek', 'minimax'].includes(props.account?.platform || ''))
+const cnBillingPlanSupported = computed(() => ['kimi', 'zhipu', 'minimax'].includes(props.account?.platform || ''))
 const cnApiProtocolOptions = computed(() => {
   const options: Array<{ value: CNApiMode; label: string; description: string }> = [
     { value: 'adaptive', label: t('admin.accounts.cnProviders.adaptive', '自适应'), description: t('admin.accounts.cnProviders.adaptiveDesc', '按请求协议自动选择端点') },
@@ -4822,20 +4832,29 @@ const cnApiProtocolOptions = computed(() => {
       description: t('admin.accounts.cnProviders.anthropicDesc')
     }
   ]
-  if (props.account?.platform === 'deepseek' || props.account?.platform === 'kimi') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
+  if (props.account?.platform === 'deepseek' || props.account?.platform === 'kimi' || props.account?.platform === 'minimax') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
   return options
 })
 const cnAdaptiveProtocolOptions = computed(() => {
   const options = [
-    { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : props.account?.platform === 'zhipu' ? (cnBillingMode.value === 'coding_plan' ? 'https://open.bigmodel.cn/api/coding/paas/v4' : 'https://open.bigmodel.cn/api/paas/v4') : 'https://api.deepseek.com/v1' },
-    { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : 'https://api.deepseek.com/anthropic' }
+    { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : props.account?.platform === 'zhipu' ? (cnBillingMode.value === 'coding_plan' ? 'https://open.bigmodel.cn/api/coding/paas/v4' : 'https://open.bigmodel.cn/api/paas/v4') : props.account?.platform === 'deepseek' ? 'https://api.deepseek.com/v1' : 'https://api.minimaxi.com/v1' },
+    { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : props.account?.platform === 'deepseek' ? 'https://api.deepseek.com/anthropic' : 'https://api.minimaxi.com/anthropic' }
   ]
   if (props.account?.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.deepseek.com' })
   if (props.account?.platform === 'kimi') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1' })
+  if (props.account?.platform === 'minimax') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.minimaxi.com/v1' })
   return options
 })
 function resetAdaptiveBaseUrls() {
   adaptiveBaseUrls.value = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, option.url]))
+  adaptiveBaseUrlOverrides.value = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, false]))
+}
+function markAdaptiveUrlOverride(protocol: string) {
+  adaptiveBaseUrlOverrides.value[protocol] = true
+}
+function restoreAdaptiveUrlLink(protocol: string, fallback: string) {
+  adaptiveBaseUrlOverrides.value[protocol] = false
+  adaptiveBaseUrls.value[protocol] = protocol === 'chat_completions' ? editBaseUrl.value.trim() || fallback : fallback
 }
 const cnBaseUrlPresets = computed(() => {
   if (props.account?.platform === 'kimi' && cnApiMode.value === 'anthropic') return [{ label: t('admin.accounts.cnProviders.anthropic'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic' }]
@@ -4852,6 +4871,7 @@ const cnBaseUrlPresets = computed(() => {
         ? [{ label: t('admin.accounts.cnProviders.anthropic'), url: 'https://api.deepseek.com/anthropic' }]
         : [{ label: t('admin.accounts.cnProviders.deepseek'), url: 'https://api.deepseek.com/v1' }]
   }
+  if (props.account?.platform === 'minimax') return [{ label: 'MiniMax', url: 'https://api.minimaxi.com/v1' }]
   return []
 })
 const cnOptionClass = (accent: 'sky' | 'violet' | 'emerald' | 'orange' | 'gray') => {
@@ -4918,6 +4938,18 @@ const selectCNBaseUrlPreset = (url: string) => {
   if (isCNProvider.value && cnApiMode.value === 'adaptive') {
     adaptiveBaseUrls.value.chat_completions = url
   }
+}
+
+const syncCNChatBaseUrl = () => {
+  if (!isCNProvider.value || cnApiMode.value !== 'adaptive') return
+  const primary = editBaseUrl.value.trim()
+  adaptiveBaseUrls.value.chat_completions = primary
+  const parsed = primary.match(/^(https?:\/\/[^/]+)(\/.*)?$/i)
+  if (!parsed) return
+  const root = parsed[1]
+  const path = (parsed[2] || '').replace(/\/+$/, '')
+  if (!adaptiveBaseUrlOverrides.value.anthropic) adaptiveBaseUrls.value.anthropic = `${root}${path.replace(/\/v1$/, '')}/anthropic`
+  if (!adaptiveBaseUrlOverrides.value.responses) adaptiveBaseUrls.value.responses = primary
 }
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -5363,7 +5395,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
   const accountExtra = (newAccount.extra as Record<string, unknown>) || {}
-  cnBillingMode.value = accountExtra.cn_billing_mode === 'coding_plan' && (newAccount.platform === 'kimi' || newAccount.platform === 'zhipu')
+  cnBillingMode.value = accountExtra.cn_billing_mode === 'coding_plan' && ['kimi', 'zhipu', 'minimax'].includes(newAccount.platform)
     ? 'coding_plan'
     : 'payg'
   editZhipuOrganization.value =
@@ -5376,7 +5408,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       : ''
   const storedCNApiMode = accountExtra.cn_api_mode ?? credentials?.api_protocol
   cnApiMode.value = storedCNApiMode === 'adaptive' || storedCNApiMode === 'anthropic' ||
-    (storedCNApiMode === 'responses' && (newAccount.platform === 'deepseek' || newAccount.platform === 'kimi'))
+    (storedCNApiMode === 'responses' && ['deepseek', 'kimi', 'minimax'].includes(newAccount.platform))
     ? storedCNApiMode as CNApiMode
     : 'chat_completions'
   const configuredAdaptiveUrls = (accountExtra.cn_api_base_urls ?? credentials?.api_base_urls) as Record<string, unknown> | undefined
@@ -5385,6 +5417,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     for (const option of cnAdaptiveProtocolOptions.value) {
       const configured = configuredAdaptiveUrls[option.value]
       if (typeof configured === 'string' && configured.trim()) adaptiveBaseUrls.value[option.value] = configured.trim()
+    }
+  }
+  const configuredOverrides = accountExtra.cn_api_base_url_overrides as Record<string, unknown> | undefined
+  if (configuredOverrides && typeof configuredOverrides === 'object') {
+    for (const option of cnAdaptiveProtocolOptions.value) {
+      adaptiveBaseUrlOverrides.value[option.value] = configuredOverrides[option.value] === true
     }
   }
   if ((!configuredAdaptiveUrls || typeof configuredAdaptiveUrls.chat_completions !== 'string' || !configuredAdaptiveUrls.chat_completions.trim()) && typeof credentials?.base_url === 'string' && credentials.base_url.trim()) {
@@ -5674,6 +5712,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
                 ? 'https://open.bigmodel.cn/api/paas/v4'
                 : newAccount.platform === 'deepseek'
                   ? 'https://api.deepseek.com/v1'
+                : newAccount.platform === 'minimax'
+                  ? 'https://api.minimaxi.com/v1'
             : 'https://api.anthropic.com'
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
 
@@ -7068,6 +7108,7 @@ const handleSubmit = async () => {
         : 'chat_completions'
       if (cnApiMode.value === 'adaptive') {
         newExtra.cn_api_base_urls = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, (adaptiveBaseUrls.value[option.value] || option.url).trim()]))
+        newExtra.cn_api_base_url_overrides = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, adaptiveBaseUrlOverrides.value[option.value] === true]))
       } else {
         delete newExtra.cn_api_base_urls
       }

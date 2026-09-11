@@ -42,13 +42,21 @@ const isOllamaCloud = computed(() => {
   const baseURL = String((props.account.credentials as Record<string, unknown> | undefined)?.base_url || '').replace(/\/$/, '').toLowerCase()
   return ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
 })
-const eligible = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account.platform) && props.account.type === 'apikey' && !isOllamaCloud.value)
 const isCodingPlan = computed(() => {
-  if (!['kimi', 'zhipu'].includes(props.account.platform)) return false
+  if (!['kimi', 'zhipu', 'minimax'].includes(props.account.platform)) return false
   const extraMode = props.account.extra?.cn_billing_mode
   const legacyMode = props.account.credentials?.account_mode
   return extraMode === 'coding_plan' || legacyMode === 'coding' || legacyMode === 'coding_plan'
 })
+// MiniMax PayG has no stable public balance endpoint. Keep the usage probe
+// visible only for its Coding Plan quota, while retaining balance probes for
+// providers that actually expose one.
+const eligible = computed(() =>
+  ['kimi', 'zhipu', 'deepseek', 'minimax'].includes(props.account.platform) &&
+  props.account.type === 'apikey' &&
+  !isOllamaCloud.value &&
+  (props.account.platform !== 'minimax' || isCodingPlan.value)
+)
 const snapshot = computed(() => props.account.extra || {})
 const QuotaBar = defineComponent({ props: { label: { type: String, required: true }, value: { type: Number, default: 0 } }, setup(p) { return () => h('div', { class: 'flex items-center gap-1.5' }, [h('span', { class: 'w-5 shrink-0 text-gray-400' }, p.label), h('div', { class: 'h-1 flex-1 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700' }, [h('div', { class: p.value >= 90 ? 'h-full bg-red-500' : p.value >= 70 ? 'h-full bg-amber-500' : 'h-full bg-emerald-500', style: { width: `${Math.max(0, Math.min(100, p.value))}%` } })]), h('span', { class: 'w-7 text-right tabular-nums text-gray-500 dark:text-gray-400' }, `${Math.round(p.value)}%`)]) } })
 function loadSnapshot() {

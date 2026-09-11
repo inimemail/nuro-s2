@@ -94,7 +94,7 @@ type ollamaCloudUsageDueRepository interface {
 
 func isOllamaCloudUsagePlatform(platform string) bool {
 	switch platform {
-	case PlatformOpenAI, PlatformAnthropic, PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	case PlatformOpenAI, PlatformAnthropic, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
 		return true
 	default:
 		return false

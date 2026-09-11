@@ -275,6 +275,7 @@ const providerTabs = computed<{ value: Provider; label: string }[]>(() => [
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
+  { value: 'minimax', label: 'MiniMax' },
 ])
 
 const activeProvider = ref<Provider>(PROVIDER_ANTHROPIC)
@@ -295,6 +296,7 @@ const countByProvider = computed<Record<Provider, number>>(() => {
     kimi: 0,
     zhipu: 0,
     deepseek: 0,
+    minimax: 0,
   }
   for (const t of templates.value) out[t.provider]++
   return out

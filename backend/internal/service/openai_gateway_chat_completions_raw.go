@@ -186,7 +186,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		trackOpenAIRequestBody(upstreamReq, upstreamCtx)
 		applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
 	}
-	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
+	profile := HTTPUpstreamProfileOpenAI
+	if clientStream {
+		profile = HTTPUpstreamProfileLongStream
+	}
+	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), profile))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(upstreamCtx, account, token)
 	if authErr != nil {

@@ -7,8 +7,9 @@ func TestChannelMonitorCNProvidersUseOpenAICompatibleAdapter(t *testing.T) {
 		MonitorProviderKimi:     providerKimiPath,
 		MonitorProviderZhipu:    providerZhipuPath,
 		MonitorProviderDeepSeek: providerDeepSeekPath,
+		MonitorProviderMiniMax:  providerMiniMaxPath,
 	}
-	for _, provider := range []string{MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepSeek} {
+	for _, provider := range []string{MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepSeek, MonitorProviderMiniMax} {
 		adapter, mode, ok := providerAdapterFor(provider, MonitorAPIModeChatCompletions)
 		if !ok {
 			t.Fatalf("provider %q was not registered", provider)
@@ -33,7 +34,7 @@ func TestChannelMonitorCNProvidersUseOpenAICompatibleAdapter(t *testing.T) {
 }
 
 func TestChannelMonitorCNProvidersValidateThroughPublicEntryPoint(t *testing.T) {
-	for _, provider := range []string{MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepSeek} {
+	for _, provider := range []string{MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepSeek, MonitorProviderMiniMax} {
 		if err := validateProvider(provider); err != nil {
 			t.Fatalf("validateProvider(%q): %v", provider, err)
 		}

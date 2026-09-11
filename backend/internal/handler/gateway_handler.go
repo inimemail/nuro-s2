@@ -1246,6 +1246,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeGrokModelsList(c, xai.DefaultModelIDs())
 		return
 	}
+	if ids := defaultModelIDsForPlatform(platform); len(ids) > 0 {
+		writeModelsList(c, platform, ids)
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
@@ -1410,10 +1414,8 @@ func customModelsListAllowsModel(availablePatterns []string, model string) bool 
 
 func defaultModelIDsForPlatform(platform string) []string {
 	switch platform {
-	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
-		// CN OpenAI-compatible providers expose account-specific model catalogs;
-		// do not leak the Anthropic fallback list into their group UI.
-		return []string{}
+	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax:
+		return service.DefaultCNModelIDs(platform)
 	case service.PlatformOpenAI:
 		return openai.DefaultModelIDs()
 	case service.PlatformGemini:

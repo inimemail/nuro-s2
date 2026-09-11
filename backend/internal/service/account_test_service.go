@@ -46,6 +46,8 @@ type TestEvent struct {
 	Status   string `json:"status,omitempty"`
 	Code     string `json:"code,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+	VideoURL string `json:"video_url,omitempty"`
+	AudioURL string `json:"audio_url,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`
 	Data     any    `json:"data,omitempty"`
 	Success  bool   `json:"success,omitempty"`
@@ -107,7 +109,7 @@ func NewAccountTestService(
 	}
 	if settingService != nil {
 		runtime := settingService.sharedNonOpenAIPoolRuntime()
-		for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+		for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax} {
 			runtime.registerProbeRunner(platform, svc.runNonOpenAIPoolProbe)
 		}
 	}
@@ -219,7 +221,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	if account.IsGrok() {
-		return s.testGrokAccountConnection(c, account, modelID, prompt)
+		return s.testGrokAccountConnection(c, account, modelID, prompt, strings.TrimSpace(strings.ToLower(mode)))
 	}
 
 	if account.IsGemini() {

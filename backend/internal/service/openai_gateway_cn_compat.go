@@ -210,7 +210,7 @@ func normalizeAnthropicCompatiblePromptUsage(node gjson.Result, usage *ClaudeUsa
 }
 
 func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
-	if platform == PlatformDeepSeek || platform == PlatformKimi {
+	if platform == PlatformDeepSeek || platform == PlatformKimi || platform == PlatformMiniMax {
 		return buildOpenAIEndpointURL(base, "/responses")
 	}
 	return buildOpenAIResponsesURL(base)

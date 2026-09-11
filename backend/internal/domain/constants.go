@@ -26,6 +26,7 @@ const (
 	PlatformKimi        = "kimi"
 	PlatformZhipu       = "zhipu"
 	PlatformDeepSeek    = "deepseek"
+	PlatformMiniMax     = "minimax"
 	PlatformComposite   = "composite"
 )
 

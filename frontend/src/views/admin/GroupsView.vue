@@ -1653,7 +1653,7 @@
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
-            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek'].includes(
+            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax'].includes(
               createForm.platform,
             )
           "
@@ -3273,7 +3273,7 @@
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
-            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek'].includes(
+            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax'].includes(
               editForm.platform,
             )
           "
@@ -5715,7 +5715,7 @@ watch(
     } else {
       createForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, createForm.max_reasoning_effort);
     }
-    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek"].includes(newVal)) {
+    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek", "minimax"].includes(newVal)) {
       createForm.require_oauth_only = false;
       createForm.require_privacy_set = false;
     }
@@ -5747,7 +5747,7 @@ watch(
     } else {
       editForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, editForm.max_reasoning_effort);
     }
-    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek"].includes(newVal)) {
+    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek", "minimax"].includes(newVal)) {
       editForm.require_oauth_only = false;
       editForm.require_privacy_set = false;
     }

@@ -23,6 +23,9 @@ const (
 	// admission state. Platform pool recovery state remains independently
 	// fenced until a successful probe or explicit admin recovery.
 	SchedulerEventAccountRuntimeOnlyCleared SchedulerEventType = "account_runtime_only_cleared"
+	// SchedulerEventChannelCacheInvalidated tells every application replica to
+	// discard its process-local channel routing/pricing snapshot.
+	SchedulerEventChannelCacheInvalidated SchedulerEventType = "channel_cache_invalidated"
 )
 
 type SchedulerEvent struct {

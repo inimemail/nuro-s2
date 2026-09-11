@@ -67,6 +67,7 @@ const (
 	// defaultClientIdleTTLSeconds: 默认客户端空闲回收阈值（15分钟）
 	defaultClientIdleTTLSeconds               = 900
 	upstreamBillingProbeResponseHeaderTimeout = 10 * time.Second
+	longStreamIdleConnTimeout                 = 30 * time.Minute
 	// OpenAI HTTP/2 代理回退策略默认值
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
@@ -313,7 +314,7 @@ func doUpstreamWithResponseHeaderDeadline(client *http.Client, req *http.Request
 		return client.Do(req)
 	}
 	profile := service.HTTPUpstreamProfileFromContext(req.Context())
-	if profile == service.HTTPUpstreamProfileMedia || profile == service.HTTPUpstreamProfileOpenAIMedia {
+	if profile == service.HTTPUpstreamProfileMedia || profile == service.HTTPUpstreamProfileOpenAIMedia || profile == service.HTTPUpstreamProfileLongStream {
 		return client.Do(req)
 	}
 	deadline, ok := service.HTTPUpstreamResponseHeaderDeadline(req.Context())
@@ -923,6 +924,14 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		settings.maxConnsPerHost = 2
 		settings.idleConnTimeout = 30 * time.Second
 		settings.responseHeaderTimeout = upstreamBillingProbeResponseHeaderTimeout
+		return settings
+	}
+	if profile == service.HTTPUpstreamProfileLongStream {
+		settings.maxIdleConns = max(settings.maxIdleConns, 32)
+		settings.maxIdleConnsPerHost = max(settings.maxIdleConnsPerHost, 16)
+		settings.maxConnsPerHost = max(settings.maxConnsPerHost, 32)
+		settings.idleConnTimeout = longStreamIdleConnTimeout
+		settings.responseHeaderTimeout = 0
 		return settings
 	}
 	if profile == service.HTTPUpstreamProfileMedia || profile == service.HTTPUpstreamProfileOpenAIMedia {

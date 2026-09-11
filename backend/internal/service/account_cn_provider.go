@@ -3,6 +3,7 @@ package service
 import (
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -24,9 +25,10 @@ func (a *Account) ApplyCNProviderHeaders(h http.Header) {
 }
 
 const (
-	cnBillingModeExtraKey = "cn_billing_mode"
-	cnAPIProtocolExtraKey = "cn_api_mode"
-	cnAPIBaseURLsExtraKey = "cn_api_base_urls"
+	cnBillingModeExtraKey         = "cn_billing_mode"
+	cnAPIProtocolExtraKey         = "cn_api_mode"
+	cnAPIBaseURLsExtraKey         = "cn_api_base_urls"
+	cnAPIBaseURLOverridesExtraKey = "cn_api_base_url_overrides"
 )
 
 func (a *Account) IsKimi() bool {
@@ -39,6 +41,10 @@ func (a *Account) IsZhipu() bool {
 
 func (a *Account) IsDeepSeek() bool {
 	return a != nil && a.Platform == PlatformDeepSeek
+}
+
+func (a *Account) IsMiniMax() bool {
+	return a != nil && a.Platform == PlatformMiniMax
 }
 
 func (a *Account) IsCNProvider() bool {
@@ -66,7 +72,7 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		protocol = requestedProtocol
 	case APIProtocolResponses:
-		if platform == PlatformDeepSeek || platform == PlatformKimi {
+		if platform == PlatformDeepSeek || platform == PlatformKimi || platform == PlatformMiniMax {
 			protocol = requestedProtocol
 		}
 	}
@@ -76,6 +82,7 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 			normalizedExtra[cnAPIBaseURLsExtraKey] = legacy
 		}
 	}
+	normalizeCNAdaptiveBaseURLs(platform, normalizedExtra, credentials)
 
 	normalizedCredentials := maps.Clone(credentials)
 	if normalizedCredentials != nil {
@@ -132,11 +139,15 @@ func normalizeCNProviderStoredConfigForAccount(account *Account, extra, credenti
 	_, requestedCredentialProtocol := credentials["api_protocol"]
 	_, requestedCredentialBaseURLs := credentials["api_base_urls"]
 	_, requestedBaseURLs := extra[cnAPIBaseURLsExtraKey]
-	if requestedProtocol || requestedCredentialProtocol || requestedCredentialBaseURLs || requestedBaseURLs {
+	_, requestedOverrides := extra[cnAPIBaseURLOverridesExtraKey]
+	if requestedProtocol || requestedCredentialProtocol || requestedCredentialBaseURLs || requestedBaseURLs || requestedOverrides {
 		resultExtra[cnAPIProtocolExtraKey] = normalizedExtra[cnAPIProtocolExtraKey]
 	}
 	if requestedBaseURLs || requestedCredentialBaseURLs {
 		resultExtra[cnAPIBaseURLsExtraKey] = normalizedExtra[cnAPIBaseURLsExtraKey]
+	}
+	if requestedOverrides {
+		resultExtra[cnAPIBaseURLOverridesExtraKey] = normalizedExtra[cnAPIBaseURLOverridesExtraKey]
 	}
 	resultCredentials := maps.Clone(credentials)
 	if resultCredentials != nil {
@@ -153,6 +164,9 @@ func hasCNProviderStoredConfigUpdate(extra, credentials map[string]any, extraRem
 	if _, ok := extra[cnAPIBaseURLsExtraKey]; ok {
 		return true
 	}
+	if _, ok := extra[cnAPIBaseURLOverridesExtraKey]; ok {
+		return true
+	}
 	if _, ok := credentials["api_protocol"]; ok {
 		return true
 	}
@@ -161,7 +175,7 @@ func hasCNProviderStoredConfigUpdate(extra, credentials map[string]any, extraRem
 	}
 	for _, key := range extraRemoveKeys {
 		key = strings.TrimSpace(key)
-		if key == cnAPIProtocolExtraKey || key == cnAPIBaseURLsExtraKey {
+		if key == cnAPIProtocolExtraKey || key == cnAPIBaseURLsExtraKey || key == cnAPIBaseURLOverridesExtraKey {
 			return true
 		}
 	}
@@ -173,6 +187,7 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 	updates.Credentials = maps.Clone(updates.Credentials)
 	updates.ExtraRemoveKeys = append([]string(nil), updates.ExtraRemoveKeys...)
 	_, submittedBaseURLs := updates.Extra[cnAPIBaseURLsExtraKey]
+	_, submittedOverrides := updates.Extra[cnAPIBaseURLOverridesExtraKey]
 	_, submittedLegacyBaseURLs := updates.Credentials["api_base_urls"]
 	removeBaseURLs := bulkUpdateContainsKey(updates.ExtraRemoveKeys, cnAPIBaseURLsExtraKey)
 	clearBaseURLs := (submittedBaseURLs && isEmptyCNBaseURLs(updates.Extra[cnAPIBaseURLsExtraKey])) ||
@@ -218,6 +233,9 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 		} else {
 			delete(updates.Extra, cnAPIBaseURLsExtraKey)
 		}
+		if submittedOverrides {
+			updates.Extra[cnAPIBaseURLOverridesExtraKey] = normalizedExtra[cnAPIBaseURLOverridesExtraKey]
+		}
 		updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey)
 		if submittedBaseURLs || submittedLegacyBaseURLs || !removeBaseURLs {
 			updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIBaseURLsExtraKey)
@@ -247,9 +265,10 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 
 	delete(updates.Extra, cnAPIProtocolExtraKey)
 	delete(updates.Extra, cnAPIBaseURLsExtraKey)
+	delete(updates.Extra, cnAPIBaseURLOverridesExtraKey)
 	delete(updates.Credentials, "api_protocol")
 	delete(updates.Credentials, "api_base_urls")
-	updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey)
+	updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey, cnAPIBaseURLOverridesExtraKey)
 	return updates
 }
 
@@ -333,7 +352,7 @@ func (a *Account) GetCodingPlanProvider() string {
 		return ""
 	}
 	switch a.Platform {
-	case PlatformKimi, PlatformZhipu:
+	case PlatformKimi, PlatformZhipu, PlatformMiniMax:
 		return a.Platform
 	default:
 		return ""
@@ -341,7 +360,7 @@ func (a *Account) GetCodingPlanProvider() string {
 }
 
 // GetAPIProtocol returns the selected domestic provider wire protocol.
-// Responses is supported by DeepSeek and Kimi; all domestic providers support
+// Responses is supported by DeepSeek, Kimi and MiniMax; all domestic providers support
 // adaptive, Chat Completions, and native Anthropic routing.
 func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsCNProvider() {
@@ -355,7 +374,7 @@ func (a *Account) GetAPIProtocol() string {
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		return protocol
 	case APIProtocolResponses:
-		if a.IsDeepSeek() || a.IsKimi() {
+		if a.IsDeepSeek() || a.IsKimi() || a.IsMiniMax() {
 			return protocol
 		}
 	}
@@ -421,6 +440,11 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultZhipuAnthropicBaseURL
 		case PlatformDeepSeek:
 			return DefaultDeepSeekAnthropicBaseURL
+		case PlatformMiniMax:
+			if strings.Contains(strings.ToLower(strings.TrimSpace(a.GetCredential("base_url"))), "minimax.io") {
+				return DefaultMiniMaxIntlAnthropicBaseURL
+			}
+			return DefaultMiniMaxCNAnthropicBaseURL
 		}
 	case APIProtocolResponses:
 		switch a.Platform {
@@ -431,6 +455,11 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 				return DefaultKimiCodingResponsesBaseURL
 			}
 			return DefaultKimiPayGResponsesBaseURL
+		case PlatformMiniMax:
+			if strings.Contains(strings.ToLower(strings.TrimSpace(a.GetCredential("base_url"))), "minimax.io") {
+				return DefaultMiniMaxIntlBaseURL
+			}
+			return DefaultMiniMaxCNBaseURL
 		}
 	case APIProtocolChatCompletions:
 		switch a.Platform {
@@ -446,16 +475,144 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultZhipuPayGBaseURL
 		case PlatformDeepSeek:
 			return DefaultDeepSeekChatBaseURL
+		case PlatformMiniMax:
+			if strings.Contains(strings.ToLower(strings.TrimSpace(a.GetCredential("base_url"))), "minimax.io") {
+				return DefaultMiniMaxIntlBaseURL
+			}
+			return DefaultMiniMaxCNBaseURL
 		}
 	}
 	return ""
+}
+
+// DeriveCNAdaptiveBaseURLs derives all protocol endpoints from the primary
+// OpenAI-compatible endpoint. Custom domains keep their path prefix while the
+// common /v1 suffix is removed only for Anthropic's sibling endpoint.
+func DeriveCNAdaptiveBaseURLs(platform, billingMode, primaryURL string) map[string]string {
+	primaryURL = strings.TrimSpace(primaryURL)
+	if primaryURL == "" {
+		primaryURL = defaultCNChatBaseURL(platform, billingMode)
+	}
+	derived := map[string]string{
+		APIProtocolChatCompletions: primaryURL,
+		APIProtocolResponses:       primaryURL,
+		APIProtocolAnthropic:       deriveCNAnthropicURL(platform, billingMode, primaryURL),
+	}
+	return derived
+}
+
+func defaultCNChatBaseURL(platform, billingMode string) string {
+	switch platform {
+	case PlatformKimi:
+		if billingMode == CNBillingModeCodingPlan {
+			return DefaultKimiCodingBaseURL
+		}
+		return DefaultKimiPayGBaseURL
+	case PlatformZhipu:
+		if billingMode == CNBillingModeCodingPlan {
+			return DefaultZhipuCodingBaseURL
+		}
+		return DefaultZhipuPayGBaseURL
+	case PlatformDeepSeek:
+		return DefaultDeepSeekChatBaseURL
+	case PlatformMiniMax:
+		return DefaultMiniMaxCNBaseURL
+	default:
+		return ""
+	}
+}
+
+func deriveCNAnthropicURL(platform, billingMode, primaryURL string) string {
+	known := defaultCNChatBaseURL(platform, billingMode)
+	if primaryURL == "" || primaryURL == known {
+		switch platform {
+		case PlatformKimi:
+			if billingMode == CNBillingModeCodingPlan {
+				return DefaultKimiCodingAnthropicBaseURL
+			}
+			return DefaultKimiPayGAnthropicBaseURL
+		case PlatformZhipu:
+			return DefaultZhipuAnthropicBaseURL
+		case PlatformDeepSeek:
+			return DefaultDeepSeekAnthropicBaseURL
+		case PlatformMiniMax:
+			return DefaultMiniMaxCNAnthropicBaseURL
+		}
+	}
+	parsed, err := url.Parse(primaryURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return primaryURL
+	}
+	path := strings.TrimSuffix(strings.TrimRight(parsed.Path, "/"), "/v1")
+	parsed.Path = strings.TrimRight(path, "/") + "/anthropic"
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+// normalizeCNAdaptiveBaseURLs makes stored endpoint maps authoritative across
+// UI, import and direct API writes. Explicit protocol overrides are preserved;
+// all other endpoints follow the primary base_url.
+func normalizeCNAdaptiveBaseURLs(platform string, extra, credentials map[string]any) {
+	if strings.TrimSpace(valueAsString(extra[cnAPIProtocolExtraKey])) != APIProtocolAdaptive {
+		return
+	}
+	primary := strings.TrimSpace(valueAsString(credentials["base_url"]))
+	billingMode := strings.TrimSpace(valueAsString(extra[cnBillingModeExtraKey]))
+	derived := DeriveCNAdaptiveBaseURLs(platform, billingMode, primary)
+	configured := cnStringMap(extra[cnAPIBaseURLsExtraKey])
+	overrides := cnBoolMap(extra[cnAPIBaseURLOverridesExtraKey])
+	for _, protocol := range []string{APIProtocolChatCompletions, APIProtocolAnthropic, APIProtocolResponses} {
+		value := strings.TrimSpace(configured[protocol])
+		// Missing override metadata is intentionally treated as linked. This
+		// repairs legacy accounts when their primary base_url changes; callers
+		// that need a manual endpoint must persist an explicit true flag.
+		if !overrides[protocol] || value == "" {
+			configured[protocol] = derived[protocol]
+		}
+	}
+	extra[cnAPIBaseURLsExtraKey] = configured
+	extra[cnAPIBaseURLOverridesExtraKey] = overrides
+}
+
+func cnStringMap(value any) map[string]string {
+	result := map[string]string{}
+	switch values := value.(type) {
+	case map[string]string:
+		for key, item := range values {
+			result[key] = strings.TrimSpace(item)
+		}
+	case map[string]any:
+		for key, item := range values {
+			result[key] = strings.TrimSpace(valueAsString(item))
+		}
+	}
+	return result
+}
+
+func cnBoolMap(value any) map[string]bool {
+	result := map[string]bool{}
+	switch values := value.(type) {
+	case map[string]bool:
+		for key, item := range values {
+			result[key] = item
+		}
+	case map[string]any:
+		for key, item := range values {
+			if flag, ok := item.(bool); ok {
+				result[key] = flag
+			}
+		}
+	}
+	return result
 }
 
 func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
 	}
-	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() {
+	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() && !a.IsMiniMax() {
 		return ""
 	}
 	if a.IsAdaptiveAPIProtocol() {

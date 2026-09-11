@@ -68,6 +68,9 @@ const PROVIDER_ICONS: Record<Provider, IconData> = {
   deepseek: {
     paths: ['M4 5h7.5a5.5 5.5 0 1 1 0 11H8v3H4zm4 4v3h3.5a1.5 1.5 0 0 0 0-3z'],
   },
+  minimax: {
+    paths: ['M4 5h3l5 6 5-6h3v14h-3v-8l-5 6-5-6v8H4z'],
+  },
 }
 
 const props = withDefaults(defineProps<{

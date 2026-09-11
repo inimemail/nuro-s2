@@ -150,7 +150,7 @@ func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey
 	}
 	if apiKey != nil && apiKey.Group != nil {
 		switch apiKey.Group.Platform {
-		case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
+		case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax:
 			return apiKey.Group.Platform
 		}
 	}

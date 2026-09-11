@@ -156,8 +156,9 @@ type ChannelService struct {
 	pricingService       *PricingService // 用于「可用渠道」展示时回落到全局定价；可为 nil（测试场景）
 	plazaInvalidator     func()
 
-	cache   atomic.Value // *channelCache
-	cacheSF singleflight.Group
+	cache    atomic.Value // *channelCache
+	cacheSF  singleflight.Group
+	eventBus SchedulerEventBus
 }
 
 // NewChannelService 创建渠道服务实例。
@@ -175,6 +176,33 @@ func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCa
 
 func (s *ChannelService) SetModelPlazaInvalidator(invalidate func()) {
 	s.plazaInvalidator = invalidate
+}
+
+// SetSchedulerEventBus enables cross-instance channel cache invalidation. It
+// is optional so lightweight tests and embedded users retain the old behavior.
+func (s *ChannelService) SetSchedulerEventBus(bus SchedulerEventBus) {
+	if s == nil || bus == nil {
+		return
+	}
+	s.eventBus = bus
+	events, unsubscribe := bus.Subscribe(32)
+	go func() {
+		defer unsubscribe()
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				if event.Type != SchedulerEventChannelCacheInvalidated {
+					continue
+				}
+				// Invalidate only; the existing singleflight path rebuilds on the
+				// next request and prevents a cross-replica thundering herd.
+				s.invalidateCacheLocal()
+			}
+		}
+	}()
 }
 
 // loadCache 加载或返回缓存的渠道数据
@@ -361,13 +389,22 @@ func (s *ChannelService) invalidateCache() {
 	if s.plazaInvalidator != nil {
 		s.plazaInvalidator()
 	}
-	s.cache.Store((*channelCache)(nil))
-	s.cacheSF.Forget("channel_cache")
+	s.invalidateCacheLocal()
+	if s.eventBus != nil {
+		if err := s.eventBus.Publish(context.Background(), SchedulerEvent{Type: SchedulerEventChannelCacheInvalidated, Source: "channel_service", At: time.Now()}); err != nil {
+			slog.Warn("failed to broadcast channel cache invalidation", "error", err)
+		}
+	}
 
 	// 主动重建缓存，确保 CRUD 后立即生效
 	if _, err := s.buildCache(context.Background()); err != nil {
 		slog.Warn("failed to rebuild channel cache after invalidation", "error", err)
 	}
+}
+
+func (s *ChannelService) invalidateCacheLocal() {
+	s.cache.Store((*channelCache)(nil))
+	s.cacheSF.Forget("channel_cache")
 }
 
 // InvalidateCache exposes the narrow cache invalidation operation to admin

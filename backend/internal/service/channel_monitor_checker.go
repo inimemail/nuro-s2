@@ -252,6 +252,7 @@ var providerAdapters = map[string]providerAdapter{
 	MonitorProviderKimi:     providerKimiChatAdapter,
 	MonitorProviderZhipu:    providerZhipuChatAdapter,
 	MonitorProviderDeepSeek: providerDeepSeekChatAdapter,
+	MonitorProviderMiniMax:  providerMiniMaxChatAdapter,
 	MonitorProviderAnthropic: {
 		buildPath: func(string) string { return providerAnthropicPath },
 		buildBody: func(model, prompt string) ([]byte, error) {
@@ -298,6 +299,7 @@ var (
 	providerKimiChatAdapter     = newOpenAICompatibleChatAdapter(providerKimiPath)
 	providerZhipuChatAdapter    = newOpenAICompatibleChatAdapter(providerZhipuPath)
 	providerDeepSeekChatAdapter = newOpenAICompatibleChatAdapter(providerDeepSeekPath)
+	providerMiniMaxChatAdapter  = newOpenAICompatibleChatAdapter(providerMiniMaxPath)
 )
 
 func newOpenAICompatibleChatAdapter(path string) providerAdapter {
@@ -508,6 +510,7 @@ var bodyMergeKeyDenyList = map[string]map[string]bool{
 	MonitorProviderKimi:      {"model": true, "messages": true, "stream": true},
 	MonitorProviderZhipu:     {"model": true, "messages": true, "stream": true},
 	MonitorProviderDeepSeek:  {"model": true, "messages": true, "stream": true},
+	MonitorProviderMiniMax:   {"model": true, "messages": true, "stream": true},
 	MonitorProviderAnthropic: {"model": true, "messages": true},
 	MonitorProviderGemini:    {"contents": true},
 }

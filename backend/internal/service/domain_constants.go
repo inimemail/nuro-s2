@@ -46,6 +46,7 @@ const (
 	PlatformKimi        = domain.PlatformKimi
 	PlatformZhipu       = domain.PlatformZhipu
 	PlatformDeepSeek    = domain.PlatformDeepSeek
+	PlatformMiniMax     = domain.PlatformMiniMax
 	// PlatformDeepseek is an internal compatibility spelling used by selected
 	// upstream adapters. Public/local code keeps PlatformDeepSeek canonical.
 	PlatformDeepseek  = PlatformDeepSeek
@@ -67,23 +68,27 @@ const (
 )
 
 const (
-	DefaultKimiPayGBaseURL            = "https://api.moonshot.cn/v1"
-	DefaultKimiCodingBaseURL          = "https://api.kimi.com/coding/v1"
-	DefaultZhipuPayGBaseURL           = "https://open.bigmodel.cn/api/paas/v4"
-	DefaultZhipuCodingBaseURL         = "https://open.bigmodel.cn/api/coding/paas/v4"
-	DefaultDeepSeekChatBaseURL        = "https://api.deepseek.com/v1"
-	DefaultDeepSeekResponsesBaseURL   = "https://api.deepseek.com"
-	DefaultKimiPayGResponsesBaseURL   = "https://api.moonshot.cn/v1"
-	DefaultKimiCodingResponsesBaseURL = "https://api.kimi.com/coding/v1"
-	DefaultKimiPayGAnthropicBaseURL   = "https://api.moonshot.cn/anthropic"
-	DefaultKimiCodingAnthropicBaseURL = "https://api.kimi.com/coding"
-	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"
-	DefaultDeepSeekAnthropicBaseURL   = "https://api.deepseek.com/anthropic"
+	DefaultKimiPayGBaseURL             = "https://api.moonshot.cn/v1"
+	DefaultKimiCodingBaseURL           = "https://api.kimi.com/coding/v1"
+	DefaultZhipuPayGBaseURL            = "https://open.bigmodel.cn/api/paas/v4"
+	DefaultZhipuCodingBaseURL          = "https://open.bigmodel.cn/api/coding/paas/v4"
+	DefaultDeepSeekChatBaseURL         = "https://api.deepseek.com/v1"
+	DefaultDeepSeekResponsesBaseURL    = "https://api.deepseek.com"
+	DefaultKimiPayGResponsesBaseURL    = "https://api.moonshot.cn/v1"
+	DefaultKimiCodingResponsesBaseURL  = "https://api.kimi.com/coding/v1"
+	DefaultKimiPayGAnthropicBaseURL    = "https://api.moonshot.cn/anthropic"
+	DefaultKimiCodingAnthropicBaseURL  = "https://api.kimi.com/coding"
+	DefaultZhipuAnthropicBaseURL       = "https://open.bigmodel.cn/api/anthropic"
+	DefaultDeepSeekAnthropicBaseURL    = "https://api.deepseek.com/anthropic"
+	DefaultMiniMaxCNBaseURL            = "https://api.minimaxi.com/v1"
+	DefaultMiniMaxCNAnthropicBaseURL   = "https://api.minimaxi.com/anthropic"
+	DefaultMiniMaxIntlBaseURL          = "https://api.minimax.io/v1"
+	DefaultMiniMaxIntlAnthropicBaseURL = "https://api.minimax.io/anthropic"
 )
 
 func IsCNProvider(platform string) bool {
 	switch platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		return true
 	default:
 		return false
@@ -102,6 +107,28 @@ var AllowedQuotaPlatforms = []string{
 	PlatformKimi,
 	PlatformZhipu,
 	PlatformDeepSeek,
+	PlatformMiniMax,
+}
+
+// DefaultCNModelIDs returns a small stable catalog for domestic providers when
+// an account has no explicit model_mapping. Live upstream model discovery and
+// explicit mappings remain authoritative; these IDs only prevent the UI and
+// /v1/models fallback from exposing unrelated Claude models.
+func DefaultCNModelIDs(platform string) []string {
+	var models []string
+	switch platform {
+	case PlatformKimi:
+		models = []string{"kimi-k2.5", "kimi-k2", "moonshot-v1-128k"}
+	case PlatformZhipu:
+		models = []string{"glm-4.7", "glm-4.6", "glm-4.5-air"}
+	case PlatformDeepSeek:
+		models = []string{"deepseek-chat", "deepseek-reasoner"}
+	case PlatformMiniMax:
+		models = []string{"MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.1"}
+	default:
+		return nil
+	}
+	return append([]string(nil), models...)
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。

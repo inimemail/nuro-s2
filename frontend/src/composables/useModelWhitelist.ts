@@ -447,7 +447,7 @@ export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'antigravity') return antigravityPresetMappings
   if (platform === 'grok') return grokPresetMappings
   if (platform === 'bedrock') return bedrockPresetMappings
-  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek') return []
+  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax') return []
   return anthropicPresetMappings
 }
 

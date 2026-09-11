@@ -74,17 +74,17 @@ func DefaultNonOpenAIPoolSettings() NonOpenAIPoolSettings {
 }
 
 func defaultNonOpenAIPoolPlatforms() map[string]NonOpenAIPoolPlatformSettings {
-	platforms := make(map[string]NonOpenAIPoolPlatformSettings, 6)
+	platforms := make(map[string]NonOpenAIPoolPlatformSettings, 7)
 	probeModels := map[string]string{
 		PlatformGemini: "gemini-2.0-flash", PlatformAntigravity: "claude-sonnet-4-5",
 		PlatformGrok: "grok-4.5", PlatformKimi: "kimi-k2",
-		PlatformZhipu: "glm-4.7", PlatformDeepSeek: "deepseek-chat",
+		PlatformZhipu: "glm-4.7", PlatformDeepSeek: "deepseek-chat", PlatformMiniMax: "MiniMax-M2.5",
 	}
 	imageProbeModels := map[string]string{
 		PlatformGemini: "gemini-2.5-flash-image", PlatformAntigravity: "gemini-2.5-flash-image",
 		PlatformGrok: "grok-imagine-image",
 	}
-	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax} {
 		platforms[platform] = NonOpenAIPoolPlatformSettings{
 			RecoveryProbeEnabled: true, RecoveryProbeModel: probeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5,
 			Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, RecoveryProbeModel: imageProbeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 360},
