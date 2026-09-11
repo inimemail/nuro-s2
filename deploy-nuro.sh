@@ -1632,6 +1632,17 @@ EOF
     return 1
 }
 
+show_compose_service_progress() {
+    local workdir="$1"
+    local dc_cmd="$2"
+    local expected_replicas="${DEPLOY_EXPECTED_APP_REPLICAS:-1}"
+
+    [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]] || expected_replicas=1
+    # Ask Compose to render its native all-service progress without replacing
+    # containers that are already running after the fast app transition.
+    (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-recreate --scale "app=${expected_replicas}")
+}
+
 rollback_app_image() {
     local workdir="$1"
     local dc_cmd="$2"
@@ -1649,6 +1660,7 @@ rollback_app_image() {
     (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps --scale "app=${expected_replicas}" app) || return 1
     wait_app_ready || return 1
     (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps autoscaler) || return 1
+    show_compose_service_progress "$workdir" "$dc_cmd" || warn "无法显示完整 Compose 服务状态，已恢复的服务不会受影响。"
     return 0
 }
 
@@ -1785,6 +1797,7 @@ upgrade_service() {
     fi
 
     [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
+    show_compose_service_progress "$workdir" "$dc_cmd" || warn "无法显示完整 Compose 服务状态，已运行的服务不会受影响。"
     show_access "$workdir"
 }
 
