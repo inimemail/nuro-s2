@@ -1748,7 +1748,7 @@ deploy_service() {
 }
 
 upgrade_service() {
-    local workdir rollback_image="" previous_replicas previous_app_id previous_image
+    local workdir rollback_image="" previous_replicas previous_app_id previous_image compose_output_file
     workdir="$(get_workdir)"
     [[ -z "$workdir" ]] && { err "未检测到 ${APP_NAME} 部署，请先执行 [1] 一键部署。"; return; }
 
@@ -1786,15 +1786,28 @@ upgrade_service() {
         [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
         die "镜像构建失败；旧版本仍在运行"
     fi
-    if ! compose_up_with_edge_fallback "$workdir" "$dc_cmd" true || ! wait_app_ready; then
+    # Keep the user-facing output identical to the historical full Compose
+    # display: the fast app-only replacement is an internal transition, while
+    # show_compose_service_progress below prints the single complete 8-service
+    # status after readiness has been verified. Preserve the captured output on
+    # failure so diagnostics are not lost.
+    compose_output_file="$(mktemp)" || die "无法创建 Compose 启动日志临时文件"
+    if ! compose_up_with_edge_fallback "$workdir" "$dc_cmd" true >"$compose_output_file" 2>&1 || ! wait_app_ready; then
+        cat "$compose_output_file" >&2 || true
+        rm -f "$compose_output_file"
         if rollback_app_image "$workdir" "$dc_cmd" "$rollback_image" "$previous_replicas"; then
             die "新版本启动失败，已自动恢复升级前版本"
         fi
         die "新版本启动失败，且自动回滚未成功，请检查上方容器日志"
     fi
-    if ! (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps autoscaler); then
+    rm -f "$compose_output_file"
+    compose_output_file="$(mktemp)" || die "无法创建 autoscaler 启动日志临时文件"
+    if ! (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps autoscaler) >"$compose_output_file" 2>&1; then
+        cat "$compose_output_file" >&2 || true
+        rm -f "$compose_output_file"
         die "新版本已就绪，但 autoscaler 启动失败，请检查 autoscaler 日志"
     fi
+    rm -f "$compose_output_file"
 
     [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
     show_compose_service_progress "$workdir" "$dc_cmd" || warn "无法显示完整 Compose 服务状态，已运行的服务不会受影响。"
