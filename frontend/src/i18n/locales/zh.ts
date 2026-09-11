@@ -2394,6 +2394,8 @@ export default {
         adaptiveTTFTThreshold: '触发阈值',
         adaptiveTTFTHealthFirstHint: '当前账号可信首 Token 达到阈值后，才允许因速度切换到更快的健康账号。',
         adaptiveTTFTCostBalancedHint: '最低精确倍率层全部达到阈值后，才逐级尝试下一倍率层。',
+        adaptiveHealthFreshness: '样本有效期',
+        minutes: '分钟',
         seconds: '秒',
         exclusiveLabel: '专属分组',
         exclusiveHint: '专属分组，可以手动指定给用户',

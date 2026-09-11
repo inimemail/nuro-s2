@@ -1210,6 +1210,27 @@ func (_u *GroupUpdate) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpdate
 	return _u
 }
 
+// SetAdaptiveHealthSampleFreshnessMinutes sets the "adaptive_health_sample_freshness_minutes" field.
+func (_u *GroupUpdate) SetAdaptiveHealthSampleFreshnessMinutes(v int) *GroupUpdate {
+	_u.mutation.ResetAdaptiveHealthSampleFreshnessMinutes()
+	_u.mutation.SetAdaptiveHealthSampleFreshnessMinutes(v)
+	return _u
+}
+
+// SetNillableAdaptiveHealthSampleFreshnessMinutes sets the "adaptive_health_sample_freshness_minutes" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableAdaptiveHealthSampleFreshnessMinutes(v *int) *GroupUpdate {
+	if v != nil {
+		_u.SetAdaptiveHealthSampleFreshnessMinutes(*v)
+	}
+	return _u
+}
+
+// AddAdaptiveHealthSampleFreshnessMinutes adds value to the "adaptive_health_sample_freshness_minutes" field.
+func (_u *GroupUpdate) AddAdaptiveHealthSampleFreshnessMinutes(v int) *GroupUpdate {
+	_u.mutation.AddAdaptiveHealthSampleFreshnessMinutes(v)
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdate) SetRpmLimit(v int) *GroupUpdate {
 	_u.mutation.ResetRpmLimit()
@@ -1615,6 +1636,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_ttft_switch_threshold_seconds": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AdaptiveHealthSampleFreshnessMinutes(); ok {
+		if err := group.AdaptiveHealthSampleFreshnessMinutesValidator(v); err != nil {
+			return &ValidationError{Name: "adaptive_health_sample_freshness_minutes", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_health_sample_freshness_minutes": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -1991,6 +2017,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedAdaptiveTtftSwitchThresholdSeconds(); ok {
 		_spec.AddField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AdaptiveHealthSampleFreshnessMinutes(); ok {
+		_spec.SetField(group.FieldAdaptiveHealthSampleFreshnessMinutes, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAdaptiveHealthSampleFreshnessMinutes(); ok {
+		_spec.AddField(group.FieldAdaptiveHealthSampleFreshnessMinutes, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -3502,6 +3534,27 @@ func (_u *GroupUpdateOne) AddAdaptiveTtftSwitchThresholdSeconds(v int) *GroupUpd
 	return _u
 }
 
+// SetAdaptiveHealthSampleFreshnessMinutes sets the "adaptive_health_sample_freshness_minutes" field.
+func (_u *GroupUpdateOne) SetAdaptiveHealthSampleFreshnessMinutes(v int) *GroupUpdateOne {
+	_u.mutation.ResetAdaptiveHealthSampleFreshnessMinutes()
+	_u.mutation.SetAdaptiveHealthSampleFreshnessMinutes(v)
+	return _u
+}
+
+// SetNillableAdaptiveHealthSampleFreshnessMinutes sets the "adaptive_health_sample_freshness_minutes" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableAdaptiveHealthSampleFreshnessMinutes(v *int) *GroupUpdateOne {
+	if v != nil {
+		_u.SetAdaptiveHealthSampleFreshnessMinutes(*v)
+	}
+	return _u
+}
+
+// AddAdaptiveHealthSampleFreshnessMinutes adds value to the "adaptive_health_sample_freshness_minutes" field.
+func (_u *GroupUpdateOne) AddAdaptiveHealthSampleFreshnessMinutes(v int) *GroupUpdateOne {
+	_u.mutation.AddAdaptiveHealthSampleFreshnessMinutes(v)
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdateOne) SetRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.ResetRpmLimit()
@@ -3920,6 +3973,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "adaptive_ttft_switch_threshold_seconds", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_ttft_switch_threshold_seconds": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.AdaptiveHealthSampleFreshnessMinutes(); ok {
+		if err := group.AdaptiveHealthSampleFreshnessMinutesValidator(v); err != nil {
+			return &ValidationError{Name: "adaptive_health_sample_freshness_minutes", err: fmt.Errorf(`ent: validator failed for field "Group.adaptive_health_sample_freshness_minutes": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.MaxReasoningEffort(); ok {
 		if err := group.MaxReasoningEffortValidator(v); err != nil {
 			return &ValidationError{Name: "max_reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "Group.max_reasoning_effort": %w`, err)}
@@ -4313,6 +4371,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AddedAdaptiveTtftSwitchThresholdSeconds(); ok {
 		_spec.AddField(group.FieldAdaptiveTtftSwitchThresholdSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AdaptiveHealthSampleFreshnessMinutes(); ok {
+		_spec.SetField(group.FieldAdaptiveHealthSampleFreshnessMinutes, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAdaptiveHealthSampleFreshnessMinutes(); ok {
+		_spec.AddField(group.FieldAdaptiveHealthSampleFreshnessMinutes, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

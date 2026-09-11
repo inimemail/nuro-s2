@@ -169,6 +169,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		AccountSchedulingStrategy:          source.AccountSchedulingStrategy,
 		AdaptiveTTFTSwitchEnabled:          source.AdaptiveTTFTSwitchEnabled,
 		AdaptiveTTFTSwitchThresholdSeconds: source.AdaptiveTTFTSwitchThresholdSeconds,
+		AdaptiveHealthSampleFreshnessMinutes: source.AdaptiveHealthSampleFreshnessMinutes,
 		RPMLimit:                           source.RPMLimit,
 		MaxReasoningEffort:                 source.MaxReasoningEffort,
 		ReasoningEffortMappings:            append([]ReasoningEffortMapping(nil), source.ReasoningEffortMappings...),

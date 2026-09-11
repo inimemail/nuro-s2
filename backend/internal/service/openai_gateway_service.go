@@ -499,11 +499,15 @@ type OpenAIGatewayService struct {
 // loadAdaptiveOpenAIAccountTTFTHistory supplies persisted latency only to the
 // current adaptive selection. It must never update shared runtime stats, since
 // strict-priority scheduling intentionally remains independent of this seed.
-func (s *OpenAIGatewayService) loadAdaptiveOpenAIAccountTTFTHistory(ctx context.Context, accounts []*Account) map[int64]AccountTTFTHistory {
+func (s *OpenAIGatewayService) loadAdaptiveOpenAIAccountTTFTHistory(ctx context.Context, accounts []*Account, windows ...time.Duration) map[int64]AccountTTFTHistory {
 	if s == nil || s.accountTTFTHistory == nil || len(accounts) == 0 {
 		return nil
 	}
-	return s.accountTTFTHistory.load(ctx, accounts, time.Now())
+	window := accountTTFTHistoryWindow
+	if len(windows) > 0 && windows[0] > 0 {
+		window = windows[0]
+	}
+	return s.accountTTFTHistory.loadWithin(ctx, accounts, time.Now(), window)
 }
 
 type promptCacheBoostGroupAvailability struct {
@@ -585,6 +589,7 @@ func NewOpenAIGatewayService(
 	}
 	if schedulerSnapshot != nil {
 		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearLocalAccountSchedulingBlockBefore)
+		schedulerSnapshot.RegisterAccountRuntimeClearEventHandler(svc.resetLocalAccountErrorHealthForRuntimeClear)
 		schedulerSnapshot.RegisterAccountRuntimeOnlyClearHandler(svc.clearLocalAccountRuntimeBlockBefore)
 	}
 	svc.logOpenAIWSModeBootstrap()
@@ -2562,15 +2567,16 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 			items = append(items, accountWithLoad{account: candidate, loadInfo: &AccountLoadInfo{AccountID: candidate.ID}})
 		}
-		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(items))
+		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(items), ttftPolicy.sampleFreshness)
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidatesWithHistory(items, requestedModel, history), OpenAIAccountScheduleRequest{
-			GroupID:                   groupID,
-			StickyAccountID:           stickyAccountID,
-			RequestedModel:            requestedModel,
-			AccountSchedulingStrategy: strategy,
-			AdaptiveTTFTSwitchEnabled: ttftPolicy.enabled,
-			AdaptiveTTFTThresholdSecs: int(ttftPolicy.thresholdMs / 1000),
+			GroupID:                        groupID,
+			StickyAccountID:                stickyAccountID,
+			RequestedModel:                 requestedModel,
+			AccountSchedulingStrategy:      strategy,
+			AdaptiveTTFTSwitchEnabled:      ttftPolicy.enabled,
+			AdaptiveTTFTThresholdSecs:      int(ttftPolicy.thresholdMs / 1000),
+			AdaptiveHealthFreshnessMinutes: int(ttftPolicy.sampleFreshness / time.Minute),
 		})
 		for rank, candidate := range ordered {
 			if candidate.account != nil {
@@ -3329,16 +3335,17 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 
 	if healthFirst {
 		ttftPolicy := s.openAIGroupAdaptiveTTFTSwitchPolicy(ctx, groupID)
-		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(available))
+		history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(available), ttftPolicy.sampleFreshness)
 		candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(available, requestedModel, history)
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(candidates, OpenAIAccountScheduleRequest{
-			GroupID:                   groupID,
-			StickyAccountID:           stickyAccountID,
-			RequestedModel:            requestedModel,
-			AccountSchedulingStrategy: strategy,
-			AdaptiveTTFTSwitchEnabled: ttftPolicy.enabled,
-			AdaptiveTTFTThresholdSecs: int(ttftPolicy.thresholdMs / 1000),
+			GroupID:                        groupID,
+			StickyAccountID:                stickyAccountID,
+			RequestedModel:                 requestedModel,
+			AccountSchedulingStrategy:      strategy,
+			AdaptiveTTFTSwitchEnabled:      ttftPolicy.enabled,
+			AdaptiveTTFTThresholdSecs:      int(ttftPolicy.thresholdMs / 1000),
+			AdaptiveHealthFreshnessMinutes: int(ttftPolicy.sampleFreshness / time.Minute),
 		})
 		byID := make(map[int64]accountWithLoad, len(available))
 		for _, item := range available {
@@ -3411,11 +3418,11 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierWithPoli
 	if len(all) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return available
 	}
-	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all))
+	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all), policy.sampleFreshness)
 	candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(all, requestedModel, history)
 	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
 	for i, candidate := range candidates {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
 	}
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), time.Now(), policy)
 	allowed := make(map[int64]struct{}, len(indexes))
@@ -3548,10 +3555,11 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidatesWithHistory(
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		sampleCount, ttftSampleCount, lastUpdated := int64(0), int64(0), time.Time{}
+		errorUpdated, ttftUpdated := time.Time{}, time.Time{}
 		if s != nil {
 			transport := s.getOpenAIWSProtocolResolver().Resolve(item.account).Transport
 			if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
-				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = stats.snapshotForRouteWithMeta(item.account.ID, requestedModel, transport)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = stats.snapshotForRouteWithFreshnessMeta(item.account.ID, requestedModel, transport)
 			}
 		}
 		ttftP90 := 0.0
@@ -3561,6 +3569,7 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidatesWithHistory(
 				ttft = summary.P50Ms
 				hasTTFT = true
 				ttftSampleCount = summary.SampleCount
+				ttftUpdated = summary.LatestAt
 			}
 			if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 				lastUpdated = summary.LatestAt
@@ -3577,6 +3586,8 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidatesWithHistory(
 			sampleCount:     sampleCount,
 			ttftSampleCount: ttftSampleCount,
 			lastUpdated:     lastUpdated,
+			errorUpdated:    errorUpdated,
+			ttftUpdated:     ttftUpdated,
 		})
 	}
 	return candidates

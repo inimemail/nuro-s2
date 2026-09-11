@@ -1249,28 +1249,34 @@ func init() {
 	group.DefaultAdaptiveTtftSwitchThresholdSeconds = groupDescAdaptiveTtftSwitchThresholdSeconds.Default.(int)
 	// group.AdaptiveTtftSwitchThresholdSecondsValidator is a validator for the "adaptive_ttft_switch_threshold_seconds" field. It is called by the builders before save.
 	group.AdaptiveTtftSwitchThresholdSecondsValidator = groupDescAdaptiveTtftSwitchThresholdSeconds.Validators[0].(func(int) error)
+	// groupDescAdaptiveHealthSampleFreshnessMinutes is the schema descriptor for adaptive_health_sample_freshness_minutes field.
+	groupDescAdaptiveHealthSampleFreshnessMinutes := groupFields[61].Descriptor()
+	// group.DefaultAdaptiveHealthSampleFreshnessMinutes holds the default value on creation for the adaptive_health_sample_freshness_minutes field.
+	group.DefaultAdaptiveHealthSampleFreshnessMinutes = groupDescAdaptiveHealthSampleFreshnessMinutes.Default.(int)
+	// group.AdaptiveHealthSampleFreshnessMinutesValidator is a validator for the "adaptive_health_sample_freshness_minutes" field. It is called by the builders before save.
+	group.AdaptiveHealthSampleFreshnessMinutesValidator = groupDescAdaptiveHealthSampleFreshnessMinutes.Validators[0].(func(int) error)
 	// groupDescRpmLimit is the schema descriptor for rpm_limit field.
-	groupDescRpmLimit := groupFields[61].Descriptor()
+	groupDescRpmLimit := groupFields[62].Descriptor()
 	// group.DefaultRpmLimit holds the default value on creation for the rpm_limit field.
 	group.DefaultRpmLimit = groupDescRpmLimit.Default.(int)
 	// groupDescForceOpenaiFast is the schema descriptor for force_openai_fast field.
-	groupDescForceOpenaiFast := groupFields[62].Descriptor()
+	groupDescForceOpenaiFast := groupFields[63].Descriptor()
 	// group.DefaultForceOpenaiFast holds the default value on creation for the force_openai_fast field.
 	group.DefaultForceOpenaiFast = groupDescForceOpenaiFast.Default.(bool)
 	// groupDescMaxReasoningEffort is the schema descriptor for max_reasoning_effort field.
-	groupDescMaxReasoningEffort := groupFields[63].Descriptor()
+	groupDescMaxReasoningEffort := groupFields[64].Descriptor()
 	// group.DefaultMaxReasoningEffort holds the default value on creation for the max_reasoning_effort field.
 	group.DefaultMaxReasoningEffort = groupDescMaxReasoningEffort.Default.(string)
 	// group.MaxReasoningEffortValidator is a validator for the "max_reasoning_effort" field. It is called by the builders before save.
 	group.MaxReasoningEffortValidator = groupDescMaxReasoningEffort.Validators[0].(func(string) error)
 	// groupDescMaxReasoningEffortOverLimit is the schema descriptor for max_reasoning_effort_over_limit field.
-	groupDescMaxReasoningEffortOverLimit := groupFields[64].Descriptor()
+	groupDescMaxReasoningEffortOverLimit := groupFields[65].Descriptor()
 	// group.DefaultMaxReasoningEffortOverLimit holds the default value on creation for the max_reasoning_effort_over_limit field.
 	group.DefaultMaxReasoningEffortOverLimit = groupDescMaxReasoningEffortOverLimit.Default.(string)
 	// group.MaxReasoningEffortOverLimitValidator is a validator for the "max_reasoning_effort_over_limit" field. It is called by the builders before save.
 	group.MaxReasoningEffortOverLimitValidator = groupDescMaxReasoningEffortOverLimit.Validators[0].(func(string) error)
 	// groupDescReasoningEffortMappings is the schema descriptor for reasoning_effort_mappings field.
-	groupDescReasoningEffortMappings := groupFields[65].Descriptor()
+	groupDescReasoningEffortMappings := groupFields[66].Descriptor()
 	// group.DefaultReasoningEffortMappings holds the default value on creation for the reasoning_effort_mappings field.
 	group.DefaultReasoningEffortMappings = groupDescReasoningEffortMappings.Default.([]domain.ReasoningEffortMapping)
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()

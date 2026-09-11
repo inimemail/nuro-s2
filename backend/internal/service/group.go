@@ -24,11 +24,21 @@ const (
 	DefaultAdaptiveTTFTSwitchThresholdSeconds   = 60
 	MinAdaptiveTTFTSwitchThresholdSeconds       = 1
 	MaxAdaptiveTTFTSwitchThresholdSeconds       = 3600
+	DefaultAdaptiveHealthSampleFreshnessMinutes = 15
+	MinAdaptiveHealthSampleFreshnessMinutes     = 1
+	MaxAdaptiveHealthSampleFreshnessMinutes     = 120
 )
 
 func NormalizeAdaptiveTTFTSwitchThresholdSeconds(value int) int {
 	if value < MinAdaptiveTTFTSwitchThresholdSeconds || value > MaxAdaptiveTTFTSwitchThresholdSeconds {
 		return DefaultAdaptiveTTFTSwitchThresholdSeconds
+	}
+	return value
+}
+
+func NormalizeAdaptiveHealthSampleFreshnessMinutes(value int) int {
+	if value < MinAdaptiveHealthSampleFreshnessMinutes || value > MaxAdaptiveHealthSampleFreshnessMinutes {
+		return DefaultAdaptiveHealthSampleFreshnessMinutes
 	}
 	return value
 }
@@ -140,6 +150,7 @@ type Group struct {
 	AccountSchedulingStrategy          string
 	AdaptiveTTFTSwitchEnabled          bool
 	AdaptiveTTFTSwitchThresholdSeconds int
+	AdaptiveHealthSampleFreshnessMinutes int
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。

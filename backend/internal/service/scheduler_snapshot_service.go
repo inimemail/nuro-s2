@@ -56,6 +56,7 @@ type SchedulerSnapshotService struct {
 	unsubscribe                     func()
 	runtimeClearMu                  sync.RWMutex
 	runtimeClearHandlers            []func(int64, int64)
+	runtimeClearEventHandlers       []func(SchedulerEvent)
 	runtimeOnlyClearHandlers        []func(int64, int64)
 	runtimeClearGenerations         sync.Map // key: int64(accountID), value: int64
 	runtimeClearGenerationCheckedAt sync.Map // key: int64(accountID), value: time.Time
@@ -198,10 +199,29 @@ func (s *SchedulerSnapshotService) handleSchedulerEvent(ctx context.Context, eve
 		for _, handler := range handlers {
 			handler(event.AccountID, event.Generation)
 		}
+		if event.Type == SchedulerEventAccountRuntimeCleared {
+			s.runtimeClearMu.RLock()
+			eventHandlers := append([]func(SchedulerEvent){}, s.runtimeClearEventHandlers...)
+			s.runtimeClearMu.RUnlock()
+			for _, handler := range eventHandlers {
+				handler(event)
+			}
+		}
 	}
 	if s.localSnapshot != nil {
 		s.localSnapshot.ApplyEvent(ctx, event)
 	}
+}
+
+// RegisterAccountRuntimeClearEventHandler preserves the authoritative event
+// timestamp for state whose ordering cannot rely on replica-local clocks.
+func (s *SchedulerSnapshotService) RegisterAccountRuntimeClearEventHandler(handler func(SchedulerEvent)) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.runtimeClearMu.Lock()
+	s.runtimeClearEventHandlers = append(s.runtimeClearEventHandlers, handler)
+	s.runtimeClearMu.Unlock()
 }
 
 func (s *SchedulerSnapshotService) RegisterAccountRuntimeClearHandler(handler func(int64, int64)) {

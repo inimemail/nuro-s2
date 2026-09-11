@@ -92,6 +92,7 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 		SetForceOpenaiFast(true).
 		SetMaxReasoningEffort("medium").
 		SetMaxReasoningEffortOverLimit("deny").
+		SetAdaptiveHealthSampleFreshnessMinutes(20).
 		SetReasoningEffortMappings([]service.ReasoningEffortMapping{{From: "max", To: "high", MatchType: "prefix", Model: "gpt-5"}}).
 		SetMessagesDispatchModelConfig(service.OpenAIMessagesDispatchModelConfig{
 			OpusMappedModel:   "gpt-5.4-nano",
@@ -140,5 +141,6 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.True(t, got.Group.ForceOpenAIFast)
 	require.Equal(t, "medium", got.Group.MaxReasoningEffort)
 	require.Equal(t, "deny", got.Group.MaxReasoningEffortOverLimit)
+	require.Equal(t, 20, got.Group.AdaptiveHealthSampleFreshnessMinutes)
 	require.Equal(t, "gpt-5", got.Group.ReasoningEffortMappings[0].Model)
 }

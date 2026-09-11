@@ -1782,6 +1782,7 @@
           v-model="createForm.account_scheduling_strategy"
           v-model:ttft-switch-enabled="createForm.adaptive_ttft_switch_enabled"
           v-model:ttft-switch-threshold-seconds="createForm.adaptive_ttft_switch_threshold_seconds"
+          v-model:health-freshness-minutes="createForm.adaptive_health_sample_freshness_minutes"
         />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
@@ -3406,6 +3407,7 @@
           v-model="editForm.account_scheduling_strategy"
           v-model:ttft-switch-enabled="editForm.adaptive_ttft_switch_enabled"
           v-model:ttft-switch-threshold-seconds="editForm.adaptive_ttft_switch_threshold_seconds"
+          v-model:health-freshness-minutes="editForm.adaptive_health_sample_freshness_minutes"
         />
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
@@ -4327,6 +4329,7 @@ const createForm = reactive({
   account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
   adaptive_ttft_switch_enabled: true,
   adaptive_ttft_switch_threshold_seconds: 60,
+  adaptive_health_sample_freshness_minutes: 15,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4691,6 +4694,7 @@ const editForm = reactive({
   account_scheduling_strategy: "strict_priority" as "strict_priority" | "health_first" | "health_cost_balanced",
   adaptive_ttft_switch_enabled: true,
   adaptive_ttft_switch_threshold_seconds: 60,
+  adaptive_health_sample_freshness_minutes: 15,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5140,6 +5144,7 @@ const closeCreateModal = () => {
   createForm.account_scheduling_strategy = "strict_priority";
   createForm.adaptive_ttft_switch_enabled = true;
   createForm.adaptive_ttft_switch_threshold_seconds = 60;
+  createForm.adaptive_health_sample_freshness_minutes = 15;
   createForm.supported_model_scopes = ["claude", "gemini_text", "gemini_image"];
   createForm.mcp_xml_inject = true;
   createForm.copy_accounts_from_group_ids = [];
@@ -5378,6 +5383,7 @@ const handleEdit = async (group: AdminGroup) => {
     : group.account_scheduling_strategy === "health_first" ? "health_first" : "strict_priority";
   editForm.adaptive_ttft_switch_enabled = group.adaptive_ttft_switch_enabled ?? true;
   editForm.adaptive_ttft_switch_threshold_seconds = group.adaptive_ttft_switch_threshold_seconds ?? 60;
+  editForm.adaptive_health_sample_freshness_minutes = group.adaptive_health_sample_freshness_minutes ?? 15;
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",
@@ -5462,6 +5468,7 @@ const closeEditModal = () => {
   editForm.account_scheduling_strategy = "strict_priority";
   editForm.adaptive_ttft_switch_enabled = true;
   editForm.adaptive_ttft_switch_threshold_seconds = 60;
+  editForm.adaptive_health_sample_freshness_minutes = 15;
   resetModelsListState(editModelsListState);
   Object.assign(editCodexManifestConfig, createCodexManifestDefaults());
   editCodexManifestAccountNames.value = {};

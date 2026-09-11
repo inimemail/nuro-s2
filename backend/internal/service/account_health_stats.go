@@ -42,17 +42,21 @@ type adaptiveAccountHealthProfile struct {
 	p90          float64
 	hasTTFT      bool
 	ttftSamples  int64
+	errorUpdated time.Time
+	ttftUpdated  time.Time
 }
 
 type adaptiveTTFTSwitchPolicy struct {
-	enabled     bool
-	thresholdMs float64
+	enabled         bool
+	thresholdMs     float64
+	sampleFreshness time.Duration
 }
 
 func defaultAdaptiveTTFTSwitchPolicy() adaptiveTTFTSwitchPolicy {
 	return adaptiveTTFTSwitchPolicy{
-		enabled:     true,
-		thresholdMs: float64(DefaultAdaptiveTTFTSwitchThresholdSeconds) * 1000,
+		enabled:         true,
+		thresholdMs:     float64(DefaultAdaptiveTTFTSwitchThresholdSeconds) * 1000,
+		sampleFreshness: time.Duration(DefaultAdaptiveHealthSampleFreshnessMinutes) * time.Minute,
 	}
 }
 
@@ -64,22 +68,24 @@ func adaptiveTTFTSwitchPolicyForGroup(group *Group) adaptiveTTFTSwitchPolicy {
 	// A zero threshold identifies legacy in-memory/cache values that predate
 	// this setting. Preserve the migration default instead of interpreting the
 	// zero-value bool as an explicit disable.
-	if group.AdaptiveTTFTSwitchThresholdSeconds == 0 {
-		return policy
+	policy.sampleFreshness = time.Duration(NormalizeAdaptiveHealthSampleFreshnessMinutes(group.AdaptiveHealthSampleFreshnessMinutes)) * time.Minute
+	if group.AdaptiveTTFTSwitchThresholdSeconds != 0 {
+		policy.enabled = group.AdaptiveTTFTSwitchEnabled
+		policy.thresholdMs = float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(group.AdaptiveTTFTSwitchThresholdSeconds)) * 1000
 	}
-	policy.enabled = group.AdaptiveTTFTSwitchEnabled
-	policy.thresholdMs = float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(group.AdaptiveTTFTSwitchThresholdSeconds)) * 1000
 	return policy
 }
 
-func adaptiveTTFTSwitchPolicyFromValues(enabled bool, thresholdSeconds int) adaptiveTTFTSwitchPolicy {
-	if thresholdSeconds == 0 {
-		return defaultAdaptiveTTFTSwitchPolicy()
+func adaptiveTTFTSwitchPolicyFromValues(enabled bool, thresholdSeconds int, freshnessMinutes ...int) adaptiveTTFTSwitchPolicy {
+	policy := defaultAdaptiveTTFTSwitchPolicy()
+	if thresholdSeconds != 0 {
+		policy.enabled = enabled
+		policy.thresholdMs = float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(thresholdSeconds)) * 1000
 	}
-	return adaptiveTTFTSwitchPolicy{
-		enabled:     enabled,
-		thresholdMs: float64(NormalizeAdaptiveTTFTSwitchThresholdSeconds(thresholdSeconds)) * 1000,
+	if len(freshnessMinutes) > 0 {
+		policy.sampleFreshness = time.Duration(NormalizeAdaptiveHealthSampleFreshnessMinutes(freshnessMinutes[0])) * time.Minute
 	}
+	return policy
 }
 
 func adaptiveAccountPolicyIndexes(profiles []adaptiveAccountHealthProfile, costBalanced bool, now time.Time) []int {
@@ -90,6 +96,7 @@ func adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles []adaptiveAccountHealth
 	if len(profiles) == 0 {
 		return nil
 	}
+	profiles = freshAdaptiveHealthProfiles(profiles, now, policy)
 	errorQualified := adaptiveErrorQualifiedIndexes(profiles)
 	if len(errorQualified) == 0 {
 		for i := range profiles {
@@ -102,6 +109,26 @@ func adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles []adaptiveAccountHealth
 	return adaptiveHealthFirstIndexesWithTTFTPolicy(profiles, errorQualified, policy)
 }
 
+func freshAdaptiveHealthProfiles(profiles []adaptiveAccountHealthProfile, now time.Time, policy adaptiveTTFTSwitchPolicy) []adaptiveAccountHealthProfile {
+	if len(profiles) == 0 || now.IsZero() || policy.sampleFreshness <= 0 {
+		return profiles
+	}
+	fresh := append([]adaptiveAccountHealthProfile(nil), profiles...)
+	for i := range fresh {
+		if !fresh[i].errorUpdated.IsZero() && now.Sub(fresh[i].errorUpdated) >= policy.sampleFreshness {
+			fresh[i].errorRate = 0
+			fresh[i].errorSamples = 0
+		}
+		if !fresh[i].ttftUpdated.IsZero() && now.Sub(fresh[i].ttftUpdated) >= policy.sampleFreshness {
+			fresh[i].p50 = 0
+			fresh[i].p90 = 0
+			fresh[i].hasTTFT = false
+			fresh[i].ttftSamples = 0
+		}
+	}
+	return fresh
+}
+
 func filterAdaptiveAccountsToPolicyTier(accounts, available []accountWithLoad, stats *accountRuntimeHealthStats, strategy string, now time.Time, history map[int64]AccountTTFTHistory) []accountWithLoad {
 	return filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(accounts, available, stats, strategy, now, history, defaultAdaptiveTTFTSwitchPolicy())
 }
@@ -110,10 +137,10 @@ func filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(accounts, available []acco
 	if len(accounts) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return available
 	}
-	candidates := buildAccountHealthCandidatesWithHistory(accounts, stats, history)
+	candidates := freshAccountHealthCandidates(buildAccountHealthCandidatesWithHistory(accounts, stats, history), now, policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
 	for i, candidate := range candidates {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.item.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.item.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
 	}
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
@@ -471,11 +498,14 @@ type accountHealthGroupProbeKey struct {
 }
 
 type accountRuntimeHealthStat struct {
+	mu                sync.Mutex
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
 	sampleCount       atomic.Int64
 	ttftSampleCount   atomic.Int64
 	lastUpdatedNano   atomic.Int64
+	errorUpdatedNano  atomic.Int64
+	ttftUpdatedNano   atomic.Int64
 }
 
 func newAccountRuntimeHealthStats() *accountRuntimeHealthStats {
@@ -512,8 +542,12 @@ func (s *accountRuntimeHealthStats) report(accountID int64, success bool, firstT
 	if stat == nil {
 		return
 	}
+	stat.mu.Lock()
+	defer stat.mu.Unlock()
 	stat.sampleCount.Add(1)
-	stat.lastUpdatedNano.Store(time.Now().UnixNano())
+	updatedNano := time.Now().UnixNano()
+	stat.lastUpdatedNano.Store(updatedNano)
+	stat.errorUpdatedNano.Store(updatedNano)
 
 	errorSample := 1.0
 	if success {
@@ -525,6 +559,7 @@ func (s *accountRuntimeHealthStats) report(accountID int64, success bool, firstT
 		return
 	}
 	stat.ttftSampleCount.Add(1)
+	stat.ttftUpdatedNano.Store(updatedNano)
 	ttft := float64(*firstTokenMs)
 	ttftBits := math.Float64bits(ttft)
 	for {
@@ -543,22 +578,50 @@ func (s *accountRuntimeHealthStats) report(accountID int64, success bool, firstT
 	}
 }
 
+// resetErrorHealth makes a recovered account unknown/default-healthy again.
+// TTFT evidence is deliberately preserved.
+func (s *accountRuntimeHealthStats) resetErrorHealth(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	value, ok := s.accounts.Load(accountID)
+	if !ok {
+		return
+	}
+	stat, _ := value.(*accountRuntimeHealthStat)
+	if stat == nil {
+		return
+	}
+	stat.mu.Lock()
+	stat.errorRateEWMABits.Store(math.Float64bits(0))
+	stat.sampleCount.Store(0)
+	stat.errorUpdatedNano.Store(0)
+	stat.mu.Unlock()
+	s.unknownExploreAt.Delete(accountID)
+	s.degradedRecoveryAt.Delete(accountID)
+}
+
 func (s *accountRuntimeHealthStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
 	errorRate, ttft, hasTTFT, found, _, _, _ = s.snapshotWithMeta(accountID)
 	return errorRate, ttft, hasTTFT, found
 }
 
 func (s *accountRuntimeHealthStats) snapshotWithMeta(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
+	errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated, _, _ = s.snapshotWithFreshnessMeta(accountID)
+	return
+}
+
+func (s *accountRuntimeHealthStats) snapshotWithFreshnessMeta(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated, errorUpdated, ttftUpdated time.Time) {
 	if s == nil || accountID <= 0 {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	value, ok := s.accounts.Load(accountID)
 	if !ok {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	stat, _ := value.(*accountRuntimeHealthStat)
 	if stat == nil {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	sampleCount = stat.sampleCount.Load()
@@ -566,11 +629,21 @@ func (s *accountRuntimeHealthStats) snapshotWithMeta(accountID int64) (errorRate
 	if updated := stat.lastUpdatedNano.Load(); updated > 0 {
 		lastUpdated = time.Unix(0, updated)
 	}
+	if updated := stat.errorUpdatedNano.Load(); updated > 0 {
+		errorUpdated = time.Unix(0, updated)
+	} else {
+		errorUpdated = lastUpdated
+	}
+	if updated := stat.ttftUpdatedNano.Load(); updated > 0 {
+		ttftUpdated = time.Unix(0, updated)
+	} else if ttftSampleCount > 0 {
+		ttftUpdated = lastUpdated
+	}
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated
+		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 	}
-	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated
+	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 }
 
 type accountHealthCandidate struct {
@@ -583,6 +656,8 @@ type accountHealthCandidate struct {
 	sampleCount     int64
 	ttftSampleCount int64
 	lastUpdated     time.Time
+	errorUpdated    time.Time
+	ttftUpdated     time.Time
 	score           float64
 }
 
@@ -604,7 +679,7 @@ func buildAccountHealthCandidatesWithHistory(accounts []accountWithLoad, stats *
 			candidates = append(candidates, accountHealthCandidate{item: item, score: accountHealthUnknownScore})
 			continue
 		}
-		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated := stats.snapshotWithMeta(item.account.ID)
+		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated := stats.snapshotWithFreshnessMeta(item.account.ID)
 		ttftP90 := 0.0
 		if summary, ok := validAccountTTFTHistory(history[item.account.ID]); ok {
 			ttftP90 = summary.P90Ms
@@ -612,6 +687,7 @@ func buildAccountHealthCandidatesWithHistory(accounts []accountWithLoad, stats *
 				ttft = summary.P50Ms
 				hasTTFT = true
 				ttftSampleCount = summary.SampleCount
+				ttftUpdated = summary.LatestAt
 			}
 			if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 				lastUpdated = summary.LatestAt
@@ -627,6 +703,8 @@ func buildAccountHealthCandidatesWithHistory(accounts []accountWithLoad, stats *
 			sampleCount:     sampleCount,
 			ttftSampleCount: ttftSampleCount,
 			lastUpdated:     lastUpdated,
+			errorUpdated:    errorUpdated,
+			ttftUpdated:     ttftUpdated,
 			score:           accountHealthUnknownScore,
 		})
 		if hasTTFT {
@@ -644,6 +722,48 @@ func buildAccountHealthCandidatesWithHistory(accounts []accountWithLoad, stats *
 		if candidates[i].found {
 			candidates[i].score = accountRuntimeHealthScore(candidates[i].errorRate, candidates[i].ttft, candidates[i].hasTTFT, minTTFT, maxTTFT, hasAnyTTFT)
 		}
+	}
+	return candidates
+}
+
+func freshAccountHealthCandidates(candidates []accountHealthCandidate, now time.Time, policy adaptiveTTFTSwitchPolicy) []accountHealthCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
+	for i, candidate := range candidates {
+		profiles[i] = adaptiveAccountHealthProfile{
+			account: candidate.item.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount,
+			p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount,
+			errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated,
+		}
+	}
+	profiles = freshAdaptiveHealthProfiles(profiles, now, policy)
+	minTTFT, maxTTFT, hasAnyTTFT := 0.0, 0.0, false
+	for i, profile := range profiles {
+		candidates[i].errorRate = profile.errorRate
+		candidates[i].sampleCount = profile.errorSamples
+		candidates[i].ttft = profile.p50
+		candidates[i].ttftP90 = profile.p90
+		candidates[i].hasTTFT = profile.hasTTFT
+		candidates[i].ttftSampleCount = profile.ttftSamples
+		if profile.hasTTFT {
+			if !hasAnyTTFT || profile.p50 < minTTFT {
+				minTTFT = profile.p50
+			}
+			if !hasAnyTTFT || profile.p50 > maxTTFT {
+				maxTTFT = profile.p50
+			}
+			hasAnyTTFT = true
+		}
+	}
+	for i := range candidates {
+		if candidates[i].sampleCount < accountHealthUnknownMinSamples && candidates[i].ttftSampleCount < accountHealthUnknownMinSamples {
+			candidates[i].found = false
+			candidates[i].score = accountHealthUnknownScore
+			continue
+		}
+		candidates[i].score = accountRuntimeHealthScore(candidates[i].errorRate, candidates[i].ttft, candidates[i].hasTTFT, minTTFT, maxTTFT, hasAnyTTFT)
 	}
 	return candidates
 }

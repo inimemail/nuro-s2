@@ -1171,3 +1171,31 @@ func TestGatewayServiceReportAccountScheduleResult_SkipsOpenAI(t *testing.T) {
 
 	require.Nil(t, svc.accountHealthStats.Load())
 }
+
+func TestAdaptiveHealthFreshnessExpiresErrorAndTTFTToUnknown(t *testing.T) {
+	now := time.Now()
+	profiles := []adaptiveAccountHealthProfile{{
+		errorRate: 1, errorSamples: 5, p50: 90_000, p90: 100_000, hasTTFT: true, ttftSamples: 5,
+		errorUpdated: now.Add(-16 * time.Minute), ttftUpdated: now.Add(-16 * time.Minute),
+	}}
+	fresh := freshAdaptiveHealthProfiles(profiles, now, adaptiveTTFTSwitchPolicy{enabled: true, thresholdMs: 60_000, sampleFreshness: 15 * time.Minute})
+	require.Zero(t, fresh[0].errorSamples)
+	require.Zero(t, fresh[0].errorRate)
+	require.False(t, fresh[0].hasTTFT)
+	require.Zero(t, fresh[0].ttftSamples)
+}
+
+func TestAccountRuntimeHealthResetPreservesTTFT(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	ttft := 420
+	reportHealthSamples(stats, 42, false, &ttft, 3)
+	stats.resetErrorHealth(42)
+
+	errorRate, gotTTFT, hasTTFT, found, samples, ttftSamples, _ := stats.snapshotWithMeta(42)
+	require.True(t, found)
+	require.Zero(t, errorRate)
+	require.Zero(t, samples)
+	require.True(t, hasTTFT)
+	require.Equal(t, float64(ttft), gotTTFT)
+	require.EqualValues(t, 3, ttftSamples)
+}

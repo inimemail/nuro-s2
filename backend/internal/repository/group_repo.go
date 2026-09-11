@@ -114,6 +114,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
 		SetAdaptiveTtftSwitchEnabled(groupIn.AdaptiveTTFTSwitchEnabled).
 		SetAdaptiveTtftSwitchThresholdSeconds(service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(groupIn.AdaptiveTTFTSwitchThresholdSeconds)).
+		SetAdaptiveHealthSampleFreshnessMinutes(service.NormalizeAdaptiveHealthSampleFreshnessMinutes(groupIn.AdaptiveHealthSampleFreshnessMinutes)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
@@ -293,6 +294,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetAccountSchedulingStrategy(service.NormalizeAccountSchedulingStrategy(groupIn.AccountSchedulingStrategy)).
 		SetAdaptiveTtftSwitchEnabled(groupIn.AdaptiveTTFTSwitchEnabled).
 		SetAdaptiveTtftSwitchThresholdSeconds(service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(groupIn.AdaptiveTTFTSwitchThresholdSeconds)).
+		SetAdaptiveHealthSampleFreshnessMinutes(service.NormalizeAdaptiveHealthSampleFreshnessMinutes(groupIn.AdaptiveHealthSampleFreshnessMinutes)).
 		SetRpmLimit(groupIn.RPMLimit).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).

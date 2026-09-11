@@ -147,6 +147,8 @@ type Group struct {
 	AdaptiveTtftSwitchEnabled bool `json:"adaptive_ttft_switch_enabled,omitempty"`
 	// 自适应健康调度首 Token 慢速切换阈值（秒）
 	AdaptiveTtftSwitchThresholdSeconds int `json:"adaptive_ttft_switch_threshold_seconds,omitempty"`
+	// 自适应健康调度样本有效期（分钟）；过期或不足三个样本按未知健康处理
+	AdaptiveHealthSampleFreshnessMinutes int `json:"adaptive_health_sample_freshness_minutes,omitempty"`
 	// 分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流
 	RpmLimit int `json:"rpm_limit,omitempty"`
 	// 是否强制此 OpenAI/Composite 分组请求使用 service_tier=priority
@@ -269,7 +271,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case group.FieldRateMultiplier, group.FieldUpstreamBillingGuardMaxMultiplier, group.FieldUpstreamBillingGuardMinMultiplier, group.FieldPeakRateMultiplier, group.FieldDailyLimitUsd, group.FieldWeeklyLimitUsd, group.FieldMonthlyLimitUsd, group.FieldImageRateMultiplier, group.FieldImagePrice1k, group.FieldImagePrice2k, group.FieldImagePrice4k, group.FieldBatchImageDiscountMultiplier, group.FieldBatchImageHoldMultiplier, group.FieldVideoRateMultiplier, group.FieldVideoPrice480p, group.FieldVideoPrice720p, group.FieldVideoPrice1080p, group.FieldWebSearchPricePerCall, group.FieldSearchPricePer1k, group.FieldAudioRealtimePricePerMin, group.FieldAudioTtsPricePerMillionChars, group.FieldAudioSttPricePerHour:
 			values[i] = new(sql.NullFloat64)
-		case group.FieldID, group.FieldDefaultValidityDays, group.FieldFallbackGroupID, group.FieldFallbackGroupIDOnInvalidRequest, group.FieldSortOrder, group.FieldAdaptiveTtftSwitchThresholdSeconds, group.FieldRpmLimit:
+		case group.FieldID, group.FieldDefaultValidityDays, group.FieldFallbackGroupID, group.FieldFallbackGroupIDOnInvalidRequest, group.FieldSortOrder, group.FieldAdaptiveTtftSwitchThresholdSeconds, group.FieldAdaptiveHealthSampleFreshnessMinutes, group.FieldRpmLimit:
 			values[i] = new(sql.NullInt64)
 		case group.FieldName, group.FieldDescription, group.FieldPeakStart, group.FieldPeakEnd, group.FieldStatus, group.FieldDuplicateOperationID, group.FieldPlatform, group.FieldSubscriptionType, group.FieldDefaultMappedModel, group.FieldAccountSchedulingStrategy, group.FieldMaxReasoningEffort, group.FieldMaxReasoningEffortOverLimit:
 			values[i] = new(sql.NullString)
@@ -716,6 +718,12 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.AdaptiveTtftSwitchThresholdSeconds = int(value.Int64)
 			}
+		case group.FieldAdaptiveHealthSampleFreshnessMinutes:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field adaptive_health_sample_freshness_minutes", values[i])
+			} else if value.Valid {
+				_m.AdaptiveHealthSampleFreshnessMinutes = int(value.Int64)
+			}
 		case group.FieldRpmLimit:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field rpm_limit", values[i])
@@ -1059,6 +1067,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("adaptive_ttft_switch_threshold_seconds=")
 	builder.WriteString(fmt.Sprintf("%v", _m.AdaptiveTtftSwitchThresholdSeconds))
+	builder.WriteString(", ")
+	builder.WriteString("adaptive_health_sample_freshness_minutes=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AdaptiveHealthSampleFreshnessMinutes))
 	builder.WriteString(", ")
 	builder.WriteString("rpm_limit=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RpmLimit))

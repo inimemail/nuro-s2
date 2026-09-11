@@ -72,6 +72,12 @@ func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Contex
 }
 
 func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if stats := s.accountHealthStats.Load(); stats != nil {
+		stats.resetErrorHealth(accountID)
+	}
 	s.clearAnthropicPoolSoftCooldown(accountID)
 	if s.nonOpenAIPoolRuntime != nil {
 		s.nonOpenAIPoolRuntime.clearAccountID(accountID)
@@ -84,6 +90,9 @@ func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
 func (s *GatewayService) clearAccountSchedulingBlockBefore(accountID, generation int64) {
 	if s == nil || accountID <= 0 {
 		return
+	}
+	if stats := s.accountHealthStats.Load(); stats != nil {
+		stats.resetErrorHealth(accountID)
 	}
 	s.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
 	if s.nonOpenAIPoolRuntime != nil {

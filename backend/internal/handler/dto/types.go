@@ -148,6 +148,7 @@ type Group struct {
 	AccountSchedulingStrategy          string `json:"account_scheduling_strategy"`
 	AdaptiveTTFTSwitchEnabled          bool   `json:"adaptive_ttft_switch_enabled"`
 	AdaptiveTTFTSwitchThresholdSeconds int    `json:"adaptive_ttft_switch_threshold_seconds"`
+	AdaptiveHealthSampleFreshnessMinutes int  `json:"adaptive_health_sample_freshness_minutes"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit                    int                              `json:"rpm_limit"`

@@ -916,11 +916,15 @@ type GatewayService struct {
 	nonOpenAIPoolRuntime                 *NonOpenAIPoolRuntime
 }
 
-func (s *GatewayService) loadAdaptiveAccountTTFTHistory(ctx context.Context, accounts []*Account) map[int64]AccountTTFTHistory {
+func (s *GatewayService) loadAdaptiveAccountTTFTHistory(ctx context.Context, accounts []*Account, windows ...time.Duration) map[int64]AccountTTFTHistory {
 	if s == nil || s.accountTTFTHistory == nil || len(accounts) == 0 {
 		return nil
 	}
-	return s.accountTTFTHistory.load(ctx, accounts, time.Now())
+	window := accountTTFTHistoryWindow
+	if len(windows) > 0 && windows[0] > 0 {
+		window = windows[0]
+	}
+	return s.accountTTFTHistory.loadWithin(ctx, accounts, time.Now(), window)
 }
 
 // NewGatewayService creates a new GatewayService
@@ -1884,7 +1888,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 	selectWithLoad := func(items []accountWithLoad) *accountWithLoad {
 		if groupUsesHealthFirst(group) {
-			history := s.loadAdaptiveAccountTTFTHistory(ctx, accountWithLoadPointers(items))
+			history := s.loadAdaptiveAccountTTFTHistory(ctx, accountWithLoadPointers(items), adaptiveTTFTSwitchPolicyForGroup(group).sampleFreshness)
 			affinityID, affinityActive := anthropicAffinityAccountID, anthropicAffinityActive
 			if !affinityActive && stickyAccountID > 0 {
 				affinityID, affinityActive = stickyAccountID, true
@@ -2244,7 +2248,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 			}
 			if groupUsesHealthFirst(group) {
-				history := s.loadAdaptiveAccountTTFTHistory(ctx, routingCandidates)
+				history := s.loadAdaptiveAccountTTFTHistory(ctx, routingCandidates, adaptiveTTFTSwitchPolicyForGroup(group).sampleFreshness)
 				routingAvailable = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(routingAll, routingAvailable, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group))
 			}
 
@@ -2570,7 +2574,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 		if groupUsesHealthFirst(group) {
-			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
+			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates, adaptiveTTFTSwitchPolicyForGroup(group).sampleFreshness)
 			available = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(allWithLoad, available, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group))
 		}
 
@@ -2610,7 +2614,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// ============ Layer 3: 兜底排队 ============
 	adaptiveFallbackTier := make(map[int64]struct{})
 	if groupUsesHealthFirst(group) {
-		history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
+		history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates, adaptiveTTFTSwitchPolicyForGroup(group).sampleFreshness)
 		s.sortAdaptiveCandidatesForFallbackWithPolicyAndHistory(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, derefGroupID(groupID), group.AccountSchedulingStrategy, history, adaptiveTTFTSwitchPolicyForGroup(group))
 		items := accountPointersToNeutralLoads(candidates)
 		for _, item := range filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(items, items, s.accountHealthStats.Load(), group.AccountSchedulingStrategy, time.Now(), history, adaptiveTTFTSwitchPolicyForGroup(group)) {
@@ -2744,7 +2748,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 	ordered := append([]*Account(nil), candidates...)
 	history := map[int64]AccountTTFTHistory(nil)
 	if healthFirst {
-		history = s.loadAdaptiveAccountTTFTHistory(ctx, ordered)
+		history = s.loadAdaptiveAccountTTFTHistory(ctx, ordered, policy.sampleFreshness)
 		items := accountPointersToNeutralLoads(ordered)
 		items = filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(items, items, s.accountHealthStats.Load(), strategy, time.Now(), history, policy)
 		ordered = accountWithLoadPointers(items)
@@ -3973,7 +3977,7 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 	if len(accounts) == 0 {
 		return nil
 	}
-	candidates := buildAccountHealthCandidatesWithHistory(accounts, healthStats, history)
+	candidates := freshAccountHealthCandidates(buildAccountHealthCandidatesWithHistory(accounts, healthStats, history), now, policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
 	for i, candidate := range candidates {
 		profiles[i] = adaptiveAccountHealthProfile{
@@ -3984,6 +3988,8 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 			p90:          candidate.ttftP90,
 			hasTTFT:      candidate.hasTTFT,
 			ttftSamples:  candidate.ttftSampleCount,
+			errorUpdated: candidate.errorUpdated,
+			ttftUpdated:  candidate.ttftUpdated,
 		}
 	}
 	preferredIndexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, policy)
@@ -4769,7 +4775,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
-			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
+			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates, adaptiveTTFTSwitchPolicyForGroup(schedGroup).sampleFreshness)
 			items := accountPointersToNeutralLoads(candidates)
 			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, true, history, adaptiveTTFTSwitchPolicyForGroup(schedGroup))
 			if selected != nil {
@@ -5053,7 +5059,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 	selectAccount := func(candidates []*Account) *Account {
 		if groupUsesHealthFirst(schedGroup) {
-			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates)
+			history := s.loadAdaptiveAccountTTFTHistory(ctx, candidates, adaptiveTTFTSwitchPolicyForGroup(schedGroup).sampleFreshness)
 			items := accountPointersToNeutralLoads(candidates)
 			selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), derefGroupID(groupID), selectionAffinityAccountID, selectionAffinityActive, schedGroup.AccountSchedulingStrategy, true, history, adaptiveTTFTSwitchPolicyForGroup(schedGroup))
 			if selected != nil {

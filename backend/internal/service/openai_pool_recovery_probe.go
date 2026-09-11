@@ -260,6 +260,9 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 			}
 			s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration+1)
 			_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
+			if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
+				_ = stats.resetErrorHealth(context.Background(), account.ID)
+			}
 		}
 		// The composite runtime blocker normally clears this deadline. Keep a
 		// local fallback for tests or deployments without that blocker, while

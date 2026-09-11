@@ -171,6 +171,9 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	s.clearLocalAccountSchedulingBlock(accountID)
 	s.clearOpenAIAccountCooldownInRedis(accountID)
 	s.clearOpenAIPoolCooldownInRedis(accountID)
+	if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
+		_ = stats.resetErrorHealth(context.Background(), accountID)
+	}
 }
 
 // ClearAccountRuntimeBlockOnly is used by automatic rate-limit/token-refresh
@@ -290,6 +293,20 @@ func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID,
 	if s.nonOpenAIPoolRuntime != nil {
 		s.nonOpenAIPoolRuntime.noteClearGeneration(accountID, clearGeneration)
 		s.nonOpenAIPoolRuntime.clearAccountIDBefore(accountID, clearGeneration)
+	}
+}
+
+func (s *OpenAIGatewayService) resetLocalAccountErrorHealthForRuntimeClear(event SchedulerEvent) {
+	if s == nil || event.AccountID <= 0 || event.Type != SchedulerEventAccountRuntimeCleared {
+		return
+	}
+	resetAt := event.At
+	if resetAt.IsZero() {
+		// Compatibility with runtime-clear events emitted by older replicas.
+		resetAt = time.Now()
+	}
+	if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
+		stats.resetLocalErrorHealth(event.AccountID, resetAt.UnixNano())
 	}
 }
 

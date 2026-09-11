@@ -260,6 +260,18 @@ sync_project_source() {
     local staged_source=""
     local previous_source=""
 
+    # A managed server upgrade must update its existing checkout in place.
+    # Local source copying remains available only through explicit PROJECT_ROOT
+    # or when no managed checkout exists (developer/first-install workflow).
+    if [[ -z "${PROJECT_ROOT:-}" && -d "${dest}/.git" ]]; then
+        require_cmd git
+        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
+        git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
+        git -C "$dest" checkout -f FETCH_HEAD || return 1
+        persist_script "$workdir"
+        return 0
+    fi
+
     if project_root="$(find_project_root)"; then
         # Stage the copy first. A full source tree is required to build the
         # image; deleting the live tree before tar succeeds can leave an
@@ -1475,8 +1487,9 @@ EOF
 compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
+    local app_only="${3:-false}"
     local env_file="${workdir}/.env"
-    local app_ids running_app_ids app_hostnames current_replicas min_replicas desired_replicas
+    local app_ids app_hostnames current_replicas min_replicas desired_replicas
     local max_replicas min_cpu_per_pair min_memory_mb_per_pair
     local host_cpus host_memory_mb cpu_limit memory_limit capacity_limit
 
@@ -1488,7 +1501,7 @@ compose_up_with_edge_fallback() {
     # Stop the controller before reading the count so it cannot scale while
     # this replacement is taking its snapshot.
     if docker container inspect "$AUTOSCALER_CONTAINER" >/dev/null 2>&1; then
-        docker rm -f "$AUTOSCALER_CONTAINER" >/dev/null || die "无法停止 autoscaler"
+        docker rm -f "$AUTOSCALER_CONTAINER" >/dev/null || return 1
     fi
 
     current_replicas="$(docker ps \
@@ -1525,9 +1538,8 @@ compose_up_with_edge_fallback() {
     (( desired_replicas > 0 )) || desired_replicas="$min_replicas"
     DEPLOY_EXPECTED_APP_REPLICAS="$desired_replicas"
 
-    # Give the paired entrypoint its TERM/drain window before removing the old
-    # containers. `docker rm -f` bypasses that path and can cut active streams
-    # before Edge delivers or persists their final complete/abort callbacks.
+    # The image build has completed while the old replicas stayed online. Keep
+    # the actual backend transition short by replacing only the app replicas.
     app_ids="$(docker ps -aq \
         --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
         --filter 'label=com.docker.compose.service=app')"
@@ -1537,18 +1549,17 @@ compose_up_with_edge_fallback() {
         # atomically reclaim the orphaned grants without waiting for node TTL.
         app_hostnames="$(docker inspect -f '{{.Config.Hostname}}' $app_ids 2>/dev/null || true)"
         # Intentional splitting is safe because Docker IDs are hexadecimal tokens.
-        # The Compose stop grace is 45s; use the same bound here because this
-        # explicit replacement happens outside `docker compose stop`.
-        running_app_ids="$(docker ps -q \
-            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
-            --filter 'label=com.docker.compose.service=app')"
-        if [[ -n "$running_app_ids" ]]; then
-            docker stop --time 45 $running_app_ids >/dev/null || die "无法优雅停止旧 app 副本"
-        fi
-        docker rm $app_ids >/dev/null || die "无法删除旧 app 副本"
+        # Preserve the historically fast replacement behavior requested for this
+        # single-host deployment: the image build completed while these replicas
+        # were still serving, so this is the only short backend transition.
+        docker rm -f $app_ids >/dev/null || return 1
         revoke_removed_app_escrow_leases "$env_file" "$app_hostnames"
     fi
 
+    if [[ "$app_only" == "true" ]]; then
+        $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps --scale "app=${desired_replicas}" app || return 1
+        return 0
+    fi
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans --scale "app=${desired_replicas}"
 }
 
@@ -1577,7 +1588,7 @@ show_access() {
 }
 
 wait_app_ready() {
-    local app_log_container app_healthy haproxy_health expected_replicas
+    local app_log_container app_ready haproxy_ready expected_replicas running_ids container_id
     expected_replicas="${DEPLOY_EXPECTED_APP_REPLICAS:-1}"
     if ! [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]]; then
         expected_replicas="$(docker ps \
@@ -1588,18 +1599,30 @@ wait_app_ready() {
         (( expected_replicas > 0 )) || expected_replicas=1
     fi
     info "正在等待 ${APP_NAME} 启动 ..."
-    for _ in $(seq 1 60); do
-        app_healthy="$(docker ps \
+    for _ in $(seq 1 120); do
+        running_ids="$(docker ps \
             --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
             --filter 'label=com.docker.compose.service=app' \
             --filter status=running \
-            --format '{{.Status}}' | awk '/\(healthy\)/ { count++ } END { print count + 0 }')"
-        haproxy_health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' nuro-sub2api-haproxy 2>/dev/null || true)"
-        if (( app_healthy >= expected_replicas )) && [[ "$haproxy_health" == "healthy" ]]; then
+            --format '{{.ID}}')"
+        app_ready=0
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            if docker exec "$container_id" sh -c 'wget -q -T 2 -O /dev/null http://127.0.0.1:8080/health && wget -q -T 2 -O /dev/null http://127.0.0.1:18080/readyz' >/dev/null 2>&1; then
+                app_ready=$((app_ready + 1))
+            fi
+        done <<EOF
+$running_ids
+EOF
+        haproxy_ready=false
+        if docker exec nuro-sub2api-haproxy wget -q -T 2 -O /dev/null http://127.0.0.1:8404/metrics >/dev/null 2>&1; then
+            haproxy_ready=true
+        fi
+        if (( app_ready >= expected_replicas )) && [[ "$haproxy_ready" == "true" ]]; then
             info "${APP_NAME} HAProxy 和成对副本已运行。"
             return 0
         fi
-        sleep 2
+        sleep 1
     done
 
     warn "${APP_NAME} 可能未正常启动，最近日志如下："
@@ -1607,6 +1630,26 @@ wait_app_ready() {
     app_log_container="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n 1)"
     [[ -z "$app_log_container" ]] || docker logs --tail=120 "$app_log_container" 2>/dev/null || true
     return 1
+}
+
+rollback_app_image() {
+    local workdir="$1"
+    local dc_cmd="$2"
+    local rollback_image="$3"
+    local expected_replicas="$4"
+    local app_ids
+
+    [[ -n "$rollback_image" ]] || return 1
+    docker image inspect "$rollback_image" >/dev/null 2>&1 || return 1
+    warn "新版本启动失败，正在自动恢复升级前镜像 ..."
+    app_ids="$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app')"
+    [[ -z "$app_ids" ]] || docker rm -f $app_ids >/dev/null || return 1
+    docker tag "$rollback_image" "$IMAGE_NAME" || return 1
+    DEPLOY_EXPECTED_APP_REPLICAS="$expected_replicas"
+    (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps --scale "app=${expected_replicas}" app) || return 1
+    wait_app_ready || return 1
+    (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps autoscaler) || return 1
+    return 0
 }
 
 wait_postgres_ready() {
@@ -1693,7 +1736,7 @@ deploy_service() {
 }
 
 upgrade_service() {
-    local workdir
+    local workdir rollback_image="" previous_replicas previous_app_id previous_image
     workdir="$(get_workdir)"
     [[ -z "$workdir" ]] && { err "未检测到 ${APP_NAME} 部署，请先执行 [1] 一键部署。"; return; }
 
@@ -1708,11 +1751,40 @@ upgrade_service() {
     ensure_scheduler_env_values "${workdir}/.env"
     create_compose_file "$workdir"
 
-    info "正在使用项目源码重建 ${APP_NAME} ..."
-    compose_build_with_edge_fallback "$workdir" "$dc_cmd" || die "镜像构建失败"
-    compose_up_with_edge_fallback "$workdir" "$dc_cmd" || die "容器启动失败"
+    previous_app_id="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n 1)"
+    previous_replicas="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | awk 'NF { count++ } END { print count + 0 }')"
+    if (( previous_replicas <= 0 )); then
+        previous_replicas="$(read_env_value "${workdir}/.env" AUTOSCALE_MIN_REPLICAS)"
+        [[ "$previous_replicas" =~ ^[1-9][0-9]*$ ]] || previous_replicas=2
+    fi
+    previous_image=""
+    if [[ -n "$previous_app_id" ]]; then
+        previous_image="$(docker inspect -f '{{.Image}}' "$previous_app_id" 2>/dev/null || true)"
+    fi
+    if [[ -z "$previous_image" ]] && docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        previous_image="$IMAGE_NAME"
+    fi
+    if [[ -n "$previous_image" ]] && docker image inspect "$previous_image" >/dev/null 2>&1; then
+        rollback_image="${IMAGE_NAME%:*}:rollback-$(date +%Y%m%d%H%M%S)"
+        docker tag "$previous_image" "$rollback_image" || die "无法保存升级前镜像"
+    fi
 
-    wait_app_ready || die "容器启动失败"
+    info "正在使用项目源码重建 ${APP_NAME} ..."
+    if ! compose_build_with_edge_fallback "$workdir" "$dc_cmd"; then
+        [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
+        die "镜像构建失败；旧版本仍在运行"
+    fi
+    if ! compose_up_with_edge_fallback "$workdir" "$dc_cmd" true || ! wait_app_ready; then
+        if rollback_app_image "$workdir" "$dc_cmd" "$rollback_image" "$previous_replicas"; then
+            die "新版本启动失败，已自动恢复升级前版本"
+        fi
+        die "新版本启动失败，且自动回滚未成功，请检查上方容器日志"
+    fi
+    if ! (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --no-deps autoscaler); then
+        die "新版本已就绪，但 autoscaler 启动失败，请检查 autoscaler 日志"
+    fi
+
+    [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
     show_access "$workdir"
 }
 

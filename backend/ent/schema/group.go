@@ -266,6 +266,10 @@ func (Group) Fields() []ent.Field {
 			Default(60).
 			Range(1, 3600).
 			Comment("自适应健康调度首 Token 慢速切换阈值（秒）"),
+		field.Int("adaptive_health_sample_freshness_minutes").
+			Default(15).
+			Range(1, 120).
+			Comment("自适应健康调度样本有效期（分钟）；过期或不足三个样本按未知健康处理"),
 
 		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
 		field.Int("rpm_limit").

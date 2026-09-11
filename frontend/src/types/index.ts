@@ -625,6 +625,7 @@ export interface Group {
   account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   adaptive_ttft_switch_enabled?: boolean
   adaptive_ttft_switch_threshold_seconds?: number
+  adaptive_health_sample_freshness_minutes?: number
   created_at: string
   updated_at: string
 }
@@ -790,6 +791,7 @@ export interface CreateGroupRequest {
   account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   adaptive_ttft_switch_enabled?: boolean
   adaptive_ttft_switch_threshold_seconds?: number
+  adaptive_health_sample_freshness_minutes?: number
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
 }
@@ -858,6 +860,7 @@ export interface UpdateGroupRequest {
   account_scheduling_strategy?: 'strict_priority' | 'health_first' | 'health_cost_balanced'
   adaptive_ttft_switch_enabled?: boolean
   adaptive_ttft_switch_threshold_seconds?: number
+  adaptive_health_sample_freshness_minutes?: number
   copy_accounts_from_group_ids?: number[]
 }
 

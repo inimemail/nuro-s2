@@ -972,6 +972,7 @@ var (
 		{Name: "account_scheduling_strategy", Type: field.TypeString, Size: 30, Default: "strict_priority"},
 		{Name: "adaptive_ttft_switch_enabled", Type: field.TypeBool, Default: true},
 		{Name: "adaptive_ttft_switch_threshold_seconds", Type: field.TypeInt, Default: 60},
+		{Name: "adaptive_health_sample_freshness_minutes", Type: field.TypeInt, Default: 15},
 		{Name: "rpm_limit", Type: field.TypeInt, Default: 0},
 		{Name: "force_openai_fast", Type: field.TypeBool, Default: false},
 		{Name: "max_reasoning_effort", Type: field.TypeString, Size: 20, Default: ""},

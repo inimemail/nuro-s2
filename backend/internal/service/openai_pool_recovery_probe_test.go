@@ -812,11 +812,20 @@ func TestOpenAIPoolRecoveryProbe_ResponsesStreamCompletedClearsCooldown(t *testi
 	cooldownUntil := time.Now().Add(-time.Second)
 	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
 	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+	ttftMS := 250
+	stats := svc.getOpenAIAccountRuntimeStats()
+	stats.report(account.ID, false, &ttftMS)
 
 	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.5", cooldownUntil)
 
 	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
 	require.False(t, cooling)
+	errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, _ := stats.snapshotForRequestWithMeta(account.ID, "")
+	require.Equal(t, 0.0, errorRate)
+	require.Equal(t, int64(0), sampleCount)
+	require.True(t, hasTTFT)
+	require.Equal(t, float64(ttftMS), ttft)
+	require.Equal(t, int64(1), ttftSampleCount)
 	require.Equal(t, "/v1/responses", upstream.path)
 	require.Contains(t, upstream.body, `"stream":true`)
 }

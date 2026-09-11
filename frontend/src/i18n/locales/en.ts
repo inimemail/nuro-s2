@@ -2338,6 +2338,8 @@ export default {
         ,adaptiveTTFTThreshold: 'Threshold'
         ,adaptiveTTFTHealthFirstHint: 'A measured account may switch for speed only after its first-token P50 reaches this threshold.'
         ,adaptiveTTFTCostBalancedHint: 'The scheduler tries the next exact multiplier tier only after every account in the cheapest tier reaches this threshold.'
+        ,adaptiveHealthFreshness: 'Sample freshness'
+        ,minutes: 'min'
         ,seconds: 'sec'
       },
       enterGroupName: 'Enter group name',

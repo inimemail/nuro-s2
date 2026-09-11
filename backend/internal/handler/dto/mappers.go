@@ -223,6 +223,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		AccountSchedulingStrategy:          service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
 		AdaptiveTTFTSwitchEnabled:          g.AdaptiveTTFTSwitchEnabled,
 		AdaptiveTTFTSwitchThresholdSeconds: service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(g.AdaptiveTTFTSwitchThresholdSeconds),
+		AdaptiveHealthSampleFreshnessMinutes: service.NormalizeAdaptiveHealthSampleFreshnessMinutes(g.AdaptiveHealthSampleFreshnessMinutes),
 		RPMLimit:                           g.RPMLimit,
 		ForceOpenAIFast:                    g.ForceOpenAIFast,
 		MaxReasoningEffort:                 g.MaxReasoningEffort,

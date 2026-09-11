@@ -254,26 +254,27 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 			AllowedGroups: []int64{groupID},
 		},
 		Group: &Group{
-			ID:                                 groupID,
-			Name:                               "openai",
-			Platform:                           PlatformOpenAI,
-			Status:                             StatusActive,
-			SubscriptionType:                   SubscriptionTypeStandard,
-			RateMultiplier:                     1,
-			UpstreamBillingGuardMaxMultiplier:  &upstreamGuard,
-			UpstreamBillingGuardMinMultiplier:  &upstreamGuardMin,
-			IsExclusive:                        true,
-			AllowBatchImageGeneration:          true,
-			BatchImageDiscountMultiplier:       0.4,
-			BatchImageHoldMultiplier:           0.7,
-			WebSearchPricePerCall:              &webSearchPricePerCall,
-			AllowMessagesDispatch:              true,
-			EdgeProtectionEnabled:              &edgeProtectionEnabled,
-			RequireOAuthOnly:                   true,
-			RequirePrivacySet:                  true,
-			AdaptiveTTFTSwitchEnabled:          false,
-			AdaptiveTTFTSwitchThresholdSeconds: 30,
-			DefaultMappedModel:                 "gpt-5.4",
+			ID:                                   groupID,
+			Name:                                 "openai",
+			Platform:                             PlatformOpenAI,
+			Status:                               StatusActive,
+			SubscriptionType:                     SubscriptionTypeStandard,
+			RateMultiplier:                       1,
+			UpstreamBillingGuardMaxMultiplier:    &upstreamGuard,
+			UpstreamBillingGuardMinMultiplier:    &upstreamGuardMin,
+			IsExclusive:                          true,
+			AllowBatchImageGeneration:            true,
+			BatchImageDiscountMultiplier:         0.4,
+			BatchImageHoldMultiplier:             0.7,
+			WebSearchPricePerCall:                &webSearchPricePerCall,
+			AllowMessagesDispatch:                true,
+			EdgeProtectionEnabled:                &edgeProtectionEnabled,
+			RequireOAuthOnly:                     true,
+			RequirePrivacySet:                    true,
+			AdaptiveTTFTSwitchEnabled:            false,
+			AdaptiveTTFTSwitchThresholdSeconds:   30,
+			AdaptiveHealthSampleFreshnessMinutes: 20,
+			DefaultMappedModel:                   "gpt-5.4",
 			MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
 				OpusMappedModel:   "gpt-5.4-nano",
 				SonnetMappedModel: "gpt-5.3-codex",
@@ -305,6 +306,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Group.RequirePrivacySet, roundTrip.Group.RequirePrivacySet)
 	require.Equal(t, apiKey.Group.AdaptiveTTFTSwitchEnabled, roundTrip.Group.AdaptiveTTFTSwitchEnabled)
 	require.Equal(t, apiKey.Group.AdaptiveTTFTSwitchThresholdSeconds, roundTrip.Group.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Equal(t, apiKey.Group.AdaptiveHealthSampleFreshnessMinutes, roundTrip.Group.AdaptiveHealthSampleFreshnessMinutes)
 }
 
 func TestAPIKeyServiceSnapshotToAPIKeyDefaultsLegacyAdaptiveTTFTSwitch(t *testing.T) {
@@ -324,6 +326,7 @@ func TestAPIKeyServiceSnapshotToAPIKeyDefaultsLegacyAdaptiveTTFTSwitch(t *testin
 	require.NotNil(t, apiKey.Group)
 	require.True(t, apiKey.Group.AdaptiveTTFTSwitchEnabled)
 	require.Equal(t, DefaultAdaptiveTTFTSwitchThresholdSeconds, apiKey.Group.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Equal(t, DefaultAdaptiveHealthSampleFreshnessMinutes, apiKey.Group.AdaptiveHealthSampleFreshnessMinutes)
 }
 
 func TestAPIKeyService_GetByKey_IgnoresLegacyAuthCacheSnapshotWithoutMessagesDispatchConfig(t *testing.T) {

@@ -441,12 +441,20 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	}
 
 	if IsAdaptiveHealthSchedulingStrategy(strategy) {
+		policy := defaultAdaptiveTTFTSwitchPolicy()
+		if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && (groupID == nil || group.ID == *groupID) {
+			policy = adaptiveTTFTSwitchPolicyForGroup(group)
+		} else if groupID != nil && s.groupRepo != nil {
+			if group, err := s.groupRepo.GetByID(ctx, *groupID); err == nil {
+				policy = adaptiveTTFTSwitchPolicyForGroup(group)
+			}
+		}
 		history := map[int64]AccountTTFTHistory(nil)
 		if s.accountTTFTHistory != nil {
-			history = s.accountTTFTHistory.load(ctx, candidates, time.Now())
+			history = s.accountTTFTHistory.loadWithin(ctx, candidates, time.Now(), policy.sampleFreshness)
 		}
 		items := accountPointersToNeutralLoads(candidates)
-		selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory(
+		selected := selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(
 			items,
 			s.getAccountHealthStats(),
 			s.schedulingConfig(),
@@ -456,7 +464,9 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 			stickyAccountID,
 			stickyAccountID > 0,
 			strategy,
+			true,
 			history,
+			policy,
 		)
 		if selected != nil {
 			return selected.account

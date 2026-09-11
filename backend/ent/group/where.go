@@ -340,6 +340,11 @@ func AdaptiveTtftSwitchThresholdSeconds(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldAdaptiveTtftSwitchThresholdSeconds, v))
 }
 
+// AdaptiveHealthSampleFreshnessMinutes applies equality check predicate on the "adaptive_health_sample_freshness_minutes" field. It's identical to AdaptiveHealthSampleFreshnessMinutesEQ.
+func AdaptiveHealthSampleFreshnessMinutes(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
@@ -2628,6 +2633,46 @@ func AdaptiveTtftSwitchThresholdSecondsLT(v int) predicate.Group {
 // AdaptiveTtftSwitchThresholdSecondsLTE applies the LTE predicate on the "adaptive_ttft_switch_threshold_seconds" field.
 func AdaptiveTtftSwitchThresholdSecondsLTE(v int) predicate.Group {
 	return predicate.Group(sql.FieldLTE(FieldAdaptiveTtftSwitchThresholdSeconds, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesEQ applies the EQ predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesNEQ applies the NEQ predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesNEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesIn applies the In predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldAdaptiveHealthSampleFreshnessMinutes, vs...))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesNotIn applies the NotIn predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesNotIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldAdaptiveHealthSampleFreshnessMinutes, vs...))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesGT applies the GT predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesGT(v int) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesGTE applies the GTE predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesGTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesLT applies the LT predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesLT(v int) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldAdaptiveHealthSampleFreshnessMinutes, v))
+}
+
+// AdaptiveHealthSampleFreshnessMinutesLTE applies the LTE predicate on the "adaptive_health_sample_freshness_minutes" field.
+func AdaptiveHealthSampleFreshnessMinutesLTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldAdaptiveHealthSampleFreshnessMinutes, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

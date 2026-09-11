@@ -144,6 +144,8 @@ const (
 	FieldAdaptiveTtftSwitchEnabled = "adaptive_ttft_switch_enabled"
 	// FieldAdaptiveTtftSwitchThresholdSeconds holds the string denoting the adaptive_ttft_switch_threshold_seconds field in the database.
 	FieldAdaptiveTtftSwitchThresholdSeconds = "adaptive_ttft_switch_threshold_seconds"
+	// FieldAdaptiveHealthSampleFreshnessMinutes holds the string denoting the adaptive_health_sample_freshness_minutes field in the database.
+	FieldAdaptiveHealthSampleFreshnessMinutes = "adaptive_health_sample_freshness_minutes"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
 	// FieldForceOpenaiFast holds the string denoting the force_openai_fast field in the database.
@@ -293,6 +295,7 @@ var Columns = []string{
 	FieldAccountSchedulingStrategy,
 	FieldAdaptiveTtftSwitchEnabled,
 	FieldAdaptiveTtftSwitchThresholdSeconds,
+	FieldAdaptiveHealthSampleFreshnessMinutes,
 	FieldRpmLimit,
 	FieldForceOpenaiFast,
 	FieldMaxReasoningEffort,
@@ -433,6 +436,10 @@ var (
 	DefaultAdaptiveTtftSwitchThresholdSeconds int
 	// AdaptiveTtftSwitchThresholdSecondsValidator is a validator for the "adaptive_ttft_switch_threshold_seconds" field. It is called by the builders before save.
 	AdaptiveTtftSwitchThresholdSecondsValidator func(int) error
+	// DefaultAdaptiveHealthSampleFreshnessMinutes holds the default value on creation for the "adaptive_health_sample_freshness_minutes" field.
+	DefaultAdaptiveHealthSampleFreshnessMinutes int
+	// AdaptiveHealthSampleFreshnessMinutesValidator is a validator for the "adaptive_health_sample_freshness_minutes" field. It is called by the builders before save.
+	AdaptiveHealthSampleFreshnessMinutesValidator func(int) error
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
 	// DefaultForceOpenaiFast holds the default value on creation for the "force_openai_fast" field.
@@ -740,6 +747,11 @@ func ByAdaptiveTtftSwitchEnabled(opts ...sql.OrderTermOption) OrderOption {
 // ByAdaptiveTtftSwitchThresholdSeconds orders the results by the adaptive_ttft_switch_threshold_seconds field.
 func ByAdaptiveTtftSwitchThresholdSeconds(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAdaptiveTtftSwitchThresholdSeconds, opts...).ToFunc()
+}
+
+// ByAdaptiveHealthSampleFreshnessMinutes orders the results by the adaptive_health_sample_freshness_minutes field.
+func ByAdaptiveHealthSampleFreshnessMinutes(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAdaptiveHealthSampleFreshnessMinutes, opts...).ToFunc()
 }
 
 // ByRpmLimit orders the results by the rpm_limit field.

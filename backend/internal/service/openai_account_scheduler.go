@@ -46,24 +46,25 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                   *int64
-	UserID                    int64
-	UserConcurrency           int
-	SessionHash               string
-	StickyAccountID           int64
-	PreviousResponseID        string
-	RequestedModel            string
-	RequiredTransport         OpenAIUpstreamTransport
-	RequiredCapability        OpenAIEndpointCapability
-	RequiredImageCapability   OpenAIImagesCapability
-	RequireCompact            bool
-	RequestPlatform           string
-	ExcludedIDs               map[int64]struct{}
-	LockedPriority            int
-	PreserveStickyBinding     bool
-	AccountSchedulingStrategy string
-	AdaptiveTTFTSwitchEnabled bool
-	AdaptiveTTFTThresholdSecs int
+	GroupID                        *int64
+	UserID                         int64
+	UserConcurrency                int
+	SessionHash                    string
+	StickyAccountID                int64
+	PreviousResponseID             string
+	RequestedModel                 string
+	RequiredTransport              OpenAIUpstreamTransport
+	RequiredCapability             OpenAIEndpointCapability
+	RequiredImageCapability        OpenAIImagesCapability
+	RequireCompact                 bool
+	RequestPlatform                string
+	ExcludedIDs                    map[int64]struct{}
+	LockedPriority                 int
+	PreserveStickyBinding          bool
+	AccountSchedulingStrategy      string
+	AdaptiveTTFTSwitchEnabled      bool
+	AdaptiveTTFTThresholdSecs      int
+	AdaptiveHealthFreshnessMinutes int
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -303,6 +304,7 @@ type openAIAccountRuntimeStats struct {
 	healthFirstProbeAt sync.Map
 	warmingUpCounter   sync.Map
 	warmingUpAt        sync.Map
+	errorResetAt       sync.Map
 	sharedMu           sync.RWMutex
 	shared             *openAIAccountHealthSharedState
 }
@@ -381,6 +383,8 @@ type openAIAccountRuntimeStat struct {
 	sampleCount       atomic.Int64
 	ttftSampleCount   atomic.Int64
 	lastUpdatedNano   atomic.Int64
+	errorUpdatedNano  atomic.Int64
+	ttftUpdatedNano   atomic.Int64
 	sharedVersion     atomic.Int64
 }
 
@@ -470,7 +474,9 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 	}
 	stat.mu.Lock()
 	stat.sampleCount.Add(1)
-	stat.lastUpdatedNano.Store(time.Now().UnixNano())
+	updatedNano := time.Now().UnixNano()
+	stat.lastUpdatedNano.Store(updatedNano)
+	stat.errorUpdatedNano.Store(updatedNano)
 
 	errorSample := 1.0
 	if success {
@@ -480,6 +486,7 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 
 	if firstTokenMs != nil && *firstTokenMs > 0 {
 		stat.ttftSampleCount.Add(1)
+		stat.ttftUpdatedNano.Store(updatedNano)
 		ttft := float64(*firstTokenMs)
 		ttftBits := math.Float64bits(ttft)
 		for {
@@ -497,7 +504,6 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 			}
 		}
 	}
-	updatedNano := stat.lastUpdatedNano.Load()
 	stat.mu.Unlock()
 	s.enqueueSharedHealthReport(key, success, firstTokenMs, updatedNano)
 }
@@ -522,6 +528,14 @@ func (s *openAIAccountRuntimeStats) snapshotForRequestWithMeta(accountID int64, 
 	return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated
 }
 
+func (s *openAIAccountRuntimeStats) snapshotForRequestWithFreshnessMeta(accountID int64, requiredImageCapability OpenAIImagesCapability) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated, errorUpdated, ttftUpdated time.Time) {
+	errorRate, ttft, hasTTFT, _, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = s.snapshotForKeyWithFreshnessMeta(openAIAccountRuntimeStatsKey{
+		accountID: accountID,
+		kind:      openAIAccountRuntimeStatsKind(requiredImageCapability),
+	})
+	return
+}
+
 func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool) {
 	if s == nil || accountID <= 0 {
 		return 0, 0, false
@@ -542,22 +556,28 @@ func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedM
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForRouteWithMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
+	errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, _, _ = s.snapshotForRouteWithFreshnessMeta(accountID, requestedModel, transport)
+	return
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForRouteWithFreshnessMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated, errorUpdated, ttftUpdated time.Time) {
 	if s == nil || accountID <= 0 {
-		return 0, 0, false, 0, 0, time.Time{}
+		return 0, 0, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	if strings.TrimSpace(requestedModel) != "" || transport != "" {
 		var found bool
-		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
+		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = s.snapshotForKeyWithFreshnessMeta(openAIAccountRuntimeStatsKey{
 			accountID: accountID,
 			kind:      "text",
 			model:     requestedModel,
 			transport: string(transport),
 		})
 		if found {
-			return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated
+			return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 		}
 	}
-	return s.snapshotForRequestWithMeta(accountID, "")
+	errorRate, ttft, hasTTFT, _, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = s.snapshotForKeyWithFreshnessMeta(openAIAccountRuntimeStatsKey{accountID: accountID, kind: "text"})
+	return
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForKey(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
@@ -566,17 +586,22 @@ func (s *openAIAccountRuntimeStats) snapshotForKey(key openAIAccountRuntimeStats
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForKeyWithMeta(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
+	errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated, _, _ = s.snapshotForKeyWithFreshnessMeta(key)
+	return
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForKeyWithFreshnessMeta(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated, errorUpdated, ttftUpdated time.Time) {
 	if s == nil || key.accountID <= 0 {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	key = normalizeOpenAIAccountRuntimeStatsKey(key)
 	value, ok := s.accounts.Load(key)
 	if !ok {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
-		return 0, 0, false, false, 0, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	sampleCount = stat.sampleCount.Load()
@@ -584,11 +609,21 @@ func (s *openAIAccountRuntimeStats) snapshotForKeyWithMeta(key openAIAccountRunt
 	if updated := stat.lastUpdatedNano.Load(); updated > 0 {
 		lastUpdated = time.Unix(0, updated)
 	}
+	if updated := stat.errorUpdatedNano.Load(); updated > 0 {
+		errorUpdated = time.Unix(0, updated)
+	} else {
+		errorUpdated = lastUpdated
+	}
+	if updated := stat.ttftUpdatedNano.Load(); updated > 0 {
+		ttftUpdated = time.Unix(0, updated)
+	} else if ttftSampleCount > 0 {
+		ttftUpdated = lastUpdated
+	}
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated
+		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 	}
-	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated
+	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 }
 
 func (s *openAIAccountRuntimeStats) shouldTriggerUnknownExploration() bool {
@@ -670,6 +705,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
 		req.AdaptiveTTFTSwitchEnabled = group.AdaptiveTTFTSwitchEnabled
 		req.AdaptiveTTFTThresholdSecs = group.AdaptiveTTFTSwitchThresholdSeconds
+		req.AdaptiveHealthFreshnessMinutes = group.AdaptiveHealthSampleFreshnessMinutes
 	} else if req.GroupID != nil && s != nil && s.service != nil && s.service.schedulerSnapshot != nil {
 		// Internal/service callers may provide only GroupID. Resolve the snapshot
 		// before sticky/previous-response shortcuts so health-first is honored for
@@ -678,6 +714,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(group.AccountSchedulingStrategy)
 			req.AdaptiveTTFTSwitchEnabled = group.AdaptiveTTFTSwitchEnabled
 			req.AdaptiveTTFTThresholdSecs = group.AdaptiveTTFTSwitchThresholdSeconds
+			req.AdaptiveHealthFreshnessMinutes = group.AdaptiveHealthSampleFreshnessMinutes
 		}
 	}
 	decision := OpenAIAccountScheduleDecision{}
@@ -1042,8 +1079,35 @@ type openAIAccountCandidateScore struct {
 	sampleCount     int64
 	ttftSampleCount int64
 	lastUpdated     time.Time
+	errorUpdated    time.Time
+	ttftUpdated     time.Time
 	healthScore     float64
 	hasHealthScore  bool
+}
+
+func freshOpenAIHealthCandidates(candidates []openAIAccountCandidateScore, now time.Time, policy adaptiveTTFTSwitchPolicy) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	fresh := append([]openAIAccountCandidateScore(nil), candidates...)
+	profiles := make([]adaptiveAccountHealthProfile, len(fresh))
+	for i, candidate := range fresh {
+		profiles[i] = adaptiveAccountHealthProfile{
+			account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount,
+			p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount,
+			errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated,
+		}
+	}
+	profiles = freshAdaptiveHealthProfiles(profiles, now, policy)
+	for i, profile := range profiles {
+		fresh[i].errorRate = profile.errorRate
+		fresh[i].sampleCount = profile.errorSamples
+		fresh[i].ttft = profile.p50
+		fresh[i].ttftP90 = profile.p90
+		fresh[i].hasTTFT = profile.hasTTFT
+		fresh[i].ttftSampleCount = profile.ttftSamples
+	}
+	return fresh
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -1262,11 +1326,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		sampleCount, ttftSampleCount, lastUpdated := int64(0), int64(0), time.Time{}
+		errorUpdated, ttftUpdated := time.Time{}, time.Time{}
 		if s.stats != nil {
 			if req.RequiredImageCapability != "" {
-				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = s.stats.snapshotForRequestWithMeta(account.ID, req.RequiredImageCapability)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = s.stats.snapshotForRequestWithFreshnessMeta(account.ID, req.RequiredImageCapability)
 			} else {
-				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = s.stats.snapshotForRouteWithMeta(account.ID, req.RequestedModel, req.RequiredTransport)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated = s.stats.snapshotForRouteWithFreshnessMeta(account.ID, req.RequestedModel, req.RequiredTransport)
 			}
 		}
 		ttftP90 := 0.0
@@ -1277,6 +1342,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 					ttft = summary.P50Ms
 					hasTTFT = true
 					ttftSampleCount = summary.SampleCount
+					ttftUpdated = summary.LatestAt
 				}
 				if lastUpdated.IsZero() || summary.LatestAt.After(lastUpdated) {
 					lastUpdated = summary.LatestAt
@@ -1294,6 +1360,8 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 			sampleCount:     sampleCount,
 			ttftSampleCount: ttftSampleCount,
 			lastUpdated:     lastUpdated,
+			errorUpdated:    errorUpdated,
+			ttftUpdated:     ttftUpdated,
 		})
 	}
 
@@ -1474,9 +1542,10 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []ope
 	if len(ordered) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return ordered
 	}
+	ordered = freshOpenAIHealthCandidates(ordered, now, policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
 	for i, candidate := range ordered {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
 	}
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
@@ -1512,14 +1581,15 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	}
 	now := time.Now()
 	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
-	policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs)
+	policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
+	ordered = freshOpenAIHealthCandidates(ordered, now, policy)
 	groupID := int64(0)
 	if req.GroupID != nil {
 		groupID = *req.GroupID
 	}
 	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
 	for i, candidate := range ordered {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount}
+		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
 	}
 	preferredIndexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, policy)
 	preferred := make(map[int64]struct{}, len(preferredIndexes))
@@ -2384,7 +2454,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	history := map[int64]AccountTTFTHistory(nil)
 	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
-		history = s.service.loadAdaptiveOpenAIAccountTTFTHistory(ctx, filtered)
+		policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
+		history = s.service.loadAdaptiveOpenAIAccountTTFTHistory(ctx, filtered, policy.sampleFreshness)
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -2411,7 +2482,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, req.RequireCompact && len(plan.allCandidates) > 0)
 	}
 
-	ttftPolicy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs)
+	ttftPolicy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
 	acquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(selectionOrder, req.AccountSchedulingStrategy, time.Now(), ttftPolicy)
 	result, compactBlocked, acquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, acquireOrder)
 	if acquireErr != nil {

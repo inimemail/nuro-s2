@@ -11,13 +11,15 @@ import (
 
 type accountTTFTHistoryRepoStub struct {
 	UsageLogRepository
-	summaries map[int64]AccountTTFTHistory
-	err       error
-	calls     int
+	summaries  map[int64]AccountTTFTHistory
+	err        error
+	calls      int
+	startTimes []time.Time
 }
 
-func (s *accountTTFTHistoryRepoStub) GetAccountTTFTHistoryBatch(_ context.Context, accountIDs []int64, _ time.Time, _ int) (map[int64]AccountTTFTHistory, error) {
+func (s *accountTTFTHistoryRepoStub) GetAccountTTFTHistoryBatch(_ context.Context, accountIDs []int64, startTime time.Time, _ int) (map[int64]AccountTTFTHistory, error) {
 	s.calls++
+	s.startTimes = append(s.startTimes, startTime)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -28,6 +30,21 @@ func (s *accountTTFTHistoryRepoStub) GetAccountTTFTHistoryBatch(_ context.Contex
 		}
 	}
 	return result, nil
+}
+
+func TestAccountTTFTHistoryCacheSeparatesFreshnessWindows(t *testing.T) {
+	now := time.Now()
+	repo := &accountTTFTHistoryRepoStub{summaries: map[int64]AccountTTFTHistory{
+		1: {AccountID: 1, SampleCount: 3, P50Ms: 200, P90Ms: 300, LatestAt: now.Add(-10 * time.Minute)},
+	}}
+	cache := newAccountTTFTHistoryCache(repo)
+
+	require.NotEmpty(t, cache.loadWithin(context.Background(), []*Account{{ID: 1}}, now, 15*time.Minute))
+	require.Empty(t, cache.loadWithin(context.Background(), []*Account{{ID: 1}}, now, 5*time.Minute))
+	require.NotEmpty(t, cache.loadWithin(context.Background(), []*Account{{ID: 1}}, now, 15*time.Minute))
+	require.Equal(t, 2, repo.calls)
+	require.WithinDuration(t, now.Add(-15*time.Minute), repo.startTimes[0], time.Millisecond)
+	require.WithinDuration(t, now.Add(-5*time.Minute), repo.startTimes[1], time.Millisecond)
 }
 
 func TestAccountTTFTHistoryCacheBatchesAndCachesAccountWideResults(t *testing.T) {
@@ -53,6 +70,18 @@ func TestAccountTTFTHistoryCacheFailsOpenAndNegativeCachesError(t *testing.T) {
 	require.Empty(t, cache.load(context.Background(), []*Account{{ID: 1}}, now))
 	require.Empty(t, cache.load(context.Background(), []*Account{{ID: 1}}, now.Add(time.Second)))
 	require.Equal(t, 1, repo.calls)
+}
+
+func TestAccountTTFTHistoryCacheFailureBackoffSurvivesExpiredEntryCleanup(t *testing.T) {
+	repo := &accountTTFTHistoryRepoStub{err: errors.New("database unavailable")}
+	cache := newAccountTTFTHistoryCache(repo)
+	now := time.Now()
+	accounts := []*Account{{ID: 1}}
+
+	require.Empty(t, cache.load(context.Background(), accounts, now))
+	require.Empty(t, cache.load(context.Background(), accounts, now.Add(31*time.Second)))
+	require.Empty(t, cache.load(context.Background(), accounts, now.Add(62*time.Second)))
+	require.Equal(t, 2, repo.calls, "the second failure must retain its one-minute retry backoff")
 }
 
 func TestAccountTTFTHistoryCacheKeepsLastSuccessWhenRefreshFails(t *testing.T) {

@@ -536,6 +536,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy),
 			AdaptiveTTFTSwitchEnabled:          adaptiveTTFTPolicy.enabled,
 			AdaptiveTTFTSwitchThresholdSeconds: int(adaptiveTTFTPolicy.thresholdMs / 1000),
+			AdaptiveHealthSampleFreshnessMinutes: int(adaptiveTTFTPolicy.sampleFreshness / time.Minute),
 			RPMLimit:                           apiKey.Group.RPMLimit,
 			ForceOpenAIFast:                    apiKey.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 apiKey.Group.MaxReasoningEffort,
@@ -585,7 +586,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		},
 	}
 	if snapshot.Group != nil {
-		adaptiveTTFTPolicy := adaptiveTTFTSwitchPolicyFromValues(snapshot.Group.AdaptiveTTFTSwitchEnabled, snapshot.Group.AdaptiveTTFTSwitchThresholdSeconds)
+		adaptiveTTFTPolicy := adaptiveTTFTSwitchPolicyFromValues(snapshot.Group.AdaptiveTTFTSwitchEnabled, snapshot.Group.AdaptiveTTFTSwitchThresholdSeconds, snapshot.Group.AdaptiveHealthSampleFreshnessMinutes)
 		apiKey.Group = &Group{
 			ID:                                 snapshot.Group.ID,
 			Name:                               snapshot.Group.Name,
@@ -644,6 +645,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(snapshot.Group.AccountSchedulingStrategy),
 			AdaptiveTTFTSwitchEnabled:          adaptiveTTFTPolicy.enabled,
 			AdaptiveTTFTSwitchThresholdSeconds: int(adaptiveTTFTPolicy.thresholdMs / 1000),
+			AdaptiveHealthSampleFreshnessMinutes: int(adaptiveTTFTPolicy.sampleFreshness / time.Minute),
 			RPMLimit:                           snapshot.Group.RPMLimit,
 			ForceOpenAIFast:                    snapshot.Group.ForceOpenAIFast,
 			MaxReasoningEffort:                 snapshot.Group.MaxReasoningEffort,

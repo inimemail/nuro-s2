@@ -180,6 +180,49 @@ func TestRuntimeClearGenerationClearsOldStateAndPreservesNewState(t *testing.T) 
 	require.True(t, anthropicNew)
 }
 
+func TestOpenAIRuntimeClearUsesEventTimestampForErrorHealthFence(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, nil)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot, openaiAccountStats: newOpenAIAccountRuntimeStats()}
+	snapshot.RegisterAccountRuntimeClearHandler(openAI.clearLocalAccountSchedulingBlockBefore)
+	snapshot.RegisterAccountRuntimeClearEventHandler(openAI.resetLocalAccountErrorHealthForRuntimeClear)
+	accountID := int64(704)
+	beforeReset := time.Unix(100, 0).UTC()
+	afterReset := beforeReset.Add(time.Second)
+	openAI.openaiAccountStats.applySharedHealthEvent(openAIAccountHealthSharedEvent{
+		AccountID:        accountID,
+		Kind:             "text",
+		Version:          1,
+		ErrorRate:        1,
+		SampleCount:      1,
+		UpdatedNano:      beforeReset.UnixNano(),
+		ErrorUpdatedNano: beforeReset.UnixNano(),
+	})
+
+	snapshot.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:       SchedulerEventAccountRuntimeCleared,
+		AccountID:  accountID,
+		Generation: 1,
+		At:         beforeReset.Add(500 * time.Millisecond),
+	})
+	clearedErrorRate, _, _, clearedSampleCount, _, _ := openAI.openaiAccountStats.snapshotForRequestWithMeta(accountID, "")
+	require.Equal(t, int64(0), clearedSampleCount)
+	require.Equal(t, 0.0, clearedErrorRate)
+
+	openAI.openaiAccountStats.applySharedHealthEvent(openAIAccountHealthSharedEvent{
+		AccountID:        accountID,
+		Kind:             "text",
+		Version:          2,
+		ErrorRate:        1,
+		SampleCount:      1,
+		UpdatedNano:      afterReset.UnixNano(),
+		ErrorUpdatedNano: afterReset.UnixNano(),
+	})
+
+	errorRate, _, _, sampleCount, _, _ := openAI.openaiAccountStats.snapshotForRequestWithMeta(accountID, "")
+	require.Equal(t, int64(1), sampleCount)
+	require.Equal(t, 1.0, errorRate)
+}
+
 func TestCompositeConditionalRuntimeClearRejectsStaleReplica(t *testing.T) {
 	bus := NewLocalSchedulerEventBus()
 	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)

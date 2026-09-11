@@ -158,6 +158,7 @@ func TestAdminServiceCreateGroupDefaultsAdaptiveTTFTSwitch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, group.AdaptiveTTFTSwitchEnabled)
 	require.Equal(t, DefaultAdaptiveTTFTSwitchThresholdSeconds, group.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Equal(t, DefaultAdaptiveHealthSampleFreshnessMinutes, group.AdaptiveHealthSampleFreshnessMinutes)
 	require.Same(t, group, repo.created)
 }
 
@@ -166,18 +167,21 @@ func TestAdminServiceCreateGroupAcceptsAdaptiveTTFTSwitchOverride(t *testing.T) 
 	svc := &adminServiceImpl{groupRepo: repo}
 	enabled := false
 	threshold := 30
+	freshness := 20
 
 	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
-		Name:                               "adaptive-override",
-		Platform:                           PlatformAnthropic,
-		RateMultiplier:                     1,
-		AdaptiveTTFTSwitchEnabled:          &enabled,
-		AdaptiveTTFTSwitchThresholdSeconds: &threshold,
+		Name:                                 "adaptive-override",
+		Platform:                             PlatformAnthropic,
+		RateMultiplier:                       1,
+		AdaptiveTTFTSwitchEnabled:            &enabled,
+		AdaptiveTTFTSwitchThresholdSeconds:   &threshold,
+		AdaptiveHealthSampleFreshnessMinutes: &freshness,
 	})
 
 	require.NoError(t, err)
 	require.False(t, group.AdaptiveTTFTSwitchEnabled)
 	require.Equal(t, threshold, group.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Equal(t, freshness, group.AdaptiveHealthSampleFreshnessMinutes)
 }
 
 func TestAdminServiceRejectsInvalidAdaptiveTTFTSwitchThreshold(t *testing.T) {
@@ -201,16 +205,38 @@ func TestAdminServiceRejectsInvalidAdaptiveTTFTSwitchThreshold(t *testing.T) {
 	}
 }
 
+func TestAdminServiceRejectsInvalidAdaptiveHealthSampleFreshness(t *testing.T) {
+	for _, freshness := range []int{0, MaxAdaptiveHealthSampleFreshnessMinutes + 1} {
+		t.Run(fmt.Sprintf("freshness_%d", freshness), func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+				Name:                                 "adaptive-freshness-invalid",
+				Platform:                             PlatformAnthropic,
+				RateMultiplier:                       1,
+				AdaptiveHealthSampleFreshnessMinutes: &freshness,
+			})
+
+			statusCode, status := infraerrors.ToHTTP(err)
+			require.Equal(t, http.StatusBadRequest, statusCode)
+			require.Equal(t, "INVALID_ADAPTIVE_HEALTH_SAMPLE_FRESHNESS", status.Reason)
+			require.Nil(t, repo.created)
+		})
+	}
+}
+
 func TestAdminServiceUpdateGroupPreservesAdaptiveTTFTSwitchWhenOmitted(t *testing.T) {
 	group := &Group{
-		ID:                                 7,
-		Name:                               "adaptive-existing",
-		Platform:                           PlatformAnthropic,
-		RateMultiplier:                     1,
-		Status:                             StatusActive,
-		SubscriptionType:                   SubscriptionTypeStandard,
-		AdaptiveTTFTSwitchEnabled:          false,
-		AdaptiveTTFTSwitchThresholdSeconds: 30,
+		ID:                                   7,
+		Name:                                 "adaptive-existing",
+		Platform:                             PlatformAnthropic,
+		RateMultiplier:                       1,
+		Status:                               StatusActive,
+		SubscriptionType:                     SubscriptionTypeStandard,
+		AdaptiveTTFTSwitchEnabled:            false,
+		AdaptiveTTFTSwitchThresholdSeconds:   30,
+		AdaptiveHealthSampleFreshnessMinutes: 20,
 	}
 	repo := &groupRepoStubForAdmin{getByID: group}
 	svc := &adminServiceImpl{groupRepo: repo}
@@ -220,6 +246,7 @@ func TestAdminServiceUpdateGroupPreservesAdaptiveTTFTSwitchWhenOmitted(t *testin
 	require.NoError(t, err)
 	require.False(t, updated.AdaptiveTTFTSwitchEnabled)
 	require.Equal(t, 30, updated.AdaptiveTTFTSwitchThresholdSeconds)
+	require.Equal(t, 20, updated.AdaptiveHealthSampleFreshnessMinutes)
 	require.Same(t, updated, repo.updated)
 }
 

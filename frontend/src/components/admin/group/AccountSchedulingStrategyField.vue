@@ -55,22 +55,39 @@
           <p class="text-[11px] leading-4 text-gray-500 dark:text-gray-400">{{ t(ttftSwitchHint) }}</p>
         </div>
       </div>
-      <label class="flex flex-none items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
-        <span>{{ t('admin.groups.form.adaptiveTTFTThreshold') }}</span>
-        <input
-          data-testid="adaptive-ttft-threshold"
-          type="number"
-          inputmode="numeric"
-          min="1"
-          max="3600"
-          step="1"
-          class="h-8 w-20 rounded-md border border-gray-300 bg-white px-2 text-right text-sm text-gray-900 outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-dark-600 dark:bg-dark-800 dark:text-white dark:disabled:bg-dark-700"
-          :disabled="!ttftSwitchEnabled"
-          :value="ttftSwitchThresholdSeconds"
-          @input="updateThreshold"
-        />
-        <span>{{ t('admin.groups.form.seconds') }}</span>
-      </label>
+      <div class="flex flex-none flex-wrap items-center gap-x-3 gap-y-2">
+        <label class="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+          <span>{{ t('admin.groups.form.adaptiveTTFTThreshold') }}</span>
+          <input
+            data-testid="adaptive-ttft-threshold"
+            type="number"
+            inputmode="numeric"
+            min="1"
+            max="3600"
+            step="1"
+            class="h-8 w-20 rounded-md border border-gray-300 bg-white px-2 text-right text-sm text-gray-900 outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-dark-600 dark:bg-dark-800 dark:text-white dark:disabled:bg-dark-700"
+            :disabled="!ttftSwitchEnabled"
+            :value="ttftSwitchThresholdSeconds"
+            @input="updateThreshold"
+          />
+          <span>{{ t('admin.groups.form.seconds') }}</span>
+        </label>
+        <label class="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+          <span>{{ t('admin.groups.form.adaptiveHealthFreshness') }}</span>
+          <input
+            data-testid="adaptive-health-freshness"
+            type="number"
+            inputmode="numeric"
+            min="1"
+            max="120"
+            step="1"
+            class="h-8 w-16 rounded-md border border-gray-300 bg-white px-2 text-right text-sm text-gray-900 outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-white"
+            :value="healthFreshnessMinutes"
+            @input="updateFreshness"
+          />
+          <span>{{ t('admin.groups.form.minutes') }}</span>
+        </label>
+      </div>
     </div>
   </div>
 </template>
@@ -85,15 +102,18 @@ const props = withDefaults(defineProps<{
   modelValue?: Strategy
   ttftSwitchEnabled?: boolean
   ttftSwitchThresholdSeconds?: number
+  healthFreshnessMinutes?: number
 }>(), {
   modelValue: 'strict_priority',
   ttftSwitchEnabled: true,
   ttftSwitchThresholdSeconds: 60,
+  healthFreshnessMinutes: 15,
 })
 const emit = defineEmits<{
   (event: 'update:modelValue', value: Strategy): void
   (event: 'update:ttftSwitchEnabled', value: boolean): void
   (event: 'update:ttftSwitchThresholdSeconds', value: number): void
+  (event: 'update:healthFreshnessMinutes', value: number): void
 }>()
 const { t } = useI18n()
 const options = [
@@ -110,6 +130,13 @@ const updateThreshold = (event: Event) => {
   const value = Number((event.target as HTMLInputElement).value)
   if (Number.isInteger(value) && value >= 1 && value <= 3600) {
     emit('update:ttftSwitchThresholdSeconds', value)
+  }
+}
+
+const updateFreshness = (event: Event) => {
+  const value = Number((event.target as HTMLInputElement).value)
+  if (Number.isInteger(value) && value >= 1 && value <= 120) {
+    emit('update:healthFreshnessMinutes', value)
   }
 }
 </script>

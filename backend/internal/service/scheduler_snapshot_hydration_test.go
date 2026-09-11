@@ -172,6 +172,27 @@ func TestSchedulerSnapshotRuntimeClearEventInvokesAllLocalHandlers(t *testing.T)
 	require.False(t, hit)
 }
 
+func TestSchedulerSnapshotRuntimeClearEventHandlerReceivesAuthoritativeTimestamp(t *testing.T) {
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, nil)
+	wantAt := time.Unix(123, 456).UTC()
+	var received SchedulerEvent
+	svc.RegisterAccountRuntimeClearEventHandler(func(event SchedulerEvent) {
+		received = event
+	})
+
+	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:       SchedulerEventAccountRuntimeCleared,
+		AccountID:  42,
+		Generation: 3,
+		At:         wantAt,
+		Source:     "other-replica",
+	})
+
+	require.Equal(t, int64(42), received.AccountID)
+	require.Equal(t, int64(3), received.Generation)
+	require.Equal(t, wantAt, received.At)
+}
+
 func TestSchedulerSnapshotPublishesRuntimeClearWhenOptionalEventBusIsDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	bus := NewLocalSchedulerEventBus()

@@ -267,6 +267,7 @@ type CreateGroupInput struct {
 	AccountSchedulingStrategy          string
 	AdaptiveTTFTSwitchEnabled          *bool
 	AdaptiveTTFTSwitchThresholdSeconds *int
+	AdaptiveHealthSampleFreshnessMinutes *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int
 	ForceOpenAIFast             bool
@@ -343,6 +344,7 @@ type UpdateGroupInput struct {
 	AccountSchedulingStrategy          *string
 	AdaptiveTTFTSwitchEnabled          *bool
 	AdaptiveTTFTSwitchThresholdSeconds *int
+	AdaptiveHealthSampleFreshnessMinutes *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit                    *int
 	ForceOpenAIFast             *bool
@@ -2129,6 +2131,13 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		}
 		adaptiveTTFTSwitchThresholdSeconds = *input.AdaptiveTTFTSwitchThresholdSeconds
 	}
+	adaptiveHealthSampleFreshnessMinutes := DefaultAdaptiveHealthSampleFreshnessMinutes
+	if input.AdaptiveHealthSampleFreshnessMinutes != nil {
+		if *input.AdaptiveHealthSampleFreshnessMinutes < MinAdaptiveHealthSampleFreshnessMinutes || *input.AdaptiveHealthSampleFreshnessMinutes > MaxAdaptiveHealthSampleFreshnessMinutes {
+			return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_HEALTH_SAMPLE_FRESHNESS", "adaptive_health_sample_freshness_minutes must be between 1 and 120")
+		}
+		adaptiveHealthSampleFreshnessMinutes = *input.AdaptiveHealthSampleFreshnessMinutes
+	}
 
 	platform := input.Platform
 	if platform == "" {
@@ -2349,6 +2358,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
 		AdaptiveTTFTSwitchEnabled:          adaptiveTTFTSwitchEnabled,
 		AdaptiveTTFTSwitchThresholdSeconds: adaptiveTTFTSwitchThresholdSeconds,
+		AdaptiveHealthSampleFreshnessMinutes: adaptiveHealthSampleFreshnessMinutes,
 		RPMLimit:                           input.RPMLimit,
 		ForceOpenAIFast:                    input.ForceOpenAIFast,
 		MaxReasoningEffort:                 maxReasoningEffort,
@@ -2799,6 +2809,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_TTFT_SWITCH_THRESHOLD", "adaptive_ttft_switch_threshold_seconds must be between 1 and 3600")
 		}
 		group.AdaptiveTTFTSwitchThresholdSeconds = *input.AdaptiveTTFTSwitchThresholdSeconds
+	}
+	if input.AdaptiveHealthSampleFreshnessMinutes != nil {
+		if *input.AdaptiveHealthSampleFreshnessMinutes < MinAdaptiveHealthSampleFreshnessMinutes || *input.AdaptiveHealthSampleFreshnessMinutes > MaxAdaptiveHealthSampleFreshnessMinutes {
+			return nil, infraerrors.BadRequest("INVALID_ADAPTIVE_HEALTH_SAMPLE_FRESHNESS", "adaptive_health_sample_freshness_minutes must be between 1 and 120")
+		}
+		group.AdaptiveHealthSampleFreshnessMinutes = *input.AdaptiveHealthSampleFreshnessMinutes
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit

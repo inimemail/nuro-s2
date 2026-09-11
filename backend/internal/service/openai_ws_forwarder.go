@@ -1662,7 +1662,9 @@ func cloneOpenAIWSRawMessages(items []json.RawMessage) []json.RawMessage {
 	}
 	// Replay items are immutable once stored; sharing their backing bytes avoids
 	// copying the complete conversation on every turn.
-	return append([]json.RawMessage(nil), items...)
+	cloned := make([]json.RawMessage, len(items))
+	copy(cloned, items)
+	return cloned
 }
 
 func combineOpenAIWSReplayItems(history, delta []json.RawMessage) []json.RawMessage {
