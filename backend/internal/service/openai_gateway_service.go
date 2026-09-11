@@ -3178,31 +3178,6 @@ openAIGroupGuardFallback:
 			}
 		}
 	}
-	// A higher-cost account is an emergency fallback only after every account
-	// in the preferred tier has filled its configured wait queue. Merely
-	// failing one slot acquisition must not let an idle expensive account win
-	// the request race.
-	adaptiveEscalationAllowed := true
-	if healthFirst && len(adaptiveFallbackTier) > 0 && s.concurrencyService != nil {
-		for _, candidate := range candidates {
-			if candidate == nil {
-				continue
-			}
-			if _, primary := adaptiveFallbackTier[candidate.ID]; !primary {
-				continue
-			}
-			// A soft-cooled account is not a real waiting candidate. Do not let
-			// it block escalation to the next tier while it is excluded.
-			if s.isOpenAIPoolAccountSoftCooling(candidate) {
-				continue
-			}
-			waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, candidate.ID)
-			if waitErr != nil || waiting < cfg.FallbackMaxWaiting {
-				adaptiveEscalationAllowed = false
-				break
-			}
-		}
-	}
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
@@ -3226,9 +3201,6 @@ openAIGroupGuardFallback:
 				continue
 			}
 			if _, primary := adaptiveFallbackTier[fresh.ID]; !primary {
-				if !adaptiveEscalationAllowed {
-					continue
-				}
 				result, acquireErr := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 				if acquireErr != nil {
 					return nil, acquireErr
@@ -3245,9 +3217,6 @@ openAIGroupGuardFallback:
 					}
 					return s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
 				}
-			}
-			if _, primary := adaptiveFallbackTier[fresh.ID]; !primary && !adaptiveEscalationAllowed {
-				continue
 			}
 		}
 		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{

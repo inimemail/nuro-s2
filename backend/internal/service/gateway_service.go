@@ -2621,69 +2621,31 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	} else {
 		s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
 	}
-	if groupUsesHealthFirst(group) && s.concurrencyService != nil {
-		// Exhaust the preferred tier first. A primary account may return a wait
-		// plan while its queue is below the cap; a full session quota is treated
-		// as unavailable so another tier can serve the request.
-		for _, acc := range candidates {
-			if _, primary := adaptiveFallbackTier[acc.ID]; !primary {
-				continue
-			}
-			waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, acc.ID)
-			if waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
-				continue
-			}
-			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-				continue
-			}
-			return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
-				AccountID:      acc.ID,
-				MaxConcurrency: acc.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			})
-		}
-
-		// All primary accounts are queue-full or unable to register a session.
-		// Only now may a higher-cost account acquire a slot directly.
-		for _, acc := range candidates {
-			if _, primary := adaptiveFallbackTier[acc.ID]; primary {
-				continue
-			}
+	for _, acc := range candidates {
+		if groupUsesHealthFirst(group) && s.concurrencyService != nil {
 			if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, acc.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
 				continue
 			}
-			result, acquireErr := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.Platform)
-			if acquireErr != nil {
-				return nil, acquireErr
-			}
-			if result != nil && result.Acquired {
-				if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-					if result.ReleaseFunc != nil {
-						result.ReleaseFunc()
-					}
-					continue
+			if _, primary := adaptiveFallbackTier[acc.ID]; !primary {
+				result, acquireErr := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.Platform)
+				if acquireErr != nil {
+					return nil, acquireErr
 				}
-				s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
-				return s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
+				if result != nil && result.Acquired {
+					if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+						if result.ReleaseFunc != nil {
+							result.ReleaseFunc()
+						}
+						continue
+					}
+					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
+					return s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
+				}
 			}
-			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-				continue
-			}
-			return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
-				AccountID:      acc.ID,
-				MaxConcurrency: acc.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			})
 		}
-		return nil, ErrNoAvailableAccounts
-	}
-
-	for _, acc := range candidates {
-		// Strict-priority and legacy paths retain their existing fallback order.
+		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-			continue
+			continue // 会话限制已满，尝试下一个账号
 		}
 		return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
 			AccountID:      acc.ID,
