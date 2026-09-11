@@ -2621,31 +2621,69 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	} else {
 		s.sortCandidatesForFallback(candidates, s.accountHealthStats.Load(), cfg, preferOAuth)
 	}
-	for _, acc := range candidates {
-		if groupUsesHealthFirst(group) && s.concurrencyService != nil {
+	if groupUsesHealthFirst(group) && s.concurrencyService != nil {
+		// Exhaust the preferred tier first. A primary account may return a wait
+		// plan while its queue is below the cap; a full session quota is treated
+		// as unavailable so another tier can serve the request.
+		for _, acc := range candidates {
+			if _, primary := adaptiveFallbackTier[acc.ID]; !primary {
+				continue
+			}
+			waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, acc.ID)
+			if waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
+				continue
+			}
+			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+				continue
+			}
+			return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
+				AccountID:      acc.ID,
+				MaxConcurrency: acc.Concurrency,
+				Timeout:        cfg.FallbackWaitTimeout,
+				MaxWaiting:     cfg.FallbackMaxWaiting,
+			})
+		}
+
+		// All primary accounts are queue-full or unable to register a session.
+		// Only now may a higher-cost account acquire a slot directly.
+		for _, acc := range candidates {
+			if _, primary := adaptiveFallbackTier[acc.ID]; primary {
+				continue
+			}
 			if waiting, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, acc.ID); waitErr == nil && waiting >= cfg.FallbackMaxWaiting {
 				continue
 			}
-			if _, primary := adaptiveFallbackTier[acc.ID]; !primary {
-				result, acquireErr := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.Platform)
-				if acquireErr != nil {
-					return nil, acquireErr
-				}
-				if result != nil && result.Acquired {
-					if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-						if result.ReleaseFunc != nil {
-							result.ReleaseFunc()
-						}
-						continue
-					}
-					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
-					return s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
-				}
+			result, acquireErr := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.Platform)
+			if acquireErr != nil {
+				return nil, acquireErr
 			}
+			if result != nil && result.Acquired {
+				if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+					if result.ReleaseFunc != nil {
+						result.ReleaseFunc()
+					}
+					continue
+				}
+				s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
+				return s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
+			}
+			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+				continue
+			}
+			return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
+				AccountID:      acc.ID,
+				MaxConcurrency: acc.Concurrency,
+				Timeout:        cfg.FallbackWaitTimeout,
+				MaxWaiting:     cfg.FallbackMaxWaiting,
+			})
 		}
-		// 会话数量限制检查（等待计划也需要占用会话配额）
+		return nil, ErrNoAvailableAccounts
+	}
+
+	for _, acc := range candidates {
+		// Strict-priority and legacy paths retain their existing fallback order.
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-			continue // 会话限制已满，尝试下一个账号
+			continue
 		}
 		return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
 			AccountID:      acc.ID,
@@ -4275,10 +4313,15 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 		return 0, false
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	// Probe failures retain the last trusted payload. Use it only while its
-	// original freshness window is valid; local billing configuration must not
-	// masquerade as an upstream declared multiplier for adaptive scheduling.
-	if snapshot != nil && snapshot.FreshUntil != nil && snapshot.FreshUntil.After(now) {
+	// Probe failures retain the last trusted payload. A stale last-known
+	// multiplier remains useful for cost ordering after its freshness window;
+	// only an account with no trusted payload is truly unknown. The freshness
+	// distinction is intentionally kept in the snapshot for guard/diagnostic
+	// consumers, while this helper is used only by adaptive scheduling.
+	if snapshot != nil {
+		if enabled, ok := account.Extra[UpstreamBillingProbeEnabledExtraKey].(bool); ok && !enabled {
+			return 0, false
+		}
 		if value, ok := billingMultiplierFromProbeData(snapshot.Data); ok {
 			adjusted := value * accountAdaptiveUpstreamMultiplierFactor(account)
 			if adjusted >= 0 && !math.IsNaN(adjusted) && !math.IsInf(adjusted, 0) {

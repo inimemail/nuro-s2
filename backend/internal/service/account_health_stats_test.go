@@ -122,7 +122,7 @@ func TestSelectHealthFirstAccountWithLoad_ColdStartUsesUpstreamMultiplier(t *tes
 	require.Equal(t, int64(2), selected.account.ID)
 }
 
-func TestSelectHealthFirstAccountWithLoad_ExpiredMultiplierIsUndeclared(t *testing.T) {
+func TestSelectHealthFirstAccountWithLoad_UsesExpiredLastKnownMultiplier(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 100
 	reportHealthSamples(stats, 1, true, &fast, 3)
@@ -139,7 +139,8 @@ func TestSelectHealthFirstAccountWithLoad_ExpiredMultiplierIsUndeclared(t *testi
 func TestAccountEffectiveUpstreamMultiplierDoesNotFallBackToLocalRate(t *testing.T) {
 	now := time.Now()
 	local := 1.0
-	account := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.07, now.Add(-time.Second)).account
+	account := makeHealthTestAccount(1, 1, 0, true).account
+	account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true}
 	account.RateMultiplier = &local
 
 	_, ok := accountEffectiveUpstreamMultiplier(account, now)
@@ -154,6 +155,14 @@ func TestAccountEffectiveUpstreamMultiplierKeepsFreshLastKnownAfterProbeFailure(
 	rate, ok := accountEffectiveUpstreamMultiplier(account, now)
 	require.True(t, ok)
 	require.Equal(t, 0.07, rate)
+}
+
+func TestAccountEffectiveUpstreamMultiplierIgnoresSnapshotWhenProbeDisabled(t *testing.T) {
+	now := time.Now()
+	account := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.07, now.Add(-time.Minute)).account
+	account.Extra[UpstreamBillingProbeEnabledExtraKey] = false
+	_, ok := accountEffectiveUpstreamMultiplier(account, now)
+	require.False(t, ok)
 }
 
 func TestAccountEffectiveUpstreamMultiplierAppliesAdaptiveFactorOnlyToSchedulingValue(t *testing.T) {
@@ -493,7 +502,7 @@ func TestHealthCostBalancedTreatsSustainedModerateRatioWithLargeGapAsSeriouslySl
 	require.Equal(t, int64(2), selected.account.ID)
 }
 
-func TestAdaptiveSelectionUsesOnlyFreshUpstreamMultiplier(t *testing.T) {
+func TestAdaptiveSelectionUsesLastKnownUpstreamMultiplierAfterExpiry(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	ttft := 200
 	reportHealthSamples(stats, 1, true, &ttft, 3)
@@ -509,6 +518,16 @@ func TestAdaptiveSelectionUsesOnlyFreshUpstreamMultiplier(t *testing.T) {
 	observedExpensive := withProbeMultiplier(localOneA, 2.0, now.Add(time.Hour))
 	selected = selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{observedExpensive, upstreamExpensive}, stats, config.GatewaySchedulingConfig{}, false, now, 108, 0, false, AccountSchedulingStrategyHealthCostBalanced)
 	require.Equal(t, int64(2), selected.account.ID)
+
+	// An expired but previously trusted low multiplier remains part of cost
+	// ordering; it must not disappear merely because the next probe is due.
+	expiredCheap := withProbeMultiplier(localOneA, 0.07, now.Add(-time.Minute)).account
+	expiredExpensive := withProbeMultiplier(localOneB, 0.2, now.Add(time.Hour)).account
+	rate, known := accountEffectiveUpstreamMultiplier(expiredCheap, now)
+	require.True(t, known)
+	require.Equal(t, 0.07, rate)
+	selected = selectAdaptiveAccountWithLoadForGroupStrategy([]accountWithLoad{{account: expiredExpensive}, {account: expiredCheap}}, stats, config.GatewaySchedulingConfig{}, false, now, 1081, 0, false, AccountSchedulingStrategyHealthCostBalanced)
+	require.Equal(t, int64(1), selected.account.ID)
 }
 
 func TestAdaptiveSelectionHistoryMakesAccountKnownAndBlocksStickyCostEscape(t *testing.T) {
@@ -523,6 +542,54 @@ func TestAdaptiveSelectionHistoryMakesAccountKnownAndBlocksStickyCostEscape(t *t
 	selected := selectAdaptiveAccountWithLoadForGroupStrategyWithHistory([]accountWithLoad{cheap, expensiveSticky}, stats, config.GatewaySchedulingConfig{}, false, now, 109, 2, true, AccountSchedulingStrategyHealthCostBalanced, history)
 	require.NotNil(t, selected)
 	require.Equal(t, int64(1), selected.account.ID)
+}
+
+func TestAdaptiveSelectionReturnsToCheaperStickyAfterMultiplierExpiry(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	ttft := 200
+	reportHealthSamples(stats, 1, true, &ttft, 3)
+	reportHealthSamples(stats, 2, true, &ttft, 3)
+	cheap := withProbeMultiplier(makeHealthTestAccount(1, 5, 0, true), 0.07, now.Add(-time.Minute))
+	expensiveSticky := withProbeMultiplier(makeHealthTestAccount(2, 1, 0, true), 0.12, now.Add(time.Hour))
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(
+		[]accountWithLoad{expensiveSticky, cheap},
+		stats,
+		config.GatewaySchedulingConfig{},
+		false,
+		now,
+		116,
+		expensiveSticky.account.ID,
+		true,
+		AccountSchedulingStrategyHealthCostBalanced,
+	)
+	require.NotNil(t, selected)
+	require.Equal(t, cheap.account.ID, selected.account.ID)
+}
+
+func TestHealthCostBalancedKeepsExactMultiplierPriority(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	now := time.Now()
+	ttft := 200
+	for _, accountID := range []int64{1, 2, 3} {
+		reportHealthSamples(stats, accountID, true, &ttft, 3)
+	}
+	best := withProbeMultiplier(makeHealthTestAccount(1, 10, 0, true), 0.05, now.Add(time.Hour))
+	second := withProbeMultiplier(makeHealthTestAccount(2, 1, 0, true), 0.06, now.Add(time.Hour))
+	third := withProbeMultiplier(makeHealthTestAccount(3, 1, 0, true), 0.07, now.Add(time.Hour))
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(
+		[]accountWithLoad{third, second, best},
+		stats,
+		config.GatewaySchedulingConfig{},
+		false,
+		now,
+		117,
+		0,
+		false,
+		AccountSchedulingStrategyHealthCostBalanced,
+	)
+	require.NotNil(t, selected)
+	require.Equal(t, best.account.ID, selected.account.ID)
 }
 
 func TestHealthFirstKeepsStickyWithinCostBandAgainstUnknown(t *testing.T) {
