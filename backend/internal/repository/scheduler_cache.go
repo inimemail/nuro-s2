@@ -726,6 +726,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 	}
 	keys := []string{
 		service.UpstreamBillingProbeEnabledExtraKey,
+		service.AdaptiveUpstreamMultiplierFactorExtraKey,
 		"mixed_scheduling",
 		"allow_overages",
 		"privacy_mode",

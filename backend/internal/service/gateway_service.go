@@ -4314,6 +4314,19 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 			}
 		}
 	}
+	// Redis bucket snapshots intentionally omit the full probe JSON to keep the
+	// scheduling hot path compact. The last successful raw effective multiplier
+	// is already persisted in its own account field for group protection, so use
+	// the same trusted observation for adaptive cost ordering after hydration.
+	// A disabled probe must not revive a stale observation.
+	if account.IsUpstreamBillingProbeEnabled() && account.UpstreamBillingGuardObservedMultiplier != nil {
+		value := *account.UpstreamBillingGuardObservedMultiplier
+		adjusted := value * accountAdaptiveUpstreamMultiplierFactor(account)
+		if value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0) &&
+			adjusted >= 0 && !math.IsNaN(adjusted) && !math.IsInf(adjusted, 0) {
+			return adjusted, true
+		}
+	}
 	return 0, false
 }
 

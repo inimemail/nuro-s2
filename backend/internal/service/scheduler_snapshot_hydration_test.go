@@ -448,6 +448,33 @@ func TestSchedulerSnapshotListSchedulableAccounts_AppliesBindingScopedBillingGua
 	require.True(t, accounts[0].IsSchedulable())
 }
 
+func TestSchedulerSnapshotListSchedulableAccounts_AppliesConvertedBillingGuardFromCompactMetadata(t *testing.T) {
+	observed := 1.6
+	limit := 0.2
+	cache := &snapshotHydrationCache{snapshot: []*Account{{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		UpstreamBillingGuardEnabled: true,
+		Extra: map[string]any{
+			UpstreamBillingProbeEnabledExtraKey:      true,
+			AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+		},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		GroupIDs:                               []int64{10},
+		AccountGroups: []AccountGroup{{
+			GroupID: 10, UpstreamBillingGuardMaxMultiplier: &limit,
+		}},
+	}}}
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil, nil)
+
+	groupID := int64(10)
+	accounts, _, err := schedulerSnapshot.ListSchedulableAccounts(context.Background(), &groupID, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.False(t, accounts[0].UpstreamBillingGuardGroupBlocked, "1.6x raw with a 0.1 factor must pass a 0.2x group limit")
+	require.True(t, accounts[0].IsSchedulable())
+}
+
 func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *testing.T) {
 	cache := &snapshotHydrationCache{
 		accounts: map[int64]*Account{},

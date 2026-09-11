@@ -155,12 +155,14 @@ func TestBuildSchedulerMetadataAccount_DropsCrossPlatformBillingGuardPolicy(t *t
 	require.Nil(t, binding.GroupUpstreamBillingGuardMaxMultiplier)
 }
 
-func TestBuildSchedulerMetadataAccount_KeepsBillingProbeToggle(t *testing.T) {
+func TestBuildSchedulerMetadataAccount_KeepsBillingProbeSchedulingInputs(t *testing.T) {
 	got := buildSchedulerMetadataAccount(service.Account{Extra: map[string]any{
-		service.UpstreamBillingProbeEnabledExtraKey: true,
-		service.UpstreamBillingProbeExtraKey:        map[string]any{"large": "drop"},
+		service.UpstreamBillingProbeEnabledExtraKey:      true,
+		service.AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+		service.UpstreamBillingProbeExtraKey:             map[string]any{"large": "drop"},
 	}})
 	require.Equal(t, true, got.Extra[service.UpstreamBillingProbeEnabledExtraKey])
+	require.Equal(t, 0.1, got.Extra[service.AdaptiveUpstreamMultiplierFactorExtraKey])
 	require.NotContains(t, got.Extra, service.UpstreamBillingProbeExtraKey)
 }
 

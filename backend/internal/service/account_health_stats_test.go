@@ -179,6 +179,24 @@ func TestAccountEffectiveUpstreamMultiplierIgnoresSnapshotWhenProbeDisabled(t *t
 	require.False(t, ok)
 }
 
+func TestAccountEffectiveUpstreamMultiplierUsesCompactSchedulerObservation(t *testing.T) {
+	observed := 1.6
+	account := makeHealthTestAccount(1, 1, 0, true).account
+	account.UpstreamBillingGuardObservedMultiplier = &observed
+	account.Extra = map[string]any{
+		UpstreamBillingProbeEnabledExtraKey:      true,
+		AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+	}
+
+	rate, ok := accountEffectiveUpstreamMultiplier(account, time.Now())
+	require.True(t, ok)
+	require.InDelta(t, 0.16, rate, 1e-9)
+
+	account.Extra[UpstreamBillingProbeEnabledExtraKey] = false
+	_, ok = accountEffectiveUpstreamMultiplier(account, time.Now())
+	require.False(t, ok, "a stale compact observation must not survive probe disablement")
+}
+
 func TestAccountEffectiveUpstreamMultiplierAppliesAdaptiveFactorOnlyToSchedulingValue(t *testing.T) {
 	now := time.Now()
 	account := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 1.6, now.Add(time.Minute)).account
