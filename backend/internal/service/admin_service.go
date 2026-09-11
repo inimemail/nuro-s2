@@ -3438,7 +3438,7 @@ func normalizeAdaptiveUpstreamMultiplierFactorExtra(extra map[string]any) (map[s
 }
 
 // normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra applies partial-update
-// semantics to the scheduler-only factor. An omitted key keeps the existing
+// semantics to the upstream multiplier conversion factor. An omitted key keeps the existing
 // administrator setting; an explicit null clears it back to the default.
 func normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account *Account, extra map[string]any, provided bool, raw any) (map[string]any, error) {
 	normalized, err := normalizeAdaptiveUpstreamMultiplierFactorExtra(extra)
@@ -3456,7 +3456,7 @@ func normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account *Account, extr
 }
 
 // adaptiveFactorOnlyExtraChange reports whether an account edit changed no
-// persisted Extra value other than the scheduler-only factor. Probe flags and
+// persisted Extra value other than the upstream multiplier conversion factor. Probe flags and
 // the probe snapshot are runtime-owned and are intentionally ignored because
 // they are stripped from the normal account-update payload below. Keeping this
 // distinction prevents changing a scheduling preference from clearing an
@@ -4517,6 +4517,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	_, factorChanged := updates[AdaptiveUpstreamMultiplierFactorExtraKey]
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(updates, UpstreamBillingProbeExtraKey)
@@ -4588,7 +4589,26 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	if len(updates) == 0 {
 		return nil
 	}
-	return s.accountRepo.UpdateExtra(ctx, id, updates)
+	if err := s.accountRepo.UpdateExtra(ctx, id, updates); err != nil {
+		return err
+	}
+	if factorChanged {
+		return s.reconcileUpstreamRateAfterFactorChange(ctx, []int64{id})
+	}
+	return nil
+}
+
+// reconcileUpstreamRateAfterFactorChange immediately refreshes an auto-synced
+// account from its raw probe payload after the conversion factor changes.
+func (s *adminServiceImpl) reconcileUpstreamRateAfterFactorChange(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	reconciler, ok := s.accountRepo.(AccountUpstreamRateReconciler)
+	if !ok {
+		return nil
+	}
+	return reconciler.ReconcileUpstreamBillingRates(ctx, ids)
 }
 
 func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []string) (bool, error) {
@@ -4955,6 +4975,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			if _, err := s.accountRepo.BulkUpdate(ctx, shadowIDs, shadowUpdates); err != nil {
 				return nil, err
 			}
+		}
+	}
+	if _, factorChanged := input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey]; factorChanged && len(normalIDs) > 0 {
+		if err := s.reconcileUpstreamRateAfterFactorChange(ctx, normalIDs); err != nil {
+			return nil, err
 		}
 	}
 	if input.ProxyID != nil {

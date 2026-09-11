@@ -91,6 +91,13 @@ type AccountBillingSettingsRepository interface {
 	) error
 }
 
+// AccountUpstreamRateReconciler refreshes only the system-managed account
+// rate after an upstream multiplier conversion-factor edit. Implementations
+// must not rewrite unrelated account fields.
+type AccountUpstreamRateReconciler interface {
+	ReconcileUpstreamBillingRates(ctx context.Context, accountIDs []int64) error
+}
+
 type AccountGroupBillingSettingsRepository interface {
 	UpdateAccountWithGroupConfigAndBillingSettings(
 		ctx context.Context,

@@ -28,10 +28,11 @@ const (
 	UpstreamBillingProbeExtraKey           = "upstream_billing_probe"
 	UpstreamBillingProbeEnabledExtraKey    = "upstream_billing_probe_enabled"
 	UpstreamBillingRateSyncEnabledExtraKey = "upstream_billing_rate_sync_enabled"
-	// AdaptiveUpstreamMultiplierFactorExtraKey corrects a provider-specific
-	// billing unit for adaptive scheduling and the matching group guard
-	// comparison. It never changes billing, probe snapshots, or upstream rate
-	// synchronization.
+	// AdaptiveUpstreamMultiplierFactorExtraKey converts a provider-specific
+	// declared billing unit into this account's effective upstream multiplier.
+	// The effective value is shared by adaptive scheduling, group guards, admin
+	// display, and opt-in account-rate synchronization. The raw probe snapshot is
+	// retained unchanged for diagnostics and audit.
 	AdaptiveUpstreamMultiplierFactorExtraKey = "adaptive_upstream_multiplier_factor"
 	UpstreamBillingProbeMaxBatchSize         = 20
 
@@ -662,7 +663,7 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	var syncRate *float64
 	previousRate := account.BillingRateMultiplier()
 	if upstreamBillingRateSyncEnabled(account) {
-		if value, valid := upstreamBillingProbeSyncRate(data); valid {
+		if value, valid := upstreamBillingProbeSyncRate(data, accountAdaptiveUpstreamMultiplierFactor(account)); valid {
 			syncRate = &value
 			snapshot.SyncedRateMultiplier = &value
 		} else {
@@ -741,16 +742,35 @@ func accountAdaptiveUpstreamMultiplierFactor(account *Account) float64 {
 	return factor
 }
 
-func upstreamBillingProbeSyncRate(data map[string]any) (float64, bool) {
+func upstreamBillingProbeSyncRate(data map[string]any, factor float64) (float64, bool) {
 	value, ok := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
-	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) ||
+		factor < adaptiveUpstreamMultiplierFactorMin || factor > adaptiveUpstreamMultiplierFactorMax || math.IsNaN(factor) || math.IsInf(factor, 0) {
 		return 0, false
 	}
-	rounded := math.Round(value*upstreamBillingProbeAccountRateScale) / upstreamBillingProbeAccountRateScale
+	// Always derive the synchronized rate from the raw probe payload. The
+	// account's existing RateMultiplier may already contain a previously
+	// synchronized value and must never be multiplied again.
+	rounded := math.Round(value*factor*upstreamBillingProbeAccountRateScale) / upstreamBillingProbeAccountRateScale
 	if rounded <= 0 || rounded > upstreamBillingRateSyncMaxMultiplier {
 		return 0, false
 	}
 	return rounded, true
+}
+
+// UpstreamBillingProbeSyncRateForAccount resolves the system-managed account
+// rate from the retained raw probe snapshot and the account's current
+// conversion factor. Keeping this derivation in one place prevents admin edits
+// from applying the factor to an already-synchronized RateMultiplier.
+func UpstreamBillingProbeSyncRateForAccount(account *Account) (float64, bool) {
+	if account == nil {
+		return 0, false
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil {
+		return 0, false
+	}
+	return upstreamBillingProbeSyncRate(snapshot.Data, accountAdaptiveUpstreamMultiplierFactor(account))
 }
 
 func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {

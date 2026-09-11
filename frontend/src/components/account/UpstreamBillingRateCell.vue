@@ -91,8 +91,8 @@ const stale = computed(() => {
   return !Number.isFinite(freshUntil.value) || props.now >= freshUntil.value
 })
 const displayedRate = computed(() => {
-  const value = snapshot.value?.data?.effective_rate_multiplier
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+  const value = effectiveObservedRate.value
+  return value != null
     ? `${Number(value.toPrecision(12))}x`
     : '-'
 })
@@ -100,12 +100,21 @@ const observedRate = computed(() => {
   const value = snapshot.value?.data?.effective_rate_multiplier
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 })
+const adaptiveUpstreamMultiplierFactor = computed(() => {
+  const rawFactor = Number(props.account.extra?.adaptive_upstream_multiplier_factor)
+  return Number.isFinite(rawFactor) && rawFactor >= 0.001 && rawFactor <= 100 ? rawFactor : 1
+})
+const effectiveObservedRate = computed(() => {
+  const value = observedRate.value
+  if (value == null) return null
+  const effective = value * adaptiveUpstreamMultiplierFactor.value
+  return Number.isFinite(effective) && effective >= 0 ? effective : null
+})
 const guardObservedRate = computed(() => {
   const value = props.account.upstream_billing_guard_observed_multiplier
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
-  const rawFactor = Number(props.account.extra?.adaptive_upstream_multiplier_factor)
-  const factor = Number.isFinite(rawFactor) && rawFactor >= 0.001 && rawFactor <= 100 ? rawFactor : 1
-  return value * factor
+  const effective = value * adaptiveUpstreamMultiplierFactor.value
+  return Number.isFinite(effective) && effective >= 0 ? effective : null
 })
 const autoProbeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
 const globalProbeDisabled = computed(() => props.globalProbeEnabled === false)

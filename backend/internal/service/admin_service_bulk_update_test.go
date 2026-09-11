@@ -48,6 +48,8 @@ type accountRepoStubForBulkUpdate struct {
 	createdAccount  *Account
 	updateExtraIDs  []int64
 	updateExtra     map[string]any
+	reconcileIDs    []int64
+	reconcileErr    error
 }
 
 type bulkUpdateCall struct {
@@ -95,6 +97,11 @@ func (s *accountRepoStubForBulkUpdate) UpdateExtra(_ context.Context, id int64, 
 	s.updateExtraIDs = append(s.updateExtraIDs, id)
 	s.updateExtra = maps.Clone(updates)
 	return nil
+}
+
+func (s *accountRepoStubForBulkUpdate) ReconcileUpstreamBillingRates(_ context.Context, ids []int64) error {
+	s.reconcileIDs = append([]int64{}, ids...)
+	return s.reconcileErr
 }
 
 func (s *accountRepoStubForBulkUpdate) Create(_ context.Context, account *Account) error {
@@ -301,6 +308,41 @@ func TestAdminServiceUpdateAccountExtra_PreservesDeepSeekResponsesWhenRemovingLe
 	require.Equal(t, []int64{7}, repo.updateExtraIDs)
 	require.Equal(t, APIProtocolResponses, repo.updateExtra[cnAPIProtocolExtraKey])
 	require.Nil(t, repo.updateExtra[cnAPIBaseURLsExtraKey])
+}
+
+func TestAdminServiceUpdateAccountExtra_ReconcilesConvertedRateWithoutFullAccountRewrite(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	err := svc.UpdateAccountExtra(context.Background(), 7, map[string]any{
+		AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []int64{7}, repo.reconcileIDs)
+	require.Empty(t, repo.updateCalls, "factor reconciliation must not save a stale full Account object")
+}
+
+func TestAdminServiceBulkUpdateAccounts_ReconcilesConvertedRatesForNormalAccounts(t *testing.T) {
+	parentID := int64(1)
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+			{ID: 8, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, ParentAccountID: &parentID},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7, 8},
+		Extra: map[string]any{
+			AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Equal(t, []int64{7}, repo.reconcileIDs)
 }
 
 func TestAdminServiceBulkUpdateAccounts_AcceptsLegacyProbeFlagInExtra(t *testing.T) {

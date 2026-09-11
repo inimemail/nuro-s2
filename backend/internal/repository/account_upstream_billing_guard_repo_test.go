@@ -47,6 +47,32 @@ func TestUpdateExtraRejectsMalformedUpstreamBillingProbeEnabled(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestReconcileUpstreamBillingRatesUpdatesOnlyManagedRateFromRawSnapshot(t *testing.T) {
+	db, mock := newSQLMock(t)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { _ = client.Close() })
+	repo := newAccountRepositoryWithSQL(client, db, nil)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, platform, type, COALESCE\(extra, '\{\}'::jsonb\)::text, rate_multiplier.*FOR UPDATE`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "type", "extra", "rate_multiplier"}).
+			AddRow(7, service.PlatformOpenAI, service.AccountTypeAPIKey, `{"upstream_billing_probe_enabled":true,"upstream_billing_rate_sync_enabled":true,"adaptive_upstream_multiplier_factor":0.1,"upstream_billing_probe":{"status":"ok","data":{"resolved_rate_multiplier":1.6}}}`, 1.6).
+			AddRow(8, service.PlatformOpenAI, service.AccountTypeAPIKey, `{"upstream_billing_probe_enabled":true,"upstream_billing_rate_sync_enabled":false,"adaptive_upstream_multiplier_factor":0.1,"upstream_billing_probe":{"status":"ok","data":{"resolved_rate_multiplier":2}}}`, 2.0).
+			AddRow(9, service.PlatformOpenAI, service.AccountTypeAPIKey, `{"upstream_billing_probe_enabled":true,"upstream_billing_rate_sync_enabled":true,"adaptive_upstream_multiplier_factor":0.1,"upstream_billing_probe":{"status":"ok","data":{"resolved_rate_multiplier":1.6}}}`, 0.16))
+	mock.ExpectExec(`(?s)UPDATE accounts\s+SET rate_multiplier = \$1, updated_at = NOW\(\)\s+WHERE id = \$2`).
+		WithArgs(0.16, int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)INSERT INTO scheduler_outbox`).
+		WithArgs(service.SchedulerOutboxEventAccountBulkChanged, nil, nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := repo.ReconcileUpstreamBillingRates(context.Background(), []int64{9, 8, 7, 7})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpdateExtraProbeDisableKeepsUnsupportedPlatformsEligible(t *testing.T) {
 	db, mock := newSQLMock(t)
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))

@@ -116,6 +116,32 @@ describe('UpstreamBillingRateCell', () => {
     }
   })
 
+  it('shows the converted upstream multiplier as the primary rate', () => {
+    const account = makeAccount({ observed: 1.6, limit: 0.2 })
+    account.extra = {
+      ...account.extra,
+      adaptive_upstream_multiplier_factor: 0.1
+    }
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe('0.16x')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('available')
+  })
+
+  it('does not expose an overflowing converted rate or mark the guard available', () => {
+    const account = makeAccount({ observed: Number.MAX_VALUE, limit: 1 })
+    account.extra = {
+      ...account.extra,
+      adaptive_upstream_multiplier_factor: 100
+    }
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe('-')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('pending')
+  })
+
   it('does not add a second synced-rate line when automatic sync is enabled', () => {
     const account = makeAccount({ observed: 0.07 })
     account.extra = {

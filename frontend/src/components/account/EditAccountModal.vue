@@ -5159,7 +5159,7 @@ const configuredUpstreamBillingGuardGroupCount = computed(() =>
 const upstreamBillingGuardObservedRate = computed(() => {
   const value = props.account?.upstream_billing_guard_observed_multiplier
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
-  return value * adaptiveFactorFromValue(props.account?.extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY])
+  return convertedUpstreamRate(value, adaptiveFactorFromValue(props.account?.extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY]))
 })
 
 const adaptiveFactorFromValue = (value: unknown): number => {
@@ -5173,9 +5173,16 @@ const upstreamBillingObservedRate = computed<number | null>(() => {
   return Number.isFinite(value) && value >= 0 ? value : null
 })
 
+const convertedUpstreamRate = (value: number, factor: number): number | null => {
+  const converted = value * factor
+  return Number.isFinite(converted) && converted >= 0 ? converted : null
+}
+
 const adaptiveUpstreamSchedulingRate = computed<number | null>(() => {
   const observed = upstreamBillingObservedRate.value
-  return observed == null ? null : observed * adaptiveFactorFromValue(adaptiveUpstreamMultiplierFactor.value)
+  return observed == null
+    ? null
+    : convertedUpstreamRate(observed, adaptiveFactorFromValue(adaptiveUpstreamMultiplierFactor.value))
 })
 
 const formatAdaptiveSchedulingRate = (value: number | null): string => value == null ? '-' : `${Number(value.toPrecision(6))}x`

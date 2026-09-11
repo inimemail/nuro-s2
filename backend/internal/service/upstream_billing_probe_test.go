@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -402,14 +403,44 @@ func TestUpstreamBillingRateSyncIsOptInAndRequiresAutomaticProbe(t *testing.T) {
 }
 
 func TestUpstreamBillingProbeSyncRateValidatesAndRoundsDeclaredRate(t *testing.T) {
-	value, ok := upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": 0.123456})
+	value, ok := upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": 0.123456}, 1)
 	require.True(t, ok)
 	require.Equal(t, 0.1235, value)
 
+	value, ok = upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": 1.6}, 0.1)
+	require.True(t, ok)
+	require.Equal(t, 0.16, value, "automatic sync must use the converted upstream multiplier")
+
 	for _, invalid := range []float64{0, -1, 100.0001} {
-		_, ok = upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": invalid})
+		_, ok = upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": invalid}, 1)
 		require.False(t, ok)
 	}
+	for _, invalidFactor := range []float64{0, 0.0001, 101, math.NaN(), math.Inf(1)} {
+		_, ok = upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": 1.6}, invalidFactor)
+		require.False(t, ok)
+	}
+}
+
+func TestUpstreamBillingProbeSyncRateForAccountUsesRawSnapshotExactlyOnce(t *testing.T) {
+	account := &Account{
+		RateMultiplier: func() *float64 { value := 0.16; return &value }(),
+		Extra: map[string]any{
+			AdaptiveUpstreamMultiplierFactorExtraKey: 0.1,
+			UpstreamBillingProbeExtraKey: map[string]any{
+				"status": "ok",
+				"data":   map[string]any{"resolved_rate_multiplier": 1.6},
+			},
+		},
+	}
+
+	value, ok := UpstreamBillingProbeSyncRateForAccount(account)
+	require.True(t, ok)
+	require.Equal(t, 0.16, value)
+
+	account.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = 0.2
+	value, ok = UpstreamBillingProbeSyncRateForAccount(account)
+	require.True(t, ok)
+	require.Equal(t, 0.32, value, "factor edits must derive from raw 1.6x, not multiply the existing 0.16x")
 }
 
 func TestUpstreamBillingProbeOfficialDomainSuppression(t *testing.T) {

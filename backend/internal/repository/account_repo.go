@@ -657,8 +657,15 @@ func (r *accountRepository) updateWithAccountBillingSettingsLocked(
 	}
 	account.Extra = mergedExtra
 	if rateMultiplier == nil {
-		preserved := currentRate
-		account.RateMultiplier = &preserved
+		managedRate, managed := service.UpstreamBillingProbeSyncRateForAccount(account)
+		if currentSync && managed {
+			// Reconcile factor edits immediately from the raw probe snapshot. Do
+			// not multiply currentRate: it may already be a synchronized value.
+			account.RateMultiplier = &managedRate
+		} else {
+			preserved := currentRate
+			account.RateMultiplier = &preserved
+		}
 	} else {
 		account.RateMultiplier = rateMultiplier
 	}
@@ -2818,6 +2825,120 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
 		r.syncSchedulerAccountSnapshot(ctx, id)
 	}
+	return nil
+}
+
+// ReconcileUpstreamBillingRates recalculates only rate_multiplier from the
+// latest locked Extra payload. Keeping this as a narrow repository operation
+// prevents a concurrent status, credential, cooldown, or custom-field update
+// from being overwritten by an older full Account value.
+func (r *accountRepository) ReconcileUpstreamBillingRates(ctx context.Context, accountIDs []int64) error {
+	uniqueIDs := make([]int64, 0, len(accountIDs))
+	seen := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return nil
+	}
+	sort.Slice(uniqueIDs, func(i, j int) bool { return uniqueIDs[i] < uniqueIDs[j] })
+	changedIDs := make([]int64, 0, len(uniqueIDs))
+
+	apply := func(txCtx context.Context) error {
+		exec := sqlExecutorFromContext(txCtx, r.sql)
+		rows, err := exec.QueryContext(txCtx, `
+			SELECT id, platform, type, COALESCE(extra, '{}'::jsonb)::text, rate_multiplier
+			FROM accounts
+			WHERE id = ANY($1) AND deleted_at IS NULL
+			ORDER BY id
+			FOR UPDATE
+		`, pq.Array(uniqueIDs))
+		if err != nil {
+			return err
+		}
+		type managedRate struct {
+			id   int64
+			rate float64
+		}
+		managed := make([]managedRate, 0, len(uniqueIDs))
+		for rows.Next() {
+			var id int64
+			var platform, accountType string
+			var extraJSON string
+			var currentRate float64
+			if err := rows.Scan(&id, &platform, &accountType, &extraJSON, &currentRate); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			extra := make(map[string]any)
+			if err := json.Unmarshal([]byte(extraJSON), &extra); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			account := &service.Account{ID: id, Platform: platform, Type: accountType, Extra: extra}
+			syncEnabled, _ := extra[service.UpstreamBillingRateSyncEnabledExtraKey].(bool)
+			if !service.IsUpstreamBillingProbeIdentity(platform, accountType) || !account.IsUpstreamBillingProbeEnabled() || !syncEnabled {
+				continue
+			}
+			rate, ok := service.UpstreamBillingProbeSyncRateForAccount(account)
+			if ok && (math.IsNaN(currentRate) || math.IsInf(currentRate, 0) ||
+				math.Abs(rate-currentRate) > 1e-12*math.Max(1, math.Max(math.Abs(rate), math.Abs(currentRate)))) {
+				managed = append(managed, managedRate{id: id, rate: rate})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range managed {
+			if _, err := exec.ExecContext(txCtx, `
+				UPDATE accounts
+				SET rate_multiplier = $1, updated_at = NOW()
+				WHERE id = $2 AND deleted_at IS NULL
+			`, item.rate, item.id); err != nil {
+				return err
+			}
+			changedIDs = append(changedIDs, item.id)
+		}
+		if len(changedIDs) > 0 {
+			if err := enqueueSchedulerOutbox(txCtx, exec, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, map[string]any{"account_ids": changedIDs}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if dbent.TxFromContext(ctx) != nil {
+		return apply(ctx)
+	}
+	if r.client == nil {
+		return errors.New("account repository transaction client is unavailable")
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := apply(dbent.NewTxContext(ctx, tx)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if len(changedIDs) == 0 {
+		return nil
+	}
+	r.syncSchedulerAccountSnapshots(context.WithoutCancel(ctx), changedIDs)
 	return nil
 }
 
