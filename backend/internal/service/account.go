@@ -2334,6 +2334,18 @@ func (a *Account) IsOpenAIOAuth() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeOAuth
 }
 
+// IsOpenAIOAuthLike reports OpenAI credentials that use the ChatGPT/Codex
+// forwarding protocol. Setup tokens share the protocol but have no refresh
+// lifecycle.
+func (a *Account) IsOpenAIOAuthLike() bool {
+	return a != nil && a.IsOpenAI() && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
+}
+
+// UsesOpenAICodexProtocol reports credentials routed through ChatGPT/Codex.
+func (a *Account) UsesOpenAICodexProtocol() bool {
+	return a != nil && a.IsOpenAIOAuthLike()
+}
+
 func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
 }
@@ -2486,21 +2498,21 @@ func (a *Account) GetOpenAIUserAgent() string {
 }
 
 func (a *Account) GetChatGPTAccountID() string {
-	if !a.IsOpenAIOAuth() {
+	if !a.IsOpenAIOAuthLike() {
 		return ""
 	}
 	return a.GetCredential("chatgpt_account_id")
 }
 
 func (a *Account) GetOpenAIDeviceID() string {
-	if !a.IsOpenAIOAuth() {
+	if !a.IsOpenAIOAuthLike() {
 		return ""
 	}
 	return strings.TrimSpace(a.GetExtraString("openai_device_id"))
 }
 
 func (a *Account) GetOpenAISessionID() string {
-	if !a.IsOpenAIOAuth() {
+	if !a.IsOpenAIOAuthLike() {
 		return ""
 	}
 	return strings.TrimSpace(a.GetExtraString("openai_session_id"))

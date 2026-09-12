@@ -255,7 +255,9 @@ type SystemSettings struct {
 	OpenAICodexUserAgent                   string // OpenAI Codex 上游完整 User-Agent；空值使用内置默认
 	OpenAICodexClientVersion               string // 管理员固定的 Codex 客户端版本；优先于自动同步值
 	OpenAICodexClientVersionSynced         string // 后台同步到的最新稳定版，只读
-	OpenAICodexVersionAutoSyncEnabled      bool   // 是否每 6 小时同步官方稳定版；默认 false
+	OpenAICodexClientVersionEffective      string // 当前请求实际使用的版本
+	OpenAICodexClientVersionSource         string // manual/synced/builtin
+	OpenAICodexVersionAutoSyncEnabled      bool   // 是否每 6 小时同步官方稳定版；默认 true
 	OpenAICodexRoutingHintEnabled          bool   // 是否向 OAuth 上游发送本地路由 hint；默认 false
 	OpenAIAllowClaudeCodeCodexPlugin       bool   // 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认 false）
 	MinCodexVersion                        string

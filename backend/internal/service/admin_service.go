@@ -254,19 +254,19 @@ type CreateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch              bool
-	AllowLive                          bool
-	EdgeProtectionEnabled              *bool
-	DefaultMappedModel                 string
-	RequireOAuthOnly                   bool
-	RequirePrivacySet                  bool
-	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig
-	ModelsListConfig                   GroupModelsListConfig
-	CodexModelsManifestConfig          GroupCodexModelsManifestConfig
-	StrictModelPriorityOnModelMismatch bool
-	AccountSchedulingStrategy          string
-	AdaptiveTTFTSwitchEnabled          *bool
-	AdaptiveTTFTSwitchThresholdSeconds *int
+	AllowMessagesDispatch                bool
+	AllowLive                            bool
+	EdgeProtectionEnabled                *bool
+	DefaultMappedModel                   string
+	RequireOAuthOnly                     bool
+	RequirePrivacySet                    bool
+	MessagesDispatchModelConfig          OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                     GroupModelsListConfig
+	CodexModelsManifestConfig            GroupCodexModelsManifestConfig
+	StrictModelPriorityOnModelMismatch   bool
+	AccountSchedulingStrategy            string
+	AdaptiveTTFTSwitchEnabled            *bool
+	AdaptiveTTFTSwitchThresholdSeconds   *int
 	AdaptiveHealthSampleFreshnessMinutes *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int
@@ -331,19 +331,19 @@ type UpdateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch              *bool
-	AllowLive                          *bool
-	EdgeProtectionEnabled              **bool
-	DefaultMappedModel                 *string
-	RequireOAuthOnly                   *bool
-	RequirePrivacySet                  *bool
-	MessagesDispatchModelConfig        *OpenAIMessagesDispatchModelConfig
-	ModelsListConfig                   *GroupModelsListConfig
-	CodexModelsManifestConfig          *GroupCodexModelsManifestConfig
-	StrictModelPriorityOnModelMismatch *bool
-	AccountSchedulingStrategy          *string
-	AdaptiveTTFTSwitchEnabled          *bool
-	AdaptiveTTFTSwitchThresholdSeconds *int
+	AllowMessagesDispatch                *bool
+	AllowLive                            *bool
+	EdgeProtectionEnabled                **bool
+	DefaultMappedModel                   *string
+	RequireOAuthOnly                     *bool
+	RequirePrivacySet                    *bool
+	MessagesDispatchModelConfig          *OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                     *GroupModelsListConfig
+	CodexModelsManifestConfig            *GroupCodexModelsManifestConfig
+	StrictModelPriorityOnModelMismatch   *bool
+	AccountSchedulingStrategy            *string
+	AdaptiveTTFTSwitchEnabled            *bool
+	AdaptiveTTFTSwitchThresholdSeconds   *int
 	AdaptiveHealthSampleFreshnessMinutes *int
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit                    *int
@@ -2301,69 +2301,69 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		longContextPricingEnabled = *input.LongContextPricingEnabled
 	}
 	group := &Group{
-		Name:                               input.Name,
-		Description:                        input.Description,
-		Platform:                           platform,
-		RateMultiplier:                     input.RateMultiplier,
-		UpstreamBillingGuardMaxMultiplier:  guardLimit,
-		UpstreamBillingGuardMinMultiplier:  guardMin,
-		IsExclusive:                        input.IsExclusive,
-		Status:                             StatusActive,
-		SubscriptionType:                   subscriptionType,
-		DailyLimitUSD:                      dailyLimit,
-		WeeklyLimitUSD:                     weeklyLimit,
-		MonthlyLimitUSD:                    monthlyLimit,
-		AllowImageGeneration:               input.AllowImageGeneration,
-		AllowBatchImageGeneration:          input.AllowBatchImageGeneration,
-		ImageRateIndependent:               input.ImageRateIndependent,
-		ImageRateMultiplier:                imageRateMultiplier,
-		PeakRateEnabled:                    peakRateEnabled,
-		PeakStart:                          peakStart,
-		PeakEnd:                            peakEnd,
-		PeakRateMultiplier:                 peakRateMultiplier,
-		ImagePrice1K:                       imagePrice1K,
-		ImagePrice2K:                       imagePrice2K,
-		ImagePrice4K:                       imagePrice4K,
-		BatchImageDiscountMultiplier:       batchImageDiscountMultiplier,
-		BatchImageHoldMultiplier:           batchImageHoldMultiplier,
-		VideoRateIndependent:               input.VideoRateIndependent,
-		VideoRateMultiplier:                videoRateMultiplier,
-		VideoPrice480P:                     videoPrice480P,
-		VideoPrice720P:                     videoPrice720P,
-		VideoPrice1080P:                    videoPrice1080P,
-		VideoModelPrices:                   NormalizeVideoModelPrices(input.VideoModelPrices),
-		WebSearchPricePerCall:              webSearchPricePerCall,
-		SearchPricePer1K:                   searchPricePer1K,
-		AudioRealtimePricePerMin:           audioRealtimePricePerMin,
-		AudioTTSPricePerMillionChars:       audioTTSPricePerMillionChars,
-		AudioSTTPricePerHour:               audioSTTPricePerHour,
-		LongContextPricingEnabled:          longContextPricingEnabled,
-		ModelPricing:                       modelPricing,
-		ClaudeCodeOnly:                     input.ClaudeCodeOnly,
-		FallbackGroupID:                    input.FallbackGroupID,
-		FallbackGroupIDOnInvalidRequest:    fallbackOnInvalidRequest,
-		ModelRouting:                       input.ModelRouting,
-		MCPXMLInject:                       mcpXMLInject,
-		SupportedModelScopes:               input.SupportedModelScopes,
-		AllowMessagesDispatch:              input.AllowMessagesDispatch,
-		AllowLive:                          input.AllowLive,
-		EdgeProtectionEnabled:              input.EdgeProtectionEnabled,
-		RequireOAuthOnly:                   input.RequireOAuthOnly,
-		RequirePrivacySet:                  input.RequirePrivacySet,
-		DefaultMappedModel:                 input.DefaultMappedModel,
-		MessagesDispatchModelConfig:        normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
-		ModelsListConfig:                   normalizeGroupModelsListConfig(input.ModelsListConfig),
-		CodexModelsManifestConfig:          codexManifestConfig,
-		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
-		AccountSchedulingStrategy:          NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
-		AdaptiveTTFTSwitchEnabled:          adaptiveTTFTSwitchEnabled,
-		AdaptiveTTFTSwitchThresholdSeconds: adaptiveTTFTSwitchThresholdSeconds,
+		Name:                                 input.Name,
+		Description:                          input.Description,
+		Platform:                             platform,
+		RateMultiplier:                       input.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:    guardLimit,
+		UpstreamBillingGuardMinMultiplier:    guardMin,
+		IsExclusive:                          input.IsExclusive,
+		Status:                               StatusActive,
+		SubscriptionType:                     subscriptionType,
+		DailyLimitUSD:                        dailyLimit,
+		WeeklyLimitUSD:                       weeklyLimit,
+		MonthlyLimitUSD:                      monthlyLimit,
+		AllowImageGeneration:                 input.AllowImageGeneration,
+		AllowBatchImageGeneration:            input.AllowBatchImageGeneration,
+		ImageRateIndependent:                 input.ImageRateIndependent,
+		ImageRateMultiplier:                  imageRateMultiplier,
+		PeakRateEnabled:                      peakRateEnabled,
+		PeakStart:                            peakStart,
+		PeakEnd:                              peakEnd,
+		PeakRateMultiplier:                   peakRateMultiplier,
+		ImagePrice1K:                         imagePrice1K,
+		ImagePrice2K:                         imagePrice2K,
+		ImagePrice4K:                         imagePrice4K,
+		BatchImageDiscountMultiplier:         batchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:             batchImageHoldMultiplier,
+		VideoRateIndependent:                 input.VideoRateIndependent,
+		VideoRateMultiplier:                  videoRateMultiplier,
+		VideoPrice480P:                       videoPrice480P,
+		VideoPrice720P:                       videoPrice720P,
+		VideoPrice1080P:                      videoPrice1080P,
+		VideoModelPrices:                     NormalizeVideoModelPrices(input.VideoModelPrices),
+		WebSearchPricePerCall:                webSearchPricePerCall,
+		SearchPricePer1K:                     searchPricePer1K,
+		AudioRealtimePricePerMin:             audioRealtimePricePerMin,
+		AudioTTSPricePerMillionChars:         audioTTSPricePerMillionChars,
+		AudioSTTPricePerHour:                 audioSTTPricePerHour,
+		LongContextPricingEnabled:            longContextPricingEnabled,
+		ModelPricing:                         modelPricing,
+		ClaudeCodeOnly:                       input.ClaudeCodeOnly,
+		FallbackGroupID:                      input.FallbackGroupID,
+		FallbackGroupIDOnInvalidRequest:      fallbackOnInvalidRequest,
+		ModelRouting:                         input.ModelRouting,
+		MCPXMLInject:                         mcpXMLInject,
+		SupportedModelScopes:                 input.SupportedModelScopes,
+		AllowMessagesDispatch:                input.AllowMessagesDispatch,
+		AllowLive:                            input.AllowLive,
+		EdgeProtectionEnabled:                input.EdgeProtectionEnabled,
+		RequireOAuthOnly:                     input.RequireOAuthOnly,
+		RequirePrivacySet:                    input.RequirePrivacySet,
+		DefaultMappedModel:                   input.DefaultMappedModel,
+		MessagesDispatchModelConfig:          normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
+		ModelsListConfig:                     normalizeGroupModelsListConfig(input.ModelsListConfig),
+		CodexModelsManifestConfig:            codexManifestConfig,
+		StrictModelPriorityOnModelMismatch:   input.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:            NormalizeAccountSchedulingStrategy(input.AccountSchedulingStrategy),
+		AdaptiveTTFTSwitchEnabled:            adaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds:   adaptiveTTFTSwitchThresholdSeconds,
 		AdaptiveHealthSampleFreshnessMinutes: adaptiveHealthSampleFreshnessMinutes,
-		RPMLimit:                           input.RPMLimit,
-		ForceOpenAIFast:                    input.ForceOpenAIFast,
-		MaxReasoningEffort:                 maxReasoningEffort,
-		MaxReasoningEffortOverLimit:        normalizeReasoningOverLimit(input.MaxReasoningEffortOverLimit),
-		ReasoningEffortMappings:            reasoningEffortMappings,
+		RPMLimit:                             input.RPMLimit,
+		ForceOpenAIFast:                      input.ForceOpenAIFast,
+		MaxReasoningEffort:                   maxReasoningEffort,
+		MaxReasoningEffortOverLimit:          normalizeReasoningOverLimit(input.MaxReasoningEffortOverLimit),
+		ReasoningEffortMappings:              reasoningEffortMappings,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
 	if group.Platform != PlatformOpenAI {
@@ -3773,6 +3773,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	accountExtra, input.Credentials = normalizeCNProviderStoredConfig(input.Platform, accountExtra, input.Credentials)
 	// Quota and billing observations are runtime-owned. Never accept a
 	// client-provided snapshot on create; only the tri-state override is
@@ -4082,7 +4083,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				normalizedExtra[key] = v
 			}
 		}
-		account.Extra = normalizedExtra
+		account.Extra = prepareCodexFingerprintExtraForUpdate(account, normalizedExtra)
 		if account.Platform == PlatformAntigravity && wasOveragesEnabled && !account.IsOveragesEnabled() {
 			delete(account.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
 			// 清除 AICredits 限流 key
@@ -4099,6 +4100,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		ComputeQuotaResetAt(account.Extra)
+	}
+	if input.Extra == nil {
+		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
 	}
 	// Canonicalize domestic protocol fields after both credential and Extra
 	// merges. This also covers credential-only edits, which otherwise could
@@ -4517,6 +4521,13 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		updates = prepareCodexFingerprintExtraForUpdate(account, updates)
+	}
 	_, factorChanged := updates[AdaptiveUpstreamMultiplierFactorExtraKey]
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)

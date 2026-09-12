@@ -348,6 +348,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		OpenAICodexUserAgent:                                  settings.OpenAICodexUserAgent,
 		OpenAICodexClientVersion:                              settings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                        settings.OpenAICodexClientVersionSynced,
+		OpenAICodexClientVersionEffective:                     settings.OpenAICodexClientVersionEffective,
+		OpenAICodexClientVersionSource:                        settings.OpenAICodexClientVersionSource,
 		OpenAICodexVersionAutoSyncEnabled:                     settings.OpenAICodexVersionAutoSyncEnabled,
 		OpenAICodexRoutingHintEnabled:                         settings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                      settings.OpenAIAllowClaudeCodeCodexPlugin,
@@ -2225,7 +2227,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAICodexClientVersion
 		}(),
-		OpenAICodexClientVersionSynced: previousSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexClientVersionSynced:    previousSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexClientVersionEffective: previousSettings.OpenAICodexClientVersionEffective,
+		OpenAICodexClientVersionSource:    previousSettings.OpenAICodexClientVersionSource,
 		OpenAICodexRoutingHintEnabled: func() bool {
 			if req.OpenAICodexRoutingHintEnabled != nil {
 				return *req.OpenAICodexRoutingHintEnabled
@@ -2741,6 +2745,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAICodexUserAgent:                                  updatedSettings.OpenAICodexUserAgent,
 		OpenAICodexClientVersion:                              updatedSettings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                        updatedSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexClientVersionEffective:                     updatedSettings.OpenAICodexClientVersionEffective,
+		OpenAICodexClientVersionSource:                        updatedSettings.OpenAICodexClientVersionSource,
 		OpenAICodexVersionAutoSyncEnabled:                     updatedSettings.OpenAICodexVersionAutoSyncEnabled,
 		OpenAICodexRoutingHintEnabled:                         updatedSettings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                      updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,

@@ -648,6 +648,8 @@ export interface SystemSettings {
   openai_codex_user_agent: string;
   openai_codex_client_version: string;
   openai_codex_client_version_synced: string;
+  openai_codex_client_version_effective: string;
+  openai_codex_client_version_source: string;
   openai_codex_version_auto_sync_enabled: boolean;
   openai_codex_routing_hint_enabled: boolean;
   openai_allow_claude_code_codex_plugin: boolean;

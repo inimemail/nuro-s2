@@ -5186,6 +5186,15 @@
                       {{ form.openai_codex_client_version_synced || t("admin.settings.gatewayForwarding.openaiCodexNotSynced") }}
                     </div>
                   </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      当前生效版本
+                    </label>
+                    <div class="flex h-10 items-center justify-between rounded-md border border-primary-200 bg-primary-50 px-3 font-mono text-sm text-primary-800 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200">
+                      <span>{{ form.openai_codex_client_version_effective || '0.146.0' }}</span>
+                      <span class="font-sans text-xs opacity-75">{{ form.openai_codex_client_version_source || 'builtin' }}</span>
+                    </div>
+                  </div>
                 </div>
                 <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
                   {{ t("admin.settings.gatewayForwarding.openaiCodexVersionPrecedence") }}
@@ -9221,7 +9230,9 @@ const form = reactive<SettingsForm>({
   openai_codex_user_agent: "",
   openai_codex_client_version: "",
   openai_codex_client_version_synced: "",
-  openai_codex_version_auto_sync_enabled: false,
+  openai_codex_client_version_effective: "",
+  openai_codex_client_version_source: "",
+  openai_codex_version_auto_sync_enabled: true,
   openai_codex_routing_hint_enabled: false,
   openai_allow_claude_code_codex_plugin: false,
   min_codex_version: "",

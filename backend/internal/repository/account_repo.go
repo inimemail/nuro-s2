@@ -77,6 +77,14 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	service.UpstreamBillingRateSyncEnabledExtraKey: {},
 }
 
+const codexFingerprintSeedPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+func ensureCodexFingerprintSeedExpression(extraExpr string) string {
+	seed := "(" + extraExpr + " ->> 'codex_fingerprint_seed')"
+	valid := "(" + seed + " ~ '" + codexFingerprintSeedPattern + "' AND " + seed + " <> '00000000-0000-0000-0000-000000000000')"
+	return "CASE WHEN platform = 'openai' AND type IN ('oauth', 'setup-token') THEN jsonb_set(" + extraExpr + ", '{codex_fingerprint_seed}', CASE WHEN " + valid + " THEN to_jsonb(" + seed + ") ELSE to_jsonb(gen_random_uuid()::text) END, true) ELSE " + extraExpr + " END"
+}
+
 // NewAccountRepository 创建账户仓储实例。
 // 这是对外暴露的构造函数，返回接口类型以便于依赖注入。
 func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache service.SchedulerCache) service.AccountRepository {
@@ -2787,7 +2795,11 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 
 	client := clientFromContext(ctx, r.client)
-	query := "UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL"
+	extraExpr := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
+		extraExpr = ensureCodexFingerprintSeedExpression(extraExpr)
+	}
+	query := "UPDATE accounts SET extra = " + extraExpr + ", updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL"
 	args := []any{string(payload), id}
 	if probeDisableRequested {
 		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax') AND type = $3 AND upstream_billing_guard_enabled = TRUE)"
@@ -3340,7 +3352,11 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			if err != nil {
 				return 0, err
 			}
-			setClauses = append(setClauses, "extra = "+extraExpr+" || $"+itoa(idx)+"::jsonb")
+			mergedExtraExpr := extraExpr + " || $" + itoa(idx) + "::jsonb"
+			if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates.Extra) {
+				mergedExtraExpr = ensureCodexFingerprintSeedExpression(mergedExtraExpr)
+			}
+			setClauses = append(setClauses, "extra = "+mergedExtraExpr)
 			args = append(args, payload)
 			idx++
 		}

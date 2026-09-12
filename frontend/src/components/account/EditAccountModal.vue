@@ -3072,7 +3072,7 @@
 
       <!-- OpenAI OAuth Codex 官方客户端限制开关 -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth' && !isSparkShadowAccount"
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token') && !isSparkShadowAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3123,6 +3123,38 @@
               ]"
             />
           </button>
+        </div>
+      </div>
+
+      <!-- OpenAI OAuth account-level Codex fingerprint convergence -->
+      <div
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token') && !isSparkShadowAccount"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">Codex 指纹收敛</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">多人共享 OAuth 账号时按账号收敛设备/会话标识；默认透传。</p>
+          </div>
+          <div class="w-44 flex-shrink-0">
+            <Select v-model="codexFingerprintMode" :options="codexFingerprintModeOptions" />
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenAI OAuth subscription tier manual override -->
+      <div
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token') && !isSparkShadowAccount"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">订阅档位（手动覆盖）</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">留空时自动识别；刷新或 429 返回真实档位时会同步更新。</p>
+          </div>
+          <div class="w-44 flex-shrink-0">
+            <Select v-model="editPlanType" :options="planTypeOptions" />
+          </div>
         </div>
       </div>
 
@@ -4378,6 +4410,21 @@ const customBaseUrl = ref('')
 
 // OpenAI 自动透传开关（OAuth/API Key）
 const openaiPassthroughEnabled = ref(false)
+const codexFingerprintMode = ref<'off' | 'device' | 'session' | 'full'>('off')
+const codexFingerprintModeOptions = [
+  { value: 'off', label: '关闭（透传，默认）' },
+  { value: 'device', label: '设备收敛' },
+  { value: 'session', label: '设备 + 会话收敛' },
+  { value: 'full', label: '完全收敛' },
+]
+const editPlanType = ref('')
+const planTypeOptions = [
+  { value: '', label: '自动识别' },
+  { value: 'plus', label: 'Plus' },
+  { value: 'pro', label: 'Pro' },
+  { value: 'free', label: 'Free' },
+  { value: 'team', label: 'Team / Business' },
+]
 const openAILongContextBillingEnabled = ref(false)
 const openAIResponsesPassthroughCompatEnabled = ref(false)
 const openAIResponsesArgumentsObjectCompatEnabled = ref(false)
@@ -5402,6 +5449,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
   const accountExtra = (newAccount.extra as Record<string, unknown>) || {}
+  const fpMode = accountExtra.codex_fingerprint_mode
+  codexFingerprintMode.value = fpMode === 'device' || fpMode === 'session' || fpMode === 'full' ? fpMode : 'off'
+  editPlanType.value = typeof credentials?.plan_type === 'string' ? credentials.plan_type.trim().toLowerCase() : ''
   cnBillingMode.value = accountExtra.cn_billing_mode === 'coding_plan' && ['kimi', 'zhipu', 'minimax'].includes(newAccount.platform)
     ? 'coding_plan'
     : 'payg'
@@ -6912,14 +6962,16 @@ const handleSubmit = async () => {
 
     // OAuth/SetupToken: persist platform-specific cache boost and isolation settings.
     if (
-      (props.account.platform === 'openai' && props.account.type === 'oauth') ||
+      (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token')) ||
       (props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token'))
     ) {
       const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
         ((props.account.credentials as Record<string, unknown>) || {})
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
-      if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+      if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token')) {
+        if (editPlanType.value) newCredentials.plan_type = editPlanType.value
+        else delete newCredentials.plan_type
         const shouldApplyModelMapping = !openaiPassthroughEnabled.value
         if (shouldApplyModelMapping) {
           const modelMapping = buildModelRestrictionMapping()
@@ -7127,7 +7179,7 @@ const handleSubmit = async () => {
       const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
-      if (props.account.type === 'oauth') {
+      if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
         const firstTokenStage = openaiOAuthFirstTokenTimeoutStageConfig.value.stages[0]
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
         newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
@@ -7313,7 +7365,9 @@ const handleSubmit = async () => {
           delete newExtra.codex_image_generation_explicit_tool_policy
       }
 
-      if (props.account.type === 'oauth') {
+      if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
+        if (codexFingerprintMode.value === 'off') delete newExtra.codex_fingerprint_mode
+        else newExtra.codex_fingerprint_mode = codexFingerprintMode.value
         if (codexCLIOnlyEnabled.value) {
           newExtra.codex_cli_only = true
         } else if (hadCodexCLIOnlyEnabled) {

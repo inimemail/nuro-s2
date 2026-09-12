@@ -1264,7 +1264,7 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 	}
 	var targetURL string
 	switch account.Type {
-	case AccountTypeOAuth:
+	case AccountTypeOAuth, AccountTypeSetupToken:
 		targetURL = chatgptCodexURL
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
@@ -1345,7 +1345,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
 	if strongIsolationEnabled {
 		// Strong isolation deliberately leaves session headers empty.
-	} else if account != nil && account.Type == AccountTypeOAuth {
+	} else if account != nil && account.IsOpenAIOAuthLike() {
 		apiKeyID := getAPIKeyIDFromContext(c)
 		if sessionResolution.SessionID != "" {
 			headers.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
@@ -1368,7 +1368,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		headers.Set(openAIWSTurnMetadataHeader, metadata)
 	}
 
-	if account != nil && account.Type == AccountTypeOAuth && !strongIsolationEnabled {
+	if account != nil && account.IsOpenAIOAuthLike() && !strongIsolationEnabled {
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
@@ -1395,7 +1395,17 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		headers.Set("user-agent", codexCLIUserAgent)
 	}
-	if account != nil && account.Type == AccountTypeOAuth {
+	if account != nil && account.IsOpenAIOAuthLike() {
+		ids := stagedCodexFingerprintIDs(c, account)
+		if ids == nil {
+			var requestHeaders http.Header
+			if c != nil && c.Request != nil {
+				requestHeaders = c.Request.Header
+			}
+			ids = resolveCodexFingerprintIDsFromRequest(account, requestHeaders)
+			stageCodexFingerprintIDs(c, ids)
+		}
+		applyCodexFingerprintHeaders(headers, ids)
 		enforceCodexIdentityHeaders(headers)
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
@@ -1421,7 +1431,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any
 	payload["type"] = "response.create"
 
 	// OAuth 默认保持 store=false，避免误依赖服务端历史。
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	if account != nil && account.IsOpenAIOAuthLike() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		payload["store"] = false
 	}
 	if account != nil && account.IsOpenAIUpstreamStrongIsolationEnabled() {
@@ -1468,7 +1478,7 @@ func (s *OpenAIGatewayService) isOpenAIWSStoreRecoveryAllowed(account *Account) 
 }
 
 func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequest(reqBody map[string]any, account *Account) bool {
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	if account != nil && account.IsOpenAIOAuthLike() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		return true
 	}
 	if len(reqBody) == 0 {
@@ -1486,7 +1496,7 @@ func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequest(reqBody map[stri
 }
 
 func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequestRaw(reqBody []byte, account *Account) bool {
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	if account != nil && account.IsOpenAIOAuthLike() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		return true
 	}
 	if len(reqBody) == 0 {
@@ -2087,7 +2097,39 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		wsPath,
 	)
 
+	// Resolve the fingerprint once per attempt and apply the same IDs to the
+	// WS payload and handshake headers. Re-stage on every failover attempt so a
+	// previous account's IDs cannot leak into the replacement account.
+	var fingerprintIDs *codexFingerprintIDs
+	if account.IsOpenAIOAuthLike() {
+		var requestHeaders http.Header
+		if c != nil && c.Request != nil {
+			requestHeaders = c.Request.Header
+		}
+		fingerprintIDs = resolveCodexFingerprintIDsFromRequest(account, requestHeaders)
+		stageCodexFingerprintIDs(c, fingerprintIDs)
+	}
 	payload := s.buildOpenAIWSCreatePayload(reqBody, account)
+	if fingerprintIDs != nil {
+		// buildOpenAIWSCreatePayload intentionally keeps nested values for the
+		// hot path; clone client_metadata before rewriting so a later failover
+		// attempt starts from the client's original payload.
+		switch metadata := payload["client_metadata"].(type) {
+		case map[string]any:
+			cloned := make(map[string]any, len(metadata))
+			for key, value := range metadata {
+				cloned[key] = value
+			}
+			payload["client_metadata"] = cloned
+		case map[string]string:
+			cloned := make(map[string]string, len(metadata))
+			for key, value := range metadata {
+				cloned[key] = value
+			}
+			payload["client_metadata"] = cloned
+		}
+		applyCodexFingerprintClientMetadata(payload, fingerprintIDs)
+	}
 	payloadStrategy, removedKeys := applyOpenAIWSRetryPayloadStrategy(payload, attempt)
 	previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
 	previousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(previousResponseID)

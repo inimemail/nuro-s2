@@ -908,6 +908,30 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth / Setup Token Codex fingerprint convergence -->
+      <div v-if="allOpenAIOAuthLike" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">Codex 指纹收敛</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">按账号收敛设备/会话标识；选择关闭可显式清除旧设置。</p>
+          </div>
+          <input v-model="enableCodexFingerprintMode" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <Select v-if="enableCodexFingerprintMode" v-model="codexFingerprintMode" :options="codexFingerprintModeOptions" />
+      </div>
+
+      <!-- OpenAI OAuth / Setup Token subscription tier override -->
+      <div v-if="allOpenAIOAuthLike" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">订阅档位（手动覆盖）</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">留空表示恢复自动识别，刷新或 429 后使用真实档位。</p>
+          </div>
+          <input v-model="enablePlanType" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        </div>
+        <Select v-if="enablePlanType" v-model="planType" :options="planTypeOptions" />
+      </div>
+
       <!-- Anthropic API Key upstream auth scheme -->
       <div v-if="allAnthropicAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1968,6 +1992,16 @@ const allOpenAIOAuth = computed(() => {
   )
 })
 
+const allOpenAIOAuthLike = computed(() => {
+  return (
+    !targetIncludesShadow.value &&
+    targetSelectedPlatforms.value.length === 1 &&
+    targetSelectedPlatforms.value[0] === 'openai' &&
+    targetSelectedTypes.value.length > 0 &&
+    targetSelectedTypes.value.every(t => t === 'oauth' || t === 'setup-token')
+  )
+})
+
 const allOpenAIAPIKey = computed(() => {
   return (
     targetSelectedPlatforms.value.length === 1 &&
@@ -2067,6 +2101,23 @@ const enableOpenAIAPIKeySafeTokenPlaceholder = ref(false)
 const enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder = ref(false)
 const enableCodexCLIOnly = ref(false)
 const enableCodexCLIOnlyAllowClaudeCode = ref(false)
+const enableCodexFingerprintMode = ref(false)
+const codexFingerprintMode = ref<'off' | 'device' | 'session' | 'full'>('off')
+const codexFingerprintModeOptions = [
+  { value: 'off', label: '关闭（透传，默认）' },
+  { value: 'device', label: '设备收敛' },
+  { value: 'session', label: '设备 + 会话收敛' },
+  { value: 'full', label: '完全收敛' },
+]
+const enablePlanType = ref(false)
+const planType = ref('')
+const planTypeOptions = [
+  { value: '', label: '自动识别' },
+  { value: 'plus', label: 'Plus' },
+  { value: 'pro', label: 'Pro' },
+  { value: 'free', label: 'Free' },
+  { value: 'team', label: 'Team / Business' },
+]
 const enableOpenAICompactMode = ref(false)
 const enableOpenAICompactModelMapping = ref(false)
 const enableAnthropicAPIKeyAuthScheme = ref(false)
@@ -2641,6 +2692,28 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.codex_cli_only = codexCLIOnlyEnabled.value
   }
 
+  if (enableCodexFingerprintMode.value) {
+    const extra = ensureExtra()
+    extra.codex_fingerprint_mode = codexFingerprintMode.value
+  } else {
+    // The toggle is tri-state at batch scope: when disabled, explicitly
+    // remove a previously configured mode instead of leaving stale
+    // convergence enabled on selected accounts.
+    const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+    updates.extra_remove_keys = [...removeKeys, 'codex_fingerprint_mode']
+  }
+
+  if (enablePlanType.value) {
+    if (planType.value) {
+      credentials.plan_type = planType.value
+      credentialsChanged = true
+    } else {
+      const removeKeys = (updates.credentials_remove_keys as string[] | undefined) ?? []
+      updates.credentials_remove_keys = [...removeKeys, 'plan_type']
+      credentialsChanged = true
+    }
+  }
+
   if (enableCodexCLIOnlyAllowClaudeCode.value) {
     const extra = ensureExtra()
     extra.codex_cli_only_allowed_clients = codexCLIOnlyAllowClaudeCodeEnabled.value ? ['claude_code'] : []
@@ -2805,6 +2878,8 @@ const handleSubmit = async () => {
     (allOpenAITextAPIKey.value && enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder.value) ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAllowClaudeCode.value ||
+    enableCodexFingerprintMode.value ||
+    enablePlanType.value ||
     enableOpenAICompactMode.value ||
     enableOpenAICompactModelMapping.value ||
     enableAnthropicAPIKeyAuthScheme.value ||
@@ -2948,6 +3023,8 @@ watch(
       enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder.value = false
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAllowClaudeCode.value = false
+      enableCodexFingerprintMode.value = false
+      enablePlanType.value = false
       enableOpenAICompactMode.value = false
       enableOpenAICompactModelMapping.value = false
       enableAnthropicAPIKeyAuthScheme.value = false
@@ -2991,6 +3068,8 @@ watch(
       resetOpenAIFirstTokenTimeoutPlaceholderGuard('apikey')
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
+      codexFingerprintMode.value = 'off'
+      planType.value = ''
       openAICompactMode.value = 'auto'
       openAICompactModelMappings.value = []
       anthropicAPIKeyAuthScheme.value = 'x_api_key'

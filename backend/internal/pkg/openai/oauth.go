@@ -33,6 +33,7 @@ const (
 	// Scopes
 	// Keep the Codex browser OAuth request aligned with the official Codex CLI.
 	DefaultScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	RefreshScopes = "openid profile email"
 	// DefaultOriginator identifies the OAuth request as the official Codex CLI family.
 	DefaultOriginator = "codex_cli_rs"
 
@@ -225,6 +226,7 @@ func OAuthClientConfigByPlatform(platform string) (clientID string, codexFlow bo
 type TokenRequest struct {
 	GrantType    string `json:"grant_type"`
 	ClientID     string `json:"client_id"`
+	Scope        string `json:"scope"`
 	Code         string `json:"code"`
 	RedirectURI  string `json:"redirect_uri"`
 	CodeVerifier string `json:"code_verifier"`
@@ -296,6 +298,7 @@ type RefreshTokenRequest struct {
 	GrantType    string `json:"grant_type"`
 	RefreshToken string `json:"refresh_token"`
 	ClientID     string `json:"client_id"`
+	Scope        string `json:"scope"`
 }
 
 // IDTokenClaims represents the claims from OpenAI ID Token
@@ -339,6 +342,7 @@ func BuildTokenRequest(code, codeVerifier, redirectURI string) *TokenRequest {
 	return &TokenRequest{
 		GrantType:    "authorization_code",
 		ClientID:     ClientID,
+		Scope:        DefaultScopes,
 		Code:         code,
 		RedirectURI:  redirectURI,
 		CodeVerifier: codeVerifier,
@@ -351,6 +355,7 @@ func BuildRefreshTokenRequest(refreshToken string) *RefreshTokenRequest {
 		GrantType:    "refresh_token",
 		RefreshToken: refreshToken,
 		ClientID:     ClientID,
+		Scope:        RefreshScopes,
 	}
 }
 
@@ -359,6 +364,9 @@ func (r *TokenRequest) ToFormData() string {
 	params := url.Values{}
 	params.Set("grant_type", r.GrantType)
 	params.Set("client_id", r.ClientID)
+	if strings.TrimSpace(r.Scope) != "" {
+		params.Set("scope", r.Scope)
+	}
 	params.Set("code", r.Code)
 	params.Set("redirect_uri", r.RedirectURI)
 	params.Set("code_verifier", r.CodeVerifier)
@@ -371,6 +379,9 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	params.Set("grant_type", r.GrantType)
 	params.Set("client_id", r.ClientID)
 	params.Set("refresh_token", r.RefreshToken)
+	if strings.TrimSpace(r.Scope) != "" {
+		params.Set("scope", r.Scope)
+	}
 	return params.Encode()
 }
 

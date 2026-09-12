@@ -51,6 +51,16 @@ func resolveCodexClientVersion(manualVersion, syncedVersion string) string {
 	return codexCLIVersion
 }
 
+func resolveCodexClientVersionSource(manualVersion, syncedVersion string) string {
+	if NormalizeCodexClientVersion(manualVersion) != "" {
+		return "manual"
+	}
+	if NormalizeCodexClientVersion(syncedVersion) != "" {
+		return "synced"
+	}
+	return "builtin"
+}
+
 func normalizeCodexBrowserUserAgent(userAgent string) string {
 	userAgent = strings.TrimSpace(userAgent)
 	if userAgent == "" || len(userAgent) > codexBrowserUserAgentMaxLen {

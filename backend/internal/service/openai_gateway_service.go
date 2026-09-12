@@ -50,7 +50,7 @@ const (
 	openaiPlatformAPIURL            = "https://api.openai.com/v1/responses"
 	openaiPlatformAPIInputTokensURL = "https://api.openai.com/v1/responses/input_tokens"
 	openaiStickySessionTTL          = time.Hour // 粘性会话TTL
-	codexCLIUserAgent               = "codex_cli_rs/0.144.1"
+	codexCLIUserAgent               = "codex_cli_rs/0.146.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -67,9 +67,13 @@ const (
 	openAIPromptCacheBoostMinBodyBytes       = 16 * 1024
 	openAIPromptCacheBoostAffinityStickyTTL  = 24 * time.Hour
 	openAIPromptCacheBoostAggressiveCacheTTL = 2 * time.Second
-	codexCLIVersion                          = "0.144.1"
+	codexCLIVersion                          = "0.146.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
+	// Do not keep an account auto-paused forever from a quota snapshot that has
+	// not been refreshed. Once it is stale, the next normal request/probe is
+	// allowed to refresh the upstream headers and heal the snapshot.
+	openAICodexAutoPauseStaleAfter = 8 * time.Hour
 	// Missing pricing must not silently turn a real OpenAI attempt into free
 	// usage. These conservative fallbacks apply only when every configured/model
 	// pricing candidate is unavailable.
@@ -78,35 +82,50 @@ const (
 	openAIOAuth401RefreshRetryKey        = "openai_oauth_401_refresh_retry"
 )
 
+// isOpenAICodexRequestAccount is intentionally narrower in scope than the
+// account business predicates. Persisted accounts must be genuine OpenAI
+// OAuth/setup-token accounts. The empty-platform OAuth case is retained only
+// for request-builder callers that construct an in-memory legacy account (for
+// example unit tests and internal adapters); it must not be used by routing,
+// scheduling, quota, token, or fingerprint decisions.
+func isOpenAICodexRequestAccount(account *Account) bool {
+	return account != nil && (account.IsOpenAIOAuthLike() ||
+		(account.Platform == "" && account.Type == AccountTypeOAuth))
+}
+
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-beta-features": true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
-	responsesLiteHeaderKey:  true,
+	"accept-language":         true,
+	"content-type":            true,
+	"conversation_id":         true,
+	"user-agent":              true,
+	"originator":              true,
+	"session_id":              true,
+	"x-codex-beta-features":   true,
+	"x-codex-installation-id": true,
+	"x-codex-turn-state":      true,
+	"x-codex-turn-metadata":   true,
+	"x-codex-window-id":       true,
+	responsesLiteHeaderKey:    true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                true,
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"openai-beta":           true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-beta-features": true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
-	responsesLiteHeaderKey:  true,
+	"accept":                  true,
+	"accept-language":         true,
+	"content-type":            true,
+	"conversation_id":         true,
+	"openai-beta":             true,
+	"user-agent":              true,
+	"originator":              true,
+	"session_id":              true,
+	"x-codex-beta-features":   true,
+	"x-codex-installation-id": true,
+	"x-codex-turn-state":      true,
+	"x-codex-turn-metadata":   true,
+	"x-codex-window-id":       true,
+	responsesLiteHeaderKey:    true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -2003,13 +2022,18 @@ func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) 
 	disabled7d := resolveAccountExtraBool(account.Extra, "auto_pause_7d_disabled")
 	threshold5h, threshold7d := resolveOpenAIQuotaAutoPauseThresholds(ctx, account)
 	now := time.Now()
+	// Codex usage headers are account-level snapshots. Only OAuth/setup-token
+	// accounts use this snapshot freshness guard; API-key accounts historically
+	// allowed explicit quota percentages without a timestamp and must retain
+	// that behavior for backwards compatibility.
+	staleGuard := account.IsOpenAIOAuthLike()
 	if !disabled5h && threshold5h > 0 {
-		if utilization, ok := resolveOpenAIQuotaUtilization(account.Extra, "5h", now); ok && utilization >= threshold5h {
+		if utilization, ok := resolveOpenAIQuotaUtilizationWithStaleness(account.Extra, "5h", now, staleGuard); ok && utilization >= threshold5h {
 			return true, openAIQuotaAutoPauseDecision{window: "5h", threshold: threshold5h, utilization: utilization}
 		}
 	}
 	if !disabled7d && threshold7d > 0 {
-		if utilization, ok := resolveOpenAIQuotaUtilization(account.Extra, "7d", now); ok && utilization >= threshold7d {
+		if utilization, ok := resolveOpenAIQuotaUtilizationWithStaleness(account.Extra, "7d", now, staleGuard); ok && utilization >= threshold7d {
 			return true, openAIQuotaAutoPauseDecision{window: "7d", threshold: threshold7d, utilization: utilization}
 		}
 	}
@@ -2108,6 +2132,10 @@ func resolveAccountExtraNumber(extra map[string]any, keys ...string) (float64, b
 // without this check an old used_percent would keep the account paused forever even
 // after the real window reset.
 func resolveOpenAIQuotaUtilization(extra map[string]any, window string, now time.Time) (float64, bool) {
+	return resolveOpenAIQuotaUtilizationWithStaleness(extra, window, now, true)
+}
+
+func resolveOpenAIQuotaUtilizationWithStaleness(extra map[string]any, window string, now time.Time, staleGuard bool) (float64, bool) {
 	usedPercent := readOpenAIQuotaUsedPercent(extra, window)
 	if usedPercent <= 0 {
 		return 0, false
@@ -2115,7 +2143,25 @@ func resolveOpenAIQuotaUtilization(extra map[string]any, window string, now time
 	if openAIQuotaWindowReset(extra, window, now) {
 		return 0, false
 	}
+	if staleGuard && openAICodexSnapshotStaleForPause(extra, now) {
+		return 0, false
+	}
 	return usedPercent / 100, true
+}
+
+func openAICodexSnapshotStaleForPause(extra map[string]any, now time.Time) bool {
+	if len(extra) == 0 {
+		return true
+	}
+	raw, ok := extra["codex_usage_updated_at"]
+	if !ok {
+		return true
+	}
+	updatedAt, err := parseTime(fmt.Sprint(raw))
+	if err != nil {
+		return true
+	}
+	return now.Sub(updatedAt) >= openAICodexAutoPauseStaleAfter
 }
 
 // openAIQuotaWindowReset reports whether the Codex usage window's reset time has
@@ -3454,7 +3500,7 @@ func splitOpenAIAdaptiveOAuthAccountLoads(items []accountWithLoad) (oauth, fallb
 	oauth = make([]accountWithLoad, 0, len(items))
 	fallback = make([]accountWithLoad, 0, len(items))
 	for _, item := range items {
-		if item.account != nil && item.account.IsOpenAIOAuth() {
+		if item.account != nil && item.account.IsOpenAIOAuthLike() {
 			oauth = append(oauth, item)
 		} else {
 			fallback = append(fallback, item)
@@ -3470,7 +3516,7 @@ func prioritizeOpenAIAdaptiveOAuthAccounts(accounts []*Account) []*Account {
 	oauth := make([]*Account, 0, len(accounts))
 	fallback := make([]*Account, 0, len(accounts))
 	for _, account := range accounts {
-		if account != nil && account.IsOpenAIOAuth() {
+		if account != nil && account.IsOpenAIOAuthLike() {
 			oauth = append(oauth, account)
 		} else {
 			fallback = append(fallback, account)
@@ -4010,6 +4056,15 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", errors.New("access_token not found in credentials")
 		}
 		return accessToken, "oauth", nil
+	case AccountTypeSetupToken:
+		if !account.IsOpenAIOAuthLike() {
+			return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
+		}
+		accessToken := account.GetOpenAIAccessToken()
+		if accessToken == "" {
+			return "", "", errors.New("access_token not found in credentials")
+		}
+		return accessToken, "oauth", nil
 	case AccountTypeAPIKey:
 		apiKey := account.GetOpenAIApiKey()
 		if apiKey == "" {
@@ -4160,7 +4215,7 @@ func (s *OpenAIGatewayService) tryAutoConsumeOpenAICodexResetCredit(ctx context.
 	if IsOpenAIHealthProbeRequestContext(ctx) {
 		return false
 	}
-	if s == nil || account == nil || !account.IsOpenAIOAuth() || account.Platform != PlatformOpenAI {
+	if s == nil || account == nil || !account.IsOpenAIOAuthLike() || account.Platform != PlatformOpenAI {
 		return false
 	}
 	if account.IsShadow() {
@@ -4352,7 +4407,7 @@ func (s *OpenAIGatewayService) fetchOpenAICodexResetCreditUpdates(ctx context.Co
 }
 
 func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account *Account, method, url string, body io.Reader) (*http.Response, error) {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	accessToken, _, err := s.GetAccessToken(ctx, account)
@@ -4444,7 +4499,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		})
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
-	if account != nil && account.IsOpenAIOAuth() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
+	if account != nil && account.IsOpenAIOAuthLike() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
 		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
 		if liteErr != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, liteErr.Error(), "")
@@ -4522,7 +4577,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
 	if shouldStripOpenAIResponsesInputNamespaces(account, wsDecision.Transport, passthroughEnabled) {
-		keepToolCallNamespaces := account.IsOpenAIOAuth() && !compactPath && !shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath)
+		keepToolCallNamespaces := account.IsOpenAIOAuthLike() && !compactPath && !shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath)
 		strippedBody, stripErr := stripOpenAIResponsesInputNamespaces(body, keepToolCallNamespaces)
 		if stripErr != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, stripErr.Error(), "")
@@ -4822,7 +4877,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	if account.Type == AccountTypeOAuth {
+	if account.IsOpenAIOAuthLike() {
 		codexResult := codexTransformResult{}
 		if compatMessagesBridge {
 			codexResult = applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
@@ -4852,7 +4907,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			promptCacheKey = codexResult.PromptCacheKey
 		}
 	}
-	if isCompactRequest && account.Type == AccountTypeOAuth && normalizeOpenAICodexCompactReasoningEffortMap(reqBody, upstreamModel) {
+	if isCompactRequest && account.IsOpenAIOAuthLike() && normalizeOpenAICodexCompactReasoningEffortMap(reqBody, upstreamModel) {
 		bodyModified = true
 		markPatchSet("reasoning.effort", "xhigh")
 	}
@@ -5685,7 +5740,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Extract and save Codex usage snapshot from response headers (for real OAuth accounts).
-		if account.Type == AccountTypeOAuth && !account.IsShadow() {
+		if account.IsOpenAIOAuthLike() && !account.IsShadow() {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 			}
@@ -5737,7 +5792,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	originalBody := body
-	if account != nil && account.IsOpenAIOAuth() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
+	if account != nil && account.IsOpenAIOAuthLike() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
 		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
 		if liteErr != nil {
 			return nil, liteErr
@@ -5759,7 +5814,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 	}
 
-	if account != nil && account.Type == AccountTypeOAuth {
+	if account != nil && account.IsOpenAIOAuthLike() {
 		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
 			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
 			if setErr != nil {
@@ -6229,9 +6284,22 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	if account != nil {
+		var headers http.Header
+		if c != nil && c.Request != nil {
+			headers = c.Request.Header
+		}
+		ids := resolveCodexFingerprintIDsFromRequest(account, headers)
+		stageCodexFingerprintIDs(c, ids)
+		if rewritten, changed, err := applyCodexFingerprintClientMetadataRaw(body, ids); err != nil {
+			return nil, err
+		} else if changed {
+			body = rewritten
+		}
+	}
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
-	case AccountTypeOAuth:
+	case AccountTypeOAuth, AccountTypeSetupToken:
 		targetURL = chatgptCodexURL
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
@@ -6299,7 +6367,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
-	if account.Type == AccountTypeOAuth {
+	if isOpenAICodexRequestAccount(account) {
 		credentialAccount := account
 		if account.IsShadow() {
 			resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -6362,7 +6430,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	s.overrideBrowserUserAgent(ctx, account, req)
 
 	// 终态收口：originator 必须与最终 User-Agent 首段配套且为官方身份，否则上游可能拒绝。
-	if account.Type == AccountTypeOAuth {
+	if isOpenAICodexRequestAccount(account) {
+		applyStagedCodexFingerprintHeaders(c, account, req.Header)
 		enforceCodexIdentityHeaders(req.Header)
 	}
 	if s.settingService != nil {
@@ -8376,10 +8445,23 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	if account != nil {
+		var headers http.Header
+		if c != nil && c.Request != nil {
+			headers = c.Request.Header
+		}
+		ids := resolveCodexFingerprintIDsFromRequest(account, headers)
+		stageCodexFingerprintIDs(c, ids)
+		if rewritten, changed, err := applyCodexFingerprintClientMetadataRaw(body, ids); err != nil {
+			return nil, err
+		} else if changed {
+			body = rewritten
+		}
+	}
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
-	case AccountTypeOAuth:
+	case AccountTypeOAuth, AccountTypeSetupToken:
 		// OAuth accounts use ChatGPT internal API
 		targetURL = chatgptCodexURL
 	case AccountTypeAPIKey:
@@ -8433,7 +8515,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
-	if account.Type == AccountTypeOAuth {
+	if isOpenAICodexRequestAccount(account) {
 		credentialAccount := account
 		if account.IsShadow() {
 			resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -8460,7 +8542,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
-	if account.Type == AccountTypeOAuth {
+	if isOpenAICodexRequestAccount(account) {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
@@ -8511,7 +8593,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	s.overrideBrowserUserAgent(ctx, account, req)
 
 	// 终态收口：originator 必须与最终 User-Agent 首段配套且为官方身份，否则上游可能拒绝。
-	if account.Type == AccountTypeOAuth {
+	if isOpenAICodexRequestAccount(account) {
+		applyStagedCodexFingerprintHeaders(c, account, req.Header)
 		enforceCodexIdentityHeaders(req.Header)
 	}
 	if s.settingService != nil {
@@ -10220,7 +10303,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// This heuristic is NOT applied to API-key accounts to avoid false
 	// positives on JSON responses that coincidentally contain "data:" or
 	// "event:" in their text content.
-	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
+	if account.IsOpenAIOAuthLike() && bodyLooksLikeSSE {
 		return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 	}
 

@@ -1557,7 +1557,7 @@ func splitOpenAIAdaptiveOAuthCandidates(candidates []openAIAccountCandidateScore
 	oauth = make([]openAIAccountCandidateScore, 0, len(candidates))
 	fallback = make([]openAIAccountCandidateScore, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.account != nil && candidate.account.IsOpenAIOAuth() {
+		if candidate.account != nil && candidate.account.IsOpenAIOAuthLike() {
 			oauth = append(oauth, candidate)
 		} else {
 			fallback = append(fallback, candidate)
@@ -2655,7 +2655,7 @@ func openAITextRequestModelSupported(account *Account, req OpenAIAccountSchedule
 	requestPlatform := strings.TrimSpace(req.RequestPlatform)
 	openAITextPlatform := requestPlatform == "" || requestPlatform == PlatformOpenAI
 	textPassthrough := account.IsOpenAI() &&
-		(account.IsOpenAIOAuth() || account.IsOpenAIApiKey()) &&
+		(account.IsOpenAIOAuthLike() || account.IsOpenAIApiKey()) &&
 		account.IsOpenAIPassthroughEnabled() &&
 		!account.IsShadow() && !account.IsImagePoolMode() &&
 		openAITextPlatform &&

@@ -66,3 +66,21 @@ func TestBuildAuthorizationURLForPlatform_OpenAI(t *testing.T) {
 		t.Fatalf("scope mismatch: got=%q want=%q", got, DefaultScopes)
 	}
 }
+
+func TestOAuthTokenFormsIncludeCompatibleScopes(t *testing.T) {
+	authCodeForm, err := url.ParseQuery(BuildTokenRequest("code", "verifier", "").ToFormData())
+	if err != nil {
+		t.Fatalf("parse authorization-code form: %v", err)
+	}
+	if got := authCodeForm.Get("scope"); got != DefaultScopes {
+		t.Fatalf("authorization-code scope = %q, want %q", got, DefaultScopes)
+	}
+
+	refreshForm, err := url.ParseQuery(BuildRefreshTokenRequest("refresh").ToFormData())
+	if err != nil {
+		t.Fatalf("parse refresh form: %v", err)
+	}
+	if got := refreshForm.Get("scope"); got != RefreshScopes {
+		t.Fatalf("refresh scope = %q, want %q", got, RefreshScopes)
+	}
+}

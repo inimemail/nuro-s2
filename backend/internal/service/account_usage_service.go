@@ -758,14 +758,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		return usage, nil
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
 		if usage.FiveHour == nil {
 			usage.FiveHour = &UsageProgress{Utilization: 0}
 		}
 		usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
 		if usage.SevenDay == nil {
 			usage.SevenDay = &UsageProgress{Utilization: 0}
 		}
@@ -776,7 +776,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 }
 
 func shouldRefreshOpenAICodexResetCredits(account *Account, now time.Time) bool {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return false
 	}
 	if account.Extra == nil {
@@ -886,7 +886,7 @@ func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now ti
 }
 
 func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return false
 	}
 	if !account.IsShadow() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
@@ -1194,7 +1194,7 @@ func (s *AccountUsageService) QueryOpenAICodexResetCreditUsage(ctx context.Conte
 	if err != nil {
 		return nil, infraerrors.InternalServer("OPENAI_CODEX_USAGE_ACCOUNT_LOOKUP_FAILED", fmt.Sprintf("get account failed: %v", err))
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, infraerrors.BadRequest("OPENAI_CODEX_USAGE_UNSUPPORTED_ACCOUNT", "account does not support OpenAI Codex reset credits")
 	}
 
@@ -1232,7 +1232,7 @@ func (s *AccountUsageService) SendOpenAICodexInvite(ctx context.Context, account
 	if err != nil {
 		return nil, infraerrors.InternalServer("OPENAI_CODEX_INVITE_ACCOUNT_LOOKUP_FAILED", fmt.Sprintf("get account failed: %v", err))
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_UNSUPPORTED_ACCOUNT", "account does not support OpenAI Codex invites")
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -1382,7 +1382,7 @@ func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	if account.IsShadow() {
@@ -1436,13 +1436,13 @@ func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context,
 	now := time.Now()
 	usage := buildOpenAIUsageFromExtra(account, now)
 	if s.usageLogRepo != nil {
-		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
 			if usage.FiveHour == nil {
 				usage.FiveHour = &UsageProgress{Utilization: 0}
 			}
 			usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 		}
-		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
 			if usage.SevenDay == nil {
 				usage.SevenDay = &UsageProgress{Utilization: 0}
 			}
@@ -1457,7 +1457,7 @@ func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, a
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	if account.IsShadow() {
@@ -1487,13 +1487,13 @@ func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, a
 	now := time.Now()
 	usage := buildOpenAIUsageFromExtra(account, now)
 	if s.usageLogRepo != nil {
-		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
 			if usage.FiveHour == nil {
 				usage.FiveHour = &UsageProgress{Utilization: 0}
 			}
 			usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 		}
-		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
 			if usage.SevenDay == nil {
 				usage.SevenDay = &UsageProgress{Utilization: 0}
 			}
@@ -1504,7 +1504,7 @@ func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, a
 }
 
 func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *Account, method, url string, body io.Reader) (*http.Response, error) {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	if account.IsShadow() {
@@ -1599,7 +1599,7 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 }
 
 func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account *Account) (string, error) {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return "", fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	if account.IsOpenAIAgentIdentity() {
@@ -1750,7 +1750,7 @@ func openAICodexInviteLocalizeUpstreamError(message string) string {
 }
 
 func openAIWhamChatGPTAccountID(account *Account) (string, error) {
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return "", fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
 	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
@@ -2232,6 +2232,20 @@ func (s *AccountUsageService) addWindowStats(ctx context.Context, account *Accou
 	if usage.FiveHour != nil {
 		usage.FiveHour.WindowStats = windowStats
 	}
+	// Codex exposes independent 5h and 7d windows. Keep the 7d request/token/
+	// cost counters independent instead of reusing the 5h aggregate.
+	if usage.SevenDay != nil {
+		start := time.Now().Add(-7 * 24 * time.Hour)
+		if usage.SevenDay.ResetsAt != nil {
+			candidate := usage.SevenDay.ResetsAt.Add(-7 * 24 * time.Hour)
+			if candidate.Before(time.Now()) {
+				start = candidate
+			}
+		}
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, start); err == nil {
+			usage.SevenDay.WindowStats = &WindowStats{Requests: stats.Requests, Tokens: stats.Tokens, Cost: stats.Cost, StandardCost: stats.StandardCost, UserCost: stats.UserCost}
+		}
+	}
 }
 
 // GetTodayStats 获取账号今日统计
@@ -2390,6 +2404,17 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	}
 
 	return progress
+}
+
+// codexWindowStatsStart keeps local billing statistics aligned with the
+// upstream window reset. A five-hour or seven-day snapshot can be fetched at
+// any point in that window; using resetAt-window avoids mixing events from a
+// previous window into the current quota display.
+func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration, now time.Time) time.Time {
+	if progress != nil && progress.ResetsAt != nil && now.Before(*progress.ResetsAt) {
+		return progress.ResetsAt.Add(-fallbackWindow)
+	}
+	return now.Add(-fallbackWindow)
 }
 
 func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {

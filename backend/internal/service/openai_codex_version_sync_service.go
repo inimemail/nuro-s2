@@ -98,6 +98,14 @@ func (s *OpenAICodexVersionSyncService) Stop() {
 func (s *OpenAICodexVersionSyncService) runInitial() {
 	ctx, cancel := context.WithTimeout(s.lifecycleCtx, openAICodexVersionSyncTimeout)
 	defer cancel()
+	// Always hydrate the runtime identity from the persisted synced value on
+	// startup. A recent sync may skip the network fetch, but must not leave the
+	// gateway serving the compile-time fallback until the next refresh tick.
+	if s.settingService != nil {
+		if err := s.settingService.RefreshOpenAICodexIdentityRuntime(ctx); err != nil {
+			slog.Warn("openai_codex_identity_runtime_refresh_failed", "error", err)
+		}
+	}
 	if !s.autoSyncEnabled(ctx) || s.syncedWithinInterval(ctx) {
 		return
 	}
@@ -161,7 +169,12 @@ func (s *OpenAICodexVersionSyncService) fetchLatestStableVersion(ctx context.Con
 // deployment's current outbound headers until an administrator opts in.
 func (s *OpenAICodexVersionSyncService) autoSyncEnabled(ctx context.Context) bool {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAICodexVersionAutoSyncEnabled)
-	return err == nil && strings.TrimSpace(value) == "true"
+	// Missing/empty settings retain the upstream default of enabled. Only an
+	// explicit false disables background release synchronization.
+	if err != nil || strings.TrimSpace(value) == "" {
+		return true
+	}
+	return strings.TrimSpace(value) == "true"
 }
 
 func (s *OpenAICodexVersionSyncService) currentSyncedVersion(ctx context.Context) string {

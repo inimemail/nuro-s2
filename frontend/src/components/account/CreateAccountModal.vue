@@ -3987,6 +3987,32 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth / Setup Token account-level Codex fingerprint convergence -->
+      <div v-if="isOpenAIOAuthLikeCreate" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">Codex 指纹收敛</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">多人共享 OAuth 账号时按账号收敛设备/会话标识；默认透传。</p>
+          </div>
+          <div class="w-44 flex-shrink-0">
+            <Select v-model="codexFingerprintMode" :options="codexFingerprintModeOptions" />
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenAI OAuth / Setup Token subscription tier manual override -->
+      <div v-if="isOpenAIOAuthLikeCreate" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">订阅档位（手动覆盖）</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">留空时自动识别；刷新或 429 返回真实档位时会同步更新。</p>
+          </div>
+          <div class="w-44 flex-shrink-0">
+            <Select v-model="createPlanType" :options="planTypeOptions" />
+          </div>
+        </div>
+      </div>
+
       <!-- OpenAI Compact 能力配置 -->
       <div
         v-if="isOpenAIRequestPathCreate"
@@ -5014,6 +5040,13 @@ const isOpenAIOAuthCreate = computed(() =>
   accountCategory.value === 'oauth-based' &&
   addMethod.value === 'oauth'
 )
+// Setup-token shares the Codex protocol for account identity and subscription
+// metadata; OAuth-only controls continue using isOpenAIOAuthCreate.
+const isOpenAIOAuthLikeCreate = computed(() =>
+  form.platform === 'openai' &&
+  accountCategory.value === 'oauth-based' &&
+  (addMethod.value === 'oauth' || addMethod.value === 'setup-token')
+)
 const isOpenAIAPIKeyCreate = computed(() =>
   form.platform === 'openai' &&
   accountCategory.value === 'apikey'
@@ -5223,6 +5256,21 @@ watch(openaiAPIKeyFirstTokenTimeoutStageConfig, (config) => {
 }, { deep: true, immediate: true })
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
+const codexFingerprintMode = ref<'off' | 'device' | 'session' | 'full'>('off')
+const codexFingerprintModeOptions = [
+  { value: 'off', label: '关闭（透传，默认）' },
+  { value: 'device', label: '设备收敛' },
+  { value: 'session', label: '设备 + 会话收敛' },
+  { value: 'full', label: '完全收敛' },
+]
+const createPlanType = ref('')
+const planTypeOptions = [
+  { value: '', label: '自动识别' },
+  { value: 'plus', label: 'Plus' },
+  { value: 'pro', label: 'Pro' },
+  { value: 'free', label: 'Free' },
+  { value: 'team', label: 'Team / Business' },
+]
 const anthropicPassthroughEnabled = ref(false)
 const anthropicKiroEnabled = ref(false)
 const anthropicAPIKeyAuthScheme = ref<'x_api_key' | 'authorization_bearer'>('x_api_key')
@@ -6330,6 +6378,8 @@ const resetForm = () => {
   autoPauseOnExpired.value = true
   upstreamBillingAutoProbeEnabled.value = true
   openaiPassthroughEnabled.value = false
+  codexFingerprintMode.value = 'off'
+  createPlanType.value = ''
   openAILongContextBillingEnabled.value = false
   openAILongContextBillingTouched.value = false
   openAIResponsesPassthroughCompatEnabled.value = false
@@ -6582,6 +6632,11 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only
   }
+  if (isOpenAIOAuthLikeCreate.value && codexFingerprintMode.value !== 'off') {
+    extra.codex_fingerprint_mode = codexFingerprintMode.value
+  } else {
+    delete extra.codex_fingerprint_mode
+  }
   if (
     isOpenAIOAuthCreate.value &&
     codexCLIOnlyEnabled.value &&
@@ -6629,6 +6684,12 @@ const buildOpenAICodexImportExtra = (): Record<string, unknown> | undefined => {
     delete extra.openai_long_context_billing_enabled
   }
   return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+const applyOpenAIPlanTypeOverride = (credentials: Record<string, unknown>) => {
+  if (isOpenAIOAuthLikeCreate.value && createPlanType.value) {
+    credentials.plan_type = createPlanType.value
+  }
 }
 
 const applyPlatformCacheBoostAndIsolationCredentials = (credentials: Record<string, unknown>) => {
@@ -7391,6 +7452,7 @@ const handleOpenAIExchange = async (authCode: string) => {
     if (!tokenInfo) return
 
     const credentials = oauthClient.buildCredentials(tokenInfo)
+    applyOpenAIPlanTypeOverride(credentials)
     const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
     const extra = buildOpenAIExtra(oauthExtra)
     const shouldCreateOpenAI = form.platform === 'openai'
@@ -7466,6 +7528,8 @@ const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | nul
   if (compactModelMapping) {
     credentials.compact_model_mapping = compactModelMapping
   }
+
+  applyOpenAIPlanTypeOverride(credentials)
 
   if (!applyTempUnschedConfig(credentials)) {
     return null
@@ -7628,6 +7692,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
         }
 
         const credentials = oauthClient.buildCredentials(tokenInfo)
+        applyOpenAIPlanTypeOverride(credentials)
         if (clientId) {
           credentials.client_id = clientId
         }

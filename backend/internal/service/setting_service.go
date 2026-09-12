@@ -3689,7 +3689,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpenAICodexUserAgent:                                  "",
 		SettingKeyOpenAICodexClientVersion:                              "",
 		SettingKeyOpenAICodexClientVersionSynced:                        "",
-		SettingKeyOpenAICodexVersionAutoSyncEnabled:                     "false",
+		SettingKeyOpenAICodexVersionAutoSyncEnabled:                     "true",
 		SettingKeyOpenAICodexRoutingHintEnabled:                         "false",
 		SettingKeyMinCodexVersion:                                       "",
 		SettingKeyMaxCodexVersion:                                       "",
@@ -4349,7 +4349,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
 	result.OpenAICodexClientVersion = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersion])
 	result.OpenAICodexClientVersionSynced = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersionSynced])
-	result.OpenAICodexVersionAutoSyncEnabled = settings[SettingKeyOpenAICodexVersionAutoSyncEnabled] == "true"
+	result.OpenAICodexClientVersionEffective = resolveCodexClientVersion(result.OpenAICodexClientVersion, result.OpenAICodexClientVersionSynced)
+	result.OpenAICodexClientVersionSource = resolveCodexClientVersionSource(result.OpenAICodexClientVersion, result.OpenAICodexClientVersionSynced)
+	if raw, ok := settings[SettingKeyOpenAICodexVersionAutoSyncEnabled]; ok && strings.TrimSpace(raw) != "" {
+		result.OpenAICodexVersionAutoSyncEnabled = raw == "true"
+	} else {
+		result.OpenAICodexVersionAutoSyncEnabled = true
+	}
 	result.OpenAICodexRoutingHintEnabled = settings[SettingKeyOpenAICodexRoutingHintEnabled] == "true"
 	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"
 	result.MinCodexVersion = strings.TrimSpace(settings[SettingKeyMinCodexVersion])

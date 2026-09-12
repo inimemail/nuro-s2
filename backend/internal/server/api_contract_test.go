@@ -1443,7 +1443,7 @@ func currentAdminSettingsContractAdditions() map[string]any {
 		"openai_codex_client_version":                    "",
 		"openai_codex_client_version_synced":             "",
 		"openai_codex_routing_hint_enabled":              false,
-		"openai_codex_version_auto_sync_enabled":         false,
+		"openai_codex_version_auto_sync_enabled":         true,
 		"openai_health_probe_max_account_switches":       float64(4),
 		"openai_health_probe_recent_success_enabled":     true,
 		"openai_health_probe_recent_success_ttl_seconds": float64(60),
