@@ -4857,6 +4857,146 @@ func TestBuildOpenAIWeightedSelectionOrder_HandlesInvalidScores(t *testing.T) {
 	require.Len(t, seen, len(candidates))
 }
 
+func TestOpenAIAdaptiveRecoveryDoesNotWaitForHealthCooldown(t *testing.T) {
+	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
+		t.Run(strategy, func(t *testing.T) {
+			now := time.Now()
+			pool := []openAIAccountCandidateScore{
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 1}, 0.5, now.Add(time.Hour)), sampleCount: 3, lastUpdated: now, errorUpdated: now},
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 2}, 0.5, now.Add(time.Hour)), sampleCount: 3, errorRate: 1, lastUpdated: now, errorUpdated: now},
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+			req := OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy}
+			for turn := 1; turn <= 20; turn++ {
+				ordered := scheduler.buildHealthFirstSelectionOrder(pool, req)
+				filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered, strategy, now)
+				require.NotEmpty(t, filtered)
+				want := int64(1)
+				if turn == 1 || turn%10 == 0 {
+					want = 2
+				}
+				require.Equal(t, want, filtered[0].account.ID, "turn %d", turn)
+			}
+		})
+	}
+}
+
+func TestOpenAIAdaptiveRecoverySurvivesUnknownPreferredMultiplier(t *testing.T) {
+	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
+		t.Run(strategy, func(t *testing.T) {
+			now := time.Now()
+			pool := []openAIAccountCandidateScore{
+				{account: &Account{ID: 1}, sampleCount: 3},
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 2}, 0.5, now.Add(time.Hour)), sampleCount: 3, errorRate: 1},
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+			ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy})
+			require.Equal(t, int64(2), ordered[0].account.ID)
+			filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered, strategy, now)
+			require.NotEmpty(t, filtered)
+			require.Equal(t, int64(2), filtered[0].account.ID)
+		})
+	}
+}
+
+func TestOpenAIAdaptiveRecoveryRespectsDeclaredCostCeiling(t *testing.T) {
+	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
+		for _, ceiling := range []float64{0, 0.25} {
+			t.Run(fmt.Sprintf("%s/%g", strategy, ceiling), func(t *testing.T) {
+				now := time.Now()
+				pool := []openAIAccountCandidateScore{
+					{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 1}, ceiling, now.Add(time.Hour)), sampleCount: 3},
+					{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 2}, 0.5, now.Add(time.Hour)), sampleCount: 3, errorRate: 1},
+				}
+				scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+				ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy})
+				require.Equal(t, int64(1), ordered[0].account.ID)
+				filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier([]openAIAccountCandidateScore{pool[1], pool[0]}, strategy, now)
+				require.Len(t, filtered, 1)
+				require.Equal(t, int64(1), filtered[0].account.ID)
+			})
+		}
+	}
+}
+
+func TestOpenAIAdaptiveCoverageRotatesWithoutWaitingForThreeSamples(t *testing.T) {
+	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
+		t.Run(strategy, func(t *testing.T) {
+			now := time.Now()
+			pool := []openAIAccountCandidateScore{
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 1, Priority: 1}, 0.5, now.Add(time.Hour)), sampleCount: 3},
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 2, Priority: 5}, 0.5, now.Add(time.Hour))},
+				{account: withOpenAIUpstreamProbeMultiplier(&Account{ID: 3, Priority: 5}, 0.5, now.Add(time.Hour))},
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+			req := OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy}
+			for turn := 1; turn <= 10; turn++ {
+				ordered := scheduler.buildHealthFirstSelectionOrder(pool, req)
+				want := int64(1)
+				if turn == 1 {
+					want = 2
+				} else if turn == 10 {
+					want = 3
+				}
+				require.Equal(t, want, ordered[0].account.ID, "turn %d", turn)
+				if turn == 1 {
+					pool[1].sampleCount = 1
+				}
+			}
+		})
+	}
+}
+
+func TestAdaptiveSelectionFiltersConfiguredSoftCooldownBeforeHealthScoring(t *testing.T) {
+	service := &OpenAIGatewayService{cfg: &config.Config{}}
+	cooling := &Account{
+		ID: 9901, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	healthy := &Account{
+		ID: 9902, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	service.openaiPoolSoftCooldownUntil.Store(cooling.ID, time.Now().Add(time.Minute))
+	all := []accountWithLoad{
+		{account: cooling, loadInfo: &AccountLoadInfo{AccountID: cooling.ID}},
+		{account: healthy, loadInfo: &AccountLoadInfo{AccountID: healthy.ID}},
+	}
+	filtered := service.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(
+		context.Background(), all, all, "gpt-5.1", AccountSchedulingStrategyHealthFirst, defaultAdaptiveTTFTSwitchPolicy(),
+	)
+
+	require.Len(t, filtered, 1)
+	require.Equal(t, healthy.ID, filtered[0].account.ID)
+	require.True(t, service.isOpenAIPoolAccountSoftCooling(cooling))
+}
+
+func TestAdaptiveHealthDoesNotCreateSoftCooldownFromHealthSamples(t *testing.T) {
+	service := &OpenAIGatewayService{cfg: &config.Config{}}
+	stats := newOpenAIAccountRuntimeStats()
+	slow := 60_000
+	for i := 0; i < int(accountHealthUnknownMinSamples); i++ {
+		stats.reportForRequest(9903, false, &slow, "")
+	}
+	account := &Account{
+		ID: 9903, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	scheduler := &defaultOpenAIAccountScheduler{service: service, stats: stats}
+
+	ordered := scheduler.buildHealthFirstSelectionOrder(
+		[]openAIAccountCandidateScore{{account: account, loadInfo: &AccountLoadInfo{AccountID: account.ID}}},
+		OpenAIAccountScheduleRequest{AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst, RequestedModel: "gpt-5.1"},
+	)
+
+	require.Len(t, ordered, 1)
+	_, cooling := service.openaiPoolSoftCooldownUntil.Load(account.ID)
+	require.False(t, cooling)
+}
+
 func TestOpenAISelectionRNG_SeedZeroStillWorks(t *testing.T) {
 	rng := newOpenAISelectionRNG(0)
 	v1 := rng.nextUint64()

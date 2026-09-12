@@ -53,6 +53,29 @@ func TestOpenAIWaitFallbackStrategyKeepsStrictPriorityAndOptInHealthFirst(t *tes
 	require.Equal(t, healthySecondary.ID, healthFirst[0].ID, "health_first may cross priority for a materially healthier account")
 }
 
+func TestOpenAIHealthOrderingFiltersSingleSoftCoolingCandidate(t *testing.T) {
+	service := &OpenAIGatewayService{cfg: &config.Config{}}
+	cooling := &Account{
+		ID: 88013, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	service.openaiPoolSoftCooldownUntil.Store(cooling.ID, time.Now().Add(time.Minute))
+
+	ordered := service.orderOpenAIAvailableCandidatesForStrategy(
+		[]accountWithLoad{{account: cooling, loadInfo: &AccountLoadInfo{AccountID: cooling.ID}}},
+		"gpt-5.1", config.GatewaySchedulingConfig{}, true, AccountSchedulingStrategyHealthFirst, nil, 0,
+	)
+	require.Empty(t, ordered)
+	require.True(t, service.isOpenAIPoolAccountSoftCooling(cooling))
+
+	waitOrdered := service.orderOpenAIWaitCandidatesForStrategyWithStrategy(
+		context.Background(), []*Account{cooling}, "gpt-5.1", false, config.GatewaySchedulingConfig{}, true,
+		AccountSchedulingStrategyHealthFirst, nil, 0,
+	)
+	require.Empty(t, waitOrdered)
+}
+
 func TestOpenAILegacyLoadStrategyPropagatesHealthCostBalanced(t *testing.T) {
 	groupID := int64(8802)
 	stats := newOpenAIAccountRuntimeStats()

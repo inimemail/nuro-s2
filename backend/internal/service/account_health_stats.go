@@ -468,6 +468,15 @@ func adaptiveHighestMultiplier(profiles []adaptiveAccountHealthProfile, indexes 
 	return highest
 }
 
+func adaptiveHasDeclaredMultiplier(profiles []adaptiveAccountHealthProfile, indexes []int, now time.Time) bool {
+	for _, index := range indexes {
+		if _, declared := accountEffectiveUpstreamMultiplier(profiles[index].account, now); declared {
+			return true
+		}
+	}
+	return false
+}
+
 func adaptiveLatencyLess(aP50, aP90 float64, aKnown bool, bP50, bP90 float64, bKnown bool) (bool, bool) {
 	if !aKnown || !bKnown {
 		return false, false
@@ -797,6 +806,18 @@ func accountHealthHasKnownSamples(sampleCount int64, ttftSampleCount int64, erro
 		return true
 	}
 	return sampleCount >= accountHealthUnknownMinSamples
+}
+
+// accountHealthCoverageSamples is deliberately separate from
+// accountHealthHasKnownSamples. A request sample is enough to give an account
+// coverage credit, while TTFT trust still depends on real first-token samples.
+// Coverage must not be blocked just because a route has not produced a TTFT
+// measurement yet.
+func accountHealthCoverageSamples(sampleCount, ttftSampleCount int64) int64 {
+	if ttftSampleCount > sampleCount {
+		return ttftSampleCount
+	}
+	return sampleCount
 }
 
 func bestAccountHealthScore(candidates []accountHealthCandidate) float64 {

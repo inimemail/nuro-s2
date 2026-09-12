@@ -300,22 +300,10 @@ type openAIAccountRuntimeStats struct {
 	selectionCounter   atomic.Uint64
 	unknownExploreAt   sync.Map
 	degradedRecoveryAt sync.Map
-	healthFirstCounter sync.Map
-	healthFirstProbeAt sync.Map
 	warmingUpCounter   sync.Map
-	warmingUpAt        sync.Map
 	errorResetAt       sync.Map
 	sharedMu           sync.RWMutex
 	shared             *openAIAccountHealthSharedState
-}
-
-func (s *openAIAccountRuntimeStats) healthFirstProbeTurn(groupID int64) bool {
-	if s == nil || accountHealthUnknownExploreEvery == 0 {
-		return false
-	}
-	value, _ := s.healthFirstCounter.LoadOrStore(groupID, &atomic.Uint64{})
-	counter, _ := value.(*atomic.Uint64)
-	return counter != nil && counter.Add(1)%accountHealthUnknownExploreEvery == 0
 }
 
 func (s *openAIAccountRuntimeStats) warmingUpTurn(groupID int64) bool {
@@ -324,49 +312,13 @@ func (s *openAIAccountRuntimeStats) warmingUpTurn(groupID int64) bool {
 	}
 	value, _ := s.warmingUpCounter.LoadOrStore(groupID, &atomic.Uint64{})
 	counter, _ := value.(*atomic.Uint64)
-	return counter != nil && counter.Add(1)%10 == 0
-}
-
-func (s *openAIAccountRuntimeStats) warmingUpDue(groupID, accountID int64, now time.Time) bool {
-	if s == nil || accountID <= 0 {
+	if counter == nil {
 		return false
 	}
-	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
-	if raw, ok := s.warmingUpAt.Load(key); ok {
-		lastNano, _ := raw.(int64)
-		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < time.Minute {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *openAIAccountRuntimeStats) markWarmingUp(groupID, accountID int64, now time.Time) {
-	if s == nil || accountID <= 0 {
-		return
-	}
-	s.warmingUpAt.Store(accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}, now.UnixNano())
-}
-
-func (s *openAIAccountRuntimeStats) healthFirstProbeDue(groupID, accountID int64, now time.Time, delay time.Duration) bool {
-	if s == nil || accountID <= 0 {
-		return false
-	}
-	key := accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}
-	if raw, ok := s.healthFirstProbeAt.Load(key); ok {
-		lastNano, _ := raw.(int64)
-		if lastNano > 0 && now.Sub(time.Unix(0, lastNano)) < delay {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *openAIAccountRuntimeStats) markHealthFirstProbe(groupID, accountID int64, now time.Time) {
-	if s == nil || accountID <= 0 {
-		return
-	}
-	s.healthFirstProbeAt.Store(accountHealthGroupProbeKey{groupID: groupID, accountID: accountID}, now.UnixNano())
+	turn := counter.Add(1)
+	// Give a cold pool an immediate coverage turn, then reserve roughly 10%
+	// of subsequent adaptive selections for under-sampled accounts.
+	return turn == 1 || turn%10 == 0
 }
 
 type openAIAccountRuntimeStatsKey struct {
@@ -1550,6 +1502,7 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []ope
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
 	maxRate := adaptiveHighestMultiplier(profiles, indexes, now)
+	maxRateKnown := adaptiveHasDeclaredMultiplier(profiles, indexes, now)
 	for _, index := range indexes {
 		if ordered[index].account != nil {
 			allowed[ordered[index].account.ID] = struct{}{}
@@ -1559,7 +1512,7 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []ope
 	// upstream cost layer. Higher-cost fallbacks remain available only to the
 	// later queue-overflow path.
 	if ordered[0].account != nil {
-		if rate, known := accountEffectiveUpstreamMultiplier(ordered[0].account, now); known && rate <= maxRate {
+		if rate, known := accountEffectiveUpstreamMultiplier(ordered[0].account, now); known && (!maxRateKnown || rate <= maxRate) {
 			allowed[ordered[0].account.ID] = struct{}{}
 		}
 	}
@@ -1596,19 +1549,25 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	for _, index := range preferredIndexes {
 		preferred[ordered[index].account.ID] = struct{}{}
 	}
+	coverageTurn := false
+	if s != nil && s.stats != nil && req.StickyAccountID <= 0 {
+		coverageTurn = s.stats.warmingUpTurn(groupID)
+	}
 	// Unknown accounts are optimistically eligible. Give them a direct,
-	// per-account first-use turn instead of a group-wide every-N probe. This
-	// keeps large pools from starving low-cost accounts. Health-first retains
-	// an active affinity only inside its policy cost band.
+	// bounded coverage turn so large pools can build evidence without allowing
+	// an unknown account to monopolize traffic. Health-first retains an active
+	// affinity outside the coverage turn.
 	warmupAccountID := int64(0)
-	if s != nil && s.stats != nil {
-		if selected, ok := selectOpenAIUnknownAdaptiveCandidate(ordered, preferred, s.stats, now, groupID, req.StickyAccountID, costBalanced); ok {
+	if coverageTurn && s != nil && s.stats != nil {
+		if selected, ok := selectOpenAIUnknownAdaptiveCandidate(ordered, preferred, s.stats, now, groupID, req.StickyAccountID, costBalanced, coverageTurn); ok {
 			warmupAccountID = selected
 		}
 	}
 	probeAccountID := int64(0)
-	if warmupAccountID == 0 && s != nil && s.stats != nil && req.StickyAccountID <= 0 && s.stats.healthFirstProbeTurn(groupID) {
+	if warmupAccountID == 0 && coverageTurn && s != nil && s.stats != nil && req.StickyAccountID <= 0 {
 		maxRate := adaptiveHighestMultiplier(profiles, preferredIndexes, now)
+		maxRateKnown := adaptiveHasDeclaredMultiplier(profiles, preferredIndexes, now)
+		selectedCandidate := -1
 		for i := range ordered {
 			candidate := &ordered[i]
 			if candidate.account == nil {
@@ -1618,13 +1577,15 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 				continue
 			}
 			rate, declared := accountEffectiveUpstreamMultiplier(candidate.account, now)
-			delay := accountHealthAdaptiveRecoveryDelay(accountHealthCandidate{errorRate: candidate.errorRate})
-			if !declared || rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !s.stats.healthFirstProbeDue(groupID, candidate.account.ID, now, delay) {
+			if !declared || maxRateKnown && rate > maxRate {
 				continue
 			}
-			s.stats.markHealthFirstProbe(groupID, candidate.account.ID, now)
-			probeAccountID = candidate.account.ID
-			break
+			if selectedCandidate < 0 || lruAccountBefore(candidate.account, ordered[selectedCandidate].account, false) {
+				selectedCandidate = i
+			}
+		}
+		if selectedCandidate >= 0 {
+			probeAccountID = ordered[selectedCandidate].account.ID
 		}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -1712,8 +1673,8 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	return ordered
 }
 
-func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced bool) (int64, bool) {
-	if len(ordered) == 0 || stats == nil {
+func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced, coverageTurn bool) (int64, bool) {
+	if len(ordered) == 0 || stats == nil || !coverageTurn {
 		return 0, false
 	}
 	if affinityAccountID > 0 && !costBalanced {
@@ -1730,9 +1691,11 @@ func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore,
 		}
 	}
 	selectedID := int64(0)
+	selectedCoverage := int64(0)
+	var selectedAccount *Account
 	selectedRate, selectedRateKnown := float64(0), false
 	for _, candidate := range ordered {
-		if candidate.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) || !stats.warmingUpDue(groupID, candidate.account.ID, now) {
+		if candidate.account == nil || accountHealthCoverageSamples(candidate.sampleCount, candidate.ttftSampleCount) >= accountHealthUnknownMinSamples {
 			continue
 		}
 		if _, ok := preferred[candidate.account.ID]; !ok {
@@ -1747,15 +1710,20 @@ func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore,
 				continue
 			}
 		}
-		if selectedID == 0 || (rateKnown && !selectedRateKnown) || (rateKnown == selectedRateKnown && rateKnown && rate < selectedRate) || (rateKnown == selectedRateKnown && (!rateKnown || rate == selectedRate) && candidate.account.ID < selectedID) {
+		coverage := accountHealthCoverageSamples(candidate.sampleCount, candidate.ttftSampleCount)
+		if selectedID == 0 || coverage < selectedCoverage ||
+			(coverage == selectedCoverage && costBalanced && rateKnown && !selectedRateKnown) ||
+			(coverage == selectedCoverage && costBalanced && rateKnown == selectedRateKnown && rateKnown && rate < selectedRate) ||
+			(coverage == selectedCoverage && (!costBalanced || rateKnown == selectedRateKnown && rate == selectedRate) && selectedAccount != nil && lruAccountBefore(candidate.account, selectedAccount, false)) {
 			selectedID = candidate.account.ID
+			selectedCoverage = coverage
+			selectedAccount = candidate.account
 			selectedRate, selectedRateKnown = rate, rateKnown
 		}
 	}
 	if selectedID <= 0 {
 		return 0, false
 	}
-	stats.markWarmingUp(groupID, selectedID, now)
 	return selectedID, true
 }
 
@@ -2446,6 +2414,22 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseFiltered, filtered) {
 		filtered = nil
+	}
+	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
+		// Adaptive health routing must not score or queue accounts that are already
+		// under the configured pool soft cooldown. The cooldown path owns the
+		// recovery probe; health scheduling only observes its result.
+		filtered = s.service.orderOpenAIPoolCoolingAccountsLast(filtered, req.RequestedModel)
+		loadReq = loadReq[:0]
+		for _, account := range filtered {
+			if account == nil {
+				continue
+			}
+			loadReq = append(loadReq, AccountWithConcurrency{
+				ID:             account.ID,
+				MaxConcurrency: account.EffectiveLoadFactor(),
+			})
+		}
 	}
 	if len(filtered) == 0 {
 		s.metrics.recordLegacyDiagnostics(req, filterStats, 0)

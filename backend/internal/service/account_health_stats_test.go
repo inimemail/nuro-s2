@@ -234,6 +234,33 @@ func TestHealthCostBalancedKeepsUnknownHealthCheapestUpstreamEligible(t *testing
 	require.Equal(t, int64(1), selected.account.ID)
 }
 
+func TestAdaptiveCoveragePrefersTheAccountWithTheLargestSampleDebt(t *testing.T) {
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	preferred := map[int64]struct{}{1: {}, 2: {}}
+	first := openAIAccountCandidateScore{
+		account:     makeHealthTestAccount(1, 1, 0, true).account,
+		sampleCount: 0,
+	}
+	second := openAIAccountCandidateScore{
+		account:     makeHealthTestAccount(2, 1, 0, true).account,
+		sampleCount: 2,
+	}
+
+	selected, ok := selectOpenAIUnknownAdaptiveCandidate(
+		[]openAIAccountCandidateScore{second, first},
+		preferred,
+		stats,
+		now,
+		901,
+		0,
+		false,
+		true,
+	)
+	require.True(t, ok)
+	require.Equal(t, int64(1), selected)
+}
+
 func TestHealthCostBalancedDoesNotEscalateForInsufficientTTFTSamples(t *testing.T) {
 	for _, sampleCount := range []int{1, 2} {
 		t.Run(fmt.Sprintf("%d samples", sampleCount), func(t *testing.T) {
@@ -1029,6 +1056,25 @@ func TestAdaptiveSelection_WarmingUpRotatesSampleStarvedAccounts(t *testing.T) {
 	affined := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now.Add(4*time.Minute), 103, 1, true, AccountSchedulingStrategyHealthFirst)
 	require.NotNil(t, affined)
 	require.Equal(t, int64(1), affined.account.ID)
+}
+
+func TestAdaptiveSelection_GenericRecoveryKeepsExistingDelay(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 100
+	slow := 2_000
+	reportHealthSamples(stats, 1, true, &fast, int(accountHealthUnknownMinSamples))
+	reportHealthSamples(stats, 2, false, &slow, int(accountHealthUnknownMinSamples))
+	now := time.Now()
+	accounts := []accountWithLoad{
+		withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.5, now.Add(time.Hour)),
+		withProbeMultiplier(makeHealthTestAccount(2, 1, 0, true), 0.5, now.Add(time.Hour)),
+	}
+	value, _ := stats.healthFirstCounter.LoadOrStore(int64(105), &atomic.Uint64{})
+	value.(*atomic.Uint64).Store(accountHealthUnknownExploreEvery - 1)
+
+	selected := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now, 105, 0, false, AccountSchedulingStrategyHealthFirst)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
 }
 
 func TestAdaptiveSelection_FallbackOrderingDoesNotMarkWarmingUp(t *testing.T) {

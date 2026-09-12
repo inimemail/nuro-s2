@@ -3329,6 +3329,11 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 	groupID *int64,
 	stickyAccountID int64,
 ) []accountWithLoad {
+	if healthFirst {
+		// Keep configured pool soft cooldowns out of adaptive scoring even when
+		// this ordering helper is called directly by a wait/fallback path.
+		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
+	}
 	if len(available) <= 1 {
 		return available
 	}
@@ -3415,7 +3420,15 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTier(ctx con
 }
 
 func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(ctx context.Context, all, available []accountWithLoad, requestedModel, strategy string, policy adaptiveTTFTSwitchPolicy) []accountWithLoad {
-	if len(all) == 0 || len(available) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
+	if !IsAdaptiveHealthSchedulingStrategy(strategy) {
+		return available
+	}
+	// Soft cooldown is configured runtime state, not a health score. Remove
+	// cooling accounts before building the adaptive policy tier so they cannot
+	// be selected and discarded later by resolveFreshSchedulableOpenAIAccount.
+	all = s.orderOpenAIPoolCoolingLoadedAccountsLast(all, requestedModel)
+	available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
+	if len(all) == 0 || len(available) == 0 {
 		return available
 	}
 	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all), policy.sampleFreshness)
@@ -3454,7 +3467,7 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategy(candidates [
 }
 
 func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(ctx context.Context, candidates []*Account, requestedModel string, requireCompact bool, cfg config.GatewaySchedulingConfig, healthFirst bool, strategy string, groupID *int64, stickyAccountID int64) []*Account {
-	if healthFirst && len(candidates) > 1 {
+	if healthFirst {
 		items := make([]accountWithLoad, 0, len(candidates))
 		for _, account := range candidates {
 			if account != nil {
