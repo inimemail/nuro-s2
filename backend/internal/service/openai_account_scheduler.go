@@ -1528,21 +1528,32 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierUnpartitioned(ordered []open
 			allowed[ordered[index].account.ID] = struct{}{}
 		}
 	}
-	// Preserve the existing sparse recovery probe when it is inside the chosen
-	// upstream cost layer. Higher-cost fallbacks remain available only to the
-	// later queue-overflow path.
+	// Preserve the existing sparse recovery-probe candidate when it is inside
+	// the chosen upstream cost layer. In health-first mode, deferred candidates
+	// are retained below this tier; cost-balanced mode keeps the tier gate.
 	if ordered[0].account != nil {
 		if rate, known := accountEffectiveUpstreamMultiplier(ordered[0].account, now); known && (!maxRateKnown || rate <= maxRate) {
 			allowed[ordered[0].account.ID] = struct{}{}
 		}
 	}
 	filtered := make([]openAIAccountCandidateScore, 0, len(ordered))
+	deferred := make([]openAIAccountCandidateScore, 0, len(ordered))
 	for _, candidate := range ordered {
-		if candidate.account != nil {
-			if _, ok := allowed[candidate.account.ID]; ok {
-				filtered = append(filtered, candidate)
-			}
+		if candidate.account == nil {
+			continue
 		}
+		if _, ok := allowed[candidate.account.ID]; ok {
+			filtered = append(filtered, candidate)
+		} else {
+			deferred = append(deferred, candidate)
+		}
+	}
+	// Health-first is a ranking policy, not an availability gate. Keep slower
+	// or less healthy accounts as ordered fallbacks so a healthy account's
+	// capacity miss does not turn them into an implicit cooldown. Cost-balanced
+	// mode intentionally keeps its exact multiplier-tier gate.
+	if !IsHealthCostBalancedSchedulingStrategy(strategy) {
+		filtered = append(filtered, deferred...)
 	}
 	return filtered
 }
@@ -1586,10 +1597,6 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
 	policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
 	ordered = freshOpenAIHealthCandidates(ordered, now, policy)
-	groupID := int64(0)
-	if req.GroupID != nil {
-		groupID = *req.GroupID
-	}
 	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
 	for i, candidate := range ordered {
 		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
@@ -1599,61 +1606,8 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	for _, index := range preferredIndexes {
 		preferred[ordered[index].account.ID] = struct{}{}
 	}
-	coverageTurn := false
-	if s != nil && s.stats != nil && req.StickyAccountID <= 0 {
-		coverageTurn = s.stats.warmingUpTurn(groupID)
-	}
-	// Unknown accounts are optimistically eligible. Give them a direct,
-	// bounded coverage turn so large pools can build evidence without allowing
-	// an unknown account to monopolize traffic. Health-first retains an active
-	// affinity outside the coverage turn.
-	warmupAccountID := int64(0)
-	if coverageTurn && s != nil && s.stats != nil {
-		if selected, ok := selectOpenAIUnknownAdaptiveCandidate(ordered, preferred, s.stats, now, groupID, req.StickyAccountID, costBalanced, coverageTurn); ok {
-			warmupAccountID = selected
-		}
-	}
-	probeAccountID := int64(0)
-	if warmupAccountID == 0 && coverageTurn && s != nil && s.stats != nil && req.StickyAccountID <= 0 {
-		maxRate := adaptiveHighestMultiplier(profiles, preferredIndexes, now)
-		maxRateKnown := adaptiveHasDeclaredMultiplier(profiles, preferredIndexes, now)
-		selectedCandidate := -1
-		for i := range ordered {
-			candidate := &ordered[i]
-			if candidate.account == nil {
-				continue
-			}
-			if _, ok := preferred[candidate.account.ID]; ok || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
-				continue
-			}
-			rate, declared := accountEffectiveUpstreamMultiplier(candidate.account, now)
-			if !declared || maxRateKnown && rate > maxRate {
-				continue
-			}
-			if selectedCandidate < 0 || lruAccountBefore(candidate.account, ordered[selectedCandidate].account, false) {
-				selectedCandidate = i
-			}
-		}
-		if selectedCandidate >= 0 {
-			probeAccountID = ordered[selectedCandidate].account.ID
-		}
-	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if warmupAccountID > 0 {
-			aWarmup := a.account.ID == warmupAccountID
-			bWarmup := b.account.ID == warmupAccountID
-			if aWarmup != bWarmup {
-				return aWarmup
-			}
-		}
-		if probeAccountID > 0 {
-			aProbe := a.account.ID == probeAccountID
-			bProbe := b.account.ID == probeAccountID
-			if aProbe != bProbe {
-				return aProbe
-			}
-		}
 		_, aInBestBand := preferred[a.account.ID]
 		_, bInBestBand := preferred[b.account.ID]
 		if aInBestBand != bInBestBand {

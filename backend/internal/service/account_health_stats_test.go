@@ -771,10 +771,10 @@ func TestAdaptiveHealthFirstSelectionWithIncompleteHealthIsStable(t *testing.T) 
 			AccountSchedulingStrategyHealthFirst, false, nil, defaultAdaptiveTTFTSwitchPolicy(),
 		)
 		require.NotNil(t, selected)
-		// Account 3 has incomplete evidence and is therefore default-healthy. It
-		// ties account 1 on health and wins their multiplier tie-break, while the
-		// known 16% error account must not become health-first merely by being cheap.
-		require.Equal(t, int64(3), selected.account.ID, "input order %v", order)
+		// Account 3 has incomplete evidence and remains usable, but it must not
+		// outrank the account with confirmed health on real traffic. The known
+		// error account also remains behind the confirmed healthy account.
+		require.Equal(t, int64(1), selected.account.ID, "input order %v", order)
 	}
 }
 
@@ -1029,7 +1029,7 @@ func TestSelectHealthCostBalancedAccountWithLoad_PreferSoonestResetKeepsWideHeal
 	require.Equal(t, int64(2), selected.account.ID)
 }
 
-func TestAdaptiveSelection_WarmingUpRotatesSampleStarvedAccounts(t *testing.T) {
+func TestAdaptiveSelection_DoesNotPromoteSampleStarvedAccountsOnRealTraffic(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 100
 	reportHealthSamples(stats, 1, true, &fast, 3)
@@ -1039,19 +1039,19 @@ func TestAdaptiveSelection_WarmingUpRotatesSampleStarvedAccounts(t *testing.T) {
 		withProbeMultiplier(makeHealthTestAccount(3, 1, 0, true), 0.5, time.Now().Add(time.Hour)),
 	}
 	now := time.Now()
-	// The counter is per-group and starts at zero; drive it to the next turn.
+	// Legacy warm-up counters must not alter the real-request ordering.
 	value, _ := stats.warmingUpCounter.LoadOrStore(int64(103), &atomic.Uint64{})
 	value.(*atomic.Uint64).Store(9)
 	first := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now, 103, 0, false, AccountSchedulingStrategyHealthFirst)
 	require.NotNil(t, first)
-	require.Equal(t, int64(2), first.account.ID)
+	require.Equal(t, int64(1), first.account.ID)
 
 	value.(*atomic.Uint64).Store(19)
 	second := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now.Add(10*time.Second), 103, 0, false, AccountSchedulingStrategyHealthFirst)
 	require.NotNil(t, second)
-	require.Equal(t, int64(3), second.account.ID)
+	require.Equal(t, int64(1), second.account.ID)
 
-	// Active affinity suppresses warm-up so continuation/sticky semantics remain intact.
+	// Active affinity still preserves continuation/sticky semantics.
 	value.(*atomic.Uint64).Store(29)
 	affined := selectAdaptiveAccountWithLoadForGroupStrategy(accounts, stats, config.GatewaySchedulingConfig{}, false, now.Add(4*time.Minute), 103, 1, true, AccountSchedulingStrategyHealthFirst)
 	require.NotNil(t, affined)

@@ -3967,7 +3967,7 @@ func selectAdaptiveAccountWithLoadForGroupStrategyWithPolicyAndHistory(accounts 
 }
 
 // selectHealthFirstAccountWithLoadForGroup applies the opt-in adaptive policy.
-// The group id is used only to isolate recovery sampling state; all hard
+// Health ranking does not mutate probe or soft-cooldown state; all hard
 // eligibility and capacity checks remain in the caller.
 func selectHealthFirstAccountWithLoadForGroup(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, groupID int64, affinityAccountID int64, affinityActive bool) *accountWithLoad {
 	return selectAdaptiveHealthAccountWithLoadForGroup(accounts, healthStats, cfg, preferOAuth, now, groupID, affinityAccountID, affinityActive, false, true, nil, defaultAdaptiveTTFTSwitchPolicy())
@@ -4002,18 +4002,6 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 	if len(preferred) == 0 {
 		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
-	// Unknown accounts are optimistically eligible. Give them a direct,
-	// per-account first-use turn instead of waiting for a global every-N
-	// cadence; this lets large account pools build evidence without allowing a
-	// single unknown account to be selected repeatedly. In health-first, an
-	// active affinity remains inside its policy cost band; a lower-cost account
-	// outside that band can still replace it.
-	if allowWarmup && healthStats != nil {
-		if selected := selectUnknownAdaptiveCandidate(candidates, preferredIDs, healthStats, now, groupID, affinityAccountID, affinityActive, costBalanced, preferOAuth); selected != nil {
-			return selected
-		}
-	}
-
 	if !hasKnownAccountHealthSample(candidates) {
 		// No sample is not a negative health signal. Let the normal cold-start
 		// ordering use effective upstream cost and LRU so every non-cooling
@@ -4021,29 +4009,6 @@ func selectAdaptiveHealthAccountWithLoadForGroup(accounts []accountWithLoad, hea
 		// higher-cost account over a cheaper eligible one.
 		return selectHealthFirstColdStart(candidates, preferOAuth, now)
 	}
-	// A low-cost account that was unhealthy or seriously slow must be able to
-	// recover eventually. The probe is sparse and cannot cross the current
-	// preferred tier's maximum multiplier.
-	if healthStats != nil && !affinityActive && healthStats.healthFirstProbeTurn(groupID) {
-		maxRate := adaptiveHighestMultiplier(profiles, preferredIndexes, now)
-		for i := range candidates {
-			candidate := &candidates[i]
-			if candidate.item.account == nil {
-				continue
-			}
-			if _, ok := preferredIDs[candidate.item.account.ID]; ok || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
-				continue
-			}
-			rate, declared := accountEffectiveUpstreamMultiplier(candidate.item.account, now)
-			delay := accountHealthAdaptiveRecoveryDelay(*candidate)
-			if !declared || rate > maxRate || accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, delay) || !healthStats.healthFirstProbeDue(groupID, candidate.item.account.ID, now, delay) {
-				continue
-			}
-			healthStats.markHealthFirstProbe(groupID, candidate.item.account.ID, now)
-			return &candidate.item
-		}
-	}
-
 	// Affinity is allowed only inside the final cost/health tier and cannot keep
 	// a materially slower account.
 	if affinityActive && affinityAccountID > 0 {

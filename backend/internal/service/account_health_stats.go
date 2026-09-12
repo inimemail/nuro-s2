@@ -150,12 +150,20 @@ func filterAdaptiveAccountsToPolicyTierWithTTFTPolicy(accounts, available []acco
 		}
 	}
 	filtered := make([]accountWithLoad, 0, len(available))
+	deferred := make([]accountWithLoad, 0, len(available))
 	for _, item := range available {
 		if item.account != nil {
 			if _, ok := allowed[item.account.ID]; ok {
 				filtered = append(filtered, item)
+			} else {
+				deferred = append(deferred, item)
 			}
 		}
+	}
+	if !IsHealthCostBalancedSchedulingStrategy(strategy) {
+		// Health-first degrades ranking only. Keep slower/degraded candidates as
+		// ordered fallbacks; existing soft-cooldown filtering remains separate.
+		filtered = append(filtered, deferred...)
 	}
 	return filtered
 }
@@ -399,6 +407,14 @@ func adaptiveTrustedTTFT(hasTTFT bool, samples int64, p50 float64) bool {
 func adaptiveProfileHealthLess(a, b adaptiveAccountHealthProfile, costBalanced bool, policy adaptiveTTFTSwitchPolicy) (bool, bool) {
 	aError, bError := adaptiveEffectiveErrorRate(a), adaptiveEffectiveErrorRate(b)
 	if !costBalanced {
+		// In health-first mode, incomplete evidence is usable but must not outrank
+		// an account with confirmed health. Real traffic does not promote UNKNOWN
+		// accounts solely to manufacture health samples.
+		aKnown := accountHealthHasKnownSamples(a.errorSamples, a.ttftSamples, aError)
+		bKnown := accountHealthHasKnownSamples(b.errorSamples, b.ttftSamples, bError)
+		if aKnown != bKnown {
+			return aKnown, true
+		}
 		if aError != bError {
 			return aError < bError, true
 		}

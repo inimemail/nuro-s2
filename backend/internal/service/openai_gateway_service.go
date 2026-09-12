@@ -3549,12 +3549,22 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierUnpartit
 		}
 	}
 	filtered := make([]accountWithLoad, 0, len(available))
+	deferred := make([]accountWithLoad, 0, len(available))
 	for _, item := range available {
-		if item.account != nil {
-			if _, ok := allowed[item.account.ID]; ok {
-				filtered = append(filtered, item)
-			}
+		if item.account == nil {
+			continue
 		}
+		if _, ok := allowed[item.account.ID]; ok {
+			filtered = append(filtered, item)
+		} else {
+			deferred = append(deferred, item)
+		}
+	}
+	// Health-first is a ranking policy, not an availability gate. Preserve
+	// slower/degraded accounts as fallbacks when the preferred tier is full;
+	// cost-balanced mode retains its strict multiplier-tier boundary.
+	if !IsHealthCostBalancedSchedulingStrategy(strategy) {
+		filtered = append(filtered, deferred...)
 	}
 	return filtered
 }

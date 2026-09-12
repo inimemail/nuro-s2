@@ -19,7 +19,7 @@ const (
 	AccountSchedulingStrategyStrictPriority = "strict_priority"
 	AccountSchedulingStrategyHealthFirst    = "health_first"
 	// AccountSchedulingStrategyHealthCostBalanced keeps the adaptive health
-	// model, but admits healthy lower-cost accounts after a bounded warm-up.
+	// model while enforcing the selected upstream multiplier tier.
 	AccountSchedulingStrategyHealthCostBalanced = "health_cost_balanced"
 	DefaultAdaptiveTTFTSwitchThresholdSeconds   = 60
 	MinAdaptiveTTFTSwitchThresholdSeconds       = 1

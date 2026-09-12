@@ -4569,11 +4569,11 @@ func TestBuildOpenAIHealthFirstSelectionWithIncompleteHealthIsStable(t *testing.
 			AccountSchedulingStrategy: AccountSchedulingStrategyHealthFirst,
 		})
 		require.NotEmpty(t, ordered)
-		require.Equal(t, int64(3), ordered[0].account.ID, "input order %v", order)
+		require.Equal(t, int64(1), ordered[0].account.ID, "input order %v", order)
 	}
 }
 
-func TestBuildOpenAIUnknownWarmupStillSortsFallbackCandidates(t *testing.T) {
+func TestBuildOpenAIUnknownAccountsStayBehindKnownHealth(t *testing.T) {
 	now := time.Now()
 	unknown := withOpenAIUpstreamProbeMultiplier(&Account{ID: 45101}, 0.05, now.Add(time.Hour))
 	knownLessHealthy := withOpenAIUpstreamProbeMultiplier(&Account{ID: 45102}, 0.10, now.Add(time.Hour))
@@ -4590,9 +4590,9 @@ func TestBuildOpenAIUnknownWarmupStillSortsFallbackCandidates(t *testing.T) {
 	})
 
 	require.Len(t, ordered, 3)
-	require.Equal(t, unknown.ID, ordered[0].account.ID)
-	require.Equal(t, knownHealthy.ID, ordered[1].account.ID)
-	require.Equal(t, knownLessHealthy.ID, ordered[2].account.ID)
+	require.Equal(t, knownHealthy.ID, ordered[0].account.ID)
+	require.Equal(t, knownLessHealthy.ID, ordered[1].account.ID)
+	require.Equal(t, unknown.ID, ordered[2].account.ID)
 }
 
 func TestBuildOpenAIHealthFirstDoesNotKeepStickyAccountAfterItBecomesUnhealthy(t *testing.T) {
@@ -4915,11 +4915,7 @@ func TestOpenAIAdaptiveRecoveryDoesNotWaitForHealthCooldown(t *testing.T) {
 				ordered := scheduler.buildHealthFirstSelectionOrder(pool, req)
 				filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered, strategy, now)
 				require.NotEmpty(t, filtered)
-				want := int64(1)
-				if turn == 1 || turn%10 == 0 {
-					want = 2
-				}
-				require.Equal(t, want, filtered[0].account.ID, "turn %d", turn)
+				require.Equal(t, int64(1), filtered[0].account.ID, "turn %d", turn)
 			}
 		})
 	}
@@ -4935,10 +4931,10 @@ func TestOpenAIAdaptiveRecoverySurvivesUnknownPreferredMultiplier(t *testing.T) 
 			}
 			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
 			ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy})
-			require.Equal(t, int64(2), ordered[0].account.ID)
+			require.Equal(t, int64(1), ordered[0].account.ID)
 			filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered, strategy, now)
 			require.NotEmpty(t, filtered)
-			require.Equal(t, int64(2), filtered[0].account.ID)
+			require.Equal(t, int64(1), filtered[0].account.ID)
 		})
 	}
 }
@@ -4956,14 +4952,18 @@ func TestOpenAIAdaptiveRecoveryRespectsDeclaredCostCeiling(t *testing.T) {
 				ordered := scheduler.buildHealthFirstSelectionOrder(pool, OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy})
 				require.Equal(t, int64(1), ordered[0].account.ID)
 				filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier([]openAIAccountCandidateScore{pool[1], pool[0]}, strategy, now)
-				require.Len(t, filtered, 1)
+				if strategy == AccountSchedulingStrategyHealthFirst {
+					require.Len(t, filtered, 2)
+				} else {
+					require.Len(t, filtered, 1)
+				}
 				require.Equal(t, int64(1), filtered[0].account.ID)
 			})
 		}
 	}
 }
 
-func TestOpenAIAdaptiveCoverageRotatesWithoutWaitingForThreeSamples(t *testing.T) {
+func TestOpenAIAdaptiveCoverageDoesNotPromoteUnknownOnRealTraffic(t *testing.T) {
 	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
 		t.Run(strategy, func(t *testing.T) {
 			now := time.Now()
@@ -4976,16 +4976,7 @@ func TestOpenAIAdaptiveCoverageRotatesWithoutWaitingForThreeSamples(t *testing.T
 			req := OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy}
 			for turn := 1; turn <= 10; turn++ {
 				ordered := scheduler.buildHealthFirstSelectionOrder(pool, req)
-				want := int64(1)
-				if turn == 1 {
-					want = 2
-				} else if turn == 10 {
-					want = 3
-				}
-				require.Equal(t, want, ordered[0].account.ID, "turn %d", turn)
-				if turn == 1 {
-					pool[1].sampleCount = 1
-				}
+				require.Equal(t, int64(1), ordered[0].account.ID, "turn %d", turn)
 			}
 		})
 	}
@@ -5015,6 +5006,34 @@ func TestAdaptiveSelectionFiltersConfiguredSoftCooldownBeforeHealthScoring(t *te
 	require.Len(t, filtered, 1)
 	require.Equal(t, healthy.ID, filtered[0].account.ID)
 	require.True(t, service.isOpenAIPoolAccountSoftCooling(cooling))
+}
+
+func TestAdaptiveOpenAIAvailablePolicyKeepsHealthFirstFallbacks(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < int(accountHealthUnknownMinSamples); i++ {
+		stats.reportForRequest(9904, true, intPtr(100), "")
+		stats.reportForRequest(9905, false, nil, "")
+	}
+	service := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	healthy := &Account{ID: 9904, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	degraded := &Account{ID: 9905, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	all := []accountWithLoad{
+		{account: healthy, loadInfo: &AccountLoadInfo{AccountID: healthy.ID}},
+		{account: degraded, loadInfo: &AccountLoadInfo{AccountID: degraded.ID}},
+	}
+
+	healthFirst := service.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(
+		context.Background(), all, all, "gpt-5.1", AccountSchedulingStrategyHealthFirst, defaultAdaptiveTTFTSwitchPolicy(),
+	)
+	require.Len(t, healthFirst, 2)
+	require.Equal(t, healthy.ID, healthFirst[0].account.ID)
+	require.Equal(t, degraded.ID, healthFirst[1].account.ID)
+
+	costBalanced := service.filterOpenAIAvailableToAdaptivePolicyTierWithPolicy(
+		context.Background(), all, all, "gpt-5.1", AccountSchedulingStrategyHealthCostBalanced, defaultAdaptiveTTFTSwitchPolicy(),
+	)
+	require.Len(t, costBalanced, 1)
+	require.Equal(t, healthy.ID, costBalanced[0].account.ID)
 }
 
 func TestAdaptiveHealthDoesNotCreateSoftCooldownFromHealthSamples(t *testing.T) {
