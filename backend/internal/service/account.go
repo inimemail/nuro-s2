@@ -487,7 +487,10 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable || a.UpstreamBillingGuardGroupBlocked {
+	// Group multiplier guards are API-key-only. Ignore a stale hydrated guard
+	// bit on OAuth/setup-token accounts so a rolling snapshot or old cache entry
+	// can never make OAuth unavailable.
+	if !a.IsActive() || !a.Schedulable || (a.UpstreamBillingGuardGroupBlocked && !a.IsOAuth()) {
 		return false
 	}
 	now := time.Now()

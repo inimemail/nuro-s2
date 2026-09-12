@@ -242,6 +242,17 @@ func TestAccountIsSchedulableUsesOnlyRuntimeGroupDecision(t *testing.T) {
 	require.False(t, account.IsSchedulable())
 }
 
+func TestAccountIsSchedulableIgnoresStaleMultiplierGuardOnOAuth(t *testing.T) {
+	account := &Account{
+		Platform:                         PlatformOpenAI,
+		Type:                             AccountTypeOAuth,
+		Status:                           StatusActive,
+		Schedulable:                      true,
+		UpstreamBillingGuardGroupBlocked: true,
+	}
+	require.True(t, account.IsSchedulable(), "group multiplier guards must not restrict OAuth accounts")
+}
+
 func TestAccountUpstreamBillingGuardLowerBoundAndEquality(t *testing.T) {
 	groupID := int64(10)
 	min, max := 0.8, 1.2

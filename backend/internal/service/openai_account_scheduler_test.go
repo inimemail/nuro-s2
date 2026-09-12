@@ -4256,6 +4256,50 @@ func TestBuildOpenAIAdaptiveSelectionUsesUpstreamRatesWhenLocalRatesAreOne(t *te
 	require.Equal(t, int64(5274), ordered[0].account.ID)
 }
 
+func TestBuildOpenAIAdaptiveSelectionAlwaysPutsOAuthBeforePool(t *testing.T) {
+	now := time.Now()
+	for _, strategy := range []string{AccountSchedulingStrategyHealthFirst, AccountSchedulingStrategyHealthCostBalanced} {
+		t.Run(strategy, func(t *testing.T) {
+			oauth := &Account{ID: 52741, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Priority: 5}
+			pool := withOpenAIUpstreamProbeMultiplier(&Account{
+				ID: 52742, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 0,
+				Credentials: map[string]any{"pool_mode": true},
+			}, 0.1, now.Add(time.Hour))
+			poolCandidate := openAIAccountCandidateScore{
+				account: pool, loadInfo: &AccountLoadInfo{AccountID: pool.ID}, sampleCount: 20,
+				ttft: 100, hasTTFT: true, ttftSampleCount: 20,
+			}
+			oauthCandidate := openAIAccountCandidateScore{
+				account: oauth, loadInfo: &AccountLoadInfo{AccountID: oauth.ID}, sampleCount: 20,
+				errorRate: 1, ttft: 60_000, hasTTFT: true, ttftSampleCount: 20,
+			}
+			scheduler := &defaultOpenAIAccountScheduler{stats: newOpenAIAccountRuntimeStats()}
+			ordered := scheduler.buildHealthFirstSelectionOrder(
+				[]openAIAccountCandidateScore{poolCandidate, oauthCandidate},
+				OpenAIAccountScheduleRequest{AccountSchedulingStrategy: strategy},
+			)
+			require.Len(t, ordered, 2)
+			require.Equal(t, oauth.ID, ordered[0].account.ID)
+		})
+	}
+}
+
+func TestFilterOpenAIAdaptivePolicyPreservesOAuthOutsideCostTier(t *testing.T) {
+	now := time.Now()
+	oauth := &Account{ID: 52743, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	cheapPool := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52744, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, 0.1, now.Add(time.Hour))
+	expensivePool := withOpenAIUpstreamProbeMultiplier(&Account{ID: 52745, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, 0.5, now.Add(time.Hour))
+	ordered := []openAIAccountCandidateScore{
+		{account: cheapPool, loadInfo: &AccountLoadInfo{AccountID: cheapPool.ID}},
+		{account: expensivePool, loadInfo: &AccountLoadInfo{AccountID: expensivePool.ID}},
+		{account: oauth, loadInfo: &AccountLoadInfo{AccountID: oauth.ID}, errorRate: 1, sampleCount: 20},
+	}
+	filtered := filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered, AccountSchedulingStrategyHealthCostBalanced, now)
+	require.Len(t, filtered, 2)
+	require.Equal(t, oauth.ID, filtered[0].account.ID)
+	require.Equal(t, cheapPool.ID, filtered[1].account.ID)
+}
+
 func TestOpenAIAdaptivePolicyTierWaitsForCheapTierBeforeUsingAvailableHigherCost(t *testing.T) {
 	now := time.Now()
 	cheap := withOpenAIUpstreamProbeMultiplier(&Account{ID: 5276, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, 0.07, now.Add(time.Hour))

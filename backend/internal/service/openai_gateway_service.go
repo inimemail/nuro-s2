@@ -2639,15 +2639,6 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		// compact 模式下高 tier 优先；同 tier 内才比较 priority/LRU。
-		if requireCompact && compactTier != selectedCompactTier {
-			if compactTier > selectedCompactTier {
-				selected = fresh
-				selectedCompactTier = compactTier
-				selectedRankSeen = 1
-			}
-			continue
-		}
 		if len(adaptiveRank) > 0 {
 			freshRank, freshKnown := adaptiveRank[fresh.ID]
 			selectedRank, selectedKnown := adaptiveRank[selected.ID]
@@ -2659,6 +2650,17 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 				}
 				continue
 			}
+		}
+		// Compact support is subordinate to the adaptive OAuth-first rank. An
+		// unknown-capability OAuth account must not be displaced by a pool account
+		// merely because the pool capability was already probed.
+		if requireCompact && compactTier != selectedCompactTier {
+			if compactTier > selectedCompactTier {
+				selected = fresh
+				selectedCompactTier = compactTier
+				selectedRankSeen = 1
+			}
+			continue
 		}
 
 		if fresh.Priority < selected.Priority {
@@ -3431,6 +3433,62 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierWithPoli
 	if len(all) == 0 || len(available) == 0 {
 		return available
 	}
+	// OAuth is the strict primary route for both adaptive strategies. Keep all
+	// currently available OAuth accounts; apply health/cost tier filtering only
+	// to the non-OAuth fallback candidates. This prevents a cheaper pool account
+	// or a group multiplier tier from excluding OAuth.
+	oauthAvailable, fallbackAvailable := splitOpenAIAdaptiveOAuthAccountLoads(available)
+	if len(oauthAvailable) > 0 {
+		_, fallbackAll := splitOpenAIAdaptiveOAuthAccountLoads(all)
+		result := append([]accountWithLoad(nil), oauthAvailable...)
+		result = append(result, s.filterOpenAIAvailableToAdaptivePolicyTierUnpartitioned(ctx, fallbackAll, fallbackAvailable, requestedModel, strategy, policy)...)
+		return result
+	}
+	return s.filterOpenAIAvailableToAdaptivePolicyTierUnpartitioned(ctx, all, available, requestedModel, strategy, policy)
+}
+
+func splitOpenAIAdaptiveOAuthAccountLoads(items []accountWithLoad) (oauth, fallback []accountWithLoad) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	oauth = make([]accountWithLoad, 0, len(items))
+	fallback = make([]accountWithLoad, 0, len(items))
+	for _, item := range items {
+		if item.account != nil && item.account.IsOpenAIOAuth() {
+			oauth = append(oauth, item)
+		} else {
+			fallback = append(fallback, item)
+		}
+	}
+	return oauth, fallback
+}
+
+func prioritizeOpenAIAdaptiveOAuthAccounts(accounts []*Account) []*Account {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	oauth := make([]*Account, 0, len(accounts))
+	fallback := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account != nil && account.IsOpenAIOAuth() {
+			oauth = append(oauth, account)
+		} else {
+			fallback = append(fallback, account)
+		}
+	}
+	if len(oauth) == 0 || len(fallback) == 0 {
+		return accounts
+	}
+	result := make([]*Account, 0, len(accounts))
+	result = append(result, oauth...)
+	result = append(result, fallback...)
+	return result
+}
+
+func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierUnpartitioned(ctx context.Context, all, available []accountWithLoad, requestedModel, strategy string, policy adaptiveTTFTSwitchPolicy) []accountWithLoad {
+	if len(all) == 0 || len(available) == 0 {
+		return available
+	}
 	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all), policy.sampleFreshness)
 	candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(all, requestedModel, history)
 	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
@@ -3481,6 +3539,9 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidatesForStrategyWithStrategy(
 		}
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
+		}
+		if IsAdaptiveHealthSchedulingStrategy(strategy) {
+			ordered = prioritizeOpenAIAdaptiveOAuthAccounts(ordered)
 		}
 		return s.orderOpenAIPoolCoolingAccountsLast(ordered, requestedModel)
 	}

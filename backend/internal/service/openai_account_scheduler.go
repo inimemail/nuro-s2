@@ -1480,6 +1480,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
+		if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
+			selectionOrder = prioritizeOpenAIAdaptiveOAuthCandidates(selectionOrder)
+		}
 		return selectionOrder
 	}
 
@@ -1491,6 +1494,23 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTier(ordered []openAIAccountCand
 }
 
 func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []openAIAccountCandidateScore, strategy string, now time.Time, policy adaptiveTTFTSwitchPolicy) []openAIAccountCandidateScore {
+	if len(ordered) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
+		return ordered
+	}
+	// OAuth is the strict primary route for adaptive OpenAI scheduling. Keep all
+	// OAuth candidates that passed the request's hard eligibility checks; health
+	// and upstream-cost tiers only decide the order among OAuth accounts. The
+	// non-OAuth pool remains a fallback when OAuth cannot acquire a slot.
+	oauth, fallback := splitOpenAIAdaptiveOAuthCandidates(ordered)
+	if len(oauth) > 0 {
+		result := append([]openAIAccountCandidateScore(nil), oauth...)
+		result = append(result, filterOpenAIAdaptiveCandidateScoresToPolicyTierUnpartitioned(fallback, strategy, now, policy)...)
+		return result
+	}
+	return filterOpenAIAdaptiveCandidateScoresToPolicyTierUnpartitioned(ordered, strategy, now, policy)
+}
+
+func filterOpenAIAdaptiveCandidateScoresToPolicyTierUnpartitioned(ordered []openAIAccountCandidateScore, strategy string, now time.Time, policy adaptiveTTFTSwitchPolicy) []openAIAccountCandidateScore {
 	if len(ordered) == 0 || !IsAdaptiveHealthSchedulingStrategy(strategy) {
 		return ordered
 	}
@@ -1525,6 +1545,36 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(ordered []ope
 		}
 	}
 	return filtered
+}
+
+// splitOpenAIAdaptiveOAuthCandidates preserves the caller's order while
+// separating OAuth/setup-token accounts from the pool fallback. It is applied
+// only after the scheduler's hard eligibility filtering.
+func splitOpenAIAdaptiveOAuthCandidates(candidates []openAIAccountCandidateScore) (oauth, fallback []openAIAccountCandidateScore) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	oauth = make([]openAIAccountCandidateScore, 0, len(candidates))
+	fallback = make([]openAIAccountCandidateScore, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account != nil && candidate.account.IsOpenAIOAuth() {
+			oauth = append(oauth, candidate)
+		} else {
+			fallback = append(fallback, candidate)
+		}
+	}
+	return oauth, fallback
+}
+
+func prioritizeOpenAIAdaptiveOAuthCandidates(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	oauth, fallback := splitOpenAIAdaptiveOAuthCandidates(candidates)
+	if len(oauth) == 0 || len(fallback) == 0 {
+		return candidates
+	}
+	result := make([]openAIAccountCandidateScore, 0, len(candidates))
+	result = append(result, oauth...)
+	result = append(result, fallback...)
+	return result
 }
 
 func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) []openAIAccountCandidateScore {
@@ -1670,7 +1720,7 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			break
 		}
 	}
-	return ordered
+	return prioritizeOpenAIAdaptiveOAuthCandidates(ordered)
 }
 
 func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced, coverageTurn bool) (int64, bool) {
@@ -2456,6 +2506,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	loadSkew := plan.loadSkew
 	selectionOrder := plan.selectionOrder
 	selectionOrder = s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, selectionOrder)
+	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
+		selectionOrder = prioritizeOpenAIAdaptiveOAuthCandidates(selectionOrder)
+	}
 	if req.RequireCompact && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
 		return nil, 0, 0, 0, ErrNoAvailableCompactAccounts
 	}
@@ -2484,6 +2537,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			freshPlan := s.buildOpenAIAccountLoadPlanWithHistory(req, filtered, freshLoadMap, history)
 			if len(freshPlan.selectionOrder) > 0 {
 				freshSelectionOrder := s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, freshPlan.selectionOrder)
+				if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
+					freshSelectionOrder = prioritizeOpenAIAdaptiveOAuthCandidates(freshSelectionOrder)
+				}
 				freshAcquireOrder := filterOpenAIAdaptiveCandidateScoresToPolicyTierWithTTFTPolicy(freshSelectionOrder, req.AccountSchedulingStrategy, time.Now(), ttftPolicy)
 				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshAcquireOrder)
 				if freshAcquireErr != nil {
