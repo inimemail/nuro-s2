@@ -553,6 +553,40 @@
             </div>
           </div>
           <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+            <div
+              v-if="upstreamBillingProbeStatus === 'unsupported'"
+              class="rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/60 dark:bg-amber-950/20"
+            >
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.manualMultiplier') }}</label>
+                    <span class="rounded px-1.5 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-300 dark:text-amber-300 dark:ring-amber-700">
+                      {{ manualUpstreamMultiplier != null ? t('admin.accounts.upstreamBilling.manual') : t('admin.accounts.upstreamBilling.unsupported') }}
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                    {{ t(manualUpstreamMultiplier != null ? 'admin.accounts.upstreamBilling.manualMultiplierHint' : 'admin.accounts.upstreamBilling.manualMultiplierUnsupportedHint') }}
+                  </p>
+                </div>
+                <div class="flex flex-none items-center gap-2">
+                  <input
+                    v-model.number="manualUpstreamMultiplier"
+                    data-testid="manual-upstream-multiplier"
+                    :aria-label="t('admin.accounts.upstreamBilling.manualMultiplier')"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.001"
+                    class="input w-28 border-amber-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-amber-800"
+                    :placeholder="t('admin.accounts.upstreamBilling.manualMultiplierPlaceholder')"
+                  />
+                  <span class="text-xs text-amber-700 dark:text-amber-300">×</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.guard') }}</label>
@@ -4295,6 +4329,7 @@ const showUpstreamBillingProbeConfig = computed(() =>
   !isSparkShadowAccount.value &&
   props.account?.type === 'apikey'
 )
+const upstreamBillingProbeStatus = computed(() => props.account?.extra?.upstream_billing_probe?.status)
 const showGrokMediaEligibilityConfig = computed(() =>
   !isSparkShadowAccount.value && props.account?.platform === 'grok'
 )
@@ -4346,8 +4381,11 @@ const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibility
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingRateSyncEnabled = ref(false)
 const ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY = 'adaptive_upstream_multiplier_factor'
+const MANUAL_UPSTREAM_MULTIPLIER_KEY = 'manual_upstream_multiplier'
 const adaptiveUpstreamMultiplierFactor = ref(1)
 const initialAdaptiveUpstreamMultiplierFactor = ref(1)
+const manualUpstreamMultiplier = ref<number | null>(null)
+const initialManualUpstreamMultiplier = ref<number | null>(null)
 const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
 const upstreamBillingGuardGroupOverrides = ref<Record<string, number | string | null>>({})
@@ -5204,6 +5242,9 @@ const configuredUpstreamBillingGuardGroupCount = computed(() =>
 )
 
 const upstreamBillingGuardObservedRate = computed(() => {
+  if (upstreamBillingProbeStatus.value === 'unsupported' && manualUpstreamMultiplier.value != null) {
+    return manualUpstreamMultiplier.value
+  }
   const value = props.account?.upstream_billing_guard_observed_multiplier
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
   return convertedUpstreamRate(value, adaptiveFactorFromValue(props.account?.extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY]))
@@ -5212,6 +5253,12 @@ const upstreamBillingGuardObservedRate = computed(() => {
 const adaptiveFactorFromValue = (value: unknown): number => {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0.001 && parsed <= 100 ? parsed : 1
+}
+
+const manualMultiplierFromValue = (value: unknown): number | null => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100 || parsed === 1) return null
+  return parsed
 }
 
 const upstreamBillingObservedRate = computed<number | null>(() => {
@@ -5263,7 +5310,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
       }
     }
-    if (!upstreamBillingAutoProbeEnabled.value || invalidRange || (upstreamBillingGuardObservedRate.value != null && ((min != null && upstreamBillingGuardObservedRate.value < min) || (limit != null && upstreamBillingGuardObservedRate.value > limit)))) {
+    if ((!upstreamBillingAutoProbeEnabled.value && manualUpstreamMultiplier.value == null) || invalidRange || (upstreamBillingGuardObservedRate.value != null && ((min != null && upstreamBillingGuardObservedRate.value < min) || (limit != null && upstreamBillingGuardObservedRate.value > limit)))) {
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
@@ -5295,7 +5342,7 @@ const toggleUpstreamBillingGuard = () => {
   if (!upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) return
   upstreamBillingGuardEnabled.value = !upstreamBillingGuardEnabled.value
   if (upstreamBillingGuardEnabled.value) {
-    upstreamBillingAutoProbeEnabled.value = true
+    if (manualUpstreamMultiplier.value == null) upstreamBillingAutoProbeEnabled.value = true
   }
 }
 
@@ -5303,7 +5350,7 @@ const toggleUpstreamBillingAutoProbe = () => {
   upstreamBillingAutoProbeEnabled.value = !upstreamBillingAutoProbeEnabled.value
   if (!upstreamBillingAutoProbeEnabled.value) {
     upstreamBillingRateSyncEnabled.value = false
-    upstreamBillingGuardEnabled.value = false
+    if (manualUpstreamMultiplier.value == null) upstreamBillingGuardEnabled.value = false
   }
 }
 
@@ -5519,6 +5566,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
   adaptiveUpstreamMultiplierFactor.value = adaptiveFactorFromValue(extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY])
   initialAdaptiveUpstreamMultiplierFactor.value = adaptiveUpstreamMultiplierFactor.value
+  manualUpstreamMultiplier.value = manualMultiplierFromValue(extra?.[MANUAL_UPSTREAM_MULTIPLIER_KEY])
+  initialManualUpstreamMultiplier.value = manualUpstreamMultiplier.value
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   const overrides: Record<string, number | string | null> = {}
@@ -7473,7 +7522,9 @@ const handleSubmit = async () => {
         delete updatePayload.rate_multiplier
       }
       const factorChanged = factor !== initialAdaptiveUpstreamMultiplierFactor.value
-      if (factorChanged || (updatePayload.extra && typeof updatePayload.extra === 'object')) {
+      const manualValue = manualMultiplierFromValue(manualUpstreamMultiplier.value)
+      const manualChanged = manualValue !== initialManualUpstreamMultiplier.value
+      if (factorChanged || manualChanged || (updatePayload.extra && typeof updatePayload.extra === 'object')) {
         const currentExtra = updatePayload.extra && typeof updatePayload.extra === 'object'
           ? updatePayload.extra as Record<string, unknown>
           : (props.account.extra as Record<string, unknown> || {})
@@ -7485,6 +7536,9 @@ const handleSubmit = async () => {
         // non-default factor; a numeric value is used only for non-defaults.
         if (factorChanged) {
           extra[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY] = factor === 1 ? null : factor
+        }
+        if (manualChanged) {
+          extra[MANUAL_UPSTREAM_MULTIPLIER_KEY] = manualValue
         }
         updatePayload.extra = extra
       }

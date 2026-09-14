@@ -28,6 +28,10 @@ const (
 	UpstreamBillingProbeExtraKey           = "upstream_billing_probe"
 	UpstreamBillingProbeEnabledExtraKey    = "upstream_billing_probe_enabled"
 	UpstreamBillingRateSyncEnabledExtraKey = "upstream_billing_rate_sync_enabled"
+	// ManualUpstreamMultiplierExtraKey is used only when the upstream probe has
+	// explicitly reported that the account does not support billing discovery.
+	// It is an effective scheduling/guard value, not a conversion factor.
+	ManualUpstreamMultiplierExtraKey = "manual_upstream_multiplier"
 	// AdaptiveUpstreamMultiplierFactorExtraKey converts a provider-specific
 	// declared billing unit into this account's effective upstream multiplier.
 	// The effective value is shared by adaptive scheduling, group guards, admin
@@ -83,6 +87,9 @@ var (
 	)
 	ErrInvalidUpstreamBillingProbeEnabled = infraerrors.BadRequest(
 		"INVALID_UPSTREAM_BILLING_PROBE_ENABLED", "upstream_billing_probe_enabled must be a boolean",
+	)
+	ErrInvalidManualUpstreamMultiplier = infraerrors.BadRequest(
+		"INVALID_MANUAL_UPSTREAM_MULTIPLIER", "manual_upstream_multiplier must be a finite number between 0.001 and 100 and is only available when upstream billing discovery is unsupported",
 	)
 	ErrUpstreamBillingRateSyncConflict = infraerrors.Conflict(
 		"UPSTREAM_BILLING_RATE_SYNC_CONFLICT", "account rate multiplier cannot be changed while upstream billing rate sync is enabled",
@@ -729,6 +736,34 @@ func billingMultiplierFromProbeData(data map[string]any) (float64, bool) {
 	}
 	value, ok := data["effective_rate_multiplier"].(float64)
 	return value, ok && value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func accountUpstreamBillingProbeUnsupported(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	return snapshot != nil && snapshot.Status == UpstreamBillingProbeStatusUnsupported
+}
+
+// accountManualUpstreamMultiplier returns a manually supplied effective value
+// only for accounts whose upstream has explicitly reported unsupported billing
+// discovery. Supported accounts must remain on the automatic probe path.
+func accountManualUpstreamMultiplier(account *Account) (float64, bool) {
+	if !accountUpstreamBillingProbeUnsupported(account) {
+		return 0, false
+	}
+	value, ok := resolveAccountExtraNumber(account.Extra, ManualUpstreamMultiplierExtraKey)
+	if !ok || value < 0 || value > adaptiveUpstreamMultiplierFactorMax || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	return value, true
+}
+
+// ManualUpstreamMultiplier returns the active manual value for API/UI
+// consumers without exposing the internal source-status check.
+func ManualUpstreamMultiplier(account *Account) (float64, bool) {
+	return accountManualUpstreamMultiplier(account)
 }
 
 func accountAdaptiveUpstreamMultiplierFactor(account *Account) float64 {

@@ -96,6 +96,11 @@ const displayedRate = computed(() => {
     ? `${Number(value.toPrecision(12))}x`
     : '-'
 })
+const manualUpstreamRate = computed(() => {
+  if (snapshot.value?.status !== 'unsupported') return null
+  const value = Number(props.account.extra?.manual_upstream_multiplier)
+  return Number.isFinite(value) && value >= 0 && value <= 100 && value !== 1 ? value : null
+})
 const observedRate = computed(() => {
   const value = snapshot.value?.data?.effective_rate_multiplier
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -105,12 +110,14 @@ const adaptiveUpstreamMultiplierFactor = computed(() => {
   return Number.isFinite(rawFactor) && rawFactor >= 0.001 && rawFactor <= 100 ? rawFactor : 1
 })
 const effectiveObservedRate = computed(() => {
+  if (manualUpstreamRate.value != null) return manualUpstreamRate.value
   const value = observedRate.value
   if (value == null) return null
   const effective = value * adaptiveUpstreamMultiplierFactor.value
   return Number.isFinite(effective) && effective >= 0 ? effective : null
 })
 const guardObservedRate = computed(() => {
+  if (manualUpstreamRate.value != null) return manualUpstreamRate.value
   const value = props.account.upstream_billing_guard_observed_multiplier
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
   const effective = value * adaptiveUpstreamMultiplierFactor.value
@@ -170,7 +177,7 @@ const protectedGroups = computed(() => {
       const min = typeof item.min === 'number' ? item.min : null
       const disabled = props.account.upstream_billing_guard_enabled !== true
       const blocked = !disabled && (
-        !autoProbeEnabled.value ||
+        (!autoProbeEnabled.value && manualUpstreamRate.value == null) ||
         (min != null && limit != null && min >= limit) ||
         (guardObservedRate.value != null &&
           ((min != null && guardObservedRate.value < min) || (limit != null && guardObservedRate.value > limit)))
@@ -199,14 +206,14 @@ const protectedGroups = computed(() => {
         detail: disabled
           ? t('admin.accounts.upstreamBilling.guardDisabled')
           : blocked
-            ? !autoProbeEnabled.value
+            ? !autoProbeEnabled.value && manualUpstreamRate.value == null
               ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
               : guardObservedRate.value != null && min != null && guardObservedRate.value < min
                 ? t('admin.accounts.upstreamBilling.guardBelowMin')
                 : t('admin.accounts.upstreamBilling.guardPaused')
             : globalProbeDisabled.value
               ? t('admin.accounts.upstreamBilling.guardGlobalProbeDisabled')
-              : !autoProbeEnabled.value
+            : !autoProbeEnabled.value && manualUpstreamRate.value == null
                 ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
                 : pending
                   ? t('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
@@ -231,6 +238,9 @@ const receivedAgeLabel = computed(() => {
   return t('common.time.daysAgo', { n: Math.floor(hours / 24) })
 })
 const statusLabel = computed(() => {
+  if (snapshot.value?.status === 'unsupported' && manualUpstreamRate.value != null) {
+    return `${t('admin.accounts.upstreamBilling.manual')} ${Number(manualUpstreamRate.value.toPrecision(8))}x`
+  }
   if (!autoProbeEnabled.value) return t('admin.accounts.upstreamBilling.autoProbeDisabled')
   if (props.globalProbeEnabled === false) return t('admin.accounts.upstreamBilling.globalProbeDisabled')
   if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')
@@ -245,6 +255,7 @@ const statusLabel = computed(() => {
     : receivedAgeLabel.value
 })
 const statusClass = computed(() => {
+  if (manualUpstreamRate.value != null) return 'text-amber-600 dark:text-amber-400'
   if (!autoProbeEnabled.value || props.globalProbeEnabled === false) return 'text-gray-500 dark:text-gray-400'
   if (snapshot.value?.status === 'failed') return 'text-red-600 dark:text-red-400'
   if (snapshot.value?.status === 'unsupported') return 'text-gray-500 dark:text-gray-400'

@@ -74,6 +74,24 @@ func TestAccountUpstreamBillingGuardRequiresAutoProbeOnlyWhenConfigured(t *testi
 	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
 }
 
+func TestAccountUpstreamBillingGuardUsesManualMultiplierForUnsupportedProbe(t *testing.T) {
+	groupID := int64(10)
+	min, max := 0.1, 0.2
+	account := &Account{
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+		Extra: map[string]any{
+			UpstreamBillingProbeExtraKey:     map[string]any{"status": UpstreamBillingProbeStatusUnsupported},
+			ManualUpstreamMultiplierExtraKey: 0.16,
+		},
+		AccountGroups: []AccountGroup{{GroupID: groupID, UpstreamBillingGuardMinMultiplier: &min, UpstreamBillingGuardMaxMultiplier: &max}},
+	}
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+	account.Extra[ManualUpstreamMultiplierExtraKey] = 0.25
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+}
+
 func TestAccountUpstreamBillingGuardMasterSwitchIsNoOpWhenDisabled(t *testing.T) {
 	observed := 3.0
 	limit := 1.0

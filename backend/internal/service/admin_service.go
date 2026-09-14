@@ -3455,6 +3455,44 @@ func normalizeAdaptiveUpstreamMultiplierFactorUpdateExtra(account *Account, extr
 	return normalized, nil
 }
 
+// normalizeManualUpstreamMultiplierExtra keeps the manual override scoped to
+// accounts whose last probe explicitly reported unsupported. A value of 1 (or
+// null) means "clear override"; unlike the automatic factor, a stored manual
+// value is already in final scheduling units and is never multiplied again.
+func normalizeManualUpstreamMultiplierExtra(account *Account, extra map[string]any, provided bool, raw any) (map[string]any, error) {
+	if extra == nil {
+		return extra, nil
+	}
+	normalized := maps.Clone(extra)
+	if !accountUpstreamBillingProbeUnsupported(account) {
+		// Do not allow a stale or manually injected override to affect a supported
+		// account. It is safe to remove it when that account returns to automatic
+		// probing.
+		delete(normalized, ManualUpstreamMultiplierExtraKey)
+		return normalized, nil
+	}
+	if !provided || raw == nil {
+		if !provided {
+			if current, exists := account.Extra[ManualUpstreamMultiplierExtraKey]; exists {
+				normalized[ManualUpstreamMultiplierExtraKey] = current
+			}
+		} else {
+			delete(normalized, ManualUpstreamMultiplierExtraKey)
+		}
+		return normalized, nil
+	}
+	value, ok := resolveAccountExtraNumber(map[string]any{ManualUpstreamMultiplierExtraKey: raw}, ManualUpstreamMultiplierExtraKey)
+	if !ok || value < 0 || value > adaptiveUpstreamMultiplierFactorMax || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, ErrInvalidManualUpstreamMultiplier
+	}
+	if value == 1 {
+		delete(normalized, ManualUpstreamMultiplierExtraKey)
+	} else {
+		normalized[ManualUpstreamMultiplierExtraKey] = value
+	}
+	return normalized, nil
+}
+
 // adaptiveFactorOnlyExtraChange reports whether an account edit changed no
 // persisted Extra value other than the upstream multiplier conversion factor. Probe flags and
 // the probe snapshot are runtime-owned and are intentionally ignored because
@@ -3466,6 +3504,7 @@ func adaptiveFactorOnlyExtraChange(current, next map[string]any) bool {
 	right := maps.Clone(next)
 	for _, key := range []string{
 		AdaptiveUpstreamMultiplierFactorExtraKey,
+		ManualUpstreamMultiplierExtraKey,
 		UpstreamBillingProbeEnabledExtraKey,
 		UpstreamBillingRateSyncEnabledExtraKey,
 		UpstreamBillingProbeExtraKey,
@@ -3785,6 +3824,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingProbeExtraKey)
+		delete(accountExtra, ManualUpstreamMultiplierExtraKey)
 	}
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -3914,6 +3954,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	requestedRateSyncEnabledUpdate := input.RateSyncEnabled
 	currentProbeEnabled := account.IsUpstreamBillingProbeEnabled()
 	currentRateSyncEnabled := upstreamBillingRateSyncEnabled(account)
+	manualOverrideRequested := false
+	if input.Extra != nil {
+		if raw, provided := input.Extra[ManualUpstreamMultiplierExtraKey]; provided && raw != nil {
+			if value, ok := resolveAccountExtraNumber(map[string]any{ManualUpstreamMultiplierExtraKey: raw}, ManualUpstreamMultiplierExtraKey); ok {
+				manualOverrideRequested = accountUpstreamBillingProbeUnsupported(account) && value >= 0 && value <= adaptiveUpstreamMultiplierFactorMax && value != 1 && !math.IsNaN(value) && !math.IsInf(value, 0)
+			}
+		}
+	}
 	guardCapableAccount := IsUpstreamBillingProbeIdentity(account.Platform, effectiveAccountType)
 	hasConfiguredGuardGroup := func(groupIDs []int64) (bool, error) {
 		selected := make(map[int64]struct{}, len(groupIDs))
@@ -3947,8 +3995,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if !guardCapableAccount {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
-		enabled := true
-		requestedProbeEnabledUpdate = &enabled
+		_, manualOverrideActive := accountManualUpstreamMultiplier(account)
+		if !manualOverrideRequested && !manualOverrideActive {
+			enabled := true
+			requestedProbeEnabledUpdate = &enabled
+		}
 	}
 	if !guardCapableAccount {
 		account.UpstreamBillingGuardEnabled = false
@@ -3960,6 +4011,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	var normalizedExtra map[string]any
 	var rawFactor any
 	factorProvided := false
+	var rawManualMultiplier any
+	manualMultiplierProvided := false
 	adaptiveFactorOnlyExtraUpdate := false
 	if input.Extra != nil {
 		if hasAnyOpenAIFirstTokenTimeoutUpdate(input.Extra) {
@@ -3986,6 +4039,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err != nil {
 			return nil, err
 		}
+		rawManualMultiplier, manualMultiplierProvided = input.Extra[ManualUpstreamMultiplierExtraKey]
+		normalizedExtra, err = normalizeManualUpstreamMultiplierExtra(account, normalizedExtra, manualMultiplierProvided, rawManualMultiplier)
+		if err != nil {
+			return nil, err
+		}
 		if raw, exists := normalizedExtra[UpstreamBillingProbeEnabledExtraKey]; exists {
 			enabled, ok := raw.(bool)
 			if !ok {
@@ -4009,15 +4067,15 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
-		if factorProvided {
+		if factorProvided || manualMultiplierProvided {
 			requestedFactor := float64(1)
-			if rawFactor != nil {
+			if factorProvided && rawFactor != nil {
 				requestedFactor, _ = resolveAccountExtraNumber(normalizedExtra, AdaptiveUpstreamMultiplierFactorExtraKey)
 			}
 			probeSettingsUnchanged := (requestedProbeEnabledUpdate == nil || *requestedProbeEnabledUpdate == currentProbeEnabled) &&
 				(requestedRateSyncEnabledUpdate == nil || *requestedRateSyncEnabledUpdate == currentRateSyncEnabled)
 			adaptiveFactorOnlyExtraUpdate = probeSettingsUnchanged &&
-				math.Abs(requestedFactor-accountAdaptiveUpstreamMultiplierFactor(account)) > 1e-12 &&
+				((factorProvided && math.Abs(requestedFactor-accountAdaptiveUpstreamMultiplierFactor(account)) > 1e-12) || manualMultiplierProvided) &&
 				adaptiveFactorOnlyExtraChange(account.Extra, normalizedExtra)
 		}
 	}
@@ -4166,7 +4224,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		effectiveRateSyncEnabled = false
 	}
 	if desiredGuardEnabled && !effectiveProbeEnabled {
-		return nil, ErrUpstreamBillingProbeRequiredByGuard
+		if _, manual := accountManualUpstreamMultiplier(account); !manual && !manualOverrideRequested {
+			return nil, ErrUpstreamBillingProbeRequiredByGuard
+		}
 	}
 	if account.Extra == nil && (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil) {
 		account.Extra = make(map[string]any)

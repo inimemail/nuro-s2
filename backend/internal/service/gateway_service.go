@@ -4262,6 +4262,12 @@ func accountEffectiveUpstreamMultiplier(account *Account, now time.Time) (float6
 	if account == nil {
 		return 0, false
 	}
+	// Unsupported upstreams may be assigned an explicit effective value by an
+	// administrator. It is already in scheduling units and must not be multiplied
+	// by the automatic conversion factor.
+	if value, ok := accountManualUpstreamMultiplier(account); ok {
+		return value, true
+	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	// Probe failures retain the last trusted payload. A stale last-known
 	// multiplier remains useful for cost ordering after its freshness window;

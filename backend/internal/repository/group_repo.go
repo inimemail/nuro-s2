@@ -1084,16 +1084,30 @@ type groupAccountCounts struct {
 }
 
 const (
+	upstreamBillingGuardManualMultiplierConfiguredSQL = `(a.extra -> 'upstream_billing_probe' ->> 'status') = 'unsupported'
+		AND (a.extra ->> 'manual_upstream_multiplier') ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+		AND (a.extra ->> 'manual_upstream_multiplier')::double precision BETWEEN 0 AND 100`
+	upstreamBillingGuardManualMultiplierConfiguredNoAliasSQL = `(extra -> 'upstream_billing_probe' ->> 'status') = 'unsupported'
+		AND (extra ->> 'manual_upstream_multiplier') ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+		AND (extra ->> 'manual_upstream_multiplier')::double precision BETWEEN 0 AND 100`
+
 	// Guard thresholds are expressed in the same effective scheduling units as
-	// adaptive selection. The raw observed probe value remains stored for
-	// diagnostics; this SQL applies the optional per-account correction factor
-	// at read time and fails safe to 1 for malformed legacy values.
-	upstreamBillingGuardEffectiveObservedMultiplierSQL = `a.upstream_billing_guard_observed_multiplier * CASE
-			WHEN (a.extra ->> 'adaptive_upstream_multiplier_factor') ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$'
-				AND (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision BETWEEN 0.001 AND 100
-			THEN (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision
-			ELSE 1.0
-		END`
+	// adaptive selection. Unsupported accounts with a valid manual value use
+	// that value directly; all other accounts use the raw observation and its
+	// optional conversion factor. Invalid legacy values fail safe to the
+	// automatic path rather than bypassing a group guard.
+	upstreamBillingGuardEffectiveObservedMultiplierSQL = `COALESCE(
+			CASE
+				WHEN ` + upstreamBillingGuardManualMultiplierConfiguredSQL + `
+				THEN (a.extra ->> 'manual_upstream_multiplier')::double precision
+			END,
+			a.upstream_billing_guard_observed_multiplier * CASE
+				WHEN (a.extra ->> 'adaptive_upstream_multiplier_factor') ~ '^(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+					AND (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision BETWEEN 0.001 AND 100
+				THEN (a.extra ->> 'adaptive_upstream_multiplier_factor')::double precision
+				ELSE 1.0
+			END
+		)`
 
 	// Binding overrides can only tighten a configured side of the group policy.
 	// PostgreSQL's GREATEST/LEAST ignore NULL arguments, so each comparison must
@@ -1132,7 +1146,8 @@ const (
 						AND a.upstream_billing_guard_enabled = TRUE
 						AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 					AND (
-						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+						(COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+							AND NOT (` + upstreamBillingGuardManualMultiplierConfiguredSQL + `))
 						OR COALESCE(` + upstreamBillingGuardObservedOutOfBoundsSQL + `,
 							FALSE
 						)

@@ -75,6 +75,7 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	service.UpstreamBillingProbeExtraKey:           {},
 	service.UpstreamBillingProbeEnabledExtraKey:    {},
 	service.UpstreamBillingRateSyncEnabledExtraKey: {},
+	service.ManualUpstreamMultiplierExtraKey:       {},
 }
 
 const codexFingerprintSeedPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -3145,7 +3146,7 @@ func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id i
 				WHERE id = $2
 					AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax')
 					AND type = $3
-					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true')
+					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true' OR (`+upstreamBillingGuardManualMultiplierConfiguredNoAliasSQL+`))
 					AND deleted_at IS NULL
 			`, enabled, id, service.AccountTypeAPIKey)
 	if err != nil {
@@ -3405,6 +3406,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			shouldSync = true
 		}
 		if _, changed := updates.Extra[service.AdaptiveUpstreamMultiplierFactorExtraKey]; changed {
+			shouldSync = true
+		}
+		if _, changed := updates.Extra[service.ManualUpstreamMultiplierExtraKey]; changed {
 			shouldSync = true
 		}
 		if shouldSync {

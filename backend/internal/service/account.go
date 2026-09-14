@@ -586,16 +586,22 @@ func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
 	if min != nil && max != nil && *min >= *max {
 		return true
 	}
-	if !a.IsUpstreamBillingProbeEnabled() {
-		return true
+	// An unsupported upstream may use an administrator-supplied effective value.
+	// Manual values are already converted and therefore bypass both the probe
+	// requirement and the automatic conversion factor.
+	observed, manual := accountManualUpstreamMultiplier(a)
+	if !manual {
+		if !a.IsUpstreamBillingProbeEnabled() {
+			return true
+		}
+		if a.UpstreamBillingGuardObservedMultiplier == nil {
+			return false
+		}
+		// Group protection uses the same effective upstream units as adaptive
+		// scheduling. The raw probe value remains available in the snapshot; only
+		// this decision applies the optional per-account correction factor.
+		observed = *a.UpstreamBillingGuardObservedMultiplier * accountAdaptiveUpstreamMultiplierFactor(a)
 	}
-	if a.UpstreamBillingGuardObservedMultiplier == nil {
-		return false
-	}
-	// Group protection uses the same effective upstream units as adaptive
-	// scheduling. The raw probe value remains available in the snapshot; only
-	// this decision applies the optional per-account correction factor.
-	observed := *a.UpstreamBillingGuardObservedMultiplier * accountAdaptiveUpstreamMultiplierFactor(a)
 	return (min != nil && observed < *min) || (max != nil && observed > *max)
 }
 

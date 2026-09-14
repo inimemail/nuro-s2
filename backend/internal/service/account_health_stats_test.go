@@ -161,6 +161,22 @@ func TestAccountEffectiveUpstreamMultiplierDoesNotFallBackToLocalRate(t *testing
 	require.False(t, ok)
 }
 
+func TestAccountEffectiveUpstreamMultiplierUsesManualValueOnlyForUnsupportedProbe(t *testing.T) {
+	account := makeHealthTestAccount(1, 1, 0, true).account
+	account.Extra = map[string]any{
+		UpstreamBillingProbeEnabledExtraKey: true,
+		UpstreamBillingProbeExtraKey:        map[string]any{"status": UpstreamBillingProbeStatusUnsupported},
+		ManualUpstreamMultiplierExtraKey:    0.16,
+	}
+	rate, ok := accountEffectiveUpstreamMultiplier(account, time.Now())
+	require.True(t, ok)
+	require.Equal(t, 0.16, rate)
+
+	account.Extra[UpstreamBillingProbeExtraKey].(map[string]any)["status"] = UpstreamBillingProbeStatusOK
+	_, ok = accountEffectiveUpstreamMultiplier(account, time.Now())
+	require.False(t, ok, "manual value must not override a supported account")
+}
+
 func TestAccountEffectiveUpstreamMultiplierKeepsFreshLastKnownAfterProbeFailure(t *testing.T) {
 	now := time.Now()
 	account := withProbeMultiplier(makeHealthTestAccount(1, 1, 0, true), 0.07, now.Add(time.Minute)).account
