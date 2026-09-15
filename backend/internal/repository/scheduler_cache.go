@@ -572,9 +572,10 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		Schedulable:                 account.Schedulable,
 		UpstreamBillingGuardEnabled: account.UpstreamBillingGuardEnabled,
 		// Binding-scoped protection only needs the last successful observation;
-		// limits and the account probe toggle are carried below with their own
-		// scheduler metadata. Legacy account-global guard fields stay out of the
-		// hot snapshot payload because they no longer affect scheduling.
+		// limits, the account probe toggle, and the minimal unsupported marker for
+		// manual values are carried below with scheduler metadata. Legacy
+		// account-global guard fields stay out of the hot snapshot payload because
+		// they no longer affect scheduling.
 		UpstreamBillingGuardObservedMultiplier: account.UpstreamBillingGuardObservedMultiplier,
 		RateLimitedAt:                          account.RateLimitedAt,
 		RateLimitResetAt:                       account.RateLimitResetAt,
@@ -727,6 +728,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 	keys := []string{
 		service.UpstreamBillingProbeEnabledExtraKey,
 		service.AdaptiveUpstreamMultiplierFactorExtraKey,
+		service.ManualUpstreamMultiplierExtraKey,
 		"mixed_scheduling",
 		"allow_overages",
 		"privacy_mode",
@@ -788,6 +790,25 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		if value, ok := extra[key]; ok && value != nil {
 			filtered[key] = value
 		}
+	}
+	// Manual upstream multipliers are valid only when the upstream explicitly
+	// reported unsupported billing discovery. Keep just that small status marker
+	// in the scheduler snapshot; the full probe payload can be large and is not
+	// needed by request routing. Without this marker, the compact Redis snapshot
+	// loses the manual override's activation condition and treats the value as
+	// absent even though the database/group statistics still recognize it.
+	if probe, ok := extra[service.UpstreamBillingProbeExtraKey].(map[string]any); ok {
+		if status, ok := probe["status"].(string); ok && status == service.UpstreamBillingProbeStatusUnsupported {
+			filtered[service.UpstreamBillingProbeExtraKey] = map[string]any{"status": status}
+		} else {
+			delete(filtered, service.UpstreamBillingProbeExtraKey)
+		}
+	} else {
+		delete(filtered, service.UpstreamBillingProbeExtraKey)
+	}
+	if _, unsupported := filtered[service.UpstreamBillingProbeExtraKey]; !unsupported {
+		// Do not carry a stale/manual value without its required source status.
+		delete(filtered, service.ManualUpstreamMultiplierExtraKey)
 	}
 	if len(filtered) == 0 {
 		return nil

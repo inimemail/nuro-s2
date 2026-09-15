@@ -2253,7 +2253,8 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 				AND a.upstream_billing_guard_enabled = TRUE
 				AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 				AND (
-					COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+					(COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+						AND NOT (`+upstreamBillingGuardManualMultiplierConfiguredSQL+`))
 					OR COALESCE(
 						`+upstreamBillingGuardObservedOutOfBoundsSQL+`,
 						FALSE

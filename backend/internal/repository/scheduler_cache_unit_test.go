@@ -66,6 +66,69 @@ func TestBuildSchedulerMetadataAccount_KeepsAnthropicAPIKeyBehaviorFlags(t *test
 	require.Equal(t, service.WebSearchModeDisabled, got.GetWebSearchEmulationMode())
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsManualUnsupportedMultiplier(t *testing.T) {
+	account := service.Account{
+		ID:       44,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			service.UpstreamBillingProbeEnabledExtraKey: false,
+			service.UpstreamBillingProbeExtraKey: map[string]any{
+				"status": service.UpstreamBillingProbeStatusUnsupported,
+				"data":   map[string]any{"large_payload": "must-not-enter-metadata"},
+			},
+			service.ManualUpstreamMultiplierExtraKey: 0.16,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+	probe, ok := got.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, service.UpstreamBillingProbeStatusUnsupported, probe["status"])
+	require.NotContains(t, probe, "data")
+	require.Equal(t, 0.16, got.Extra[service.ManualUpstreamMultiplierExtraKey])
+
+	// A supported probe must not carry a manual value into the request snapshot;
+	// the override is intentionally scoped to unsupported upstreams.
+	account.Extra[service.UpstreamBillingProbeExtraKey] = map[string]any{
+		"status": service.UpstreamBillingProbeStatusOK,
+	}
+	supported := buildSchedulerMetadataAccount(account)
+	require.NotContains(t, supported.Extra, service.UpstreamBillingProbeExtraKey)
+	require.NotContains(t, supported.Extra, service.ManualUpstreamMultiplierExtraKey)
+}
+
+func TestSchedulerCache_RoundTripsManualUnsupportedMultiplier(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cache := newSchedulerCacheWithChunkSizes(client, 16, 16).(*schedulerCache)
+	ctx := context.Background()
+	account := service.Account{
+		ID:       45,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			service.UpstreamBillingProbeEnabledExtraKey: false,
+			service.UpstreamBillingProbeExtraKey: map[string]any{
+				"status": service.UpstreamBillingProbeStatusUnsupported,
+			},
+			service.ManualUpstreamMultiplierExtraKey: 0.16,
+		},
+	}
+	bucket := service.SchedulerBucket{GroupID: 9, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{account}))
+
+	gotAccounts, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, gotAccounts, 1)
+	value, ok := service.ManualUpstreamMultiplier(gotAccounts[0])
+	require.True(t, ok)
+	require.Equal(t, 0.16, value)
+}
+
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	limit := 1.25
 	minimum := 0.75

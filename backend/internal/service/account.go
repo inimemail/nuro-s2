@@ -571,8 +571,10 @@ func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
 
 // IsUpstreamBillingGuardBlockedForGroup makes an account x group decision.
 // Missing bounds mean unrestricted. A configured guard requires automatic
-// probing; an enabled probe with no first successful observation is allowed
-// while waiting. A successful value inside the interval restores scheduling.
+// probing unless an unsupported upstream has a valid administrator-supplied
+// effective value; an enabled probe with no first successful observation is
+// allowed while waiting. A successful value inside the interval restores
+// scheduling.
 func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
 	if a == nil || !a.UpstreamBillingGuardEnabled {
 		return false
