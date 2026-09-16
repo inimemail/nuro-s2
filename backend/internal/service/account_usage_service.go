@@ -1605,7 +1605,9 @@ func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account
 	if account.IsOpenAIAgentIdentity() {
 		return "", nil
 	}
-	if s != nil && s.openAITokenProvider != nil {
+	// Setup-token credentials are static and intentionally do not participate
+	// in the OAuth refresh provider; only regular OAuth accounts can use it.
+	if account.IsOpenAIOAuth() && s != nil && s.openAITokenProvider != nil {
 		return s.openAITokenProvider.GetAccessToken(ctx, account)
 	}
 	return strings.TrimSpace(account.GetOpenAIAccessToken()), nil

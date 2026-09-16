@@ -20,7 +20,7 @@ func setOpenAICodexRoutingHint(headers http.Header, account *Account, model, tie
 			delete(headers, key)
 		}
 	}
-	if !enabled || account == nil || !account.IsOpenAIOAuth() {
+	if !enabled || account == nil || !account.IsOpenAIOAuthLike() {
 		return
 	}
 	model = strings.TrimSpace(model)
@@ -36,7 +36,7 @@ func setOpenAICodexRoutingHint(headers http.Header, account *Account, model, tie
 }
 
 func openAICodexRoutingHintEligible(account *Account, enabled bool) bool {
-	return enabled && account != nil && account.IsOpenAIOAuth() && !account.IsOpenAIUpstreamStrongIsolationEnabled()
+	return enabled && account != nil && account.IsOpenAIOAuthLike() && !account.IsOpenAIUpstreamStrongIsolationEnabled()
 }
 
 func setOpenAICodexRoutingHintFromBody(headers http.Header, account *Account, body []byte, enabled bool) {

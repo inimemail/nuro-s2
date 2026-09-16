@@ -116,8 +116,8 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if _, ok := r.PostForm["scope"]; ok {
-			errCh <- "scope should be omitted"
+		if got := r.PostForm.Get("scope"); got != openai.RefreshScopes {
+			errCh <- "scope mismatch"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

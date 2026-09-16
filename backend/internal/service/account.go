@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -1184,7 +1185,7 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
-		if a.IsOpenAIOAuth() && !a.IsOpenAIPassthroughEnabled() {
+		if a.IsOpenAIOAuthLike() && !a.IsOpenAIPassthroughEnabled() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
 		return true // 无映射 = 允许所有
@@ -2509,7 +2510,26 @@ func (a *Account) GetChatGPTAccountID() string {
 	if !a.IsOpenAIOAuthLike() {
 		return ""
 	}
-	return a.GetCredential("chatgpt_account_id")
+	if accountID := strings.TrimSpace(a.GetCredential("chatgpt_account_id")); accountID != "" {
+		return accountID
+	}
+	// Older/imported OAuth credentials may not contain the dedicated claim but
+	// can still carry it in an ID/access token. Decode only the JWT payload;
+	// this is a routing/header fallback, not an authorization decision.
+	for _, key := range []string{"id_token", "access_token"} {
+		token := strings.TrimSpace(a.GetCredential(key))
+		if token == "" {
+			continue
+		}
+		claims, err := openai.DecodeIDToken(token)
+		if err != nil {
+			continue
+		}
+		if info := claims.GetUserInfo(); info != nil && strings.TrimSpace(info.ChatGPTAccountID) != "" {
+			return strings.TrimSpace(info.ChatGPTAccountID)
+		}
+	}
+	return ""
 }
 
 func (a *Account) GetOpenAIDeviceID() string {

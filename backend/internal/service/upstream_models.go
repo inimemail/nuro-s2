@@ -310,7 +310,7 @@ func (s *AccountTestService) buildAntigravityAPIKeyModelsRequest(ctx context.Con
 }
 
 func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
-	if account.IsOpenAIOAuth() {
+	if account.IsOpenAIOAuthLike() {
 		return s.buildOpenAIOAuthUpstreamModelsRequest(ctx, account)
 	}
 	if account.Type != AccountTypeAPIKey {
@@ -350,7 +350,7 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 	if err != nil {
 		return nil, newUpstreamModelSyncConfigError("Failed to resolve OpenAI account credentials", err)
 	}
-	if credentialAccount == nil || !credentialAccount.IsOpenAIOAuth() {
+	if credentialAccount == nil || !credentialAccount.IsOpenAIOAuthLike() {
 		return nil, newUpstreamModelSyncUnsupportedError("Unsupported OpenAI account type for upstream model sync", nil)
 	}
 
@@ -375,7 +375,10 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 		}
 	} else {
 		accessToken := strings.TrimSpace(credentialAccount.GetOpenAIAccessToken())
-		if s.openAITokenProvider != nil {
+		// Setup-token credentials have no refresh lifecycle and the OAuth token
+		// provider intentionally rejects them; use their static access token
+		// directly. Only regular OAuth accounts may go through the provider.
+		if credentialAccount.IsOpenAIOAuth() && s.openAITokenProvider != nil {
 			accessToken, err = s.openAITokenProvider.GetAccessToken(ctx, credentialAccount)
 		}
 		if err != nil {

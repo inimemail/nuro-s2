@@ -137,6 +137,8 @@ func TestForwardAsChatCompletions_UnknownModelDoesNotUseDefaultMappedModel(t *te
 	require.Nil(t, result)
 	require.Equal(t, "gpt6", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.NotEqual(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "", gjson.GetBytes(upstream.lastBody, "instructions").String())
+	require.Equal(t, gjson.String, gjson.GetBytes(upstream.lastBody, "instructions").Type)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 

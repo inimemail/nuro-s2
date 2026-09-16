@@ -107,7 +107,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// Keep full replay there so upstream prompt caching can grow turn by turn.
 	keepFullReplayForCacheBoost := cacheBoostEnabled && (len(body) >= openAIPromptCacheBoostMinBodyBytes ||
 		s.shouldEnhanceOpenAIPromptCacheLongContext(ctx, c, account, upstreamModel, body))
-	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth && previousResponseID == "" && !compatContinuationDisabled && !keepFullReplayForCacheBoost {
+	if compatReplayGuardEnabled && !account.IsOpenAIOAuthLike() && previousResponseID == "" && !compatContinuationDisabled && !keepFullReplayForCacheBoost {
 		compatReplayTrimmed = applyAnthropicCompatFullReplayGuard(&anthropicReq)
 	}
 
@@ -135,7 +135,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		responsesReq.PreviousResponseID = previousResponseID
 		trimAnthropicCompatResponsesInputToLatestTurn(responsesReq)
 	}
-	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth {
+	if compatReplayGuardEnabled && !account.IsOpenAIOAuthLike() {
 		appendOpenAICompatClaudeCodeTodoGuard(responsesReq)
 	}
 
@@ -185,7 +185,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	if account.Type == AccountTypeOAuth {
+	if account.IsOpenAIOAuthLike() {
 		var reqBody map[string]any
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
@@ -342,7 +342,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		attempt = newOpenAIUpstreamAttempt()
 		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
 	}
-	if account.Type == AccountTypeOAuth && account.Platform != PlatformGrok {
+	if account.IsOpenAIOAuthLike() && account.Platform != PlatformGrok {
 		setOpenAICompatMessagesBridgeContext(c, true)
 	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
@@ -369,14 +369,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			upstreamReq.Header.Set("conversation_id", isolatedSessionID)
 		}
 	}
-	if account.Type == AccountTypeOAuth && account.Platform != PlatformGrok {
+	if account.IsOpenAIOAuthLike() && account.Platform != PlatformGrok {
 		// Anthropic Messages compatibility uses the ChatGPT Codex SSE endpoint.
 		// This bridge intentionally does not send the Responses experimental beta
 		// header or force a Codex originator identity.
 		upstreamReq.Header.Del("OpenAI-Beta")
 		upstreamReq.Header.Del("originator")
 	}
-	if account.Type == AccountTypeOAuth && promptCacheKey != "" && strings.TrimSpace(c.GetHeader("conversation_id")) == "" {
+	if account.IsOpenAIOAuthLike() && promptCacheKey != "" && strings.TrimSpace(c.GetHeader("conversation_id")) == "" {
 		upstreamReq.Header.Del("conversation_id")
 	}
 	if !strongIsolationEnabled && compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
@@ -559,7 +559,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	}
 
-	if account.Type == AccountTypeOAuth && promptCacheKey != "" {
+	if account.IsOpenAIOAuthLike() && promptCacheKey != "" {
 		if turnState := strings.TrimSpace(resp.Header.Get("x-codex-turn-state")); turnState != "" {
 			s.bindOpenAICompatSessionTurnState(ctx, c, account, promptCacheKey, turnState)
 		}
@@ -599,7 +599,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
-	if handleErr == nil && account.Type == AccountTypeOAuth && account.Platform != PlatformGrok {
+	if handleErr == nil && account.IsOpenAIOAuthLike() && account.Platform != PlatformGrok {
 		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 		}

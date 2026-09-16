@@ -22,7 +22,7 @@ func shouldFlattenOpenAIResponsesNamespaces(account *Account, transport OpenAIUp
 	if passthroughEnabled {
 		return false
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
+	if account == nil || !account.IsOpenAIOAuthLike() {
 		return false
 	}
 	if !compactPath && !account.IsOpenAIResponsesFlattenNamespacesEnabled() {
@@ -45,7 +45,7 @@ func shouldStripOpenAIResponsesInputNamespaces(account *Account, transport OpenA
 	if passthroughEnabled {
 		return false
 	}
-	if account == nil || (!account.IsOpenAIOAuth() && !account.IsOpenAIApiKey()) {
+	if account == nil || (!account.IsOpenAIOAuthLike() && !account.IsOpenAIApiKey()) {
 		return false
 	}
 	return transport != OpenAIUpstreamTransportResponsesWebsocketV2

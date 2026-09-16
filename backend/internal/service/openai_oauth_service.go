@@ -350,7 +350,29 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 // 从 accounts/check 获取最新 plan_type、subscription_expires_at、email，
 // 然后尝试关闭训练数据共享。适用于所有获取/刷新 token 的路径。
 func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *OpenAITokenInfo, proxyURL string) {
-	if tokenInfo.AccessToken == "" || s.privacyClientFactory == nil {
+	if tokenInfo == nil || tokenInfo.AccessToken == "" {
+		return
+	}
+
+	// A refresh response can omit id_token even though its access token still
+	// carries the OpenAI identity claims. Recover them before querying ChatGPT so
+	// refreshed/imported accounts do not silently lose chatgpt-account-id.
+	if tokenInfo.ChatGPTAccountID == "" || tokenInfo.ChatGPTUserID == "" || tokenInfo.OrganizationID == "" {
+		if claims, err := openai.DecodeIDToken(tokenInfo.AccessToken); err == nil {
+			if userInfo := claims.GetUserInfo(); userInfo != nil {
+				if tokenInfo.ChatGPTAccountID == "" {
+					tokenInfo.ChatGPTAccountID = userInfo.ChatGPTAccountID
+				}
+				if tokenInfo.ChatGPTUserID == "" {
+					tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
+				}
+				if tokenInfo.OrganizationID == "" {
+					tokenInfo.OrganizationID = userInfo.OrganizationID
+				}
+			}
+		}
+	}
+	if s.privacyClientFactory == nil {
 		return
 	}
 
@@ -374,6 +396,9 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 		if tokenInfo.Email == "" && info.Email != "" {
 			tokenInfo.Email = info.Email
 		}
+		if tokenInfo.ChatGPTAccountID == "" && info.AccountID != "" {
+			tokenInfo.ChatGPTAccountID = info.AccountID
+		}
 	}
 
 	// 尝试设置隐私（关闭训练数据共享），best-effort
@@ -392,37 +417,38 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	if account.Type != AccountTypeOAuth {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
+	var proxyURL string
+	if account.ProxyID != nil && s.proxyRepo != nil {
+		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
+		if err == nil && proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
 
 	refreshToken := account.GetCredential("refresh_token")
 	if refreshToken == "" {
 		accessToken := account.GetCredential("access_token")
 		if accessToken != "" {
 			tokenInfo := &OpenAITokenInfo{
-				AccessToken:      accessToken,
-				RefreshToken:     "",
-				IDToken:          account.GetCredential("id_token"),
-				ClientID:         account.GetCredential("client_id"),
-				Email:            account.GetCredential("email"),
-				ChatGPTAccountID: account.GetCredential("chatgpt_account_id"),
-				ChatGPTUserID:    account.GetCredential("chatgpt_user_id"),
-				OrganizationID:   account.GetCredential("organization_id"),
-				PlanType:         account.GetCredential("plan_type"),
+				AccessToken:           accessToken,
+				RefreshToken:          "",
+				IDToken:               account.GetCredential("id_token"),
+				ClientID:              account.GetCredential("client_id"),
+				Email:                 account.GetCredential("email"),
+				ChatGPTAccountID:      account.GetCredential("chatgpt_account_id"),
+				ChatGPTUserID:         account.GetCredential("chatgpt_user_id"),
+				OrganizationID:        account.GetCredential("organization_id"),
+				PlanType:              account.GetCredential("plan_type"),
+				SubscriptionExpiresAt: account.GetCredential("subscription_expires_at"),
 			}
 			if expiresAt := account.GetCredentialAsTime("expires_at"); expiresAt != nil {
 				tokenInfo.ExpiresAt = expiresAt.Unix()
 				tokenInfo.ExpiresIn = int64(time.Until(*expiresAt).Seconds())
 			}
+			s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
 			return tokenInfo, nil
 		}
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_NO_REFRESH_TOKEN", "no refresh token available")
-	}
-
-	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
 	}
 
 	clientID := account.GetCredential("client_id")
