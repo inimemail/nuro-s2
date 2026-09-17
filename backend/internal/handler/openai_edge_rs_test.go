@@ -500,6 +500,23 @@ func TestOpenAIEdgePrepareResponsesWSFallsBackForPerTurnGovernance(t *testing.T)
 	}
 }
 
+func TestOpenAIEdgePrepareNativeCompactionUsesGoCapabilityScheduling(t *testing.T) {
+	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
+	h.cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+		Enabled: true, InternalAPIEnabled: true, InternalSecret: "edge-secret",
+		Mode: "relay", RelayResponses: true, RolloutPercent: 100,
+	}
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/prepare",
+		`{"edge_request_id":"edge-compact-1","method":"POST","path":"/v1/responses","body":{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"compaction_trigger"}]},"stream":true}`, "edge-secret")
+	h.OpenAIEdgePrepare(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	var plan service.OpenAIEdgePlan
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &plan))
+	require.Equal(t, service.OpenAIEdgeActionFallbackGo, plan.Action)
+	require.Equal(t, "native_compaction_requires_go", plan.Reason)
+	require.Empty(t, plan.LeaseID, "compact must be classified before Edge reserves an ordinary Responses account")
+}
+
 func TestOpenAIEdgeResponsesWSAccountFallbackReason(t *testing.T) {
 	strongIsolation := &service.Account{
 		Platform: service.PlatformOpenAI,

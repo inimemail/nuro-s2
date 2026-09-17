@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,51 @@ import (
 
 const compactProbeSSESuccessBody = "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"id\":\"cmp_probe\",\"encrypted_content\":\"blob\"}}\n\n" +
 	"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_probe\",\"output\":[]}}\n\n"
+
+type compactProbeBrokenReader struct{}
+
+func (compactProbeBrokenReader) Read([]byte) (int, error) {
+	return 0, errors.New("test connection reset")
+}
+
+func TestAccountTestService_CompactStreamFailuresDoNotDisableCapability(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body io.Reader
+		want string
+	}{
+		{"failed", strings.NewReader("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"Upstream request failed\"}}}\n\n"), "Upstream request failed"},
+		{"error", strings.NewReader("data: {\"error\":{\"message\":\"server is overloaded\"}}\n\n"), "server is overloaded"},
+		{"named_error", strings.NewReader("event: error\r\ndata: {\"message\":\"server is overloaded\"}\r\n\r\n"), "server is overloaded"},
+		{"json_error", strings.NewReader(`{"error":{"message":"upstream timeout"}}`), "upstream timeout"},
+		{"incomplete", strings.NewReader("data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n"), "incomplete"},
+		{"truncated", strings.NewReader("data: {\"type\":\"response.created\"}\n\n"), "before successful completion"},
+		{"read_error", compactProbeBrokenReader{}, "test connection reset"},
+		{"item_without_completion", strings.NewReader("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"blob\"}}\n\n"), "before successful completion"},
+		{"item_then_failed", strings.NewReader("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"blob\"}}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"upstream timeout\"}}}\n\n"), "upstream timeout"},
+		{"oversized", strings.NewReader(strings.Repeat(": keepalive\n\n", (2<<20)/13+1)), "exceeded"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			updatesCh := make(chan map[string]any, 1)
+			account := Account{ID: 91, Name: "nuai", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "test-key"}, Extra: map[string]any{"openai_compact_supported": true}}
+			repo := &snapshotUpdateAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, updateExtraCalls: updatesCh}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK,
+				Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(tt.body)}}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream,
+				cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/91/test", nil)
+			err := svc.TestAccountConnection(c, account.ID, "gpt-5.6-sol", "", AccountTestModeCompact)
+			require.ErrorContains(t, err, tt.want)
+			updates := <-updatesCh
+			require.NotContains(t, updates, "openai_compact_supported", "a failed probe must preserve the previous capability state")
+			require.Contains(t, updates["openai_compact_last_error"], tt.want)
+			require.NotContains(t, rec.Body.String(), "unsupported on this chain")
+		})
+	}
+}
 
 func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersistsSupport(t *testing.T) {
 	setGinTestMode()

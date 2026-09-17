@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
@@ -21,6 +22,35 @@ func edgePlanHeaderValue(headers map[string]string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestBuildChatGPTOAuthResponsesEdgePlanNativeCompactionV2(t *testing.T) {
+	for _, beta := range []string{"", "other_feature"} {
+		t.Run("incoming_beta_"+beta, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			c.Request.Header.Set("Authorization", "Bearer downstream-key")
+			c.Request.Header.Set("x-codex-beta-features", beta)
+			c.Set("api_key", &APIKey{ID: 42})
+			account := &Account{ID: 123, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"}}
+			body := []byte(`{"model":"gpt-5.6-sol","stream":true,"store":true,"input":[{"role":"user","content":"hi"},{"type":"compaction_trigger"}]}`)
+			prepared, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, body)
+			require.NoError(t, err)
+			require.Equal(t, chatgptCodexURL, prepared.Plan.UpstreamURL)
+			require.Equal(t, "Bearer oauth-token", edgePlanHeaderValue(prepared.Plan.Headers, "Authorization"))
+			require.Contains(t, edgePlanHeaderValue(prepared.Plan.Headers, "x-codex-beta-features"), openAIRemoteCompactionV2Feature)
+			if beta != "" {
+				require.Contains(t, edgePlanHeaderValue(prepared.Plan.Headers, "x-codex-beta-features"), beta)
+			}
+			out, err := base64.StdEncoding.DecodeString(prepared.Plan.BodyRawBase64)
+			require.NoError(t, err)
+			require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(out, "model").String())
+			require.True(t, gjson.GetBytes(out, "stream").Bool())
+			require.Equal(t, gjson.False, gjson.GetBytes(out, "store").Type)
+			require.True(t, HasCompactionTriggerInInput(out))
+		})
+	}
 }
 
 func TestOpenAIEdgePlanAlwaysSerializesPreambleFlushFlag(t *testing.T) {

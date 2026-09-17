@@ -1484,6 +1484,11 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if normalizeOpenAIEdgePath(req.Path) != "/v1/responses" {
 		return fallback("edge_route_not_supported")
 	}
+	// Edge's ordinary Responses lease/retry path does not carry compact
+	// capability requirements. Classify in Go before selecting any account.
+	if service.HasCompactionTriggerInInput(req.Body) {
+		return fallback("native_compaction_requires_go")
+	}
 	if openAIEdgeHeader(req.Headers, "Upgrade") != "" {
 		// WS is multi-turn and must reacquire concurrency and settle usage for
 		// every response. Keep it on the Go relay until edge-rs has a per-turn

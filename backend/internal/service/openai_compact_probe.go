@@ -1,10 +1,13 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -43,8 +46,69 @@ func createOpenAICompactProbePayload(model string, isOAuth bool) map[string]any 
 	return payload
 }
 
-// A successful native v2 probe must contain an actual compaction output item.
-// A plain Responses success means an intermediary ignored the trigger.
+// HTTP success alone is insufficient for SSE: failures and disconnects after
+// response headers must not poison an account's persisted compact capability.
+func validateOpenAICompactProbeCompletion(body []byte) error {
+	completed := false
+	var probeErr error
+	inspect := func(data []byte) {
+		if probeErr != nil {
+			return
+		}
+		eventType := gjson.GetBytes(data, "type").String()
+		response := gjson.ParseBytes(data)
+		if nested := response.Get("response"); nested.IsObject() {
+			response = nested
+		}
+		status := response.Get("status").String()
+		errorValue := response.Get("error")
+		if eventType == "error" || eventType == "response.failed" || status == "failed" ||
+			(errorValue.Exists() && errorValue.Type != gjson.Null) {
+			message := extractOpenAISSEErrorMessage(data)
+			if message == "" {
+				message = "upstream response failed"
+			}
+			probeErr = fmt.Errorf("Compact probe failed: %s", message)
+			return
+		}
+		if eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled" ||
+			status == "incomplete" || status == "cancelled" || status == "canceled" {
+			probeErr = fmt.Errorf("Compact probe returned an incomplete or cancelled response")
+			return
+		}
+		if eventType == "response.completed" || eventType == "response.done" ||
+			(eventType == "" && response.Get("output").IsArray() && (status == "" || status == "completed")) {
+			completed = true
+		}
+	}
+	if gjson.ValidBytes(body) {
+		inspect(body)
+	} else {
+		var parser openAICompatSSEFrameParser
+		inspectFrame := func(frame openAICompatSSEFrame) {
+			emitOpenAISSEDataPayloads(strings.Split(frame.Data, "\n"), func(data []byte) {
+				inspect([]byte(openAICompatPayloadWithEventType(string(data), frame.EventType)))
+			})
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			if frame, ok := parser.AddLine(strings.TrimSuffix(line, "\r")); ok {
+				inspectFrame(frame)
+			}
+		}
+		if frame, ok := parser.Finish(); ok {
+			inspectFrame(frame)
+		}
+	}
+	if probeErr != nil {
+		return probeErr
+	}
+	if !completed {
+		return fmt.Errorf("Compact probe stream ended before successful completion; capability was not determined")
+	}
+	return nil
+}
+
+// A successful native v2 probe must also contain an actual compaction item.
 func openAICompactProbeFoundCompactionItem(body []byte) bool {
 	if len(body) == 0 {
 		return false

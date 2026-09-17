@@ -753,6 +753,10 @@ func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
 	// Keep the Rust Edge path on the same final OAuth identity contract as the
 	// two Go forwarding paths. This must run after every User-Agent override.
 	enforceCodexIdentityHeaders(headers)
+	applyOpenAICodexBetaFeatures(c, account, headers)
+	if gjson.GetBytes(body, "stream").Bool() && HasCompactionTriggerInInput(body) {
+		ensureOpenAIRemoteCompactionV2BetaFeature(headers)
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
 	}

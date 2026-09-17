@@ -685,7 +685,6 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if isOAuth {
 		req.Host = "chatgpt.com"
 		req.Header.Set("accept", "text/event-stream")
-		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("Originator", "codex_cli_rs")
 		if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
 			req.Header.Set("User-Agent", customUA)
@@ -699,6 +698,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenAICodexBetaFeatures(c, account, req.Header)
 
 	// Get proxy URL
 	proxyURL := ""
@@ -908,11 +908,19 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	compactionFound := openAICompactProbeFoundCompactionItem(body)
+	const compactProbeBodyLimit = 2 << 20
+	body, probeErr := io.ReadAll(io.LimitReader(resp.Body, compactProbeBodyLimit+1))
+	if probeErr != nil {
+		probeErr = fmt.Errorf("Compact probe response read failed: %w", probeErr)
+	} else if len(body) > compactProbeBodyLimit {
+		probeErr = fmt.Errorf("Compact probe response exceeded %d bytes; capability was not determined", compactProbeBodyLimit)
+	} else if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		probeErr = validateOpenAICompactProbeCompletion(body)
+	}
+	compactionFound := probeErr == nil && openAICompactProbeFoundCompactionItem(body)
 
 	if s.accountRepo != nil {
-		updates := buildOpenAICompactProbeExtraUpdates(resp, body, nil, compactionFound, time.Now())
+		updates := buildOpenAICompactProbeExtraUpdates(resp, body, probeErr, compactionFound, time.Now())
 		if codexUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(codexUpdates) > 0 {
 			updates = mergeExtraUpdates(updates, codexUpdates)
 		}
@@ -941,6 +949,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+	}
+	if probeErr != nil {
+		return s.sendErrorAndEnd(c, sanitizeUpstreamErrorMessage(probeErr.Error()))
 	}
 	if !compactionFound {
 		return s.sendErrorAndEnd(c, "Upstream returned 2xx without a compaction output item (native remote compaction v2 unsupported on this chain)")
