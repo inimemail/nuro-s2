@@ -589,8 +589,15 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	// Align test routing with gateway behavior. Native remote compaction v2 uses
 	// the ordinary /responses model and never applies legacy compact-only mapping.
 	testModelID = account.GetMappedModel(testModelID)
-	if mode == AccountTestModeCompact {
-		return s.testOpenAICompactConnection(c, account, testModelID)
+	if mode == AccountTestModeCompact || mode == AccountTestModeCompactLegacy {
+		if mode == AccountTestModeCompactLegacy {
+			fallback := ""
+			if s.cfg != nil {
+				fallback = s.cfg.Gateway.OpenAICompactModel
+			}
+			testModelID = resolveOpenAICompactForwardModelWithFallback(account, testModelID, fallback)
+		}
+		return s.testOpenAICompactConnection(c, account, testModelID, mode)
 	}
 
 	// Route to image generation test if an image model is selected
@@ -807,8 +814,9 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 // testOpenAICompactConnection probes native remote compaction v2 through the
 // streaming /responses wire and persists the resulting capability state.
-func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string, modes ...string) error {
 	ctx := c.Request.Context()
+	native := len(modes) == 0 || modes[0] != AccountTestModeCompactLegacy
 
 	authToken := ""
 	apiURL := ""
@@ -851,7 +859,14 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	if isOAuth {
 		testModelID = normalizeOpenAIModelForUpstream(account, testModelID)
 	}
-	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(testModelID, isOAuth))
+	payload := createOpenAICompactProbePayload(testModelID, isOAuth)
+	if !native {
+		apiURL = appendOpenAIResponsesRequestPathSuffix(apiURL, "/compact")
+		payload["input"] = payload["input"].([]any)[:1]
+		delete(payload, "stream")
+		delete(payload, "store")
+	}
+	payloadBytes, _ := json.Marshal(payload)
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
@@ -862,7 +877,11 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
+	if native {
+		ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 	if account.IsOpenAIAgentIdentity() {
 		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
@@ -877,6 +896,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 	applyOpenAICodexProbeHeaders(req.Header)
+	stripOpenAILegacyResponsesBeta(req.Header)
 	probeSessionID := compactProbeSessionID(account.ID)
 	req.Header.Set("Session_ID", probeSessionID)
 	req.Header.Set("Conversation_ID", probeSessionID)
@@ -890,7 +910,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
-	ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
+	if native {
+		ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -900,7 +922,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		if s.accountRepo != nil {
-			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, false, time.Now())
+			updates := buildOpenAICompactProbeUpdatesForMode(nil, nil, err, false, native, account)
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
@@ -920,7 +942,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	compactionFound := probeErr == nil && openAICompactProbeFoundCompactionItem(body)
 
 	if s.accountRepo != nil {
-		updates := buildOpenAICompactProbeExtraUpdates(resp, body, probeErr, compactionFound, time.Now())
+		updates := buildOpenAICompactProbeUpdatesForMode(resp, body, probeErr, compactionFound, native, account)
 		if codexUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(codexUpdates) > 0 {
 			updates = mergeExtraUpdates(updates, codexUpdates)
 		}
@@ -942,7 +964,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 				return s.sendErrorAndEnd(c, "Agent Identity task recovery failed")
 			}
 			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
-			return s.testOpenAICompactConnection(c, account, testModelID)
+			return s.testOpenAICompactConnection(c, account, testModelID, modes...)
 		}
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
@@ -954,10 +976,18 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, sanitizeUpstreamErrorMessage(probeErr.Error()))
 	}
 	if !compactionFound {
-		return s.sendErrorAndEnd(c, "Upstream returned 2xx without a compaction output item (native remote compaction v2 unsupported on this chain)")
+		protocol := "standalone compact"
+		if native {
+			protocol = "native remote compaction v2"
+		}
+		return s.sendErrorAndEnd(c, "Upstream returned 2xx without a compaction output item ("+protocol+" unsupported on this chain)")
 	}
 
-	s.sendEvent(c, TestEvent{Type: "content", Text: "Compact probe succeeded (native remote compaction v2)"})
+	message := "Compact probe succeeded (/responses/compact)"
+	if native {
+		message = "Compact probe succeeded (native remote compaction v2)"
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: message})
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
 }

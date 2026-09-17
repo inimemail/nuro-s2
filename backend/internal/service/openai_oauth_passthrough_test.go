@@ -593,6 +593,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 }
 
 func TestOpenAIGatewayService_DownstreamAPIKeyToOAuth_NativeCompactionV2(t *testing.T) {
+	t.Run("without_placeholder", func(t *testing.T) {
+		testDownstreamAPIKeyToOAuthNativeCompactionV2(t, false)
+	})
+	t.Run("with_placeholder", func(t *testing.T) {
+		testDownstreamAPIKeyToOAuthNativeCompactionV2(t, true)
+	})
+}
+
+func testDownstreamAPIKeyToOAuthNativeCompactionV2(t *testing.T, placeholderEnabled bool) {
+	t.Helper()
 	setGinTestMode()
 
 	rec := httptest.NewRecorder()
@@ -654,6 +664,14 @@ func TestOpenAIGatewayService_DownstreamAPIKeyToOAuth_NativeCompactionV2(t *test
 		RateMultiplier: f64p(1),
 	}
 
+	if placeholderEnabled {
+		account.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey] = true
+		account.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey] = 200
+		account.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey] = false
+		StartOpenAIPlaceholderCoordination(c, time.Now())
+		require.True(t, writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.6-sol", openAIRequestFirstTokenPlaceholderDialectResponses).Sent)
+	}
+
 	result, err := svc.Forward(c.Request.Context(), c, account, originalBody)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -674,6 +692,10 @@ func TestOpenAIGatewayService_DownstreamAPIKeyToOAuth_NativeCompactionV2(t *test
 	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
 	require.Contains(t, rec.Body.String(), `"type":"compaction"`)
 	require.Contains(t, rec.Body.String(), `"encrypted_content":"opaque-compact-state"`)
+	require.Equal(t, 1, strings.Count(rec.Body.String(), `"type":"response.completed"`))
+	if placeholderEnabled {
+		require.Equal(t, 1, strings.Count(rec.Body.String(), `"type":"response.transport_progress.delta"`))
+	}
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCancel(t *testing.T) {

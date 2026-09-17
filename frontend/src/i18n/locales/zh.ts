@@ -4118,7 +4118,7 @@ export default {
         codexImageToolBadgeBlock: '客户端图片工具已移除',
         compactMode: 'Compact 模式',
         compactModeDesc:
-          '控制本账号在 /responses/compact 调度中的参与方式。Auto 跟随探测结果，Force On 强制允许，Force Off 强制排除。',
+          '控制本账号的 Compact 调度。自动模式分别使用独立接口和原生流内压缩的探测结果；强制开启或关闭对两种协议都生效。',
         compactModeAuto: '自动',
         compactModeForceOn: '强制开启',
         compactModeForceOff: '强制关闭',
@@ -4132,7 +4132,10 @@ export default {
         compactLastChecked: '最近探测',
         testMode: '测试模式',
         testModeDefault: '常规请求',
-        testModeCompact: 'Compact 探测',
+        testModeCompact: '原生 Compact 探测（Responses 流）',
+        testModeCompactLegacy: '独立 Compact 探测（/responses/compact）',
+        compactStandalone: '独立接口',
+        compactNative: '原生流内',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       anthropic: {

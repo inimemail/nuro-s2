@@ -72,6 +72,10 @@ func (r OpenAIAccountScheduleRequest) requiresCompactCapability() bool {
 	return r.RequireCompact || r.RequireCompactCapability
 }
 
+func (r OpenAIAccountScheduleRequest) compactSupportTier(account *Account) int {
+	return openAICompactSupportTier(account, r.RequireCompactCapability && !r.RequireCompact)
+}
+
 type OpenAIAccountScheduleDecision struct {
 	Layer               string
 	StickyPreviousHit   bool
@@ -1330,7 +1334,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 	if req.requiresCompactCapability() {
 		candidates = make([]openAIAccountCandidateScore, 0, len(allCandidates))
 		for _, candidate := range allCandidates {
-			if openAICompactSupportTier(candidate.account) == 0 {
+			if req.compactSupportTier(candidate.account) == 0 {
 				staleSnapshotCompactRetry = append(staleSnapshotCompactRetry, candidate)
 				continue
 			}
@@ -1475,7 +1479,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		for _, candidate := range plan.candidates {
-			switch openAICompactSupportTier(candidate.account) {
+			switch req.compactSupportTier(candidate.account) {
 			case 2:
 				supported = append(supported, candidate)
 			case 1:
@@ -2177,7 +2181,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
-		if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
+		if req.requiresCompactCapability() && req.compactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -2240,7 +2244,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
-			if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
+			if req.requiresCompactCapability() && req.compactSupportTier(fresh) == 0 {
 				compactBlocked = true
 				continue
 			}
@@ -2541,7 +2545,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
-		if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
+		if req.requiresCompactCapability() && req.compactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -2670,7 +2674,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if !accountSupportsOpenAICapabilities(ctx, account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability) {
 		return false, "capability_mismatch"
 	}
-	if req.requiresCompactCapability() && openAICompactSupportTier(account) == 0 {
+	if req.requiresCompactCapability() && req.compactSupportTier(account) == 0 {
 		return false, "compact_unsupported"
 	}
 	return true, ""

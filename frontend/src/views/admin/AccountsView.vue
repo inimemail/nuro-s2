@@ -310,17 +310,19 @@
                   {{ getAntigravityTierLabel(row) }}
                 </span>
               </div>
-              <div
-                v-if="getOpenAICompactMeta(row)"
-                :class="[
-                  'inline-flex items-center gap-1.5 pl-0.5 text-[11px] font-medium leading-4',
-                  getOpenAICompactMeta(row)?.className
-                ]"
-                :title="getOpenAICompactTitle(row)"
-              >
-                <span :class="['h-1.5 w-1.5 rounded-full', getOpenAICompactMeta(row)?.dotClass]" />
-                <span>{{ getOpenAICompactMeta(row)?.label }}</span>
-              </div>
+              <template v-for="native in [false, true]" :key="String(native)">
+                <div
+                  v-if="getOpenAICompactMeta(row, native)"
+                  :class="[
+                    'inline-flex items-center gap-1.5 pl-0.5 text-[11px] font-medium leading-4',
+                    getOpenAICompactMeta(row, native)?.className
+                  ]"
+                  :title="getOpenAICompactTitle(row, native)"
+                >
+                  <span :class="['h-1.5 w-1.5 rounded-full', getOpenAICompactMeta(row, native)?.dotClass]" />
+                  <span>{{ t(native ? 'admin.accounts.openai.compactNative' : 'admin.accounts.openai.compactStandalone') }}: {{ getOpenAICompactMeta(row, native)?.label }}</span>
+                </div>
+              </template>
             </div>
           </template>
           <template #cell-capacity="{ row }">
@@ -524,6 +526,7 @@ import { isImagePoolModeAccount, isPoolModeAccount } from '@/utils/accountPoolMo
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { accountHomepageUrl } from '@/utils/accountHomepage'
 import { resolveGrokMediaEligibility } from '@/utils/grokMediaEligibility'
+import { resolveOpenAICompactState } from '@/utils/openaiCompact'
 import { fetchAllAccountIds, normalizeAccountSelectionFilters } from '@/utils/accountSelection'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
@@ -1525,20 +1528,14 @@ function getAntigravityTierLabel(row: any): string | null {
 
 type OpenAICompactBadgeState = 'active' | 'blocked' | 'auto'
 
-function getOpenAICompactState(row: any): OpenAICompactBadgeState | null {
+function getOpenAICompactState(row: any, native = false): OpenAICompactBadgeState | null {
   if (row.platform !== 'openai' || (row.type !== 'oauth' && row.type !== 'apikey')) return null
   const extra = row.extra as Record<string, unknown> | undefined
-  const mode = typeof extra?.openai_compact_mode === 'string' ? extra.openai_compact_mode : 'auto'
-  if (mode === 'force_on') return 'active'
-  if (mode === 'force_off') return 'blocked'
-  if (typeof extra?.openai_compact_supported === 'boolean') {
-    return extra.openai_compact_supported ? 'active' : 'blocked'
-  }
-  return 'auto'
+  return resolveOpenAICompactState(extra, native)
 }
 
-function getOpenAICompactMeta(row: any): { label: string; className: string; dotClass: string } | null {
-  const state = getOpenAICompactState(row)
+function getOpenAICompactMeta(row: any, native = false): { label: string; className: string; dotClass: string } | null {
+  const state = getOpenAICompactState(row, native)
   if (!state) return null
   switch (state) {
     case 'active':
@@ -1562,11 +1559,11 @@ function getOpenAICompactMeta(row: any): { label: string; className: string; dot
   }
 }
 
-function getOpenAICompactTitle(row: any): string {
+function getOpenAICompactTitle(row: any, native = false): string {
   const extra = row.extra as Record<string, unknown> | undefined
-  const checkedAt = typeof extra?.openai_compact_checked_at === 'string' ? extra.openai_compact_checked_at : ''
-  const label = getOpenAICompactMeta(row)?.label || ''
-  if (!checkedAt) return label
+  const checkedAt = extra?.[native ? 'openai_native_compact_checked_at' : 'openai_compact_checked_at']
+  const label = getOpenAICompactMeta(row, native)?.label || ''
+  if (typeof checkedAt !== 'string' || !checkedAt) return label
   return `${label} | ${t('admin.accounts.openai.compactLastChecked')}: ${formatDateTime(new Date(checkedAt))}`
 }
 

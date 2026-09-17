@@ -62,6 +62,33 @@ func TestAccountGetOpenAICompactMode(t *testing.T) {
 	}
 }
 
+func TestAccountCompactProtocolsAreIndependent(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": legacy, "openai_native_compact_supported": !legacy}}
+		supported, known := account.OpenAICompactSupportKnown()
+		if !known || supported != legacy {
+			t.Fatal("standalone capability changed")
+		}
+		supported, known = account.OpenAINativeCompactSupportKnown()
+		if !known || supported == legacy {
+			t.Fatal("native capability must be independent")
+		}
+		delete(account.Extra, "openai_native_compact_supported")
+		_, known = account.OpenAINativeCompactSupportKnown()
+		if known {
+			t.Fatal("legacy probe must not determine native capability")
+		}
+	}
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false, "openai_compact_last_error": "upstream returned 2xx without a compaction output item (native remote compaction v2 unsupported)"}}
+	if !account.AllowsOpenAICompact() {
+		t.Fatal("historical native false negative must not block standalone")
+	}
+	account.Extra["openai_compact_mode"] = OpenAICompactModeForceOff
+	if account.AllowsOpenAICompact() {
+		t.Fatal("manual force_off must stay authoritative")
+	}
+}
+
 func TestAccountOpenAICompactSupportKnown(t *testing.T) {
 	tests := []struct {
 		name          string

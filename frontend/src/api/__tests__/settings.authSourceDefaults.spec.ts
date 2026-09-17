@@ -19,6 +19,7 @@ const allNullQuotas: DefaultPlatformQuotasMap = {
   kimi:      { daily: null, weekly: null, monthly: null },
   zhipu:     { daily: null, weekly: null, monthly: null },
   deepseek:  { daily: null, weekly: null, monthly: null },
+  minimax:   { daily: null, weekly: null, monthly: null },
 }
 
 describe("admin settings auth source defaults helpers", () => {
@@ -246,7 +247,7 @@ describe("normalizePlatformQuotasMap", () => {
 
   it("无参数时返回全平台全 null", () => {
     const result = normalizePlatformQuotasMap();
-    expect(Object.keys(result)).toHaveLength(8);
+    expect(Object.keys(result).sort()).toEqual(Object.keys(allNullQuotas).sort());
     for (const v of Object.values(result)) {
       expect(v).toEqual({ daily: null, weekly: null, monthly: null });
     }
@@ -294,7 +295,7 @@ describe("sanitizePlatformQuotasMap", () => {
 
   it("缺失平台填充为全 null", () => {
     const result = sanitizePlatformQuotasMap({});
-    expect(Object.keys(result)).toHaveLength(8);
+    expect(Object.keys(result).sort()).toEqual(Object.keys(allNullQuotas).sort());
     for (const v of Object.values(result)) {
       expect(v).toEqual({ daily: null, weekly: null, monthly: null });
     }

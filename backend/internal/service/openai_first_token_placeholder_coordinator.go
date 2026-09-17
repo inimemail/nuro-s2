@@ -35,13 +35,25 @@ type openAIPlaceholderCoordinator struct {
 	safePlaceholderWritten   bool
 	gatewayWriteObserved     bool
 	upstreamCommitted        bool
+	placeholderOutputStarted bool
 	terminalWritten          bool
 	responsesTerminalWritten bool
+	sseAtEventBoundary       bool
+	sseTail                  string
+	ssePending               []byte
+	sseDiscarding            bool
+	pendingTimeoutFrame      *openAIPendingTimeoutFrame
 	stallFailoverClaimed     bool
 	stallActionPending       bool
 	stallProgressKey         openAIStreamProgressKey
 	chatID                   string
 	chatCreated              int64
+}
+
+type openAIPendingTimeoutFrame struct {
+	frame       string
+	chatID      string
+	chatCreated int64
 }
 
 type openAIPlaceholderWriter struct {
@@ -60,6 +72,9 @@ func (w *openAIPlaceholderWriter) Write(data []byte) (int, error) {
 		w.coordinator.mu.Lock()
 		w.coordinator.markWriteLocked(data[:min(n, len(data))])
 		w.coordinator.mu.Unlock()
+		if err == nil {
+			err = w.coordinator.flushPendingTimeoutLocked(w.ResponseWriter)
+		}
 	}
 	return n, err
 }
@@ -75,6 +90,9 @@ func (w *openAIPlaceholderWriter) WriteString(data string) (int, error) {
 		w.coordinator.mu.Lock()
 		w.coordinator.markWriteLocked([]byte(data[:min(n, len(data))]))
 		w.coordinator.mu.Unlock()
+		if err == nil {
+			err = w.coordinator.flushPendingTimeoutLocked(w.ResponseWriter)
+		}
 	}
 	return n, err
 }
@@ -143,6 +161,54 @@ func (w *openAIPlaceholderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 }
 
 func (c *openAIPlaceholderCoordinator) markWriteLocked(data []byte) {
+	// Timer callbacks share writeMu with upstream writes. Remember SSE framing
+	// across writes so a callback never inserts a data line inside another event.
+	// A Write is a transport chunk, not an SSE event. In particular bufio
+	// splits large response.created payloads in the middle of their JSON.
+	// Commit partial upstream bytes immediately, but classify token/terminal
+	// output only after reassembling the event. Bound diagnostic buffering;
+	// the original bytes are always forwarded unchanged.
+	if !openAIWriteContainsOnlyGatewayFrames(data) {
+		c.upstreamCommitted = true
+	}
+	const maxObservedEventBytes = 8 << 20
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		if end < 0 {
+			end = len(data) - 1
+		}
+		part := data[:end+1]
+		data = data[end+1:]
+		tail := part
+		if len(tail) > 4 {
+			tail = tail[len(tail)-4:]
+		}
+		c.sseTail += string(tail)
+		c.sseAtEventBoundary = strings.HasSuffix(c.sseTail, "\n\n") || strings.HasSuffix(c.sseTail, "\r\n\r\n")
+		if len(c.sseTail) > 4 {
+			c.sseTail = c.sseTail[len(c.sseTail)-4:]
+		}
+		if !c.sseDiscarding {
+			if len(c.ssePending)+len(part) > maxObservedEventBytes {
+				c.ssePending = nil
+				c.sseDiscarding = true
+				c.placeholderOutputStarted = true
+				c.stopOnce.Do(func() { close(c.stop) })
+			} else {
+				c.ssePending = append(c.ssePending, part...)
+			}
+		}
+		if c.sseAtEventBoundary {
+			if !c.sseDiscarding {
+				c.markSSEFrameLocked(c.ssePending)
+			}
+			c.ssePending = nil
+			c.sseDiscarding = false
+		}
+	}
+}
+
+func (c *openAIPlaceholderCoordinator) markSSEFrameLocked(data []byte) {
 	if openAIWriteContainsOnlyGatewayFrames(data) {
 		c.gatewayWriteObserved = true
 		if openAIWriteContainsTokenPlaceholder(data) {
@@ -151,13 +217,80 @@ func (c *openAIPlaceholderCoordinator) markWriteLocked(data []byte) {
 		return
 	}
 	c.upstreamCommitted = true
+	// Forwarding structural Responses events commits the account, but does not
+	// satisfy the first-token controls. In particular, preamble forwarding must
+	// not disable the independent safe frame and timeout frame.
+	if !openAIWriteContainsOnlyResponsesStructure(data) {
+		c.placeholderOutputStarted = true
+	}
 	if openAIWriteContainsTerminalFrame(data) {
 		c.terminalWritten = true
 	}
 	if openAIWriteContainsResponsesTerminalFrame(data) {
 		c.responsesTerminalWritten = true
 	}
-	c.stopOnce.Do(func() { close(c.stop) })
+	if c.placeholderOutputStarted || c.terminalWritten {
+		c.stopOnce.Do(func() { close(c.stop) })
+	}
+}
+
+// Caller holds writeMu. A queued timeout is delivered after the upstream event
+// ends, or discarded if that event supplies real output or terminates the stream.
+func (c *openAIPlaceholderCoordinator) flushPendingTimeoutLocked(writer gin.ResponseWriter) error {
+	c.mu.Lock()
+	if c.placeholderOutputStarted || c.terminalWritten || c.placeholderWritten {
+		c.pendingTimeoutFrame = nil
+	}
+	pending := c.pendingTimeoutFrame
+	if pending == nil || !c.sseAtEventBoundary {
+		c.mu.Unlock()
+		return nil
+	}
+	c.pendingTimeoutFrame = nil
+	c.mu.Unlock()
+	if _, err := writer.WriteString(pending.frame); err != nil {
+		return err
+	}
+	writer.Flush()
+	c.mu.Lock()
+	c.recordTimeoutPlaceholderLocked(pending.chatID, pending.chatCreated)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *openAIPlaceholderCoordinator) recordTimeoutPlaceholderLocked(chatID string, chatCreated int64) {
+	c.placeholderWritten = true
+	c.gatewayWriteObserved = true
+	c.active = true
+	if chatID != "" {
+		c.chatID = chatID
+		c.chatCreated = chatCreated
+	}
+}
+
+func openAIWriteContainsOnlyResponsesStructure(data []byte) bool {
+	var parser openAICompatSSEFrameParser
+	for _, line := range strings.Split(string(data), "\n") {
+		frame, ok := parser.AddLine(strings.TrimSuffix(line, "\r"))
+		if !ok {
+			continue
+		}
+		payload := []byte(openAICompatPayloadWithEventType(frame.Data, frame.EventType))
+		if !gjson.ValidBytes(payload) {
+			return false
+		}
+		eventType := gjson.GetBytes(payload, "type").String()
+		switch eventType {
+		case "response.created", "response.in_progress", "response.content_part.added", "response.reasoning_summary_part.added":
+		case "response.output_item.added":
+			if openAIStreamDataStartsRealOutput(string(payload), eventType) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func openAIWriteContainsTerminalFrame(data []byte) bool {
@@ -171,12 +304,13 @@ func openAIWriteContainsTerminalFrame(data []byte) bool {
 }
 
 func openAIWriteContainsResponsesTerminalFrame(data []byte) bool {
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if !bytes.HasPrefix(line, []byte("data:")) {
+	var parser openAICompatSSEFrameParser
+	for _, line := range strings.Split(string(data), "\n") {
+		frame, ok := parser.AddLine(strings.TrimSuffix(line, "\r"))
+		if !ok {
 			continue
 		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		payload := []byte(openAICompatPayloadWithEventType(frame.Data, frame.EventType))
 		if !gjson.ValidBytes(payload) {
 			continue
 		}
@@ -250,7 +384,7 @@ func (c *openAIPlaceholderCoordinator) arm(
 	}
 	c.configure(timeout)
 	c.mu.Lock()
-	if c.armed || c.placeholderWritten || c.upstreamCommitted || c.deadline.IsZero() {
+	if c.armed || c.placeholderWritten || c.placeholderOutputStarted || c.terminalWritten || c.deadline.IsZero() {
 		c.mu.Unlock()
 		return
 	}
@@ -395,7 +529,7 @@ func ensureOpenAIPlaceholderCoordinator(c *gin.Context, startedAt time.Time) *op
 	if startedAt.IsZero() {
 		startedAt = time.Now()
 	}
-	coordinator := &openAIPlaceholderCoordinator{startedAt: startedAt, stop: make(chan struct{})}
+	coordinator := &openAIPlaceholderCoordinator{startedAt: startedAt, stop: make(chan struct{}), sseAtEventBoundary: true}
 	c.Writer = &openAIPlaceholderWriter{ResponseWriter: c.Writer, coordinator: coordinator}
 	c.Set(openAIPlaceholderCoordinatorKey, coordinator)
 	return coordinator
@@ -555,10 +689,17 @@ func writeOpenAIGatewayPlaceholder(c *gin.Context, frame string, chatID string, 
 	coordinator.writeMu.Lock()
 	defer coordinator.writeMu.Unlock()
 	coordinator.mu.Lock()
-	if coordinator.placeholderWritten || coordinator.upstreamCommitted {
+	if coordinator.placeholderWritten || coordinator.placeholderOutputStarted || coordinator.terminalWritten {
 		written := coordinator.placeholderWritten
 		coordinator.mu.Unlock()
 		return written
+	}
+	if !coordinator.sseAtEventBoundary {
+		if coordinator.pendingTimeoutFrame == nil {
+			coordinator.pendingTimeoutFrame = &openAIPendingTimeoutFrame{frame: frame, chatID: chatID, chatCreated: chatCreated}
+		}
+		coordinator.mu.Unlock()
+		return true
 	}
 	coordinator.mu.Unlock()
 	writer := c.Writer
@@ -577,13 +718,7 @@ func writeOpenAIGatewayPlaceholder(c *gin.Context, frame string, chatID string, 
 	}
 	writer.Flush()
 	coordinator.mu.Lock()
-	coordinator.placeholderWritten = true
-	coordinator.gatewayWriteObserved = true
-	coordinator.active = true
-	if chatID != "" {
-		coordinator.chatID = chatID
-		coordinator.chatCreated = chatCreated
-	}
+	coordinator.recordTimeoutPlaceholderLocked(chatID, chatCreated)
 	coordinator.mu.Unlock()
 	return true
 }
@@ -602,7 +737,7 @@ func writeOpenAIGatewayOnlyFrame(c *gin.Context, frame string) bool {
 	coordinator.writeMu.Lock()
 	defer coordinator.writeMu.Unlock()
 	coordinator.mu.Lock()
-	if coordinator.upstreamCommitted {
+	if coordinator.placeholderOutputStarted || coordinator.terminalWritten {
 		coordinator.mu.Unlock()
 		return false
 	}
@@ -639,11 +774,11 @@ func writeOpenAISafePlaceholder(c *gin.Context, frame string, chatID string, cha
 	coordinator.writeMu.Lock()
 	defer coordinator.writeMu.Unlock()
 	coordinator.mu.Lock()
-	if coordinator.safePlaceholderWritten {
+	if coordinator.safePlaceholderWritten || coordinator.placeholderWritten {
 		coordinator.mu.Unlock()
 		return true
 	}
-	if coordinator.upstreamCommitted {
+	if coordinator.placeholderOutputStarted || coordinator.terminalWritten {
 		coordinator.mu.Unlock()
 		return false
 	}

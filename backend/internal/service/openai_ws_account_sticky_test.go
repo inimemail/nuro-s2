@@ -49,6 +49,30 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_Hit(t *testing.T
 	}
 }
 
+func TestOpenAIGatewayService_PreviousResponseNativeCompactKeepsOrdinaryBinding(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(23)
+	account := Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 2, GroupIDs: []int64{groupID}, Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+			"openai_compact_supported":                      true, "openai_native_compact_supported": false,
+		}}
+	cache := &stubGatewayCache{}
+	store := NewOpenAIWSStateStore(cache)
+	svc := &OpenAIGatewayService{accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, cache: cache,
+		cfg: newOpenAIWSV2TestConfig(), concurrencyService: NewConcurrencyService(stubConcurrencyCache{}), openaiWSStateStore: store}
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_native", account.ID, time.Hour))
+	selection, err := svc.SelectAccountByPreviousResponseID(WithOpenAINativeCompactionV2(ctx), &groupID, "resp_native", "gpt-5.1", nil, false)
+	require.NoError(t, err)
+	require.Nil(t, selection, "standalone support must not permit a known unsupported native turn")
+	selection, err = svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_native", "gpt-5.1", nil, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection, "ordinary conversations must keep their binding")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QuotaAutoPausedMiss(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(23)

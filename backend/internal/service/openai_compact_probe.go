@@ -14,13 +14,16 @@ const (
 	// AccountTestModeDefault drives the standard /responses connection test.
 	AccountTestModeDefault = "default"
 	// AccountTestModeCompact drives the native remote-compaction-v2 probe.
-	AccountTestModeCompact = "compact"
+	AccountTestModeCompact       = "compact"
+	AccountTestModeCompactLegacy = "compact_legacy"
 )
 
 func normalizeAccountTestMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case AccountTestModeCompact:
 		return AccountTestModeCompact
+	case AccountTestModeCompactLegacy:
+		return AccountTestModeCompactLegacy
 	default:
 		return AccountTestModeDefault
 	}
@@ -55,6 +58,10 @@ func validateOpenAICompactProbeCompletion(body []byte) error {
 		if probeErr != nil {
 			return
 		}
+		if !gjson.ValidBytes(data) {
+			probeErr = fmt.Errorf("Compact probe returned invalid JSON; capability was not determined")
+			return
+		}
 		eventType := gjson.GetBytes(data, "type").String()
 		response := gjson.ParseBytes(data)
 		if nested := response.Get("response"); nested.IsObject() {
@@ -81,24 +88,7 @@ func validateOpenAICompactProbeCompletion(body []byte) error {
 			completed = true
 		}
 	}
-	if gjson.ValidBytes(body) {
-		inspect(body)
-	} else {
-		var parser openAICompatSSEFrameParser
-		inspectFrame := func(frame openAICompatSSEFrame) {
-			emitOpenAISSEDataPayloads(strings.Split(frame.Data, "\n"), func(data []byte) {
-				inspect([]byte(openAICompatPayloadWithEventType(string(data), frame.EventType)))
-			})
-		}
-		for _, line := range strings.Split(string(body), "\n") {
-			if frame, ok := parser.AddLine(strings.TrimSuffix(line, "\r")); ok {
-				inspectFrame(frame)
-			}
-		}
-		if frame, ok := parser.Finish(); ok {
-			inspectFrame(frame)
-		}
-	}
+	forEachOpenAICompactProbePayload(body, inspect)
 	if probeErr != nil {
 		return probeErr
 	}
@@ -110,18 +100,47 @@ func validateOpenAICompactProbeCompletion(body []byte) error {
 
 // A successful native v2 probe must also contain an actual compaction item.
 func openAICompactProbeFoundCompactionItem(body []byte) bool {
-	if len(body) == 0 {
-		return false
+	found := false
+	validItem := func(item gjson.Result) bool {
+		return isResponsesCompactionItemType(item.Get("type").String()) && strings.TrimSpace(item.Get("encrypted_content").String()) != ""
 	}
-	bodyText := string(body)
-	if _, found := findRawCompactionItemFromSSE(bodyText); found {
-		return true
+	forEachOpenAICompactProbePayload(body, func(data []byte) {
+		value := gjson.ParseBytes(data)
+		eventType := value.Get("type").String()
+		if (eventType == "response.output_item.done" || eventType == "response.output_item.added") && validItem(value.Get("item")) {
+			found = true
+		}
+		if response := value.Get("response"); response.IsObject() {
+			value = response
+		}
+		for _, item := range value.Get("output").Array() {
+			if validItem(item) {
+				found = true
+			}
+		}
+	})
+	return found
+}
+
+func forEachOpenAICompactProbePayload(body []byte, inspect func([]byte)) {
+	if gjson.ValidBytes(body) {
+		inspect(body)
+		return
 	}
-	if finalResponse, ok := extractCodexFinalResponse(bodyText); ok &&
-		responsesOutputHasCompactionItem(finalResponse) {
-		return true
+	var parser openAICompatSSEFrameParser
+	inspectFrame := func(frame openAICompatSSEFrame) {
+		emitOpenAISSEDataPayloads(strings.Split(frame.Data, "\n"), func(data []byte) {
+			inspect([]byte(openAICompatPayloadWithEventType(string(data), frame.EventType)))
+		})
 	}
-	return responsesOutputHasCompactionItem(body)
+	for _, line := range strings.Split(string(body), "\n") {
+		if frame, ok := parser.AddLine(strings.TrimSuffix(line, "\r")); ok {
+			inspectFrame(frame)
+		}
+	}
+	if frame, ok := parser.Finish(); ok {
+		inspectFrame(frame)
+	}
 }
 
 func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
@@ -187,6 +206,29 @@ func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probe
 	}
 
 	return updates
+}
+
+func buildOpenAICompactProbeUpdatesForMode(resp *http.Response, body []byte, probeErr error, compactionFound bool, native bool, account *Account) map[string]any {
+	updates := buildOpenAICompactProbeExtraUpdates(resp, body, probeErr, compactionFound, time.Now())
+	if !native {
+		if account != nil {
+			previousError, _ := account.Extra["openai_compact_last_error"].(string)
+			if _, determined := updates["openai_compact_supported"]; !determined && strings.Contains(previousError, "native remote compaction v2 unsupported") {
+				// A transient reprobe must not revive the old native false negative
+				// by replacing the diagnostic used to identify it.
+				updates["openai_compact_supported"] = nil
+			}
+		}
+		if message, ok := updates["openai_compact_last_error"].(string); ok {
+			updates["openai_compact_last_error"] = strings.ReplaceAll(message, "native remote compaction v2 unsupported", "standalone compact unsupported")
+		}
+		return updates
+	}
+	namespaced := make(map[string]any, len(updates))
+	for key, value := range updates {
+		namespaced[strings.Replace(key, "openai_compact_", "openai_native_compact_", 1)] = value
+	}
+	return namespaced
 }
 
 func mergeExtraUpdates(base map[string]any, more map[string]any) map[string]any {

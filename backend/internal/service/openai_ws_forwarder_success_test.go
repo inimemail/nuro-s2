@@ -588,11 +588,16 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 	tests := []struct {
 		name        string
 		safe        bool
+		preamble    bool
+		comment     bool
+		wantFrames  int
 		timeoutMS   int
 		secondDelay time.Duration
 	}{
-		{name: "safe placeholder after response.created", safe: true, timeoutMS: 200},
-		{name: "timeout placeholder while waiting for real delta", timeoutMS: 20, secondDelay: 60 * time.Millisecond},
+		{name: "safe placeholder after response.created", safe: true, timeoutMS: 200, wantFrames: 1},
+		{name: "timeout placeholder while waiting for real delta", timeoutMS: 20, secondDelay: 60 * time.Millisecond, wantFrames: 1},
+		{name: "safe does not consume timeout", safe: true, timeoutMS: 20, secondDelay: 60 * time.Millisecond, wantFrames: 2},
+		{name: "all OAuth controls enabled", safe: true, preamble: true, comment: true, timeoutMS: 20, secondDelay: 60 * time.Millisecond, wantFrames: 2},
 	}
 
 	for _, tt := range tests {
@@ -622,6 +627,7 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 			}
 			pool := newOpenAIWSConnPool(cfg)
 			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
+			t.Cleanup(pool.Close)
 			svc := &OpenAIGatewayService{
 				cfg:              cfg,
 				httpUpstream:     &httpUpstreamRecorder{},
@@ -641,6 +647,8 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 				Credentials: map[string]any{"access_token": "oauth-token"},
 				Extra: map[string]any{
 					"responses_websockets_v2_enabled":                                  true,
+					openAIOAuthChatGPTPreambleFlushExtraKey:                            tt.preamble,
+					openAIOAuthChatGPTSSECommentPreflushExtraKey:                       tt.comment,
 					openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                     tt.safe,
 					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
 					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           tt.timeoutMS,
@@ -654,8 +662,17 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 			require.NotNil(t, result.FirstTokenMs, "the local metric must still use the upstream token event")
 			body := rec.Body.String()
 			placeholder := `"type":"response.transport_progress.delta","delta":"in_progress"`
-			require.Equal(t, 1, strings.Count(body, placeholder))
-			require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.created"`))
+			require.Equal(t, tt.wantFrames, strings.Count(body, placeholder))
+			if tt.preamble {
+				require.Less(t, strings.Index(body, `"type":"response.created"`), strings.Index(body, placeholder))
+			} else {
+				require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.created"`))
+			}
+			if tt.comment {
+				require.True(t, strings.HasPrefix(body, ":\n\n"), body)
+			}
+			require.Equal(t, 2, result.Usage.InputTokens)
+			require.Equal(t, 1, result.Usage.OutputTokens)
 			require.Less(t, strings.Index(body, `"type":"response.created"`), strings.Index(body, `"type":"response.output_text.delta"`))
 		})
 	}

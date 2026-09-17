@@ -381,7 +381,7 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ cn_api_mode: 'responses' })
   })
 
-  it('submits OAuth timeout stages with stage-one compatibility scalars', async () => {
+  it.each([0, 50000])('submits OAuth timeout stages with stage-one compatibility scalars (guard offset %i)', async (offset) => {
     const account = buildOpenAIOAuthAccount()
     updateAccountMock.mockReset().mockResolvedValue(account)
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
@@ -390,7 +390,10 @@ describe('EditAccountModal', () => {
 
     await wrapper.get('[data-testid="oauth-first-token-timeout-placeholder-toggle"]').trigger('click')
     await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(1200)
-    await wrapper.get('[data-testid="stage-1-guard"]').setValue(6000)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(6000 + offset)
+    await wrapper.get('[data-testid="stage-2-guard"]').setValue(10000 + offset)
+    await wrapper.get('[data-testid="stage-3-guard"]').setValue(15000 + offset)
+    await wrapper.get('[data-testid="stage-4-guard"]').setValue(30000 + offset)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -399,12 +402,12 @@ describe('EditAccountModal', () => {
       openai_oauth_chatgpt_first_token_timeout_placeholder_enabled: true,
       openai_oauth_chatgpt_first_token_timeout_placeholder_ms: 1200,
       openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled: true,
-      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 6000,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 6000 + offset,
       openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
-        { stage: 1, placeholder_ms: 1200, guard_max_ms: 6000 },
-        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
-        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
-        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+        { stage: 1, placeholder_ms: 1200, guard_max_ms: 6000 + offset },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 + offset },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 + offset },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 + offset }
       ]
     })
   })

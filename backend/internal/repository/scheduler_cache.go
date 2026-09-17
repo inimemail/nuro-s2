@@ -769,6 +769,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_responses_supported",
 		"openai_compact_mode",
 		"openai_compact_supported",
+		"openai_compact_last_error",
+		"openai_native_compact_supported",
 		"openai_long_context_billing_enabled",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",

@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,10 @@ import (
 const openAIEdgeFallbackHeader = "X-Sub2API-Edge-Fallback"
 const openAIEdgeFallbackReasonHeader = "X-Sub2API-Edge-Fallback-Reason"
 const openAIEdgeContinuationHeader = "X-Sub2API-Edge-Continuation"
+
+// JSON permits whitespace around the colon. A successfully completed Edge
+// stream must not gain a synthetic failure solely because of its formatting.
+var openAIEdgeTerminalJSONPattern = regexp.MustCompile(`"type"\s*:\s*"response\.(?:completed|failed|incomplete|cancelled|canceled|done)"`)
 
 var openAIEdgeIngressClient = &http.Client{
 	Transport: &http.Transport{
@@ -267,12 +272,7 @@ func copyOpenAIEdgeResponseBody(c *gin.Context, src io.Reader, responsesDialect 
 			scan := make([]byte, 0, len(tail)+len(chunk))
 			scan = append(scan, tail...)
 			scan = append(scan, chunk...)
-			if bytes.Contains(scan, []byte(`"type":"response.completed"`)) ||
-				bytes.Contains(scan, []byte(`"type":"response.failed"`)) ||
-				bytes.Contains(scan, []byte(`"type":"response.incomplete"`)) ||
-				bytes.Contains(scan, []byte(`"type":"response.cancelled"`)) ||
-				bytes.Contains(scan, []byte(`"type":"response.canceled"`)) ||
-				bytes.Contains(scan, []byte(`"type":"response.done"`)) ||
+			if openAIEdgeTerminalJSONPattern.Match(scan) ||
 				bytes.Contains(scan, []byte("event: response.completed")) ||
 				bytes.Contains(scan, []byte("event: response.failed")) ||
 				bytes.Contains(scan, []byte("event: response.incomplete")) ||

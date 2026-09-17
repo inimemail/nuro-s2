@@ -98,8 +98,8 @@ describe('UserPlatformQuotaModal', () => {
     })
     const w = await mountAndOpen()
     const inputs = w.findAll('input[type=number]')
-    // 8 platforms × 3 windows = 24 inputs
-    expect(inputs.length).toBe(24)
+    // Nine platforms, including MiniMax, each have three quota windows.
+    expect(inputs.length).toBe(27)
     // 第一个 input 是 anthropic.daily = 10
     expect((inputs[0].element as HTMLInputElement).value).toBe('10')
   })
@@ -121,7 +121,9 @@ describe('UserPlatformQuotaModal', () => {
     expect(apiMocks.updatePlatformQuotas).toHaveBeenCalledTimes(1)
     const [uid, payload] = apiMocks.updatePlatformQuotas.mock.calls[0]
     expect(uid).toBe(99)
-    expect(payload).toHaveLength(8) // all platforms always submitted
+    expect(payload.map((p: { platform: string }) => p.platform).sort()).toEqual(
+      ['anthropic', 'openai', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax'].sort()
+    )
     const openai = payload.find((p: any) => p.platform === 'openai')
     expect(openai.weekly_limit_usd).toBe(20)
   })

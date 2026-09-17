@@ -3207,14 +3207,14 @@
             <Select v-model="openAICompactMode" :options="openAICompactModeOptions" />
           </div>
         </div>
-        <div class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-          <span class="font-medium">{{ t(openAICompactStatusKey) }}</span>
+        <div v-for="state in openAICompactStates" :key="state.protocol" class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+          <span class="font-medium">{{ t(state.protocol) }}: {{ t(state.statusKey) }}</span>
           <span
-            v-if="account?.extra?.openai_compact_checked_at"
+            v-if="state.checkedAt"
             class="ml-2 text-gray-500 dark:text-gray-400"
           >
             {{ t('admin.accounts.openai.compactLastChecked') }}:
-            {{ formatDateTime(new Date(String(account.extra.openai_compact_checked_at))) }}
+            {{ formatDateTime(new Date(String(state.checkedAt))) }}
           </span>
         </div>
         <div>
@@ -3923,6 +3923,7 @@ import {
   validateOpenAIApiKeyFirstTokenTimeoutStageConfig
 } from '@/utils/openaiFirstTokenTimeoutStages'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { resolveOpenAICompactState } from '@/utils/openaiCompact'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
@@ -4035,8 +4036,6 @@ const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
@@ -4563,13 +4562,9 @@ function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
 
 function normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): number {
   const ms = Math.trunc(Number(value))
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-  }
-  return Math.min(
-    OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS,
-    Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS, ms)
-  )
+  return Number.isSafeInteger(ms) && ms > 0
+    ? ms
+    : OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
 }
 
 function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(value: unknown): number {
@@ -4835,19 +4830,15 @@ const openAIResponsesStatusKey = computed(() => {
   }
   return 'admin.accounts.openai.responsesStatusAutoUnknown'
 })
-const openAICompactStatusKey = computed(() => {
+const openAICompactStates = computed(() => [false, true].map(native => {
   const extra = props.account?.extra as Record<string, unknown> | undefined
-  if (!props.account || props.account.platform !== 'openai') return ''
-  const mode = typeof extra?.openai_compact_mode === 'string' ? extra.openai_compact_mode : 'auto'
-  if (mode === 'force_on') return 'admin.accounts.openai.compactSupported'
-  if (mode === 'force_off') return 'admin.accounts.openai.compactUnsupported'
-  if (typeof extra?.openai_compact_supported === 'boolean') {
-    return extra.openai_compact_supported
-      ? 'admin.accounts.openai.compactSupported'
-      : 'admin.accounts.openai.compactUnsupported'
+  const state = resolveOpenAICompactState(extra, native)
+  return {
+    protocol: native ? 'admin.accounts.openai.compactNative' : 'admin.accounts.openai.compactStandalone',
+    statusKey: state === 'active' ? 'admin.accounts.openai.compactSupported' : state === 'blocked' ? 'admin.accounts.openai.compactUnsupported' : 'admin.accounts.openai.compactAuto',
+    checkedAt: extra?.[native ? 'openai_native_compact_checked_at' : 'openai_compact_checked_at']
   }
-  return 'admin.accounts.openai.compactAuto'
-})
+}))
 
 // Computed: current preset mappings based on platform
 const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))

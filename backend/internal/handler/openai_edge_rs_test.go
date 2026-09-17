@@ -517,6 +517,32 @@ func TestOpenAIEdgePrepareNativeCompactionUsesGoCapabilityScheduling(t *testing.
 	require.Empty(t, plan.LeaseID, "compact must be classified before Edge reserves an ordinary Responses account")
 }
 
+func TestOpenAIEdgeResponsesHTTPAccountFallbackReason(t *testing.T) {
+	for _, account := range []*service.Account{
+		{Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+		newOpenAIEdgeRetryWSTestAccount(1, false),
+		newOpenAIEdgeRetryWSTestAccount(2, true),
+	} {
+		require.Equal(t, "oauth_http_requires_go", openAIEdgeResponsesHTTPAccountFallbackReason(account))
+	}
+	require.Empty(t, openAIEdgeResponsesHTTPAccountFallbackReason(&service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
+	require.Empty(t, openAIEdgeResponsesHTTPAccountFallbackReason(nil))
+}
+
+func TestOpenAIEdgeRetryCannotReintroduceOAuthHTTPTransport(t *testing.T) {
+	h := &OpenAIGatewayHandler{gatewayService: newOpenAIEdgeRetryWSTestService()}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	lease := &openAIEdgeLease{
+		inboundEndpoint: "/v1/responses",
+		forwardBody:     []byte(`{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`),
+		lastPlan:        service.OpenAIEdgePlan{AccountID: 99},
+	}
+	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, newOpenAIEdgeRetryWSTestAccount(1, false), nil)
+	require.EqualError(t, err, "oauth_http_requires_go")
+	require.Empty(t, plan.Action)
+	require.EqualValues(t, 99, lease.lastPlan.AccountID, "a rejected transport must not replace the active lease")
+}
+
 func TestOpenAIEdgeResponsesWSAccountFallbackReason(t *testing.T) {
 	strongIsolation := &service.Account{
 		Platform: service.PlatformOpenAI,

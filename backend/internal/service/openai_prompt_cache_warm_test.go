@@ -221,6 +221,11 @@ func TestPrioritizeOpenAIPromptCacheWarmCandidatesPreservesCompactSupportTier(t 
 
 	ordered := svc.prioritizeOpenAIPromptCacheWarmCandidates(context.Background(), req, candidates)
 	require.Equal(t, []int64{21, 22}, []int64{ordered[0].account.ID, ordered[1].account.ID})
+	req.RequireCompact = false
+	req.RequireCompactCapability = true
+	supported.Extra = map[string]any{"openai_native_compact_supported": true}
+	ordered = svc.prioritizeOpenAIPromptCacheWarmCandidates(context.Background(), req, candidates)
+	require.Equal(t, []int64{21, 22}, []int64{ordered[0].account.ID, ordered[1].account.ID}, "native support tiers must survive cache affinity ordering")
 }
 
 func TestPrioritizeOpenAIPromptCacheWarmCandidatesRelaysHealthyPeers(t *testing.T) {

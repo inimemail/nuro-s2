@@ -118,7 +118,7 @@ describe('AccountTestModal', () => {
     localStorage.clear()
   })
 
-  it('posts compact mode for OpenAI compact probe', async () => {
+  it.each(['compact', 'compact_legacy'])('posts %s mode for the selected Compact protocol', async (mode) => {
     const wrapper = mount(AccountTestModal, {
       props: {
         show: true,
@@ -136,7 +136,7 @@ describe('AccountTestModal', () => {
 
     await flushPromises()
     ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
-    ;(wrapper.vm as any).testMode = 'compact'
+    ;(wrapper.vm as any).testMode = mode
     await (wrapper.vm as any).startTest()
     await flushPromises()
 
@@ -144,7 +144,7 @@ describe('AccountTestModal', () => {
     const [, options] = (global.fetch as any).mock.calls[0]
     expect(JSON.parse(options.body)).toMatchObject({
       model_id: 'gpt-5.4',
-      mode: 'compact'
+      mode
     })
   })
 

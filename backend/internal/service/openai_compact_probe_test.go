@@ -157,12 +157,24 @@ func TestCreateOpenAICompactProbePayload_NativeV2Shape(t *testing.T) {
 }
 
 func TestOpenAICompactProbeFoundCompactionItem(t *testing.T) {
-	sse := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"id\":\"cmp_1\"}}\n\n")
+	sse := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"id\":\"cmp_1\",\"encrypted_content\":\"blob\"}}\n\n")
 	if !openAICompactProbeFoundCompactionItem(sse) {
 		t.Fatal("expected SSE compaction item to be detected")
 	}
 	if openAICompactProbeFoundCompactionItem([]byte(`{"output":[{"type":"message"}]}`)) {
 		t.Fatal("plain message output must not be accepted as compaction")
+	}
+	for _, body := range []string{
+		`{"output":[{"type":"compaction"}]}`,
+		`{"output":[{"type":"compaction","encrypted_content":""}]}`,
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
+	} {
+		if openAICompactProbeFoundCompactionItem([]byte(body)) {
+			t.Fatal("empty compaction announcement must not prove capability")
+		}
+	}
+	if !openAICompactProbeFoundCompactionItem([]byte("event: response.output_item.done\ndata: {\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"blob\"}}\n\n")) {
+		t.Fatal("named SSE events must preserve compaction capability")
 	}
 }
 

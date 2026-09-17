@@ -66,3 +66,36 @@ func TestNormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages_PreservesValidLe
 	require.Equal(t, 900, stages[0].PlaceholderMS)
 	require.Equal(t, 6000, stages[0].GuardMaxMS)
 }
+
+func TestOAuthFirstTokenStagesMatchAPIKeyRuntime(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
+		t.Run(accountType, func(t *testing.T) {
+			prefix := "openai_oauth_chatgpt_first_token_timeout_placeholder"
+			if accountType == AccountTypeAPIKey {
+				prefix = "openai_apikey_first_token_timeout_placeholder"
+			}
+			account := &Account{ID: 17, Platform: PlatformOpenAI, Type: accountType, Extra: map[string]any{
+				prefix + "_enabled":       true,
+				prefix + "_ms":            600,
+				prefix + "_guard_enabled": true,
+				prefix + "_guard_max_ms":  30000,
+				prefix + "_stages": []any{
+					map[string]any{"stage": 1, "placeholder_ms": 600, "guard_max_ms": 30000},
+					map[string]any{"stage": 2, "placeholder_ms": 5000, "guard_max_ms": 90000},
+					map[string]any{"stage": 3, "placeholder_ms": 100000, "guard_max_ms": 900000},
+				},
+			}}
+			svc := &OpenAIGatewayService{}
+			require.Equal(t, 600, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.6-sol"))
+			for _, sample := range []struct{ latency, want int }{{30000, 600}, {30001, 5000}, {90001, 100000}, {900001, 0}, {500, 600}} {
+				svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.6-sol", sample.latency)
+				require.Equal(t, sample.want, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.6-sol"))
+			}
+			account.Extra[prefix+"_guard_enabled"] = false
+			account.Extra[prefix+"_ms"] = 100000
+			account.Extra[prefix+"_guard_max_ms"] = 900000
+			account.Extra[prefix+"_stages"] = []any{map[string]any{"stage": 1, "placeholder_ms": 100000, "guard_max_ms": 900000}}
+			require.Equal(t, 100000, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.6-sol"), "disabling protection must not truncate a saved stage")
+		})
+	}
+}

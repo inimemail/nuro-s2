@@ -187,7 +187,7 @@ func openAIPromptCacheWarmCandidateCompatible(
 	}
 	return candidate.account.IsOpenAIPromptCacheSmartRoutingEnabled() &&
 		sameOpenAIStrictPriorityTie(candidate, baseline, preferSoonestReset) &&
-		(!req.RequireCompact || openAICompactSupportTier(candidate.account) == openAICompactSupportTier(baseline.account))
+		(!req.requiresCompactCapability() || req.compactSupportTier(candidate.account) == req.compactSupportTier(baseline.account))
 }
 
 func (s *OpenAIGatewayService) shouldEnhanceOpenAIPromptCacheLongContext(ctx context.Context, c *gin.Context, account *Account, model string, body []byte) bool {

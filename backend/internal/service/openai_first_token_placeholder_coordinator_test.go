@@ -16,6 +16,77 @@ type failingOpenAIPlaceholderWriter struct {
 	gin.ResponseWriter
 }
 
+func TestOpenAIPlaceholderCoordinatorReassemblesArbitraryChunks(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		for _, event := range []string{"response.created", "response.output_text.delta", "response.completed"} {
+			t.Run(event+"/"+strings.ReplaceAll(ending, "\n", "LF"), func(t *testing.T) {
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				coordinator := ensureOpenAIPlaceholderCoordinator(c, time.Now())
+				// Named events and JSON split over multiple data lines are legal SSE.
+				frame := "event: " + event + ending + "data: {\"delta\":" + ending + "data: \"OK\"}" + ending + ending
+				for _, b := range []byte(frame) {
+					_, err := c.Writer.Write([]byte{b})
+					require.NoError(t, err)
+				}
+				require.True(t, coordinator.sseAtEventBoundary)
+				require.Empty(t, coordinator.ssePending)
+				require.True(t, OpenAIRequestUpstreamCommitted(c))
+				require.Equal(t, event != "response.created", coordinator.placeholderOutputStarted)
+				require.Equal(t, event == "response.completed", OpenAIRequestResponsesTerminalWritten(c))
+			})
+		}
+	}
+}
+
+func TestOpenAIPlaceholderWaitsForSSEEventBoundary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, eventType := range []string{"response.created", "response.output_text.delta", "response.completed"} {
+		t.Run(eventType, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			StartOpenAIPlaceholderCoordination(c, time.Now())
+			_, err := c.Writer.WriteString("event: " + eventType + "\n")
+			require.NoError(t, err)
+			writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.6-sol", openAIRequestFirstTokenPlaceholderDialectResponses)
+			require.NotContains(t, rec.Body.String(), "response.transport_progress.delta", "a timer must not insert its data into an unfinished upstream event")
+			_, err = c.Writer.WriteString(`data: {"type":"` + eventType + `","delta":"OK"}` + "\n\n")
+			require.NoError(t, err)
+			if eventType == "response.created" {
+				require.Contains(t, rec.Body.String(), "\n\ndata: {\"type\":\"response.transport_progress.delta\"")
+				require.True(t, OpenAIRequestTokenPlaceholderWritten(c))
+			} else {
+				require.NotContains(t, rec.Body.String(), "response.transport_progress.delta", "real output or a terminal event cancels a queued placeholder")
+			}
+		})
+	}
+}
+
+func TestOpenAIPlaceholderTimerSurvivesForwardedPreamble(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	StartOpenAIPlaceholderCoordination(c, time.Now())
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	done := make(chan struct{})
+	coordinator.arm(nil, 10*time.Millisecond, func() {
+		writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.6-sol", openAIRequestFirstTokenPlaceholderDialectResponses)
+		close(done)
+	})
+	_, err := c.Writer.WriteString("data: {\"type\":\"response.created\"}\n\n")
+	require.NoError(t, err)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("forwarding created canceled the timeout timer")
+	}
+	require.True(t, OpenAIRequestUpstreamCommitted(c), "forwarded preamble still prevents account replay")
+	require.True(t, OpenAIRequestTokenPlaceholderWritten(c))
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "response.transport_progress.delta"))
+}
+
 func (w *failingOpenAIPlaceholderWriter) Write(data []byte) (int, error) {
 	return 0, errors.New("write failed")
 }

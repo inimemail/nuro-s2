@@ -137,6 +137,7 @@ describe('AccountTestModal', () => {
     const [, request] = (global.fetch as any).mock.calls[0]
     expect(JSON.parse(request.body)).toEqual({
       model_id: 'gemini-3.1-flash-image',
+      mode: 'default',
       prompt: 'draw a tiny orange cat astronaut'
     })
 

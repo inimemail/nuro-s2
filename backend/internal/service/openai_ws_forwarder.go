@@ -2429,12 +2429,25 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	var firstTokenMs *int
 	var firstTokenTimeoutGuardSampleMS *int
 	downstreamTTFTObserved := false
+	flushPreamble := reqStream && s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := reqStream && s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
 	if !reqStream {
 		firstTokenTimeoutPlaceholder = 0
 	}
 	firstTokenTimeoutPlaceholderSent := false
+	safeTokenPlaceholderSent := false
+	if reqStream {
+		coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
+		if coordinator != nil {
+			if safeTokenPlaceholder || firstTokenTimeoutPlaceholder > 0 {
+				coordinator.activate()
+			}
+			state := coordinator.snapshot()
+			firstTokenTimeoutPlaceholderSent = state.Sent
+			safeTokenPlaceholderSent = state.SafeSent || state.Sent
+		}
+	}
 	responseID := ""
 	var finalResponse []byte
 	wroteDownstream := false
@@ -2473,6 +2486,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	clientDisconnected := false
+	if reqStream && s.openAIStreamSSECommentPreflushEnabled(account, originalModel) {
+		if written := writeOpenAIGatewayOnlyFrame(c, ":\n\n"); openAIGatewayFrameWriteFailed(c, written) {
+			clientDisconnected = true
+		}
+		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+	}
 	flushBatchSize := s.openAIWSEventFlushBatchSize()
 	flushInterval := s.openAIWSEventFlushInterval()
 	pendingFlushEvents := 0
@@ -2538,6 +2557,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		_ = reason
 		if writeOpenAIGatewayPlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0) {
 			firstTokenTimeoutPlaceholderSent = true
+			safeTokenPlaceholderSent = true
 		} else if !OpenAIRequestUpstreamCommitted(c) {
 			clientDisconnected = true
 		}
@@ -2797,18 +2817,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 		clientMessage := sanitizeOpenAIWSErrorEventForClient(message, eventType, wroteDownstream)
 		if reqStream {
-			if safeTokenPlaceholder && !firstTokenTimeoutPlaceholderSent && eventType == "response.created" {
-				buffered := make([]byte, len(clientMessage))
-				copy(buffered, clientMessage)
-				bufferedStreamEvents = append(bufferedStreamEvents, buffered)
-				bufferedEventCount++
-				emitFirstTokenPlaceholder("safe_placeholder")
-				firstTokenTimeoutCh = nil
-				continue
-			}
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
-			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
+			forwardPreamble := flushPreamble && openAIStreamEventIsPreamble(eventType)
+			shouldBuffer := !wroteDownstream && firstTokenMs == nil && !isTokenEvent && !isTerminalEvent && !forwardPreamble
 			if shouldBuffer {
 				buffered := make([]byte, len(clientMessage))
 				copy(buffered, clientMessage)
@@ -2827,7 +2839,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 			} else {
 				flushBufferedStreamEvents(eventType)
-				emitStreamMessage(clientMessage, isTerminalEvent)
+				emitStreamMessage(clientMessage, isTerminalEvent || forwardPreamble)
+			}
+			if safeTokenPlaceholder && !safeTokenPlaceholderSent && !clientDisconnected && eventType == "response.created" {
+				if written := writeOpenAISafePlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0); openAIGatewayFrameWriteFailed(c, written) {
+					clientDisconnected = true
+				} else {
+					safeTokenPlaceholderSent = true
+				}
 			}
 		} else {
 			clientResponseField := responseField
@@ -4987,7 +5006,7 @@ func isOpenAIWSRealTokenEvent(message []byte, eventType string) bool {
 	if eventType == "response.transport_progress.delta" {
 		return false
 	}
-	if eventType == "response.output_item.added" {
+	if eventType == "response.output_item.added" || eventType == "response.output_item.done" {
 		return openAIStreamDataStartsRealOutput(string(message), eventType)
 	}
 	if !strings.HasSuffix(eventType, ".delta") {
@@ -5172,8 +5191,10 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		}
 		account = latest
 	}
-	if requireCompact && openAICompactSupportTier(account) == 0 {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account, !requireCompact && IsOpenAINativeCompactionV2Context(ctx)) == 0 {
+		if requireCompact {
+			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		}
 		return nil, nil
 	}
 

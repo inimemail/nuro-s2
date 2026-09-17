@@ -383,6 +383,20 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAICompactCapability(t *testing.T
 	require.False(t, supported, "force_off must remain authoritative after snapshot filtering")
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsSeparateCompactCapabilities(t *testing.T) {
+	account := service.Account{Platform: service.PlatformOpenAI, Extra: map[string]any{
+		"openai_compact_supported":        false,
+		"openai_native_compact_supported": true,
+		"openai_compact_last_error":       "upstream returned 2xx without a compaction output item (native remote compaction v2 unsupported)",
+	}}
+	got := buildSchedulerMetadataAccount(account)
+	_, known := got.OpenAICompactSupportKnown()
+	require.False(t, known, "historical false negative must stay unknown in the snapshot too")
+	supported, known := got.OpenAINativeCompactSupportKnown()
+	require.True(t, known)
+	require.True(t, supported)
+}
+
 func TestBuildSchedulerMetadataAccount_KeepsPromptCacheAffinityModeWithoutChildFeatures(t *testing.T) {
 	account := service.Account{
 		ID:       202,

@@ -1619,12 +1619,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 			accountReleaseFunc()
 		}
 	}()
-	var prepared *service.OpenAIEdgePreparedChatCompletions
-	if account.Type == service.AccountTypeOAuth {
-		prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
-	} else {
-		prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
+	if reason := openAIEdgeResponsesHTTPAccountFallbackReason(account); reason != "" {
+		return fallback(reason)
 	}
+	prepared, err := h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
 	if err != nil {
 		reqLog.Warn("openai_edge.build_responses_plan_failed", zap.Int64("account_id", account.ID), zap.String("account_type", string(account.Type)), zap.Error(err))
 		return fallback("build_responses_plan_failed")
@@ -2749,7 +2747,22 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeRetryStage(c *gin.Context) {
 	}
 }
 
+// OAuth Responses HTTP must use the full Go transport, which applies account
+// TLS profiles and OAuth request/stream handling. The Edge HTTP client does not
+// have that contract. API-key HTTP and the separate WS path remain eligible.
+func openAIEdgeResponsesHTTPAccountFallbackReason(account *service.Account) string {
+	if account != nil && account.Type == service.AccountTypeOAuth {
+		return "oauth_http_requires_go"
+	}
+	return ""
+}
+
 func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (*openAIEdgePreparedRetryPlan, error) {
+	if lease.inboundEndpoint == "/v1/responses" {
+		if reason := openAIEdgeResponsesHTTPAccountFallbackReason(account); reason != "" {
+			return nil, errors.New(reason)
+		}
+	}
 	var (
 		prepared *service.OpenAIEdgePreparedChatCompletions
 		err      error
@@ -2779,11 +2792,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 		}
 		prepared, err = h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, attemptBody, token)
 	} else if lease.inboundEndpoint == "/v1/responses" {
-		if account.Type == service.AccountTypeOAuth {
-			prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, attemptBody)
-		} else {
-			prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, attemptBody)
-		}
+		prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, attemptBody)
 	} else {
 		prepared, err = h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, attemptBody, "")
 	}

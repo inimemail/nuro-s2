@@ -2531,6 +2531,9 @@ func TestOpenAIStreamDataStartsRealOutput(t *testing.T) {
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.transport_progress.delta","delta":"in_progress"}`, "response.transport_progress.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":"hello"}`, "response.output_text.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
+	require.False(t, openAIStreamDataStartsRealOutput(`{"item":{"type":"compaction"}}`, "response.output_item.added"))
+	require.True(t, openAIStreamDataStartsRealOutput(`{"item":{"type":"compaction","encrypted_content":"opaque-state"}}`, "response.output_item.added"))
+	require.True(t, openAIStreamDataStartsRealOutput(`{"item":{"type":"compaction","encrypted_content":"opaque-state"}}`, "response.output_item.done"))
 }
 
 func TestOpenAIStreamStructuralPreambleDoesNotCommitAttempt(t *testing.T) {

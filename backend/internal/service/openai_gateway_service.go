@@ -1886,11 +1886,14 @@ func (e openAINoAvailableSelectionError) Unwrap() error {
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.
 // 0 = explicitly unsupported, 1 = unknown / not yet probed, 2 = explicitly supported.
-func openAICompactSupportTier(account *Account) int {
+func openAICompactSupportTier(account *Account, native ...bool) int {
 	if account == nil || !account.IsOpenAI() {
 		return 0
 	}
 	supported, known := account.OpenAICompactSupportKnown()
+	if len(native) > 0 && native[0] {
+		supported, known = account.OpenAINativeCompactSupportKnown()
+	}
 	if !known {
 		return 1
 	}
@@ -1960,7 +1963,7 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	if !account.MatchesOpenAIImagePoolRequest(ctx, requestedModel, requiredImageCapability) {
 		return false
 	}
-	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account) == 0 {
+	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account, !requireCompact && IsOpenAINativeCompactionV2Context(ctx)) == 0 {
 		return false
 	}
 	return true
@@ -6686,7 +6689,7 @@ func openAIStreamDataStartsCoordinatedClientOutput(data, eventType string) bool 
 		return false
 	}
 	eventType = strings.TrimSpace(eventType)
-	if eventType == "response.output_item.added" {
+	if eventType == "response.output_item.added" || eventType == "response.output_item.done" {
 		return openAIStreamDataStartsRealOutput(trimmed, eventType)
 	}
 	if eventType == "response.transport_progress.delta" || !strings.HasSuffix(eventType, ".delta") {
@@ -6856,7 +6859,15 @@ func openAIStreamDataStartsRealOutput(data, eventType string) bool {
 		return strings.TrimSpace(gjson.Get(trimmed, "delta").String()) != ""
 	case "response.output_item.added":
 		itemType := strings.TrimSpace(gjson.Get(trimmed, "item.type").String())
-		return itemType == "function_call" || itemType == "custom_tool_call"
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			return true
+		}
+		fallthrough
+	case "response.output_item.done":
+		// Compaction returns encrypted state rather than text deltas. An empty
+		// item announcement is still preamble; the state itself commits output.
+		return gjson.Get(trimmed, "item.type").String() == "compaction" &&
+			strings.TrimSpace(gjson.Get(trimmed, "item.encrypted_content").String()) != ""
 	default:
 		return false
 	}
@@ -7553,6 +7564,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	requestFirstTokenPlaceholderSentOpt ...bool,
 ) (*openaiStreamingResultPassthrough, error) {
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
+	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
 		writeOpenAIPassthroughResponseHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -7594,7 +7606,6 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawFailedEvent := false
 	sawCyberPolicyEvent := false
 	failedMessage := ""
-	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
@@ -7867,8 +7878,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			lineStartsClientOutput = lineStartsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
 			if gatewayOnlyOutput {
 				lineStartsFirstToken = forceFlushFailedEvent || openAIStreamDataStartsCoordinatedClientOutput(trimmedData, eventType)
-				lineStartsClientOutput = lineStartsFirstToken
+				lineStartsClientOutput = lineStartsFirstToken || (flushPreamble && openAIStreamEventIsPreamble(eventType))
 			}
+			// A terminal response must release buffered frames even when no text
+			// delta preceded it (for example, compaction or an empty completion).
+			// Keep this separate from first-token timing. Failed events have already
+			// passed through the failover decision above.
+			lineStartsClientOutput = lineStartsClientOutput || openAIResponsesTerminalEventType(eventType) != ""
 			if lineStartsRealOutput && trimmedData != "[DONE]" {
 				recordFirstTokenTimeoutGuardSample()
 			}
@@ -9138,6 +9154,7 @@ type openaiNonStreamingResult struct {
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, requestFirstTokenPlaceholderSentOpt ...bool) (*openaiStreamingResult, error) {
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
+	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
 		responseheaders.WriteFilteredHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -9238,7 +9255,6 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	sawCyberPolicyEvent := false
 	failedMessage := ""
 	var upstreamSSEState openAIUpstreamSSEState
-	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
@@ -9618,8 +9634,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
 			if gatewayOnlyOutput {
 				startsFirstToken = forceFlushFailedEvent || openAIStreamDataStartsCoordinatedClientOutput(data, eventType)
-				startsClientOutput = startsFirstToken
+				startsClientOutput = startsFirstToken || (flushPreamble && openAIStreamEventIsPreamble(eventType))
 			}
+			startsClientOutput = startsClientOutput || openAIResponsesTerminalEventType(eventType) != ""
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {

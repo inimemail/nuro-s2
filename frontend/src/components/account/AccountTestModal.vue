@@ -306,7 +306,7 @@ let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const generatedVideos = ref<string[]>([])
 const generatedAudio = ref<string[]>([])
-const testMode = ref<'default' | 'compact'>('default')
+const testMode = ref<'default' | 'compact' | 'compact_legacy'>('default')
 const grokTestMode = ref('text')
 const handleGrokMediaUpload = (event: Event) => {
   const file = (event.target as HTMLInputElement).files?.[0]
@@ -328,7 +328,8 @@ const grokTestModeOptions = computed(() => [
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const openAITestModeOptions = computed(() => [
   { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
-  { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
+  { value: 'compact', label: t('admin.accounts.openai.testModeCompact') },
+  { value: 'compact_legacy', label: t('admin.accounts.openai.testModeCompactLegacy') }
 ])
 const previewImageUrl = ref('')
 const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']

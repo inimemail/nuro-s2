@@ -4928,7 +4928,7 @@ const selectCNBaseUrlPreset = (url: string) => {
   if (isCNProvider.value && cnApiMode.value === 'adaptive') {
     for (const option of cnAdaptiveProtocolOptions.value) {
       if (option.value === 'chat_completions') adaptiveBaseUrls.value[option.value] = url
-      else if (adaptiveBaseUrls.value[option.value] === cnAdaptiveProtocolOptions.value.find(item => item.value === option.value)?.url) adaptiveBaseUrls.value[option.value] = option.url
+      else if (!adaptiveBaseUrlOverrides.value[option.value]) adaptiveBaseUrls.value[option.value] = option.url
     }
   }
 }
@@ -4975,8 +4975,6 @@ const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
@@ -5470,13 +5468,9 @@ function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
 
 function normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): number {
   const ms = Math.trunc(Number(value))
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-  }
-  return Math.min(
-    OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS,
-    Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS, ms)
-  )
+  return Number.isSafeInteger(ms) && ms > 0
+    ? ms
+    : OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
 }
 
 function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(value: unknown): number {

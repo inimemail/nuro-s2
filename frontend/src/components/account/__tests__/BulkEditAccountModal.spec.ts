@@ -149,6 +149,17 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it.each(['off', 'session'])('指纹设置只有明确勾选后才提交：%s', async mode => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    await wrapper.get('[data-testid="bulk-fingerprint-enabled"]').setValue(true)
+    await wrapper.get('[data-testid="bulk-fingerprint-mode"]').setValue(mode)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], mode === 'off'
+      ? { extra_remove_keys: ['codex_fingerprint_mode'] }
+      : { extra: { codex_fingerprint_mode: 'session' } })
+  })
+
   it('OpenAI OAuth 批量编辑应提交 OAuth 专属 WS mode 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
@@ -299,6 +310,29 @@ describe('BulkEditAccountModal', () => {
           { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
         ]
       }
+    })
+  })
+
+  it('OAuth 批量编辑保留超过 30000ms 的首阶段保护值', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    await wrapper.get('#bulk-edit-openai-oauth-first-token-timeout-placeholder-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-oauth-first-token-timeout-placeholder-toggle').trigger('click')
+    for (const [index, guard] of [56000, 60000, 65000, 80000].entries()) {
+      await wrapper.get(`[data-testid="stage-${index + 1}-guard"]`).setValue(guard)
+    }
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    const payload = vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls[0]?.[1]
+    expect(payload?.extra).toMatchObject({
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 56000,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 56000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 60000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 65000 },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 80000 }
+      ]
     })
   })
 

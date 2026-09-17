@@ -915,9 +915,9 @@
             <label class="input-label mb-0">Codex 指纹收敛</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">按账号收敛设备/会话标识；选择关闭可显式清除旧设置。</p>
           </div>
-          <input v-model="enableCodexFingerprintMode" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          <input v-model="enableCodexFingerprintMode" data-testid="bulk-fingerprint-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
         </div>
-        <Select v-if="enableCodexFingerprintMode" v-model="codexFingerprintMode" :options="codexFingerprintModeOptions" />
+        <Select v-if="enableCodexFingerprintMode" data-testid="bulk-fingerprint-mode" v-model="codexFingerprintMode" :options="codexFingerprintModeOptions" />
       </div>
 
       <!-- OpenAI OAuth / Setup Token subscription tier override -->
@@ -2187,8 +2187,6 @@ const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled = ref(true)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS)
@@ -2288,13 +2286,9 @@ function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
 
 function normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): number {
   const ms = Math.trunc(Number(value))
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-  }
-  return Math.min(
-    OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS,
-    Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS, ms)
-  )
+  return Number.isSafeInteger(ms) && ms > 0
+    ? ms
+    : OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
 }
 
 function resetOpenAIFirstTokenTimeoutPlaceholderMs(kind: 'oauth' | 'apikey') {
@@ -2692,15 +2686,14 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.codex_cli_only = codexCLIOnlyEnabled.value
   }
 
-  if (enableCodexFingerprintMode.value) {
-    const extra = ensureExtra()
-    extra.codex_fingerprint_mode = codexFingerprintMode.value
-  } else {
-    // The toggle is tri-state at batch scope: when disabled, explicitly
-    // remove a previously configured mode instead of leaving stale
-    // convergence enabled on selected accounts.
-    const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
-    updates.extra_remove_keys = [...removeKeys, 'codex_fingerprint_mode']
+  if (enableCodexFingerprintMode.value && allOpenAIOAuthLike.value) {
+    if (codexFingerprintMode.value === 'off') {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [...removeKeys, 'codex_fingerprint_mode']
+    } else {
+      const extra = ensureExtra()
+      extra.codex_fingerprint_mode = codexFingerprintMode.value
+    }
   }
 
   if (enablePlanType.value) {

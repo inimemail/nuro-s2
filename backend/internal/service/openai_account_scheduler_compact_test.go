@@ -73,12 +73,12 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_NativeV2RejectsUnsuppor
 		{
 			ID: 71030, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
-			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_compact_supported": false},
+			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_native_compact_supported": false, "openai_compact_supported": true},
 		},
 		{
 			ID: 71031, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
-			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_compact_supported": true},
+			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_native_compact_supported": true, "openai_compact_supported": false},
 		},
 	}
 	cfg := &config.Config{}

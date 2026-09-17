@@ -1236,6 +1236,16 @@ func (a *Account) GetOpenAICompactMode() string {
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
+	return a.openAICompactSupportKnown(false)
+}
+
+// Native Responses compaction and /responses/compact are independent upstream
+// capabilities. Historical standalone results must not filter native turns.
+func (a *Account) OpenAINativeCompactSupportKnown() (supported bool, known bool) {
+	return a.openAICompactSupportKnown(true)
+}
+
+func (a *Account) openAICompactSupportKnown(native bool) (supported bool, known bool) {
 	if a == nil || !a.IsOpenAI() {
 		return false, false
 	}
@@ -1250,7 +1260,15 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	if a.Extra == nil {
 		return false, false
 	}
-	supported, ok := a.Extra["openai_compact_supported"].(bool)
+	key := "openai_compact_supported"
+	if native {
+		key = "openai_native_compact_supported"
+	} else if lastError, _ := a.Extra["openai_compact_last_error"].(string); strings.Contains(lastError, "native remote compaction v2 unsupported") {
+		// Earlier native probes overwrote the standalone flag. This diagnostic
+		// identifies those false negatives unambiguously; let standalone retry.
+		return false, false
+	}
+	supported, ok := a.Extra[key].(bool)
 	if !ok {
 		return false, false
 	}
@@ -3100,6 +3118,9 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 	case a.IsOpenAIOAuth():
 		if !a.getExtraBool(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey) {
 			return 0
+		}
+		if stages, err := NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(a.Extra); err == nil && len(stages) > 0 {
+			return stages[0].PlaceholderMS
 		}
 		return normalizeOpenAIFirstTokenTimeoutPlaceholderMs(a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey))
 	case a.IsOpenAIApiKey():

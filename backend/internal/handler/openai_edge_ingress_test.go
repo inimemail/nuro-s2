@@ -127,6 +127,29 @@ func TestCopyOpenAIEdgeResponseBodyDoesNotDuplicateTerminal(t *testing.T) {
 	require.NotContains(t, body, "response.failed")
 }
 
+func TestCopyOpenAIEdgeResponseBodyAcceptsJSONWhitespaceInTerminal(t *testing.T) {
+	for _, terminal := range []string{"response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled"} {
+		t.Run(terminal, func(t *testing.T) {
+			body := "data: {\"type\" : \"" + terminal + "\", \"response\": {\"output\": []}}\n\n"
+			for _, reader := range []io.Reader{strings.NewReader(body), &edgeOneByteReader{Reader: strings.NewReader(body)}} {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				copyOpenAIEdgeResponseBody(c, reader, true)
+				require.Equal(t, body, rec.Body.String(), "a valid terminal event must not be followed by a fabricated upstream failure")
+			}
+		})
+	}
+}
+
+type edgeOneByteReader struct{ io.Reader }
+
+func (r *edgeOneByteReader) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return r.Reader.Read(p)
+}
+
 func TestOpenAIEdgeIngressFallbackHeaderSkipsProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}

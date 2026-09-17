@@ -3974,7 +3974,7 @@ export default {
         codexImageToolBadgeBlock: 'Client image tools stripped',
         compactMode: 'Compact mode',
         compactModeDesc:
-          'Controls how this account participates in /responses/compact routing. Auto follows probe results, Force On always allows, Force Off always excludes.',
+          'Controls Compact routing. Auto uses separate probe results for the standalone endpoint and native streaming compaction. Force On and Force Off apply to both protocols.',
         compactModeAuto: 'Auto',
         compactModeForceOn: 'Force On',
         compactModeForceOff: 'Force Off',
@@ -3988,7 +3988,10 @@ export default {
         compactLastChecked: 'Last compact probe',
         testMode: 'Test mode',
         testModeDefault: 'Default request',
-        testModeCompact: 'Compact probe',
+        testModeCompact: 'Native Compact probe (Responses stream)',
+        testModeCompactLegacy: 'Standalone Compact probe (/responses/compact)',
+        compactStandalone: 'Standalone',
+        compactNative: 'Native stream',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
       },
       anthropic: {

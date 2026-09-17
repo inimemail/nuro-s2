@@ -11,6 +11,9 @@ func TestShouldEnqueueSchedulerOutboxForExtraUpdates_CompactCapabilityKeysAreRel
 	if !shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
 		t.Fatalf("expected compact capability updates to enqueue scheduler outbox")
 	}
+	if !shouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{"openai_native_compact_supported": false}) {
+		t.Fatal("native compact probe must invalidate scheduler snapshots")
+	}
 }
 
 func TestShouldEnqueueSchedulerOutboxForExtraUpdates_OpenAIResponsesCapabilityKeysAreRelevant(t *testing.T) {

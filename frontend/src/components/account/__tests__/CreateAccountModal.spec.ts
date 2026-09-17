@@ -333,7 +333,7 @@ describe('CreateAccountModal', () => {
     )
   })
 
-  it('shows Kimi billing/protocol choices and persists the selected coding preset', async () => {
+  it.each([false, true])('Kimi coding preset refreshes linked endpoints and preserves explicit overrides=%s', async (customAnthropic) => {
     const wrapper = mountModal()
     await wrapper.findAll('button').find((button) => button.text().trim() === 'Kimi')!.trigger('click')
     await flushPromises()
@@ -343,6 +343,9 @@ describe('CreateAccountModal', () => {
     expect(wrapper.find('[data-testid="cn-protocol-anthropic"]').exists()).toBe(true)
     const baseUrl = wrapper.get('input[placeholder="https://api.moonshot.cn/v1"]')
     await baseUrl.setValue('https://gateway.example.test/kimi')
+    if (customAnthropic) {
+      await wrapper.get('[data-testid="cn-adaptive-base-url-anthropic"]').setValue('https://custom.example.test/anthropic')
+    }
     await wrapper.get('[data-testid="cn-billing-coding-plan"]').trigger('click')
     expect((baseUrl.element as HTMLInputElement).value).toBe('https://gateway.example.test/kimi')
     await wrapper.get('[data-testid="cn-base-url-coding"]').trigger('click')
@@ -359,7 +362,7 @@ describe('CreateAccountModal', () => {
         api_key: 'sk-kimi-test',
         api_base_urls: {
           chat_completions: 'https://api.kimi.com/coding/v1',
-          anthropic: 'https://api.kimi.com/coding'
+          anthropic: customAnthropic ? 'https://custom.example.test/anthropic' : 'https://api.kimi.com/coding'
         }
       },
       extra: { cn_billing_mode: 'coding_plan', cn_api_mode: 'adaptive' }

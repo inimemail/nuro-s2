@@ -76,6 +76,8 @@ func TestIsOpenAIWSTokenEvent_DisjointWithTerminal(t *testing.T) {
 }
 
 func TestIsOpenAIWSRealTokenEventRequiresContent(t *testing.T) {
+	require.True(t, isOpenAIWSRealTokenEvent([]byte(`{"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"state"}}`), "response.output_item.done"))
+	require.False(t, isOpenAIWSRealTokenEvent([]byte(`{"type":"response.output_item.done","item":{"type":"compaction"}}`), "response.output_item.done"))
 	require.False(t, isOpenAIWSRealTokenEvent([]byte(`{"type":"response.output_text.done","text":"ok"}`), "response.output_text.done"))
 	require.False(t, isOpenAIWSRealTokenEvent([]byte(`{"type":"response.output_text.delta","delta":""}`), "response.output_text.delta"))
 	require.False(t, isOpenAIWSRealTokenEvent([]byte(`{"type":"response.transport_progress.delta","delta":"in_progress"}`), "response.transport_progress.delta"))
