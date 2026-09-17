@@ -57,6 +57,7 @@ type OpenAIAccountScheduleRequest struct {
 	RequiredCapability             OpenAIEndpointCapability
 	RequiredImageCapability        OpenAIImagesCapability
 	RequireCompact                 bool
+	RequireCompactCapability       bool
 	RequestPlatform                string
 	ExcludedIDs                    map[int64]struct{}
 	LockedPriority                 int
@@ -65,6 +66,10 @@ type OpenAIAccountScheduleRequest struct {
 	AdaptiveTTFTSwitchEnabled      bool
 	AdaptiveTTFTThresholdSecs      int
 	AdaptiveHealthFreshnessMinutes int
+}
+
+func (r OpenAIAccountScheduleRequest) requiresCompactCapability() bool {
+	return r.RequireCompact || r.RequireCompactCapability
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -650,6 +655,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	if IsOpenAINativeCompactionV2Context(ctx) {
+		req.RequireCompactCapability = true
+	}
 	// Normalize an explicitly supplied strategy first so scheduler callers that
 	// do not carry HTTP middleware context still get deterministic behavior.
 	req.AccountSchedulingStrategy = NormalizeAccountSchedulingStrategy(req.AccountSchedulingStrategy)
@@ -1319,7 +1327,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlanWithHistory(
 
 	candidates := allCandidates
 	staleSnapshotCompactRetry := make([]openAIAccountCandidateScore, 0, len(allCandidates))
-	if req.RequireCompact {
+	if req.requiresCompactCapability() {
 		candidates = make([]openAIAccountCandidateScore, 0, len(allCandidates))
 		for _, candidate := range allCandidates {
 			if openAICompactSupportTier(candidate.account) == 0 {
@@ -1463,7 +1471,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		return s.buildStrictPrioritySelectionOrderForSession(pool, req.RequestedModel, req.SessionHash)
 	}
 
-	if req.RequireCompact {
+	if req.requiresCompactCapability() {
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		for _, candidate := range plan.candidates {
@@ -2169,7 +2177,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
-		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+		if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -2232,7 +2240,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
-			if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+			if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
 				compactBlocked = true
 				continue
 			}
@@ -2463,14 +2471,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if IsAdaptiveHealthSchedulingStrategy(req.AccountSchedulingStrategy) {
 		selectionOrder = prioritizeOpenAIAdaptiveOAuthCandidates(selectionOrder)
 	}
-	if req.RequireCompact && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
+	if req.requiresCompactCapability() && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
 		return nil, 0, 0, 0, ErrNoAvailableCompactAccounts
 	}
-	if req.RequireCompact && len(selectionOrder) == 0 && s.service.schedulerSnapshot == nil {
+	if req.requiresCompactCapability() && len(selectionOrder) == 0 && s.service.schedulerSnapshot == nil {
 		return nil, candidateCount, topK, loadSkew, ErrNoAvailableCompactAccounts
 	}
 	if len(selectionOrder) == 0 {
-		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, req.RequireCompact && len(plan.allCandidates) > 0)
+		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, req.requiresCompactCapability() && len(plan.allCandidates) > 0)
 	}
 
 	ttftPolicy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
@@ -2533,7 +2541,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
-		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+		if req.requiresCompactCapability() && openAICompactSupportTier(fresh) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -2661,6 +2669,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}
 	if !accountSupportsOpenAICapabilities(ctx, account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability) {
 		return false, "capability_mismatch"
+	}
+	if req.requiresCompactCapability() && openAICompactSupportTier(account) == 0 {
+		return false, "compact_unsupported"
 	}
 	return true, ""
 }

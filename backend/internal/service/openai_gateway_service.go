@@ -1960,7 +1960,7 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	if !account.MatchesOpenAIImagePoolRequest(ctx, requestedModel, requiredImageCapability) {
 		return false
 	}
-	if requireCompact && openAICompactSupportTier(account) == 0 {
+	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account) == 0 {
 		return false
 	}
 	return true
@@ -6449,6 +6449,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
@@ -8612,6 +8613,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)

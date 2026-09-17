@@ -83,11 +83,11 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2CompatibilityMatrix(t *t
 			wantPath:   "/backend-api/codex/responses",
 		},
 		{
-			name:       "wrong_case_uses_legacy_bridge",
+			name:       "wrong_case_still_native_by_body_signal",
 			path:       "/v1/responses",
 			body:       []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`),
 			betaHeader: "REMOTE_COMPACTION_V2",
-			wantPath:   "/v1/responses/compact",
+			wantPath:   "/v1/responses",
 		},
 		{
 			name:       "stream_false_uses_legacy_bridge",
@@ -114,7 +114,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2CompatibilityMatrix(t *t
 	}
 }
 
-func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T) {
+func TestNormalizeOpenAIResponsesCompactRequest_HeaderlessStreamTriggerStaysNative(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{
 		"model":"gpt-5.5",
@@ -131,24 +131,21 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T)
 	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 
-	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
-	require.True(t, isOpenAIRemoteCompactPath(c))
-	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
-	require.False(t, gjson.GetBytes(normalized, "store").Exists())
-	require.False(t, gjson.GetBytes(normalized, "prompt_cache_key").Exists())
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.False(t, isOpenAIRemoteCompactPath(c))
+	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
+	require.True(t, gjson.GetBytes(normalized, "store").Bool())
+	require.Equal(t, "pck-signal-1", gjson.GetBytes(normalized, "prompt_cache_key").String())
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(normalized, "model").String())
 
 	reqStream, streamOK := parseOpenAICompatibleStream(normalized)
 	require.True(t, streamOK)
-	require.False(t, reqStream)
+	require.True(t, reqStream)
 
-	seed, exists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
-	require.True(t, exists)
-	require.Equal(t, "pck-signal-1", seed)
-
-	clientStream, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-	require.True(t, exists)
-	require.Equal(t, true, clientStream)
+	_, exists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
+	require.False(t, exists)
+	_, exists = c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.False(t, exists)
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlash(t *testing.T) {

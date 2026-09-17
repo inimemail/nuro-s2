@@ -1410,6 +1410,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	account.ApplyHeaderOverrides(headers)
+	applyOpenAICodexBetaFeatures(c, account, headers)
 	if strongIsolationEnabled {
 		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
 	}

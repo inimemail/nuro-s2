@@ -65,6 +65,41 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 	require.Equal(t, int64(71002), selection.Account.ID, "compact-supported account should win over unknown")
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_NativeV2RejectsUnsupportedWithoutLegacyMapping(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(91004)
+	accounts := []Account{
+		{
+			ID: 71030, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
+			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_compact_supported": false},
+		},
+		{
+			ID: 71031, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
+			GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_compact_supported": true},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	ctx := WithOpenAINativeCompactionV2(context.Background())
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "", "gpt-5.6-sol", nil,
+		OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(71031), selection.Account.ID)
+}
+
 // TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitlyUnsupported
 // 验证 force_off / 已探测不支持 (tier=0) 的账号不会被 compact 请求选中。
 func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitlyUnsupported(t *testing.T) {

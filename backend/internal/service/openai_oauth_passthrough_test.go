@@ -592,6 +592,90 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 	require.Contains(t, rec.Body.String(), `"id":"cmp_123"`)
 }
 
+func TestOpenAIGatewayService_DownstreamAPIKeyToOAuth_NativeCompactionV2(t *testing.T) {
+	setGinTestMode()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("Authorization", "Bearer downstream-api-key")
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+	c.Request.Header.Set("Content-Type", "application/json")
+	// Mirror the API-key authentication middleware. The selected upstream
+	// account below is deliberately OAuth: these are two different identities.
+	c.Set("api_key", &APIKey{ID: 456})
+	MarkOpenAINativeCompactionV2(c)
+	c.Request = c.Request.WithContext(WithOpenAINativeCompactionV2(c.Request.Context()))
+
+	originalBody := []byte(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"store":true,
+		"prompt_cache_key":"compact-session-1",
+		"input":[
+			{"type":"message","role":"user","content":"hi"},
+			{"type":"compaction_trigger"}
+		]
+	}`)
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"cmp_native_1","type":"compaction","status":"completed","encrypted_content":"opaque-compact-state"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_native_compact","status":"completed","output":[{"id":"cmp_native_1","type":"compaction","status":"completed","encrypted_content":"opaque-compact-state"}],"usage":{"input_tokens":10,"output_tokens":1}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-native-compact"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          123,
+		Name:        "oauth-upstream",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-upstream-token",
+			"chatgpt_account_id": "chatgpt-account-1",
+		},
+		Extra: map[string]any{
+			"openai_passthrough":       true,
+			"openai_compact_supported": true,
+		},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(c.Request.Context(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.NotNil(t, upstream.lastReq)
+
+	require.Equal(t, chatgptCodexURL, upstream.lastReq.URL.String())
+	require.NotContains(t, upstream.lastReq.URL.Path, "/compact")
+	require.Equal(t, "Bearer oauth-upstream-token", upstream.lastReq.Header.Get("Authorization"))
+	require.NotContains(t, upstream.lastReq.Header.Get("Authorization"), "downstream-api-key")
+	require.Equal(t, "chatgpt-account-1", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.Contains(t, upstream.lastReq.Header.Get("x-codex-beta-features"), openAIRemoteCompactionV2Feature)
+	require.Equal(t, "text/event-stream", upstream.lastReq.Header.Get("Accept"))
+
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	require.Equal(t, gjson.False, gjson.GetBytes(upstream.lastBody, "store").Type)
+	require.True(t, HasCompactionTriggerInInput(upstream.lastBody))
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
+	require.Contains(t, rec.Body.String(), `"type":"compaction"`)
+	require.Contains(t, rec.Body.String(), `"encrypted_content":"opaque-compact-state"`)
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCancel(t *testing.T) {
 	setGinTestMode()
 

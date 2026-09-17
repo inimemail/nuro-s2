@@ -586,15 +586,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		testModelID = openai.DefaultTestModel
 	}
 
-	// Align test routing with gateway behavior: OpenAI accounts apply normal
-	// account model mapping, and compact mode applies compact-only mapping on top.
+	// Align test routing with gateway behavior. Native remote compaction v2 uses
+	// the ordinary /responses model and never applies legacy compact-only mapping.
 	testModelID = account.GetMappedModel(testModelID)
 	if mode == AccountTestModeCompact {
-		compactFallback := ""
-		if s != nil && s.cfg != nil {
-			compactFallback = s.cfg.Gateway.OpenAICompactModel
-		}
-		testModelID = resolveOpenAICompactForwardModelWithFallback(account, testModelID, compactFallback)
 		return s.testOpenAICompactConnection(c, account, testModelID)
 	}
 
@@ -810,8 +805,8 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
 }
 
-// testOpenAICompactConnection probes /responses/compact and persists the
-// resulting capability state on the account.
+// testOpenAICompactConnection probes native remote compaction v2 through the
+// streaming /responses wire and persists the resulting capability state.
 func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
 	ctx := c.Request.Context()
 
@@ -827,7 +822,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		if authToken == "" && !account.IsOpenAIAgentIdentity() {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
-		apiURL = chatgptCodexAPIURL + "/compact"
+		apiURL = chatgptCodexAPIURL
 		chatgptAccountID = account.GetChatGPTAccountID()
 	case account.Type == AccountTypeAPIKey:
 		authToken = account.GetOpenAIApiKey()
@@ -842,7 +837,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		apiURL = appendOpenAIResponsesRequestPathSuffix(buildOpenAIResponsesURL(normalizedBaseURL), "/compact")
+		apiURL = buildOpenAIResponsesURL(normalizedBaseURL)
 	default:
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -853,7 +848,10 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(testModelID))
+	if isOAuth {
+		testModelID = normalizeOpenAIModelForUpstream(account, testModelID)
+	}
+	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(testModelID, isOAuth))
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
@@ -863,22 +861,22 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
 	if account.IsOpenAIAgentIdentity() {
 		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
 			return s.sendErrorAndEnd(c, "Failed to build Agent Identity authentication")
 		}
-		req.Header = authHeaders
+		for key, values := range authHeaders {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
 	} else {
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("User-Agent", codexCLIUserAgent)
-	req.Header.Set("Version", codexCLIVersion)
+	applyOpenAICodexProbeHeaders(req.Header)
 	probeSessionID := compactProbeSessionID(account.ID)
 	req.Header.Set("Session_ID", probeSessionID)
 	req.Header.Set("Conversation_ID", probeSessionID)
@@ -892,6 +890,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
+	ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -901,7 +900,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		if s.accountRepo != nil {
-			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, time.Now())
+			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, false, time.Now())
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
@@ -910,9 +909,10 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	compactionFound := openAICompactProbeFoundCompactionItem(body)
 
 	if s.accountRepo != nil {
-		updates := buildOpenAICompactProbeExtraUpdates(resp, body, nil, time.Now())
+		updates := buildOpenAICompactProbeExtraUpdates(resp, body, nil, compactionFound, time.Now())
 		if codexUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(codexUpdates) > 0 {
 			updates = mergeExtraUpdates(updates, codexUpdates)
 		}
@@ -926,7 +926,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
 		if !agentIdentityTaskRecoveryWasTried(ctx) && account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
 			expectedTaskID := account.GetCredential("task_id")
@@ -942,8 +942,11 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
+	if !compactionFound {
+		return s.sendErrorAndEnd(c, "Upstream returned 2xx without a compaction output item (native remote compaction v2 unsupported on this chain)")
+	}
 
-	s.sendEvent(c, TestEvent{Type: "content", Text: "Compact probe succeeded"})
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Compact probe succeeded (native remote compaction v2)"})
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
 }
