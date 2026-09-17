@@ -260,7 +260,7 @@ func TestOpenAIGatewayService_Forward_StrongIsolationForcesHTTPWhenWSEnabled(t *
 	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists())
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
-	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
 	require.Empty(t, upstream.lastReq.Header.Get(openAIWSTurnStateHeader))
 	require.Empty(t, upstream.lastReq.Header.Get(openAIWSTurnMetadataHeader))
 

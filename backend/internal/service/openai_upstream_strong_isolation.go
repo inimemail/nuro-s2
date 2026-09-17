@@ -9,9 +9,11 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// These fields carry conversation/turn continuity and must not cross tenants.
+// originator is deliberately not scrubbed: it identifies the official Codex
+// client family (and is paired with User-Agent), not an end-user session.
 var openAIUpstreamStrongIsolationHeaders = []string{
 	"conversation_id",
-	"originator",
 	"session_id",
 	"x-codex-turn-metadata",
 	"x-codex-turn-state",

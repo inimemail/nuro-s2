@@ -662,6 +662,11 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testing.T) {
+	// Validate the explicit legacy-pairing escape hatch. Normal operation uses
+	// canonical identity enforcement and is covered by the default-path tests.
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+	publishCodexIdentityRuntime("", "", "", false)
+
 	setGinTestMode()
 
 	// 上游要求 originator 与最终 user-agent 首段配套：

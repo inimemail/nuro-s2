@@ -538,10 +538,13 @@ func TestScrubOpenAIEdgeStrongIsolationHeaders(t *testing.T) {
 
 	scrubOpenAIEdgeStrongIsolationHeaders(headers)
 
-	for _, key := range []string{"conversation_id", "Session_ID", "x-codex-turn-state", "x-codex-turn-metadata", "originator"} {
+	for _, key := range []string{"conversation_id", "Session_ID", "x-codex-turn-state", "x-codex-turn-metadata"} {
 		if _, ok := headers[key]; ok {
 			t.Fatalf("expected %s to be removed from headers: %#v", key, headers)
 		}
+	}
+	if headers["originator"] != "origin" {
+		t.Fatalf("expected client identity header to remain: %#v", headers)
 	}
 	if headers["Authorization"] == "" || headers["Accept"] == "" || headers["X-Keep-This-Test-Value"] != "ok" {
 		t.Fatalf("expected non-isolation headers to remain: %#v", headers)
@@ -549,6 +552,9 @@ func TestScrubOpenAIEdgeStrongIsolationHeaders(t *testing.T) {
 }
 
 func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+	publishCodexIdentityRuntime("0.151.0", "", "", true)
+
 	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -607,11 +613,14 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	if got := plan.Plan.Headers["Accept"]; got != "text/event-stream" {
 		t.Fatalf("unexpected accept header: %q", got)
 	}
-	if got := plan.Plan.Headers["Openai-Beta"]; got != "responses=experimental" {
-		t.Fatalf("unexpected beta header: %#v", plan.Plan.Headers)
+	if got := plan.Plan.Headers["Openai-Beta"]; got != "" {
+		t.Fatalf("legacy responses beta header must be absent: %#v", plan.Plan.Headers)
 	}
-	if got := plan.Plan.Headers["Originator"]; got != "opencode" {
+	if got := plan.Plan.Headers["Originator"]; got != "codex_cli_rs" {
 		t.Fatalf("unexpected originator header: %q", got)
+	}
+	if got := plan.Plan.Headers["Version"]; got != "0.151.0" {
+		t.Fatalf("unexpected canonical version header: %q", got)
 	}
 	expectedSession := isolateOpenAISessionID(42, "turn-1")
 	if got := plan.Plan.Headers["Session_id"]; got != expectedSession {
@@ -620,8 +629,8 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	if got := plan.Plan.Headers["Conversation_id"]; got != expectedSession {
 		t.Fatalf("unexpected conversation header: got %q want %q", got, expectedSession)
 	}
-	if got := plan.Plan.Headers["User-Agent"]; got != DefaultOpenAICodexUserAgent {
-		t.Fatalf("browser user-agent should be replaced, got %q", got)
+	if got := plan.Plan.Headers["User-Agent"]; got != currentCodexIdentityRuntime().canonicalUserAgent {
+		t.Fatalf("edge OAuth identity should be canonicalized, got %q", got)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
 	if err != nil {

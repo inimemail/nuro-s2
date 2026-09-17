@@ -4873,7 +4873,9 @@ export default {
         activeQuery: 'Query',
         activeQueried: 'Queried',
         grokFreeQuota24hHint: 'Estimated from local token usage over the rolling 24-hour window ({limit} limit)',
-        resetCredits: 'Reset credits'
+        resetCredits: 'Reset credits',
+        estimatedTotalCost: 'Est. total ${cost}',
+        estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
       tier: {
         free: 'Free',

@@ -28,7 +28,7 @@ type codexIdentityRuntimeSnapshot struct {
 var codexIdentityRuntime atomic.Pointer[codexIdentityRuntimeSnapshot]
 
 func init() {
-	publishCodexIdentityRuntime("", "", "", false)
+	publishCodexIdentityRuntime("", "", "", true)
 }
 
 // NormalizeCodexClientVersion accepts only the short ASCII version forms used
@@ -109,6 +109,68 @@ func currentCodexIdentityRuntime() *codexIdentityRuntimeSnapshot {
 		version:            codexCLIVersion,
 		canonicalUserAgent: codexCLIUserAgent,
 		browserUserAgent:   DefaultOpenAICodexUserAgent,
+		enforceIdentity:    true,
+	}
+}
+
+// publishCodexIdentityEnforcement updates only the enforcement switch while
+// retaining the last known-good version and User-Agent values. This lets
+// startup honor config even when the settings repository is temporarily
+// unavailable, without discarding a previously hydrated identity snapshot.
+func publishCodexIdentityEnforcement(enforce bool) {
+	for {
+		current := codexIdentityRuntime.Load()
+		if current == nil {
+			publishCodexIdentityRuntime("", "", "", enforce)
+			continue
+		}
+		next := *current
+		next.enforceIdentity = enforce
+		if codexIdentityRuntime.CompareAndSwap(current, &next) {
+			return
+		}
+	}
+}
+
+// CodexCanonicalAuthIdentity returns the canonical identity pair used on the
+// OpenAI credential plane (device auth, token exchange, and token refresh).
+// Unlike inference requests, credential requests do not send a version header.
+func CodexCanonicalAuthIdentity() (userAgent, originator string) {
+	snapshot := currentCodexIdentityRuntime()
+	return snapshot.canonicalUserAgent, openai.DefaultOriginator
+}
+
+// stripOpenAILegacyResponsesBeta removes only the retired OAuth Responses
+// experiment token. Independent beta negotiations are preserved for callers
+// that still require them.
+func stripOpenAILegacyResponsesBeta(headers http.Header) {
+	if headers == nil {
+		return
+	}
+
+	preserved := make([]string, 0)
+	for key, values := range headers {
+		if !strings.EqualFold(strings.TrimSpace(key), "OpenAI-Beta") {
+			continue
+		}
+		delete(headers, key)
+		for _, value := range values {
+			parts := strings.Split(value, ",")
+			kept := parts[:0]
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" || strings.EqualFold(part, "responses=experimental") {
+					continue
+				}
+				kept = append(kept, part)
+			}
+			if len(kept) > 0 {
+				preserved = append(preserved, strings.Join(kept, ", "))
+			}
+		}
+	}
+	for _, value := range preserved {
+		headers.Add("OpenAI-Beta", value)
 	}
 }
 

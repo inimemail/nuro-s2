@@ -180,7 +180,7 @@ func TestOpenAICodexVersionSyncStopCancelsInFlightRequest(t *testing.T) {
 }
 
 func TestOpenAICodexIdentityRuntimePrecedenceAndLegacyNoOp(t *testing.T) {
-	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", false) })
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
 
 	publishCodexIdentityRuntime("", "", "", false)
 	headers := http.Header{
@@ -209,7 +209,7 @@ func TestOpenAICodexIdentityRuntimePrecedenceAndLegacyNoOp(t *testing.T) {
 }
 
 func TestOpenAICodexIdentityRuntimeRefreshUsesControlPlaneOnly(t *testing.T) {
-	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", false) })
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
 	repo := &codexVersionSyncSettingRepoStub{values: map[string]string{
 		SettingKeyOpenAICodexClientVersion:       "0.151.0",
 		SettingKeyOpenAICodexClientVersionSynced: "0.150.0",
@@ -223,7 +223,7 @@ func TestOpenAICodexIdentityRuntimeRefreshUsesControlPlaneOnly(t *testing.T) {
 }
 
 func TestOpenAICodexIdentityRuntimeRejectsUnsafeBrowserUserAgent(t *testing.T) {
-	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", false) })
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
 	publishCodexIdentityRuntime("0.151.0", "", "codex-tui/0.140.0\r\nX-Injected: true", false)
 	require.Equal(t, openai.SetCodexUserAgentVersion(DefaultOpenAICodexUserAgent, "0.151.0"), currentCodexIdentityRuntime().browserUserAgent)
 

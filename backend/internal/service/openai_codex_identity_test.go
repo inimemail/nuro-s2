@@ -1,13 +1,89 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
+type failingCodexIdentitySettingRepo struct {
+	SettingRepository
+}
+
+func (failingCodexIdentitySettingRepo) GetMultiple(context.Context, []string) (map[string]string, error) {
+	return nil, errors.New("settings unavailable")
+}
+
+func TestStripOpenAILegacyResponsesBeta(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		want   []string
+	}{
+		{name: "legacy only", values: []string{"responses=experimental"}},
+		{name: "case insensitive legacy", values: []string{"RESPONSES=EXPERIMENTAL"}},
+		{name: "preserves independent token", values: []string{"responses=experimental, assistants=v2"}, want: []string{"assistants=v2"}},
+		{name: "preserves multiple header lines", values: []string{"feature-a", "responses=experimental, feature-b"}, want: []string{"feature-a", "feature-b"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := make(http.Header)
+			for _, value := range tt.values {
+				headers.Add("OpenAI-Beta", value)
+			}
+
+			stripOpenAILegacyResponsesBeta(headers)
+
+			require.Equal(t, tt.want, headers.Values("OpenAI-Beta"))
+		})
+	}
+}
+
+func TestCodexCanonicalAuthIdentity(t *testing.T) {
+	userAgent, originator := CodexCanonicalAuthIdentity()
+
+	require.NotEmpty(t, userAgent)
+	require.Equal(t, "codex_cli_rs", originator)
+}
+
+func TestRefreshOpenAICodexIdentityRuntimeAppliesConfigWithoutRepository(t *testing.T) {
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+
+	publishCodexIdentityRuntime("0.151.0", "", "", false)
+	enabled := NewSettingService(nil, &config.Config{})
+	require.NoError(t, enabled.RefreshOpenAICodexIdentityRuntime(t.Context()))
+	require.True(t, currentCodexIdentityRuntime().enforceIdentity)
+	require.Equal(t, "0.151.0", currentCodexIdentityRuntime().version)
+
+	disabled := NewSettingService(nil, &config.Config{Gateway: config.GatewayConfig{
+		DisableCodexIdentityEnforcement: true,
+	}})
+	require.NoError(t, disabled.RefreshOpenAICodexIdentityRuntime(t.Context()))
+	require.False(t, currentCodexIdentityRuntime().enforceIdentity)
+	require.Equal(t, "0.151.0", currentCodexIdentityRuntime().version)
+}
+
+func TestRefreshOpenAICodexIdentityRuntimeKeepsIdentityWhenRepositoryFails(t *testing.T) {
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+
+	publishCodexIdentityRuntime("0.151.0", "", "", false)
+	svc := NewSettingService(failingCodexIdentitySettingRepo{}, &config.Config{})
+	err := svc.RefreshOpenAICodexIdentityRuntime(t.Context())
+
+	require.ErrorContains(t, err, "settings unavailable")
+	require.True(t, currentCodexIdentityRuntime().enforceIdentity)
+	require.Equal(t, "0.151.0", currentCodexIdentityRuntime().version)
+}
+
 func TestEnforceCodexIdentityHeaders(t *testing.T) {
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+	publishCodexIdentityRuntime("", "", "", false)
+
 	const tuiUA = "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)"
 
 	tests := []struct {
@@ -104,6 +180,9 @@ func TestEnforceCodexIdentityHeaders(t *testing.T) {
 
 // compat messages bridge 故意不带 originator：收口必须保持 no-op，不得注入身份头。
 func TestEnforceCodexIdentityHeaders_NoOriginatorIsNoop(t *testing.T) {
+	t.Cleanup(func() { publishCodexIdentityRuntime("", "", "", true) })
+	publishCodexIdentityRuntime("", "", "", false)
+
 	h := make(http.Header)
 	h.Set("user-agent", "luna/1.0.0")
 

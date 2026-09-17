@@ -720,7 +720,7 @@ func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
 		headers.Del("OpenAI-Beta")
 		headers.Del("originator")
 	} else {
-		headers.Set("OpenAI-Beta", "responses=experimental")
+		stripOpenAILegacyResponsesBeta(headers)
 		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
 
@@ -750,6 +750,9 @@ func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
 		headers.Set("user-agent", codexCLIUserAgent)
 	}
 	s.overrideBrowserUserAgentHeader(ctx, account, headers)
+	// Keep the Rust Edge path on the same final OAuth identity contract as the
+	// two Go forwarding paths. This must run after every User-Agent override.
+	enforceCodexIdentityHeaders(headers)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
 	}

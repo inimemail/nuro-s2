@@ -3790,7 +3790,9 @@ export default {
         activeQuery: '查询',
         activeQueried: '已主动查询',
         grokFreeQuota24hHint: '按滚动 24 小时本地 Token 用量估算（限额 {limit}）',
-        resetCredits: '重置次数'
+        resetCredits: '重置次数',
+        estimatedTotalCost: '预计总费用 ${cost}',
+        estimatedTotalCostTooltip: '根据当前窗口费用和使用率估算达到 100% 使用率时的总费用'
       },
       tier: {
         free: 'Free',

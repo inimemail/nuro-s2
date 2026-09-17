@@ -467,7 +467,7 @@ func TestCreateUpstreamLiveCallHonorsAccountStrongIsolation(t *testing.T) {
 	require.False(t, gjson.GetBytes(forwarded.Session, "store").Bool())
 	require.True(t, gjson.GetBytes(forwarded.Session, "custom.keep").Bool())
 	require.Contains(t, string(original), `"conversation_id":"conv"`, "caller-owned session must stay unchanged")
-	require.Empty(t, upstream.request.Header.Get("originator"))
+	require.Equal(t, "codex_cli_rs", upstream.request.Header.Get("originator"))
 	require.Empty(t, upstream.request.Header.Get("session_id"))
 }
 
@@ -487,7 +487,7 @@ func TestLiveSidebandHeadersHonorAccountStrongIsolationAndDisabledNoOp(t *testin
 		wantOriginator  bool
 	}{
 		{name: "disabled_noop", wantOriginator: true},
-		{name: "enabled", strongIsolation: true},
+		{name: "enabled", strongIsolation: true, wantOriginator: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			account := &Account{

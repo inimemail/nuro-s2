@@ -38,9 +38,11 @@ func (s *openaiOAuthService) StartDeviceAuth(ctx context.Context, proxyURL strin
 	payload := map[string]string{"client_id": openai.ClientID}
 
 	var startResp openai.DeviceAuthStartResponse
+	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
 	resp, err := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", "codex-cli/0.91.0").
+		SetHeader("User-Agent", authUA).
+		SetHeader("originator", authOriginator).
 		SetHeader("Content-Type", "application/json").
 		SetBody(payload).
 		SetSuccessResult(&startResp).
@@ -81,9 +83,11 @@ func (s *openaiOAuthService) PollDeviceAuth(ctx context.Context, deviceAuthID, u
 	}
 
 	var tokenResp openai.DeviceAuthTokenResponse
+	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
 	resp, err := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", "codex-cli/0.91.0").
+		SetHeader("User-Agent", authUA).
+		SetHeader("originator", authOriginator).
 		SetHeader("Content-Type", "application/json").
 		SetBody(payload).
 		SetSuccessResult(&tokenResp).
@@ -134,9 +138,11 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 
 	var tokenResp openai.TokenResponse
 
+	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
 	resp, err := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", "codex-cli/0.91.0").
+		SetHeader("User-Agent", authUA).
+		SetHeader("originator", authOriginator).
 		SetFormDataFromValues(formData).
 		SetSuccessResult(&tokenResp).
 		Post(s.tokenURL)
@@ -182,9 +188,11 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 
 	var tokenResp openai.TokenResponse
 
+	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
 	resp, err := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", "codex-cli/0.91.0").
+		SetHeader("User-Agent", authUA).
+		SetHeader("originator", authOriginator).
 		SetFormDataFromValues(formData).
 		SetSuccessResult(&tokenResp).
 		Post(s.tokenURL)

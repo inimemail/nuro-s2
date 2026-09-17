@@ -10,9 +10,24 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+func canonicalOpenAIAuthHeadersError(r *http.Request) string {
+	wantUA, wantOriginator := service.CodexCanonicalAuthIdentity()
+	if r.Header.Get("User-Agent") != wantUA {
+		return "canonical user-agent mismatch"
+	}
+	if r.Header.Get("originator") != wantOriginator {
+		return "canonical originator mismatch"
+	}
+	if r.Header.Get("version") != "" {
+		return "credential request unexpectedly sent inference version header"
+	}
+	return ""
+}
 
 type OpenAIOAuthServiceSuite struct {
 	suite.Suite
@@ -42,6 +57,11 @@ func (s *OpenAIOAuthServiceSuite) setupServer(handler http.HandlerFunc) {
 func (s *OpenAIOAuthServiceSuite) TestExchangeCode_DefaultRedirectURI() {
 	errCh := make(chan string, 1)
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if msg := canonicalOpenAIAuthHeadersError(r); msg != "" {
+			errCh <- msg
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		if r.Method != http.MethodPost {
 			errCh <- "method mismatch"
 			w.WriteHeader(http.StatusBadRequest)
@@ -96,6 +116,11 @@ func (s *OpenAIOAuthServiceSuite) TestExchangeCode_DefaultRedirectURI() {
 func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
 	errCh := make(chan string, 1)
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if msg := canonicalOpenAIAuthHeadersError(r); msg != "" {
+			errCh <- msg
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		if err := r.ParseForm(); err != nil {
 			errCh <- "ParseForm failed"
 			w.WriteHeader(http.StatusBadRequest)
@@ -135,6 +160,45 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
 	}
 	require.Equal(s.T(), "at2", resp.AccessToken)
 	require.Equal(s.T(), "rt2", resp.RefreshToken)
+}
+
+func (s *OpenAIOAuthServiceSuite) TestDeviceAuthUsesCanonicalIdentity() {
+	errCh := make(chan string, 2)
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if msg := canonicalOpenAIAuthHeadersError(r); msg != "" {
+			errCh <- msg
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/device":
+			_, _ = io.WriteString(w, `{"device_auth_id":"device-1","user_code":"ABCD","verification_url":"https://example.test/device"}`)
+		case "/poll":
+			_, _ = io.WriteString(w, `{"code":"auth-code","code_verifier":"verifier"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.svc = &openaiOAuthService{
+		tokenURL:          s.srv.URL + "/token",
+		deviceUserCodeURL: s.srv.URL + "/device",
+		deviceTokenURL:    s.srv.URL + "/poll",
+	}
+
+	start, err := s.svc.StartDeviceAuth(s.ctx, "")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "device-1", start.DeviceAuthID)
+
+	poll, err := s.svc.PollDeviceAuth(s.ctx, "device-1", "ABCD", "")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "auth-code", poll.Code)
+	require.Equal(s.T(), "verifier", poll.CodeVerifier)
+	select {
+	case msg := <-errCh:
+		require.Fail(s.T(), msg)
+	default:
+	}
 }
 
 // TestRefreshToken_DefaultsToOpenAIClientID 验证未指定 client_id 时默认使用 OpenAI ClientID，

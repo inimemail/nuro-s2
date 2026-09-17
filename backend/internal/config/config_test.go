@@ -334,21 +334,21 @@ func TestLoadDefaultOpenAIResponseHeaderTimeoutUnlimited(t *testing.T) {
 	require.Equal(t, 0, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
-func TestLoadDefaultCodexIdentityEnforcementDisabled(t *testing.T) {
+func TestLoadDefaultCodexIdentityEnforcementEnabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
-
-	cfg, err := Load()
-	require.NoError(t, err)
-	require.True(t, cfg.Gateway.DisableCodexIdentityEnforcement)
-}
-
-func TestLoadCanExplicitlyEnableCodexIdentityEnforcement(t *testing.T) {
-	resetViperWithJWTSecret(t)
-	t.Setenv("GATEWAY_DISABLE_CODEX_IDENTITY_ENFORCEMENT", "false")
 
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.False(t, cfg.Gateway.DisableCodexIdentityEnforcement)
+}
+
+func TestLoadCanExplicitlyDisableCodexIdentityEnforcement(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_DISABLE_CODEX_IDENTITY_ENFORCEMENT", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.DisableCodexIdentityEnforcement)
 }
 
 func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {

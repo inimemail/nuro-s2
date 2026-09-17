@@ -689,15 +689,19 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 }
 
 func (s *SettingService) codexIdentityEnforcementEnabled() bool {
-	return s != nil && s.cfg != nil && !s.cfg.Gateway.DisableCodexIdentityEnforcement
+	if s == nil || s.cfg == nil {
+		return true
+	}
+	return !s.cfg.Gateway.DisableCodexIdentityEnforcement
 }
 
 // RefreshOpenAICodexIdentityRuntime refreshes the immutable process snapshot.
 // It is called during startup, settings writes, and background version sync;
 // request forwarding never calls this method.
 func (s *SettingService) RefreshOpenAICodexIdentityRuntime(ctx context.Context) error {
+	enforceIdentity := s.codexIdentityEnforcementEnabled()
+	publishCodexIdentityEnforcement(enforceIdentity)
 	if s == nil || s.settingRepo == nil {
-		publishCodexIdentityRuntime("", "", "", false)
 		return nil
 	}
 	values, err := s.settingRepo.GetMultiple(ctx, []string{
@@ -712,7 +716,7 @@ func (s *SettingService) RefreshOpenAICodexIdentityRuntime(ctx context.Context) 
 		values[SettingKeyOpenAICodexClientVersion],
 		values[SettingKeyOpenAICodexClientVersionSynced],
 		values[SettingKeyOpenAICodexUserAgent],
-		s.codexIdentityEnforcementEnabled(),
+		enforceIdentity,
 	)
 	return nil
 }

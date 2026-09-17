@@ -66,4 +66,33 @@ describe('UsageProgressBar', () => {
     expect(wrapper.text()).toContain('2h 30m')
     expect(wrapper.text()).not.toContain('现在')
   })
+
+  it('传入预计总费用时显示带说明的费用徽章', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 40,
+        color: 'emerald',
+        windowStats: { requests: 2, tokens: 200, cost: 12 },
+        estimatedTotalCost: 30
+      }
+    })
+
+    const estimate = wrapper.get('[data-test="estimated-total-cost"]')
+    expect(estimate.text()).toBe('admin.accounts.usageWindow.estimatedTotalCost')
+    expect(estimate.attributes('title')).toBe('admin.accounts.usageWindow.estimatedTotalCostTooltip')
+  })
+
+  it('未传入预计总费用时不显示费用徽章', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 25,
+        color: 'indigo',
+        windowStats: { requests: 1, tokens: 100, cost: 2 }
+      }
+    })
+
+    expect(wrapper.find('[data-test="estimated-total-cost"]').exists()).toBe(false)
+  })
 })

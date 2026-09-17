@@ -169,7 +169,7 @@ func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsCont
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
-	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
 	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-state"))
 	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-metadata"))
 }
@@ -207,7 +207,7 @@ func TestOpenAIGatewayService_OAuthUpstreamStrongIsolationDropsContinuation(t *t
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
-	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
 	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-state"))
 	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-metadata"))
 }

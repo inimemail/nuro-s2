@@ -1805,6 +1805,15 @@ fn parse_sse_failure_event(frame: &[u8]) -> Option<SseFailureEvent> {
     Some(SseFailureEvent { payload, message })
 }
 
+fn sse_frame_may_contain_failure(frame: &[u8]) -> bool {
+    frame
+        .windows(b"error".len())
+        .any(|window| window.eq_ignore_ascii_case(b"error"))
+        || frame
+            .windows(b"failed".len())
+            .any(|window| window.eq_ignore_ascii_case(b"failed"))
+}
+
 fn extract_edge_stream_failure_message(value: &Value) -> Option<String> {
     [
         "/response/error/message",
@@ -1817,6 +1826,93 @@ fn extract_edge_stream_failure_message(value: &Value) -> Option<String> {
     .map(str::trim)
     .filter(|message| !message.is_empty())
     .map(|message| message.chars().take(512).collect())
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UpstreamFailureDiagnostic {
+    event_type: Option<String>,
+    error_type: Option<String>,
+    code: Option<String>,
+    status: Option<String>,
+    request_id: Option<String>,
+}
+
+fn safe_upstream_diagnostic_value(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(value) => value.trim().to_string(),
+        Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    safe_upstream_diagnostic_text(&text)
+}
+
+fn safe_upstream_diagnostic_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn first_safe_upstream_diagnostic(value: &Value, paths: &[&str]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| value.pointer(path).and_then(safe_upstream_diagnostic_value))
+}
+
+fn upstream_failure_diagnostic(value: &Value) -> UpstreamFailureDiagnostic {
+    UpstreamFailureDiagnostic {
+        event_type: json_event_type(value).and_then(safe_upstream_diagnostic_text),
+        error_type: first_safe_upstream_diagnostic(value, &["/response/error/type", "/error/type"]),
+        code: first_safe_upstream_diagnostic(
+            value,
+            &["/response/error/code", "/error/code", "/code"],
+        ),
+        status: first_safe_upstream_diagnostic(
+            value,
+            &[
+                "/response/error/status",
+                "/error/status",
+                "/response/status",
+                "/status",
+            ],
+        ),
+        request_id: first_safe_upstream_diagnostic(
+            value,
+            &[
+                "/response/error/request_id",
+                "/error/request_id",
+                "/response/request_id",
+                "/request_id",
+            ],
+        ),
+    }
+}
+
+fn log_upstream_stream_failure(
+    edge_request_id: &str,
+    upstream_request_id: Option<&str>,
+    payload: &Value,
+) {
+    let diagnostic = upstream_failure_diagnostic(payload);
+    let edge_request_id = safe_upstream_diagnostic_text(edge_request_id);
+    let request_id = diagnostic
+        .request_id
+        .or_else(|| upstream_request_id.and_then(safe_upstream_diagnostic_text));
+    warn!(
+        edge_request_id = %edge_request_id.as_deref().unwrap_or("unknown"),
+        upstream_request_id = %request_id.as_deref().unwrap_or("unknown"),
+        event_type = %diagnostic.event_type.as_deref().unwrap_or("unknown"),
+        error_type = %diagnostic.error_type.as_deref().unwrap_or("unknown"),
+        code = %diagnostic.code.as_deref().unwrap_or("unknown"),
+        status = %diagnostic.status.as_deref().unwrap_or("unknown"),
+        "edge upstream stream failure"
+    );
 }
 
 impl ChatStreamObservation {
@@ -7952,8 +8048,23 @@ async fn relay_upstream_direct_core_impl(
                         break 'relay;
                     }
                     for chunk in frames {
+                    // Before the first real token this parser also drives
+                    // body-level retry, so inspect every frame. After output
+                    // has started, avoid reparsing ordinary deltas and only
+                    // inspect frames that can plausibly carry a failure.
+                    let parsed_failure = (real_first_token_ms.is_none()
+                        || sse_frame_may_contain_failure(&chunk))
+                        .then(|| parse_sse_failure_event(&chunk))
+                        .flatten();
+                    if let Some(failure) = parsed_failure.as_ref() {
+                        log_upstream_stream_failure(
+                            &current_plan.edge_request_id,
+                            summary.request_id.as_deref(),
+                            &failure.payload,
+                        );
+                    }
                     if real_first_token_ms.is_none() {
-                        if let Some(failure) = parse_sse_failure_event(&chunk) {
+                        if let Some(failure) = parsed_failure {
                             // The failure frame can carry provider usage even
                             // though it is handled before the normal observe
                             // path. Feed it through the same parser so a
@@ -13286,6 +13397,66 @@ mod tests {
                 .pointer("/response/error/code")
                 .and_then(Value::as_str),
             Some("server_is_overloaded")
+        );
+    }
+
+    #[test]
+    fn sse_failure_prefilter_skips_normal_deltas_and_keeps_failures() {
+        assert!(!sse_frame_may_contain_failure(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        ));
+        assert!(sse_frame_may_contain_failure(
+            b"event: response.failed\ndata: {}\n\n"
+        ));
+        assert!(sse_frame_may_contain_failure(b"event: ERROR\ndata: {}\n\n"));
+    }
+
+    #[test]
+    fn upstream_failure_diagnostic_keeps_only_safe_structured_fields() {
+        let payload = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {
+                    "type": "server_error",
+                    "code": "server_is_overloaded",
+                    "status": 503,
+                    "request_id": "req_safe-123",
+                    "message": "secret bearer token and private.example"
+                }
+            },
+            "provider": "private-provider.example"
+        });
+
+        assert_eq!(
+            upstream_failure_diagnostic(&payload),
+            UpstreamFailureDiagnostic {
+                event_type: Some("response.failed".to_string()),
+                error_type: Some("server_error".to_string()),
+                code: Some("server_is_overloaded".to_string()),
+                status: Some("503".to_string()),
+                request_id: Some("req_safe-123".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn upstream_failure_diagnostic_rejects_log_injection_values() {
+        let payload = serde_json::json!({
+            "type": "response.failed\nforged=true",
+            "error": {
+                "type": "bad value with spaces",
+                "code": "invalid\ncode",
+                "request_id": "req_ok"
+            }
+        });
+
+        assert_eq!(
+            upstream_failure_diagnostic(&payload),
+            UpstreamFailureDiagnostic {
+                request_id: Some("req_ok".to_string()),
+                ..UpstreamFailureDiagnostic::default()
+            }
         );
     }
 

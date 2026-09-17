@@ -766,7 +766,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StrongIsolationB
 	require.False(t, gjson.GetBytes(upstreamHTTP.lastBody, "client_metadata").Exists())
 	require.Empty(t, upstreamHTTP.lastReq.Header.Get("session_id"))
 	require.Empty(t, upstreamHTTP.lastReq.Header.Get("conversation_id"))
-	require.Empty(t, upstreamHTTP.lastReq.Header.Get("originator"))
+	require.Equal(t, "codex_cli_rs", upstreamHTTP.lastReq.Header.Get("originator"))
 	require.Empty(t, upstreamHTTP.lastReq.Header.Get(openAIWSTurnStateHeader))
 	require.Empty(t, upstreamHTTP.lastReq.Header.Get(openAIWSTurnMetadataHeader))
 }
