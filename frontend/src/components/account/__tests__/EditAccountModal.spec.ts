@@ -51,6 +51,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import OpenAIPlanTypeSelect from '../OpenAIPlanTypeSelect.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -365,6 +366,34 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it.each(['', 'business', 'enterprise', 'future_plan'])('preserves the %s tier when saving unrelated edits', async (tier) => {
+    const account = buildOpenAIOAuthAccount()
+    if (tier) account.credentials.plan_type = tier
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.getComponent(OpenAIPlanTypeSelect).props('modelValue')).toBe(tier)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    if (tier) expect(credentials.plan_type).toBe(tier)
+    else expect(credentials).not.toHaveProperty('plan_type')
+    wrapper.unmount()
+  })
+
+  it('allows clearing a saved tier to resume automatic detection', async () => {
+    const account = buildOpenAIOAuthAccount()
+    account.credentials.plan_type = 'enterprise'
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.getComponent(OpenAIPlanTypeSelect).get('select').setValue('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('plan_type')
+    wrapper.unmount()
+  })
+
   it('preserves and submits a saved Kimi Responses protocol', async () => {
     const account = buildKimiResponsesAccount()
     updateAccountMock.mockReset().mockResolvedValue(account)

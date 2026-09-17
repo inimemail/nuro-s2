@@ -924,12 +924,12 @@
       <div v-if="allOpenAIOAuthLike" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div>
-            <label class="input-label mb-0">订阅档位（手动覆盖）</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">留空表示恢复自动识别，刷新或 429 后使用真实档位。</p>
+            <label class="input-label mb-0">订阅档位（默认自动识别）</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">勾选后可手动指定档位，选择“自动识别”可清除当前档位；刷新或 429 返回真实档位时会同步更新。</p>
           </div>
           <input v-model="enablePlanType" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
         </div>
-        <Select v-if="enablePlanType" v-model="planType" :options="planTypeOptions" />
+        <OpenAIPlanTypeSelect v-if="enablePlanType" v-model="planType" />
       </div>
 
       <!-- Anthropic API Key upstream auth scheme -->
@@ -1884,6 +1884,7 @@ import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType, Op
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
+import OpenAIPlanTypeSelect from './OpenAIPlanTypeSelect.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
@@ -2111,13 +2112,6 @@ const codexFingerprintModeOptions = [
 ]
 const enablePlanType = ref(false)
 const planType = ref('')
-const planTypeOptions = [
-  { value: '', label: '自动识别' },
-  { value: 'plus', label: 'Plus' },
-  { value: 'pro', label: 'Pro' },
-  { value: 'free', label: 'Free' },
-  { value: 'team', label: 'Team / Business' },
-]
 const enableOpenAICompactMode = ref(false)
 const enableOpenAICompactModelMapping = ref(false)
 const enableAnthropicAPIKeyAuthScheme = ref(false)

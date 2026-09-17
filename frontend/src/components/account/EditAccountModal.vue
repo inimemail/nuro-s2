@@ -3183,11 +3183,11 @@
       >
         <div class="flex items-center justify-between gap-4">
           <div class="min-w-0">
-            <label class="input-label mb-0">订阅档位（手动覆盖）</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">留空时自动识别；刷新或 429 返回真实档位时会同步更新。</p>
+            <label class="input-label mb-0">订阅档位（默认自动识别）</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">默认自动识别，无需手动选择；也可手动指定，刷新或 429 返回真实档位时会同步更新。</p>
           </div>
           <div class="w-44 flex-shrink-0">
-            <Select v-model="editPlanType" :options="planTypeOptions" />
+            <OpenAIPlanTypeSelect v-model="editPlanType" />
           </div>
         </div>
       </div>
@@ -3886,6 +3886,7 @@ import type {
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
+import OpenAIPlanTypeSelect from './OpenAIPlanTypeSelect.vue'
 import Icon from '@/components/icons/Icon.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
@@ -4455,13 +4456,6 @@ const codexFingerprintModeOptions = [
   { value: 'full', label: '完全收敛' },
 ]
 const editPlanType = ref('')
-const planTypeOptions = [
-  { value: '', label: '自动识别' },
-  { value: 'plus', label: 'Plus' },
-  { value: 'pro', label: 'Pro' },
-  { value: 'free', label: 'Free' },
-  { value: 'team', label: 'Team / Business' },
-]
 const openAILongContextBillingEnabled = ref(false)
 const openAIResponsesPassthroughCompatEnabled = ref(false)
 const openAIResponsesArgumentsObjectCompatEnabled = ref(false)
