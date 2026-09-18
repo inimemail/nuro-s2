@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/tidwall/gjson"
 )
 
 const nonOpenAIPoolProbeResponseLimit = 1 << 20
@@ -69,13 +70,17 @@ func (s *AccountTestService) runNonOpenAIPoolProbe(ctx context.Context, accountI
 		result.Reason = sanitizeUpstreamErrorMessage(err.Error())
 		return result
 	}
-	if resp == nil {
+	if resp == nil || resp.Body == nil {
 		result.Reason = "upstream returned no response"
 		return result
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, nonOpenAIPoolProbeResponseLimit))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, nonOpenAIPoolProbeResponseLimit+1))
 	result.StatusCode = resp.StatusCode
+	if len(body) > nonOpenAIPoolProbeResponseLimit {
+		result.Reason = "upstream probe response exceeded size limit"
+		return result
+	}
 	if readErr != nil {
 		result.Reason = sanitizeUpstreamErrorMessage(readErr.Error())
 		return result
@@ -322,6 +327,9 @@ func nonOpenAIPoolProbeSSEMetadataFrame(account *Account, payload []byte) bool {
 }
 
 func nonOpenAIPoolProbeJSONResponseValid(account *Account, trimmed []byte) bool {
+	if account != nil && account.IsGrok() {
+		return grokRecoveryProbeResponseValid(trimmed)
+	}
 	var object map[string]any
 	if err := json.Unmarshal(trimmed, &object); err != nil || object["error"] != nil {
 		return false
@@ -414,6 +422,23 @@ func nonOpenAIPoolProbeJSONResponseValid(account *Account, trimmed []byte) bool 
 		default:
 			return hasArray("choices")
 		}
+	default:
+		return false
+	}
+}
+
+func grokRecoveryProbeResponseValid(body []byte) bool {
+	if openAIPassthroughResponseIsUnsafe(body) || !gjson.GetBytes(body, "output").IsArray() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "status").String())) {
+	case "", "completed":
+		return true
+	case "incomplete":
+		// The recovery request deliberately caps output at one token. A valid
+		// response stopped at that cap proves connectivity, not account failure.
+		return gjson.GetBytes(body, "incomplete_details.reason").String() == "max_output_tokens" &&
+			gjson.GetBytes(body, "usage.output_tokens").Int() > 0
 	default:
 		return false
 	}

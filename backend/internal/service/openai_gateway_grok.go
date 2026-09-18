@@ -967,13 +967,14 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 	}
 	now := time.Now()
 	s.updateGrokUsageSnapshot(ctx, account, parseGrokQuotaSnapshot(headers, statusCode, now))
+	// A rejected prompt is not a broken credential, including in pool mode.
+	if isGrokContentPolicyRejection(statusCode, responseBody) {
+		return
+	}
 	if account.IsPoolMode() {
 		if s.nonOpenAIPoolRuntime != nil && shouldNonOpenAIPoolFailoverStatus(statusCode) {
 			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, statusCode, extractUpstreamErrorMessage(responseBody), "upstream_failure")
 		}
-		return
-	}
-	if isGrokContentPolicyRejection(statusCode, responseBody) {
 		return
 	}
 	switch statusCode {

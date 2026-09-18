@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -26,7 +27,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 
@@ -810,9 +810,11 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 
 // TestAccountRequest represents the request body for testing an account
 type TestAccountRequest struct {
-	ModelID string `json:"model_id"`
-	Prompt  string `json:"prompt"`
-	Mode    string `json:"mode"`
+	ModelID      string `json:"model_id"`
+	Prompt       string `json:"prompt"`
+	Mode         string `json:"mode"`
+	ImageDataURL string `json:"image_data_url"`
+	AudioDataURL string `json:"audio_data_url"`
 }
 
 type SyncFromCRSRequest struct {
@@ -840,10 +842,13 @@ func (h *AccountHandler) Test(c *gin.Context) {
 
 	var req TestAccountRequest
 	// Allow empty body, model_id is optional
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid account test request")
+		return
+	}
 
 	// Use AccountTestService to test the account with SSE streaming
-	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode); err != nil {
+	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, service.AccountTestMedia{ImageDataURL: req.ImageDataURL, AudioDataURL: req.AudioDataURL}); err != nil {
 		// Error already sent via SSE, just log
 		return
 	}
@@ -2534,10 +2539,8 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
-	// Grok OAuth accounts do not carry a static model_mapping. Keep the admin
-	// test picker on the native xAI catalog instead of Claude's fallback list.
-	if account.Platform == service.PlatformGrok && account.IsOAuth() {
-		response.Success(c, xai.DefaultModels())
+	if account.Platform == service.PlatformGrok {
+		response.Success(c, grokAccountTestModels(account))
 		return
 	}
 

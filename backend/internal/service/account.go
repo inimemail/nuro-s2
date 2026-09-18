@@ -942,6 +942,13 @@ func stringMappingFromRaw(raw any) map[string]string {
 }
 
 func (a *Account) GetModelMapping() map[string]string {
+	// In-memory/imported Grok credentials can use a typed map before JSON
+	// persistence. Keep the same whitelist and mapping semantics as DB data.
+	if a.IsGrok() {
+		if mapping, ok := a.Credentials["model_mapping"].(map[string]string); ok && len(mapping) > 0 {
+			return stringMappingFromRaw(mapping)
+		}
+	}
 	credentialsPtr := mapPtr(a.Credentials)
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
 	rawPtr := mapPtr(rawMapping)
@@ -1178,7 +1185,7 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		if a.Credentials == nil {
 			return true
 		}
-		rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
+		rawMapping := stringMappingFromRaw(a.Credentials["model_mapping"])
 		if len(rawMapping) == 0 {
 			return true
 		}

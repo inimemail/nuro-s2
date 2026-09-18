@@ -621,6 +621,37 @@ func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestGrokNative46DownstreamProtocols(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
+		for _, protocol := range []string{"responses", "chat/completions"} {
+			t.Run(accountType+"/"+protocol, func(t *testing.T) {
+				payload := `{"id":"resp_1","object":"response","model":"grok-4.6","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":4}}`
+				body := `{"model":"grok-4.6","input":"hi","stream":false}`
+				if protocol == "chat/completions" {
+					payload = `{"id":"chat_1","object":"chat.completion","model":"grok-4.6","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`
+					body = `{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],"stream":false}`
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(payload))}}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, codexSnapshotThrottle: newAccountWriteThrottle(time.Minute)}
+				account := &Account{ID: 77, Platform: PlatformGrok, Type: accountType, Credentials: map[string]any{"api_key": "test-api-key", "access_token": "test-oauth-token"}}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+protocol, nil)
+				var err error
+				if protocol == "responses" {
+					_, err = svc.Forward(context.Background(), c, account, []byte(body))
+				} else {
+					_, err = svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(body), "", "")
+				}
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.Equal(t, "/v1/"+protocol, upstream.lastReq.URL.Path)
+				require.Equal(t, "grok-4.6", gjson.GetBytes(upstream.lastBody, "model").String())
+			})
+		}
+	}
+}
+
 func TestOpenAIGatewayService_ForwardGrokResponses_PropagatesStreamTerminal(t *testing.T) {
 	setGinTestMode()
 	upstream := &httpUpstreamRecorder{

@@ -1015,7 +1015,7 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context,
 	}
 
 	kind := "http_error"
-	if s.shouldFailoverUpstreamError(resp.StatusCode) {
+	if s.shouldFailoverGrokUpstreamError(resp.StatusCode, body) {
 		kind = "failover"
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

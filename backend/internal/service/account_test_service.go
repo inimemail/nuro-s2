@@ -193,7 +193,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // All account types use full Claude Code client characteristics, only auth header differs
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
-func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string) error {
+func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, media ...AccountTestMedia) error {
 	ctx := c.Request.Context()
 
 	// Get account
@@ -228,7 +228,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	if account.IsGrok() {
-		return s.testGrokAccountConnection(c, account, modelID, prompt, strings.TrimSpace(strings.ToLower(mode)))
+		return s.testGrokAccountConnection(c, account, modelID, prompt, strings.TrimSpace(strings.ToLower(mode)), media...)
 	}
 
 	if account.IsGemini() {

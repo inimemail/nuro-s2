@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -166,6 +168,51 @@ func TestAccountHandlerGetAvailableModels_GrokOAuthUsesNativeCatalog(t *testing.
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"grok-4.5"`)
 	require.NotContains(t, rec.Body.String(), `"claude-sonnet`)
+}
+
+func TestAccountHandlerRejectsMalformedTestBeforeCallingUpstream(t *testing.T) {
+	handler := &AccountHandler{}
+	router := gin.New()
+	router.POST("/accounts/:id/test", handler.Test)
+	for _, body := range []string{`{"mode":"image",`, `{"mode":5}`} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/accounts/1/test", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestAccountHandlerGetAvailableModels_GrokBothTypesHonorMapping(t *testing.T) {
+	for _, accountType := range []string{service.AccountTypeOAuth, service.AccountTypeAPIKey} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/explicit=%t", accountType, explicit), func(t *testing.T) {
+				account := service.Account{ID: 45, Platform: service.PlatformGrok, Type: accountType, Credentials: map[string]any{}}
+				if explicit {
+					account.Credentials["model_mapping"] = map[string]any{"picture": "grok-imagine-image-2.0", "conversation": "grok-4.6"}
+				}
+				router := setupAvailableModelsRouter(&availableModelsAdminService{stubAdminService: newStubAdminService(), account: account})
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil))
+				require.Equal(t, http.StatusOK, rec.Code)
+				var result struct {
+					Data []grokAccountTestModel `json:"data"`
+				}
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+				if explicit {
+					require.Len(t, result.Data, 2)
+					require.Equal(t, "conversation", result.Data[0].ID)
+					require.Equal(t, "grok-imagine-image-2.0", result.Data[1].UpstreamModel)
+				} else {
+					require.Len(t, result.Data, len(xai.DefaultModels()))
+					require.Equal(t, "grok-4.6", result.Data[0].ID)
+					for _, model := range result.Data {
+						require.NotContains(t, model.ID, "/")
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestAccountHandlerGetAvailableModels_MiniMaxUsesNativeFallbackCatalog(t *testing.T) {

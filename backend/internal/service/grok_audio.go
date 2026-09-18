@@ -49,6 +49,7 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		contentType = "application/json"
 	}
 	req.Header.Set("Content-Type", contentType)
+	applyGrokOAuthIdentityHeaders(req.Header, targetURL, account.IsGrokOAuth())
 	account.ApplyHeaderOverrides(req.Header)
 	proxyURL := resolveAccountProxyURL(account)
 	started := time.Now()
@@ -64,6 +65,9 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 	data, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if (baseEndpoint == "tts" || baseEndpoint == "stt") && !grokVoiceResponseValid(baseEndpoint, resp.Header.Get("Content-Type"), data) {
+		return nil, fmt.Errorf("Grok voice returned an invalid or unsuccessful response")
 	}
 	writeGrokMediaResponse(c, resp, data, s.responseHeaderFilter)
 	return &OpenAIForwardResult{
@@ -87,6 +91,7 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *co
 	u.Scheme = "wss"
 	u.RawQuery = "model=" + url.QueryEscape(firstNonEmpty(model, "grok-voice-latest"))
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
+	applyGrokOAuthIdentityHeaders(headers, u.String(), account.IsGrokOAuth())
 	account.ApplyHeaderOverrides(headers)
 	upstream, _, _, err := s.getOpenAIWSPassthroughDialer().Dial(ctx, u.String(), headers, resolveAccountProxyURL(account))
 	if err != nil {
@@ -156,6 +161,28 @@ func grokRealtimeEventHasAudio(msg []byte) bool {
 		}
 	}
 	return false
+}
+
+func grokVoiceResponseValid(endpoint, contentType string, body []byte) bool {
+	if endpoint == "tts" && strings.HasPrefix(strings.ToLower(contentType), "audio/") {
+		return len(body) > 0
+	}
+	if openAIPassthroughResponseIsUnsafe(body) {
+		return false
+	}
+	switch strings.ToLower(gjson.GetBytes(body, "status").String()) {
+	case "cancelled", "canceled", "incomplete", "expired":
+		return false
+	}
+	switch endpoint {
+	case "stt":
+		return gjson.GetBytes(body, "text").Type == gjson.String
+	case "tts":
+		return strings.TrimSpace(gjson.GetBytes(body, "audio_url").String()) != "" ||
+			strings.TrimSpace(gjson.GetBytes(body, "data").String()) != ""
+	default:
+		return true
+	}
 }
 
 func estimateGrokVoiceAudioUsage(endpoint string, reqBody, respBody []byte, elapsed time.Duration) *AudioUsage {
@@ -240,6 +267,7 @@ func (s *OpenAIGatewayService) forwardGrokNativeSearch(ctx context.Context, c *g
 	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok {
 		searchModel = upstreamModel
 	}
+	searchModel = resolveGrokUpstreamModel(account, searchModel)
 	tool := map[string]any{"type": toolType}
 	if toolType == "x_search" {
 		for _, key := range []string{"allowed_x_handles", "excluded_x_handles", "from_date", "to_date", "enable_image_understanding", "enable_video_understanding"} {
@@ -270,6 +298,7 @@ func (s *OpenAIGatewayService) forwardGrokNativeSearch(ctx context.Context, c *g
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	applyGrokOAuthIdentityHeaders(req.Header, targetURL, account.IsGrokOAuth())
 	account.ApplyHeaderOverrides(req.Header)
 	started := time.Now()
 	resp, err := s.httpUpstream.Do(req, resolveAccountProxyURL(account), account.ID, account.Concurrency)
@@ -284,6 +313,12 @@ func (s *OpenAIGatewayService) forwardGrokNativeSearch(ctx context.Context, c *g
 	data, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	// Search results must be a completed Responses object before reporting
+	// success or charging a search call. HTTP 200 may carry an upstream error.
+	if openAIPassthroughResponseIsUnsafe(data) || !gjson.GetBytes(data, "output").IsArray() ||
+		strings.TrimSpace(gjson.GetBytes(data, "status").String()) != "completed" {
+		return nil, fmt.Errorf("Grok search returned no completed response")
 	}
 	count := countGrokNativeSearchCallsFromJSONBytes(data)
 	if count <= 0 {
