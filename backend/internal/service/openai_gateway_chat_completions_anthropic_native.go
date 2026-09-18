@@ -9,12 +9,9 @@ package service
 // 状态机），仅上游发送/错误处理对齐 OpenAI 网关语义。
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -154,114 +151,10 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	scanner := bufio.NewScanner(resp.Body)
-	maxLineSize := defaultMaxLineSize
-	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
-		maxLineSize = s.cfg.Gateway.MaxLineSize
-	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
-	var finalResp *apicompat.AnthropicResponse
-	var usage ClaudeUsage
-
-	// 读间隔上限：上游挂住 SSE 时中止组装（缓冲路径尚未提交响应头，可回 502）。
-	streamInterval := s.anthropicNativeStreamInterval()
-	pump := newAnthropicNativeLinePump(scanner, streamInterval)
-	defer pump.stop()
-
-	logReadErr := func(err error) {
-		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			logger.L().Warn("openai cc via native anthropic buffered: read error",
-				zap.Error(err),
-				zap.String("request_id", requestID),
-			)
-		}
-	}
-	onIdle := func() (*OpenAIForwardResult, error) {
-		_ = resp.Body.Close()
-		logger.L().Warn("openai cc via native anthropic buffered: data interval timeout",
-			zap.String("request_id", requestID),
-			zap.Duration("interval", streamInterval),
-		)
-		writeChatCompletionsError(c, http.StatusBadGateway, "server_error", "Upstream stream data interval timeout")
-		return nil, fmt.Errorf("stream data interval timeout")
-	}
-
-	for {
-		line, rerr := pump.next()
-		if rerr != nil {
-			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
-				return onIdle()
-			}
-			logReadErr(rerr)
-			break
-		}
-		// SSE 规范允许 `event:xxx`（冒号后无空格）：Kimi 等 Anthropic 兼容上游
-		// 返回紧凑格式，严格匹配 "event: " 会丢弃全部事件（#4653 同根因）。
-		if _, ok := extractOpenAISSEEventLine(line); !ok {
-			continue
-		}
-
-		dataLine, rerr := pump.next()
-		if rerr != nil {
-			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
-				return onIdle()
-			}
-			logReadErr(rerr)
-			break
-		}
-		payload, ok := extractOpenAISSEDataLine(dataLine)
-		if !ok {
-			continue
-		}
-
-		var event apicompat.AnthropicStreamEvent
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			continue
-		}
-
-		if event.Type == "message_start" && event.Message != nil {
-			finalResp = event.Message
-			mergeAnthropicUsage(&usage, event.Message.Usage)
-		}
-		if event.Type == "message_delta" {
-			if event.Usage != nil {
-				mergeAnthropicUsage(&usage, *event.Usage)
-			}
-			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
-				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
-			}
-		}
-		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
-			finalResp.Content = append(finalResp.Content, *event.ContentBlock)
-		}
-		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
-			idx := *event.Index
-			if idx < len(finalResp.Content) {
-				switch event.Delta.Type {
-				case "text_delta":
-					finalResp.Content[idx].Text += event.Delta.Text
-				case "thinking_delta":
-					finalResp.Content[idx].Thinking += event.Delta.Thinking
-				case "input_json_delta":
-					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
-				}
-			}
-		}
-	}
-
-	if finalResp == nil {
-		writeChatCompletionsError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
-	}
-
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		finalResp.Usage = apicompat.AnthropicUsage{
-			InputTokens:              usage.InputTokens,
-			OutputTokens:             usage.OutputTokens,
-			CacheCreationInputTokens: usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     usage.CacheReadInputTokens,
-		}
+	finalResp, usage, err := s.readNativeAnthropicResponse(resp)
+	if err != nil {
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream stream failed or ended before completion")
+		return nil, err
 	}
 
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
@@ -326,13 +219,6 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	firstChunk := true
 	clientDisconnected := false
 
-	scanner := bufio.NewScanner(resp.Body)
-	maxLineSize := defaultMaxLineSize
-	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
-		maxLineSize = s.cfg.Gateway.MaxLineSize
-	}
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:        requestID,
@@ -347,34 +233,6 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			FirstTokenMs:     firstTokenMs,
 			ClientDisconnect: clientDisconnected,
 		}
-	}
-
-	// 读间隔上限：上游挂住 SSE（不发数据也不断连）时结束排水。上游 ctx 为
-	// WithoutCancel 且 http.Client 无整体 Timeout，无此界限则客户端断开后
-	// scanner.Scan() 永久阻塞（见 anthropic native pump 文件注释）。
-	streamInterval := s.anthropicNativeStreamInterval()
-	pump := newAnthropicNativeLinePump(scanner, streamInterval)
-	defer pump.stop()
-
-	logReadErr := func(err error) {
-		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			logger.L().Warn("openai cc via native anthropic stream: read error",
-				zap.Error(err),
-				zap.String("request_id", requestID),
-			)
-		}
-	}
-	// onIdle 关闭上游连接（解除阻塞的读、归还连接池位），并按已累计 usage
-	// 返回——与 messages 主路径 "stream usage incomplete after timeout" 同语义。
-	onIdle := func() (*OpenAIForwardResult, error) {
-		_ = resp.Body.Close()
-		if !clientDisconnected {
-			logger.L().Warn("openai cc via native anthropic stream: data interval timeout",
-				zap.String("request_id", requestID),
-				zap.Duration("interval", streamInterval),
-			)
-		}
-		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
 	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
@@ -427,41 +285,23 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		return false
 	}
 
-	for {
-		line, rerr := pump.next()
-		if rerr != nil {
-			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
-				return onIdle()
+	err := s.scanNativeAnthropicEvents(resp, func(event *apicompat.AnthropicStreamEvent) error {
+		processAnthropicEvent(event)
+		return nil
+	})
+	if err != nil {
+		if !clientDisconnected {
+			if !c.Writer.Written() {
+				writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream stream failed or ended before completion")
+			} else {
+				_, _ = fmt.Fprint(c.Writer, buildChatStreamErrorSSE("upstream_error", "Upstream stream failed or ended before completion"))
+				_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+				c.Writer.Flush()
 			}
-			logReadErr(rerr)
-			break
 		}
-		if _, ok := extractOpenAISSEEventLine(line); !ok {
-			continue
-		}
-
-		dataLine, rerr := pump.next()
-		if rerr != nil {
-			if errors.Is(rerr, errAnthropicNativeStreamIdle) {
-				return onIdle()
-			}
-			// EOF / 读错误：事件行后流终止，进入 finalize。
-			logReadErr(rerr)
-			break
-		}
-		payload, ok := extractOpenAISSEDataLine(dataLine)
-		if !ok {
-			continue
-		}
-
-		var event apicompat.AnthropicStreamEvent
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			continue
-		}
-
-		if processAnthropicEvent(&event) {
-			return resultWithUsage(), nil
-		}
+		result := resultWithUsage()
+		result.TerminalEventType = "error"
+		return result, err
 	}
 
 	// Finalize both state machines（客户端已断开时仍执行，保证 usage 汇总完整）。

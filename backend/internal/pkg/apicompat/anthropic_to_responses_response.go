@@ -22,9 +22,10 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 	}
 
 	out := &ResponsesResponse{
-		ID:     id,
-		Object: "response",
-		Model:  resp.Model,
+		CreatedAt: time.Now().Unix(),
+		ID:        id,
+		Object:    "response",
+		Model:     resp.Model,
 	}
 
 	var outputs []ResponsesOutput
@@ -155,9 +156,10 @@ type AnthropicEventToResponsesState struct {
 	TextAccum    string
 
 	// Content of the currently open item, folded into Outputs when it closes.
-	CurrentContent []ResponsesContentPart
-	CurrentArgs    string
-	CurrentSummary string
+	CurrentContent     []ResponsesContentPart
+	CurrentArgs        string
+	InitialArgsPending bool
+	CurrentSummary     string
 
 	// Outputs accumulates every closed output item so the terminal event is
 	// useful to SDKs that read response.completed directly.
@@ -273,6 +275,7 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 
 	switch evt.ContentBlock.Type {
 	case "thinking":
+		events = append(events, closeCurrentResponsesItem(state)...)
 		state.CurrentItemID = generateItemID()
 		state.CurrentItemType = "reasoning"
 		state.ContentIndex = 0
@@ -284,6 +287,11 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 				ID:   state.CurrentItemID,
 			},
 		}))
+		if evt.ContentBlock.Thinking != "" {
+			events = append(events, anthToResHandleContentBlockDelta(&AnthropicStreamEvent{Delta: &AnthropicDelta{
+				Type: "thinking_delta", Thinking: evt.ContentBlock.Thinking,
+			}}, state)...)
+		}
 
 	case "text":
 		// If we don't have an open message item, open one
@@ -309,6 +317,11 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 			Part:         &ResponsesContentPart{Type: "output_text", Text: ""},
 		}))
 		state.TextAccum = ""
+		if evt.ContentBlock.Text != "" {
+			events = append(events, anthToResHandleContentBlockDelta(&AnthropicStreamEvent{Delta: &AnthropicDelta{
+				Type: "text_delta", Text: evt.ContentBlock.Text,
+			}}, state)...)
+		}
 
 	case "tool_use":
 		// Close previous item if any
@@ -318,6 +331,8 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		state.CurrentItemType = "function_call"
 		state.CurrentCallID = toResponsesCallID(evt.ContentBlock.ID)
 		state.CurrentName = evt.ContentBlock.Name
+		state.CurrentArgs = string(evt.ContentBlock.Input)
+		state.InitialArgsPending = true
 
 		events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
@@ -368,6 +383,11 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		if evt.Delta.PartialJSON == "" {
 			return nil
 		}
+		// The initial input is a placeholder when the provider sends deltas.
+		if state.InitialArgsPending {
+			state.CurrentArgs = ""
+			state.InitialArgsPending = false
+		}
 		state.CurrentArgs += evt.Delta.PartialJSON
 		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
@@ -406,7 +426,8 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 		if arguments == "" {
 			arguments = "{}"
 		}
-		events := []ResponsesStreamEvent{
+		events := flushAnthropicInitialToolArguments(state)
+		events = append(events,
 			makeResponsesEvent(state, "response.function_call_arguments.done", &ResponsesStreamEvent{
 				OutputIndex: state.OutputIndex,
 				ItemID:      state.CurrentItemID,
@@ -414,7 +435,7 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 				Name:        state.CurrentName,
 				Arguments:   arguments,
 			}),
-		}
+		)
 		events = append(events, closeCurrentResponsesItem(state)...)
 		return events
 
@@ -492,10 +513,25 @@ func anthropicResponsesStreamTerminalState(stopReason string) (string, *Response
 	return "completed", nil
 }
 
+func flushAnthropicInitialToolArguments(state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
+	if state.CurrentItemType != "function_call" || !state.InitialArgsPending {
+		return nil
+	}
+	state.InitialArgsPending = false
+	if state.CurrentArgs == "" {
+		return nil
+	}
+	return []ResponsesStreamEvent{makeResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
+		OutputIndex: state.OutputIndex, ItemID: state.CurrentItemID,
+		CallID: state.CurrentCallID, Name: state.CurrentName, Delta: state.CurrentArgs,
+	})}
+}
+
 func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	if state.CurrentItemType == "" {
 		return nil
 	}
+	events := flushAnthropicInitialToolArguments(state)
 
 	itemType := state.CurrentItemType
 	itemID := state.CurrentItemID
@@ -525,15 +561,16 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 	state.CurrentName = ""
 	state.CurrentContent = nil
 	state.CurrentArgs = ""
+	state.InitialArgsPending = false
 	state.CurrentSummary = ""
 	state.TextAccum = ""
 	state.OutputIndex++
 	state.ContentIndex = 0
 
-	return []ResponsesStreamEvent{makeResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
+	return append(events, makeResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
 		OutputIndex: state.OutputIndex - 1, // Use the index before increment
 		Item:        &item,
-	})}
+	}))
 }
 
 func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesStreamEvent {
@@ -543,11 +580,12 @@ func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesS
 		Type:           "response.created",
 		SequenceNumber: seq,
 		Response: &ResponsesResponse{
-			ID:     state.ResponseID,
-			Object: "response",
-			Model:  state.Model,
-			Status: "in_progress",
-			Output: []ResponsesOutput{},
+			CreatedAt: state.Created,
+			ID:        state.ResponseID,
+			Object:    "response",
+			Model:     state.Model,
+			Status:    "in_progress",
+			Output:    []ResponsesOutput{},
 		},
 	}
 }
@@ -583,11 +621,12 @@ func makeResponsesCompletedEvent(
 		Type:           eventType,
 		SequenceNumber: seq,
 		Response: &ResponsesResponse{
+			CreatedAt:         state.Created,
 			ID:                state.ResponseID,
 			Object:            "response",
 			Model:             state.Model,
 			Status:            status,
-			Output:            append([]ResponsesOutput(nil), state.Outputs...),
+			Output:            append([]ResponsesOutput{}, state.Outputs...),
 			Usage:             usage,
 			IncompleteDetails: incompleteDetails,
 		},

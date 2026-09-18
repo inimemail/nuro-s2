@@ -101,8 +101,19 @@ func newCodexVersionSyncTestService(repo *codexVersionSyncSettingRepoStub, githu
 	return NewOpenAICodexVersionSyncService(repo, nil, github, openAICodexVersionSyncInterval)
 }
 
-func TestOpenAICodexVersionSyncDisabledByDefault(t *testing.T) {
+func TestOpenAICodexVersionSyncEnabledByDefault(t *testing.T) {
 	repo := &codexVersionSyncSettingRepoStub{values: map[string]string{}}
+	github := &codexVersionSyncGitHubStub{latest: &GitHubRelease{TagName: "rust-v0.150.0"}}
+	newCodexVersionSyncTestService(repo, github).runOnce()
+	require.Equal(t, 1, github.latestCalls)
+	require.Zero(t, github.recentCalls)
+	require.Equal(t, []string{"0.150.0"}, repo.writes)
+}
+
+func TestOpenAICodexVersionSyncExplicitlyDisabled(t *testing.T) {
+	repo := &codexVersionSyncSettingRepoStub{values: map[string]string{
+		SettingKeyOpenAICodexVersionAutoSyncEnabled: "false",
+	}}
 	github := &codexVersionSyncGitHubStub{latest: &GitHubRelease{TagName: "rust-v0.150.0"}}
 	newCodexVersionSyncTestService(repo, github).runOnce()
 	require.Zero(t, github.latestCalls)
@@ -203,7 +214,7 @@ func TestOpenAICodexIdentityRuntimePrecedenceAndLegacyNoOp(t *testing.T) {
 	headers.Set("Originator", "third-party")
 	headers.Set("Version", "9.9.9")
 	enforceCodexIdentityHeaders(headers)
-	require.Equal(t, "codex_cli_rs/0.151.0", headers.Get("User-Agent"))
+	require.Equal(t, "codex_cli_rs/0.151.0 (Ubuntu 22.4.0; x86_64) xterm-256color", headers.Get("User-Agent"))
 	require.Equal(t, "codex_cli_rs", headers.Get("Originator"))
 	require.Equal(t, "0.151.0", headers.Get("Version"))
 }

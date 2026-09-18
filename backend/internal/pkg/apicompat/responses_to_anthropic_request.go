@@ -51,6 +51,21 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		}
 		out.ToolChoice = tc
 	}
+	if req.ParallelToolCalls != nil && len(out.Tools) > 0 {
+		choice := map[string]any{"type": "auto"}
+		if len(out.ToolChoice) > 0 {
+			if err := json.Unmarshal(out.ToolChoice, &choice); err != nil {
+				return nil, fmt.Errorf("convert parallel tool choice: %w", err)
+			}
+		}
+		if choice == nil {
+			choice = map[string]any{"type": "auto"}
+		}
+		if choice["type"] != "none" {
+			choice["disable_parallel_tool_use"] = !*req.ParallelToolCalls
+			out.ToolChoice, _ = json.Marshal(choice)
+		}
+	}
 
 	// reasoning.effort → output_config.effort + thinking
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
@@ -62,6 +77,15 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 				Type:         "enabled",
 				BudgetTokens: defaultThinkingBudget(effort),
 			}
+		}
+	}
+	// Respect the caller's output cap. Extended thinking needs at least 1024
+	// tokens and a budget strictly below max_tokens; otherwise disable it.
+	if out.Thinking != nil && out.Thinking.Type == "enabled" {
+		if out.MaxTokens <= 1024 {
+			out.Thinking = nil
+		} else if out.Thinking.BudgetTokens >= out.MaxTokens {
+			out.Thinking.BudgetTokens = out.MaxTokens - 1
 		}
 	}
 

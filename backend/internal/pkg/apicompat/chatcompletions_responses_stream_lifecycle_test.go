@@ -45,7 +45,7 @@ func TestStream_ReasoningOpensItemBeforeDelta(t *testing.T) {
 	}
 }
 
-func TestStream_ReasoningOnlySynthesizesVisibleText(t *testing.T) {
+func TestStream_ReasoningOnlyRemainsReasoning(t *testing.T) {
 	events := collectStreamEvents(t, []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}`,
 		`{"choices":[{"index":0,"delta":{"reasoning_content":"thinking before final"}}]}`,
@@ -78,15 +78,14 @@ func TestStream_ReasoningOnlySynthesizesVisibleText(t *testing.T) {
 			require.Equal(t, "incomplete", e.Response.Status)
 			require.NotNil(t, e.Response.IncompleteDetails)
 			require.Equal(t, "max_output_tokens", e.Response.IncompleteDetails.Reason)
-			require.Len(t, e.Response.Output, 2)
+			require.Len(t, e.Response.Output, 1)
 			require.Equal(t, "reasoning", e.Response.Output[0].Type)
-			require.Equal(t, "message", e.Response.Output[1].Type)
-			require.Equal(t, "thinking before final", e.Response.Output[1].Content[0].Text)
+			require.Equal(t, "thinking before final", e.Response.Output[0].Summary[0].Text)
 		}
 	}
-	require.True(t, sawTextDelta, "reasoning-only stream must produce visible text delta")
-	require.True(t, sawTextDone, "reasoning-only stream must close visible text part")
-	require.True(t, sawMessageDone, "reasoning-only stream must close synthesized message item")
+	require.False(t, sawTextDelta, "reasoning must not become answer text")
+	require.False(t, sawTextDone)
+	require.False(t, sawMessageDone)
 	require.True(t, sawIncomplete, "length finish_reason must emit response.incomplete")
 }
 
@@ -100,10 +99,8 @@ func TestStream_ReasoningOnlyBlankDoesNotSynthesizeVisibleText(t *testing.T) {
 		require.NotEqual(t, "response.output_text.delta", e.Type)
 		if e.Type == "response.completed" {
 			require.NotNil(t, e.Response)
-			require.Len(t, e.Response.Output, 2)
+			require.Len(t, e.Response.Output, 1)
 			require.Equal(t, "reasoning", e.Response.Output[0].Type)
-			require.Equal(t, "message", e.Response.Output[1].Type)
-			require.Equal(t, "", e.Response.Output[1].Content[0].Text)
 		}
 	}
 }

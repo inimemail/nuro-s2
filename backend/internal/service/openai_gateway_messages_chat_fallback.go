@@ -45,7 +45,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	applyOpenAICompatModelNormalization(&anthropicReq)
 	clientStream := anthropicReq.Stream
 
-	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
+	responsesReq, err := apicompat.AnthropicToResponsesForChatCompletions(&anthropicReq)
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
@@ -282,6 +282,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 		observer.ObserveOpenAI(respBody, strings.TrimSpace(gjson.GetBytes(respBody, "type").String()))
 	}
+	if err := apicompat.ValidateChatToolCalls(&ccResp, customTools, toolSearchDeclared, namespaceTools); err != nil {
+		writeAnthropicError(c, http.StatusBadGateway, "upstream_error", "Invalid tool arguments from upstream")
+		return nil, err
+	}
 	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customTools, toolSearchDeclared, namespaceTools)
 
 	usage := OpenAIUsage{}
@@ -332,7 +336,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	toolSearchDeclared bool,
 	namespaceTools map[string]apicompat.NamespacedToolName,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
@@ -361,6 +365,24 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
+	defer func() {
+		if result != nil {
+			result.ClientDisconnect = clientDisconnected
+			if forwardErr != nil {
+				result.TerminalEventType = "error"
+			}
+		}
+		if forwardErr == nil || clientDisconnected {
+			return
+		}
+		if !headersWritten {
+			writeAnthropicError(c, http.StatusBadGateway, "upstream_error", "Upstream chat stream failed or ended before completion")
+			return
+		}
+		payload, _ := json.Marshal(gin.H{"type": "error", "error": gin.H{"type": "upstream_error", "message": "Upstream chat stream failed or ended before completion"}})
+		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload)
+		c.Writer.Flush()
+	}()
 	sawDone := false
 	streamInvalid := false
 
@@ -399,8 +421,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	pump := newAnthropicNativeLinePump(scanner, s.anthropicNativeStreamInterval())
+	defer pump.stop()
+	defer resp.Body.Close()
+	var scanErr error
+	for {
+		line, err := pump.next()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				scanErr = err
+			}
+			break
+		}
 		payload, ok := extractOpenAISSEDataLine(line)
 		if !ok {
 			continue
@@ -439,7 +471,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 		emitChunk(&chunk)
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanErr; err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai messages chat fallback: stream read error",
 				zap.Error(err),

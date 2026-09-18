@@ -551,18 +551,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	type rawChatScanEvent struct {
-		line string
-		err  error
-		done bool
+	pump := newAnthropicNativeLinePump(scanner, s.anthropicNativeStreamInterval())
+	defer pump.stop()
+	defer resp.Body.Close()
+	var idleCh <-chan time.Time
+	if pump.timer != nil {
+		idleCh = pump.timer.C
 	}
-	scanEvents := make(chan rawChatScanEvent, 1)
-	go func() {
-		for scanner.Scan() {
-			scanEvents <- rawChatScanEvent{line: scanner.Text()}
-		}
-		scanEvents <- rawChatScanEvent{err: scanner.Err(), done: true}
-	}()
 	placeholderStartTime := openAIRequestPlaceholderEffectiveStartTime(c, startTime, firstTokenTimeoutPlaceholder)
 	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
@@ -572,19 +567,29 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		writeFirstTokenTimeoutPlaceholder()
 	}
 	var scanErr error
+readLoop:
 	for {
-		var event rawChatScanEvent
+		var event anthropicNativeLineEvent
+		var ok bool
 		select {
+		case <-idleCh:
+			select {
+			case event, ok = <-pump.events:
+			default:
+				scanErr = errAnthropicNativeStreamIdle
+				break readLoop
+			}
 		case <-firstTokenTimeoutCh:
 			firstTokenTimeoutCh = nil
 			writeFirstTokenTimeoutPlaceholder()
 			continue
-		case event = <-scanEvents:
+		case event, ok = <-pump.events:
 		}
-		if event.done {
+		if !ok || event.err != nil {
 			scanErr = event.err
 			break
 		}
+		pump.resetTimer()
 		line := event.line
 		lineCommitsAttempt := false
 		var unsafe bool
@@ -645,6 +650,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 
 		writeLine(line, lineCommitsAttempt)
+		if terminalEventType == "[DONE]" {
+			writeLine("", false)
+			if !clientDisconnected && clientOutputStarted {
+				c.Writer.Flush()
+			}
+			break
+		}
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()

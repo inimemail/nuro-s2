@@ -161,8 +161,8 @@ func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	var items []ResponsesInputItem
 	content := ""
 
-	if m.ReasoningContent != "" {
-		content = "<thinking>" + m.ReasoningContent + "</thinking>"
+	if reasoning := m.reasoningText(); reasoning != "" {
+		content = "<thinking>" + reasoning + "</thinking>"
 	}
 
 	// Emit assistant message with output_text if content is non-empty.

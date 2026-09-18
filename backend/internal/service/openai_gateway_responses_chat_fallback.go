@@ -99,6 +99,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat completions fallback request: %w", err)
 	}
+	if normalized, changed := NormalizeGLMOpenAIReasoningEffort(chatBody, upstreamModel); changed {
+		chatBody = normalized
+	}
 	chatBody, err = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, chatBody)
 	if err != nil {
 		var blocked *OpenAIFastBlockedError
@@ -280,9 +283,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	var result *OpenAIForwardResult
 	var forwardErr error
 	if clientStream {
-		result, forwardErr = s.streamChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		result, forwardErr = s.streamChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime, apicompat.FunctionToolNames(effectiveTools))
 	} else {
-		result, forwardErr = s.bufferChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		result, forwardErr = s.bufferChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime, apicompat.FunctionToolNames(effectiveTools))
 	}
 	if result != nil && trackAttempt {
 		result.AttemptID = attempt.ID
@@ -305,6 +308,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	toolSearchDeclared bool,
 	namespaceTools map[string]apicompat.NamespacedToolName,
 	startTime time.Time,
+	functionTools ...map[string]bool,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
@@ -342,7 +346,11 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		})
 		return nil, fmt.Errorf("parse chat completions response: %w", err)
 	}
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customTools, toolSearchDeclared, namespaceTools)
+	if err := apicompat.ValidateChatToolCalls(&ccResp, customTools, toolSearchDeclared, namespaceTools, functionTools...); err != nil {
+		writeResponsesError(c, http.StatusBadGateway, "upstream_error", "Invalid tool arguments from upstream")
+		return nil, err
+	}
+	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customTools, toolSearchDeclared, namespaceTools, functionTools...)
 	if IsOpenAIResponsesHealthProbe(c) {
 		responsesBody, err := json.Marshal(responsesResp)
 		if err != nil {
@@ -399,7 +407,8 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	toolSearchDeclared bool,
 	namespaceTools map[string]apicompat.NamespacedToolName,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+	functionTools ...map[string]bool,
+) (result *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
@@ -421,11 +430,32 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 
 	state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
 	state.CustomTools = customTools
+	if len(functionTools) > 0 {
+		state.FunctionTools = functionTools[0]
+	}
 	state.ToolSearchDeclared = toolSearchDeclared
 	state.NamespaceTools = namespaceTools
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
+	defer func() {
+		if result != nil {
+			result.ClientDisconnect = clientDisconnected
+			if forwardErr != nil {
+				result.TerminalEventType = "error"
+			}
+		}
+		if forwardErr == nil || clientDisconnected {
+			return
+		}
+		if !headersWritten {
+			writeResponsesError(c, http.StatusBadGateway, "upstream_error", "Upstream chat stream failed or ended before completion")
+			return
+		}
+		payload, _ := json.Marshal(gin.H{"type": "response.failed", "sequence_number": state.SequenceNumber, "response": gin.H{"id": state.ResponseID, "model": originalModel, "object": "response", "created_at": state.Created, "status": "failed", "output": []any{}, "error": gin.H{"code": "upstream_error", "message": "Upstream chat stream failed or ended before completion"}}})
+		_, _ = fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", payload)
+		c.Writer.Flush()
+	}()
 	sawDone := false
 	streamInvalid := false
 
@@ -462,8 +492,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	pump := newAnthropicNativeLinePump(scanner, s.anthropicNativeStreamInterval())
+	defer pump.stop()
+	defer resp.Body.Close()
+	var scanErr error
+	for {
+		line, err := pump.next()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				scanErr = err
+			}
+			break
+		}
 		payload, ok := extractOpenAISSEDataLine(line)
 		if !ok {
 			continue
@@ -501,7 +541,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		writeEvents(apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state))
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanErr; err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai responses chat fallback: stream read error",
 				zap.Error(err),
@@ -573,7 +613,7 @@ func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool 
 		return false
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || len(choice.Delta.ToolCalls) > 0 {
+		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || choice.Delta.Reasoning != nil || len(choice.Delta.ToolCalls) > 0 {
 			return true
 		}
 	}

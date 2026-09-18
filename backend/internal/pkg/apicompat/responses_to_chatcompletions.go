@@ -124,6 +124,7 @@ type ResponsesEventToChatState struct {
 	Finalized              bool        // true after finish chunk has been emitted
 	NextToolCallIndex      int         // next sequential tool_call index to assign
 	OutputIndexToToolIndex map[int]int // Responses output_index → Chat tool_calls index
+	OutputIndexToArguments map[int]string
 	IncludeUsage           bool
 	Usage                  *ChatUsage
 }
@@ -134,6 +135,7 @@ func NewResponsesEventToChatState() *ResponsesEventToChatState {
 		ID:                     generateChatCmplID(),
 		Created:                time.Now().Unix(),
 		OutputIndexToToolIndex: make(map[int]int),
+		OutputIndexToArguments: make(map[int]string),
 	}
 }
 
@@ -149,6 +151,8 @@ func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEvent
 		return resToChatHandleOutputItemAdded(evt, state)
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		return resToChatHandleFuncArgsDelta(evt, state)
+	case "response.function_call_arguments.done", "response.custom_tool_call_input.done":
+		return resToChatHandleFuncArgsDone(evt, state)
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		return resToChatHandleReasoningDelta(evt, state)
 	case "response.reasoning_summary_text.done":
@@ -263,6 +267,10 @@ func resToChatHandleFuncArgsDelta(evt *ResponsesStreamEvent, state *ResponsesEve
 	if !ok {
 		return nil
 	}
+	if state.OutputIndexToArguments == nil {
+		state.OutputIndexToArguments = make(map[int]string)
+	}
+	state.OutputIndexToArguments[evt.OutputIndex] += evt.Delta
 
 	return []ChatCompletionsChunk{makeChatDeltaChunk(state, ChatDelta{
 		ToolCalls: []ChatToolCall{{
@@ -272,6 +280,23 @@ func resToChatHandleFuncArgsDelta(evt *ResponsesStreamEvent, state *ResponsesEve
 			},
 		}},
 	})}
+}
+
+func resToChatHandleFuncArgsDone(evt *ResponsesStreamEvent, state *ResponsesEventToChatState) []ChatCompletionsChunk {
+	if _, ok := state.OutputIndexToToolIndex[evt.OutputIndex]; !ok {
+		return nil
+	}
+	complete := evt.Arguments
+	if evt.Type == "response.custom_tool_call_input.done" {
+		complete = evt.Input
+	}
+	current := state.OutputIndexToArguments[evt.OutputIndex]
+	if complete == current || !strings.HasPrefix(complete, current) {
+		return nil
+	}
+	copy := *evt
+	copy.Delta = complete[len(current):]
+	return resToChatHandleFuncArgsDelta(&copy, state)
 }
 
 func resToChatHandleReasoningDelta(evt *ResponsesStreamEvent, state *ResponsesEventToChatState) []ChatCompletionsChunk {

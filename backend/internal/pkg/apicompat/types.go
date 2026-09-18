@@ -258,7 +258,8 @@ type ResponsesInputItem struct {
 	outputRaw json.RawMessage
 
 	// type=reasoning (Grok/Codex encrypted reasoning round-trip)
-	EncryptedContent string `json:"encrypted_content,omitempty"`
+	EncryptedContent string             `json:"encrypted_content,omitempty"`
+	Summary          []ResponsesSummary `json:"summary,omitempty"`
 }
 
 func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
@@ -349,12 +350,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesResponse is the non-streaming response from POST /v1/responses.
 type ResponsesResponse struct {
-	ID     string            `json:"id"`
-	Object string            `json:"object"` // "response"
-	Model  string            `json:"model"`
-	Status string            `json:"status"` // "completed" | "incomplete" | "failed"
-	Output []ResponsesOutput `json:"output"`
-	Usage  *ResponsesUsage   `json:"usage,omitempty"`
+	CreatedAt int64             `json:"created_at"`
+	ID        string            `json:"id"`
+	Object    string            `json:"object"` // "response"
+	Model     string            `json:"model"`
+	Status    string            `json:"status"` // "completed" | "incomplete" | "failed"
+	Output    []ResponsesOutput `json:"output"`
+	Usage     *ResponsesUsage   `json:"usage,omitempty"`
 
 	// incomplete_details is present when status="incomplete"
 	IncompleteDetails *ResponsesIncompleteDetails `json:"incomplete_details,omitempty"`
@@ -684,6 +686,7 @@ type ChatStreamOptions struct {
 
 // ChatMessage is a single message in the Chat Completions conversation.
 type ChatMessage struct {
+	Reasoning        string          `json:"reasoning,omitempty"`
 	Role             string          `json:"role"` // "system" | "user" | "assistant" | "tool" | "function"
 	Content          json.RawMessage `json:"content,omitempty"`
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
@@ -817,6 +820,7 @@ type ChatChunkChoice struct {
 
 // ChatDelta carries incremental content in a streaming chunk.
 type ChatDelta struct {
+	Reasoning        *string        `json:"reasoning,omitempty"`
 	Role             string         `json:"role,omitempty"`
 	Content          *string        `json:"content,omitempty"` // pointer: omit when not present, null vs "" matters
 	ReasoningContent *string        `json:"reasoning_content,omitempty"`

@@ -76,16 +76,24 @@ func (p *anthropicNativeLinePump) next() (string, error) {
 	if p.timer != nil {
 		timeoutCh = p.timer.C
 	}
+	var ev anthropicNativeLineEvent
+	var ok bool
 	select {
-	case ev, ok := <-p.events:
-		if !ok {
-			return "", io.EOF
-		}
-		p.resetTimer()
-		return ev.line, ev.err
+	case ev, ok = <-p.events:
 	case <-timeoutCh:
-		return "", errAnthropicNativeStreamIdle
+		// A slow downstream write can let the timer expire while upstream
+		// data is already queued. Drain it before declaring the upstream idle.
+		select {
+		case ev, ok = <-p.events:
+		default:
+			return "", errAnthropicNativeStreamIdle
+		}
 	}
+	if !ok {
+		return "", io.EOF
+	}
+	p.resetTimer()
+	return ev.line, ev.err
 }
 
 // resetTimer 在收到一行后重启间隔计时器。
