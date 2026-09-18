@@ -64,6 +64,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { manualMultiplierFromValue } from '@/utils/upstreamBilling'
 import type { Account, UpstreamBillingProbeSnapshot } from '@/types'
 
 const props = defineProps<{
@@ -98,8 +99,7 @@ const displayedRate = computed(() => {
 })
 const manualUpstreamRate = computed(() => {
   if (snapshot.value?.status !== 'unsupported') return null
-  const value = Number(props.account.extra?.manual_upstream_multiplier)
-  return Number.isFinite(value) && value >= 0 && value <= 100 && value !== 1 ? value : null
+  return manualMultiplierFromValue(props.account.extra?.manual_upstream_multiplier)
 })
 const observedRate = computed(() => {
   const value = snapshot.value?.data?.effective_rate_multiplier
@@ -241,10 +241,10 @@ const statusLabel = computed(() => {
   if (snapshot.value?.status === 'unsupported' && manualUpstreamRate.value != null) {
     return `${t('admin.accounts.upstreamBilling.manual')} ${Number(manualUpstreamRate.value.toPrecision(8))}x`
   }
+  if (snapshot.value?.status === 'unsupported') return t('admin.accounts.upstreamBilling.unsupported')
   if (!autoProbeEnabled.value) return t('admin.accounts.upstreamBilling.autoProbeDisabled')
   if (props.globalProbeEnabled === false) return t('admin.accounts.upstreamBilling.globalProbeDisabled')
   if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')
-  if (snapshot.value.status === 'unsupported') return t('admin.accounts.upstreamBilling.unsupported')
   if (snapshot.value.status === 'failed') {
     return observedRate.value == null
       ? t('admin.accounts.upstreamBilling.failed')

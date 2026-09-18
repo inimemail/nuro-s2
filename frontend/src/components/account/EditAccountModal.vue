@@ -563,11 +563,11 @@
                   <div class="flex flex-wrap items-center gap-2">
                     <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.manualMultiplier') }}</label>
                     <span class="rounded px-1.5 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-300 dark:text-amber-300 dark:ring-amber-700">
-                      {{ manualUpstreamMultiplier != null ? t('admin.accounts.upstreamBilling.manual') : t('admin.accounts.upstreamBilling.unsupported') }}
+                      {{ activeManualUpstreamMultiplier != null ? t('admin.accounts.upstreamBilling.manual') : t('admin.accounts.upstreamBilling.unsupported') }}
                     </span>
                   </div>
                   <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-                    {{ t(manualUpstreamMultiplier != null ? 'admin.accounts.upstreamBilling.manualMultiplierHint' : 'admin.accounts.upstreamBilling.manualMultiplierUnsupportedHint') }}
+                    {{ t(activeManualUpstreamMultiplier != null ? 'admin.accounts.upstreamBilling.manualMultiplierHint' : 'admin.accounts.upstreamBilling.manualMultiplierUnsupportedHint') }}
                   </p>
                 </div>
                 <div class="flex flex-none items-center gap-2">
@@ -3928,6 +3928,7 @@ import {
 } from '@/utils/openaiFirstTokenTimeoutStages'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { resolveOpenAICompactState } from '@/utils/openaiCompact'
+import { manualMultiplierFromValue } from '@/utils/upstreamBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
@@ -4387,7 +4388,7 @@ const ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY = 'adaptive_upstream_multiplier_fa
 const MANUAL_UPSTREAM_MULTIPLIER_KEY = 'manual_upstream_multiplier'
 const adaptiveUpstreamMultiplierFactor = ref(1)
 const initialAdaptiveUpstreamMultiplierFactor = ref(1)
-const manualUpstreamMultiplier = ref<number | null>(null)
+const manualUpstreamMultiplier = ref<number | string | null>(null)
 const initialManualUpstreamMultiplier = ref<number | null>(null)
 const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
@@ -5242,9 +5243,15 @@ const configuredUpstreamBillingGuardGroupCount = computed(() =>
   }).length
 )
 
+const activeManualUpstreamMultiplier = computed(() =>
+  upstreamBillingProbeStatus.value === 'unsupported'
+    ? manualMultiplierFromValue(manualUpstreamMultiplier.value)
+    : null
+)
+
 const upstreamBillingGuardObservedRate = computed(() => {
-  if (upstreamBillingProbeStatus.value === 'unsupported' && manualUpstreamMultiplier.value != null) {
-    return manualUpstreamMultiplier.value
+  if (activeManualUpstreamMultiplier.value != null) {
+    return activeManualUpstreamMultiplier.value
   }
   const value = props.account?.upstream_billing_guard_observed_multiplier
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
@@ -5256,16 +5263,9 @@ const adaptiveFactorFromValue = (value: unknown): number => {
   return Number.isFinite(parsed) && parsed >= 0.001 && parsed <= 100 ? parsed : 1
 }
 
-const manualMultiplierFromValue = (value: unknown): number | null => {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100 || parsed === 1) return null
-  return parsed
-}
-
 const upstreamBillingObservedRate = computed<number | null>(() => {
-  const raw = props.account?.extra?.upstream_billing_probe?.data?.effective_rate_multiplier
-  const value = Number(raw)
-  return Number.isFinite(value) && value >= 0 ? value : null
+  const value = props.account?.extra?.upstream_billing_probe?.data?.effective_rate_multiplier
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 })
 
 const convertedUpstreamRate = (value: number, factor: number): number | null => {
@@ -5311,7 +5311,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
       }
     }
-    if ((!upstreamBillingAutoProbeEnabled.value && manualUpstreamMultiplier.value == null) || invalidRange || (upstreamBillingGuardObservedRate.value != null && ((min != null && upstreamBillingGuardObservedRate.value < min) || (limit != null && upstreamBillingGuardObservedRate.value > limit)))) {
+    if ((!upstreamBillingAutoProbeEnabled.value && activeManualUpstreamMultiplier.value == null) || invalidRange || (upstreamBillingGuardObservedRate.value != null && ((min != null && upstreamBillingGuardObservedRate.value < min) || (limit != null && upstreamBillingGuardObservedRate.value > limit)))) {
       return {
         group,
         defaultLimit: guardGroupDefaultLimit(group),
@@ -5343,7 +5343,7 @@ const toggleUpstreamBillingGuard = () => {
   if (!upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) return
   upstreamBillingGuardEnabled.value = !upstreamBillingGuardEnabled.value
   if (upstreamBillingGuardEnabled.value) {
-    if (manualUpstreamMultiplier.value == null) upstreamBillingAutoProbeEnabled.value = true
+    if (activeManualUpstreamMultiplier.value == null) upstreamBillingAutoProbeEnabled.value = true
   }
 }
 
@@ -5351,7 +5351,7 @@ const toggleUpstreamBillingAutoProbe = () => {
   upstreamBillingAutoProbeEnabled.value = !upstreamBillingAutoProbeEnabled.value
   if (!upstreamBillingAutoProbeEnabled.value) {
     upstreamBillingRateSyncEnabled.value = false
-    if (manualUpstreamMultiplier.value == null) upstreamBillingGuardEnabled.value = false
+    if (activeManualUpstreamMultiplier.value == null) upstreamBillingGuardEnabled.value = false
   }
 }
 
@@ -5570,7 +5570,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   adaptiveUpstreamMultiplierFactor.value = adaptiveFactorFromValue(extra?.[ADAPTIVE_UPSTREAM_MULTIPLIER_FACTOR_KEY])
   initialAdaptiveUpstreamMultiplierFactor.value = adaptiveUpstreamMultiplierFactor.value
   manualUpstreamMultiplier.value = manualMultiplierFromValue(extra?.[MANUAL_UPSTREAM_MULTIPLIER_KEY])
-  initialManualUpstreamMultiplier.value = manualUpstreamMultiplier.value
+  initialManualUpstreamMultiplier.value = manualMultiplierFromValue(manualUpstreamMultiplier.value)
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   const overrides: Record<string, number | string | null> = {}

@@ -367,6 +367,46 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it.each([undefined, null, '', ' '])('leaves missing manual multiplier %s blank when editing and saving', async (value) => {
+    const account = buildAccount()
+    account.extra = {
+      upstream_billing_probe: { status: 'unsupported' },
+      manual_upstream_multiplier: value
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="manual-upstream-multiplier"]').element.value).toBe('')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamBilling.manualMultiplierUnsupportedHint')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledOnce()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.manual_upstream_multiplier).not.toBe(0)
+  })
+
+  it.each([0, 0.5])('clears the saved manual multiplier %s with null, not zero', async (value) => {
+    const account = buildAccount()
+    account.group_ids = [10]
+    account.upstream_billing_guard_enabled = true
+    account.extra = {
+      upstream_billing_probe_enabled: true,
+      upstream_billing_probe: { status: 'unsupported' },
+      manual_upstream_multiplier: value
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account, [buildGroup(10, 'Primary', 1)])
+    const input = wrapper.get<HTMLInputElement>('[data-testid="manual-upstream-multiplier"]')
+    expect(input.element.value).toBe(String(value))
+    await input.setValue('')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamBilling.manualMultiplierUnsupportedHint')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').text()).toContain('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledOnce()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.manual_upstream_multiplier).toBeNull()
+  })
+
   it('round-trips OpenCode mode and rules and can restore default rules', async () => {
     const account = buildKimiResponsesAccount()
     account.platform = 'opencode_go'

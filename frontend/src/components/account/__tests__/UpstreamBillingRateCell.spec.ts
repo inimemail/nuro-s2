@@ -98,6 +98,29 @@ function mountCell(account: Account, globalProbeEnabled = true) {
 }
 
 describe('UpstreamBillingRateCell', () => {
+  it.each([undefined, null, '', ' ', false])('shows unsupported without inventing a manual zero for %s', (value) => {
+    const account = makeAccount({ status: 'unsupported' })
+    account.extra = { ...account.extra, manual_upstream_multiplier: value } as any
+    const wrapper = mountCell(account)
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe('-')
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toBe('admin.accounts.upstreamBilling.unsupported')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('pending')
+  })
+
+  it.each([0, 0.5, '0.5'])('preserves an explicitly set manual multiplier %s', (value) => {
+    const account = makeAccount({ status: 'unsupported', autoProbe: false })
+    account.extra = { ...account.extra, manual_upstream_multiplier: value } as any
+    const wrapper = mountCell(account)
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe(`${value}x`)
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toBe(`admin.accounts.upstreamBilling.manual ${value}x`)
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('available')
+  })
+
+  it('keeps unsupported visible when automatic probing is disabled', () => {
+    const wrapper = mountCell(makeAccount({ status: 'unsupported', autoProbe: false }), false)
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toBe('admin.accounts.upstreamBilling.unsupported')
+  })
+
   it('shows one upstream multiplier and marks an equal threshold as available', () => {
     const wrapper = mountCell(makeAccount({ observed: 1, limit: 1 }))
 
