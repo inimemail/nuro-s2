@@ -102,6 +102,7 @@ func FlattenResponsesNamespacesExcept(req map[string]any, preserved map[string]b
 					flatChild[key] = value
 				}
 				flatChild["name"] = flat
+				flatChild["description"] = loweredNamespaceToolDescription(namespace, name, stringValue(tool["description"]), stringValue(child["description"]))
 				flattened = append(flattened, flatChild)
 			}
 		}

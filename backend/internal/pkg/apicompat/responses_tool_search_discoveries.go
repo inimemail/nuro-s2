@@ -178,6 +178,11 @@ func responsesDirectToolDiscovery(tool map[string]any, typ string) (map[string]a
 		identityCopy = copyClientTool(copy)
 		identityCopy["type"] = "function"
 		identityCopy["parameters"] = json.RawMessage(customToolInputSchema)
+		format, err := json.Marshal(copy["format"])
+		if err != nil {
+			return nil, responsesDiscoveredToolIdentity{}, false
+		}
+		identityCopy["description"] = loweredCustomToolDescription(stringValue(copy["description"]), format)
 		delete(identityCopy, "format")
 	}
 	encoded, err := json.Marshal(identityCopy)
@@ -248,11 +253,17 @@ func responsesNamespaceToolDiscovery(tool map[string]any) (map[string]any, []res
 			continue
 		}
 		flat := flattenNamespaceToolName(namespace, direct.name)
+		identityCopy := copyClientTool(childCopy)
+		identityCopy["description"] = loweredNamespaceToolDescription(namespace, direct.name, stringValue(tool["description"]), stringValue(childCopy["description"]))
+		encoded, err := json.Marshal(identityCopy)
+		if err != nil {
+			return nil, nil, false
+		}
 		identities = append(identities, responsesNamespaceToolCandidate{
 			flat:  flat,
 			child: childCopy,
 			identity: responsesDiscoveredToolIdentity{
-				typ: "namespace", name: direct.name, namespace: namespace, encoded: direct.encoded,
+				typ: "namespace", name: direct.name, namespace: namespace, encoded: string(encoded),
 			},
 		})
 	}

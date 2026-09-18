@@ -762,10 +762,15 @@ const customToolInputSchema = `{"type":"object","properties":{"input":{"type":"s
 
 func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 	topLevel := make(map[string]bool)
+	topLevelTypes := make(map[string]string)
 	for _, tool := range tools {
 		if tool.Type == "x_search" {
 			topLevel["x_search"] = true
 		} else if (tool.Type == "function" || tool.Type == "custom") && tool.Name != "" {
+			if previous, exists := topLevelTypes[tool.Name]; exists && previous != tool.Type {
+				return nil, fmt.Errorf("custom tool %q conflicts with a function tool of the same name; this upstream cannot disambiguate them, rename one of the tools", tool.Name)
+			}
+			topLevelTypes[tool.Name] = tool.Type
 			topLevel[tool.Name] = true
 		}
 	}
@@ -782,7 +787,7 @@ func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 			}})
 		case "custom":
 			out = append(out, ChatTool{Type: "function", Function: &ChatFunction{
-				Name: tool.Name, Description: tool.Description, Parameters: json.RawMessage(customToolInputSchema),
+				Name: tool.Name, Description: loweredCustomToolDescription(tool.Description, tool.Format), Parameters: json.RawMessage(customToolInputSchema),
 			}})
 		case "tool_search":
 			if topLevel[toolSearchProxyName] {
@@ -839,7 +844,7 @@ func namespaceChildrenToChatTools(tool ResponsesTool, topLevel map[string]bool, 
 		}
 		flatOwner[flat] = entry
 		out = append(out, ChatTool{Type: "function", Function: &ChatFunction{
-			Name: flat, Description: child.Description, Parameters: child.Parameters, Strict: child.Strict,
+			Name: flat, Description: loweredNamespaceToolDescription(tool.Name, child.Name, tool.Description, child.Description), Parameters: child.Parameters, Strict: child.Strict,
 		}})
 	}
 	return out, nil

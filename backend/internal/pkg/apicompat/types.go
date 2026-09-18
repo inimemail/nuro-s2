@@ -322,6 +322,7 @@ type ResponsesTool struct {
 	Name                     string          `json:"name,omitempty"`
 	Description              string          `json:"description,omitempty"`
 	Parameters               json.RawMessage `json:"parameters,omitempty"`
+	Format                   json.RawMessage `json:"format,omitempty"`
 	Strict                   *bool           `json:"strict,omitempty"`
 	Tools                    []ResponsesTool `json:"tools,omitempty"`
 	Children                 []ResponsesTool `json:"children,omitempty"`

@@ -99,6 +99,11 @@ func AdaptResponsesClientTools(req map[string]any) (ResponsesClientToolMapping, 
 			copy := copyClientTool(tool)
 			copy["type"] = "function"
 			copy["parameters"] = json.RawMessage(customToolInputSchema)
+			format, err := json.Marshal(tool["format"])
+			if err != nil {
+				return ResponsesClientToolMapping{}, false, fmt.Errorf("encode custom tool %q format: %w", name, err)
+			}
+			copy["description"] = loweredCustomToolDescription(stringValue(tool["description"]), format)
 			delete(copy, "format")
 			adapter.CustomTools[name] = true
 			lowered = append(lowered, copy)
