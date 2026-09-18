@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -717,23 +718,92 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string)
 	if len(body) == 0 {
 		return body, false
 	}
-	if !gjson.GetBytes(body, "context_management").Exists() {
+	changed := false
+	if gjson.GetBytes(body, "context_management").Exists() && !anthropicBetaTokensContains(anthropicBetaHeader, anthropicBetaContextManagementToken) {
+		if b, err := sjson.DeleteBytes(body, "context_management"); err == nil {
+			body, changed = b, true
+		} else {
+			// 不应发生：gjson 刚验证过字段存在 + body 是合法 JSON。如果 sjson 仍报错，
+			// 调用方会拿到 (body, false)，但此前 computeFinalAnthropicBeta 已按“strip 后”
+			// 计算了 finalBeta——两侧会不一致。记录 warning 最小限度提醒运维。
+			logger.LegacyPrintf("service.gateway",
+				"[CtxMgmtSanitize] sjson.DeleteBytes failed unexpectedly: %v (body len=%d). "+
+					"body and final anthropic-beta header may be out of sync.", err, len(body))
+		}
+	}
+	if b, outputChanged := stripAnthropicMessageOutputConfigUnlessBeta(body, anthropicBetaHeader); outputChanged {
+		body, changed = b, true
+	}
+	return body, changed
+}
+
+func stripAnthropicMessageOutputConfigUnlessBeta(body []byte, header string) ([]byte, bool) {
+	if anthropicBetaTokensContains(header, claude.BetaMidConversationOutputConfig) || !bytes.Contains(body, []byte("output_config")) {
 		return body, false
 	}
-	if anthropicBetaTokensContains(anthropicBetaHeader, anthropicBetaContextManagementToken) {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
 		return body, false
 	}
-	if b, err := sjson.DeleteBytes(body, "context_management"); err == nil {
-		return b, true
-	} else {
-		// 不应发生：gjson 刚验证过字段存在 + body 是合法 JSON。如果 sjson 仍报错，
-		// 调用方会拿到 (body, false)，但此前 computeFinalAnthropicBeta 已按“strip 后”
-		// 计算了 finalBeta——两侧会不一致。记录 warning 最小限度提醒运维。
-		logger.LegacyPrintf("service.gateway",
-			"[CtxMgmtSanitize] sjson.DeleteBytes failed unexpectedly: %v (body len=%d). "+
-				"body and final anthropic-beta header may be out of sync.", err, len(body))
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal([]byte(messages.Raw), &rawMessages); err != nil {
+		return body, false
 	}
-	return body, false
+	changed := false
+	kept := make([]json.RawMessage, 0, len(rawMessages))
+	for _, msg := range rawMessages {
+		if !gjson.GetBytes(msg, "output_config").Exists() {
+			kept = append(kept, msg)
+			continue
+		}
+		changed = true
+		if gjson.GetBytes(msg, "role").String() == "system" && !anthropicMessageContentHasBody(gjson.GetBytes(msg, "content")) {
+			continue
+		}
+		cleaned, err := sjson.DeleteBytes(msg, "output_config")
+		if err != nil {
+			kept = append(kept, msg)
+		} else {
+			kept = append(kept, cleaned)
+		}
+	}
+	if !changed {
+		return body, false
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		return body, false
+	}
+	out, err := sjson.SetRawBytes(body, "messages", encoded)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+func anthropicMessageContentHasBody(content gjson.Result) bool {
+	if !content.Exists() || content.Type == gjson.Null {
+		return false
+	}
+	if content.Type == gjson.String {
+		return content.String() != ""
+	}
+	if !content.IsArray() {
+		return true
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal([]byte(content.Raw), &blocks); err != nil {
+		return true
+	}
+	for _, block := range blocks {
+		if block["type"] != "text" {
+			return true
+		}
+		if text, _ := block["text"].(string); text != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // anthropicBetaTokensContains 检测逗号分隔的 anthropic-beta header 是否含指定 token。

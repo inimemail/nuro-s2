@@ -229,7 +229,19 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		return true
 	}
 
+	var ownedAccountRelease func()
+	releaseAccount := func() {
+		if ownedAccountRelease != nil {
+			ownedAccountRelease()
+			ownedAccountRelease = nil
+		}
+	}
+	defer releaseAccount()
 	for {
+		releaseAccount()
+		if failoverClientGone(c) {
+			return
+		}
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		var (
 			selection             *service.AccountSelectionResult
@@ -268,6 +280,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					modelRoutingLockedPriority,
 				)
 			}
+		}
+		if selection != nil && selection.Acquired {
+			selection.ReleaseFunc = wrapReleaseOnDone(requestCtx, selection.ReleaseFunc)
+			ownedAccountRelease = selection.ReleaseFunc
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
 			if failoverClientGone(c) {
@@ -336,7 +352,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		reqLog.Debug("grok_media.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
+		admissionSessionHash := sessionHash
+		if exactVideoStatusRoute {
+			// Task ownership is already resolved. Admission must not recreate a
+			// missing binding or shorten its TTL through the text sticky path.
+			admissionSessionHash = ""
+		}
+		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, admissionSessionHash, selection, false, &streamStarted, reqLog)
 		if !slotResult.Acquired {
 			if slotResult.CapacityMiss {
 				if sameAccountRetryAccountID > 0 && sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
@@ -360,7 +382,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			}
 			return
 		}
-		accountReleaseFunc := slotResult.ReleaseFunc
+		ownedAccountRelease = slotResult.ReleaseFunc
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
@@ -371,11 +393,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		markSameAccountAttemptStart(sameAccountRetryStartedAt, account, forwardStart)
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
-			defer func() {
-				if accountReleaseFunc != nil {
-					accountReleaseFunc()
-				}
-			}()
+			defer releaseAccount()
 			return h.gatewayService.ForwardGrokMediaWithVideoBinding(
 				requestCtx, c, account, endpoint, requestID, body, contentType,
 				service.GrokMediaVideoBinding{GroupID: apiKey.GroupID, UserID: subject.UserID, APIKeyID: apiKey.ID},

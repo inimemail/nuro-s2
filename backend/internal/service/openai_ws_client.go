@@ -40,6 +40,10 @@ type openAIWSClientConn interface {
 	Close() error
 }
 
+// coder/websocket consumes control frames only while Read is running.
+type openAIWSReaderLoopCapable interface{ RequiresReaderLoop() bool }
+type openAIWSForceCloser interface{ CloseNow() error }
+
 // openAIWSClientDialer 抽象 WS 建连器。
 type openAIWSClientDialer interface {
 	Dial(ctx context.Context, wsURL string, headers http.Header, proxyURL string) (openAIWSClientConn, int, http.Header, error)
@@ -336,4 +340,13 @@ func (c *coderOpenAIWSClientConn) Close() error {
 	_ = c.conn.Close(coderws.StatusNormalClosure, "")
 	_ = c.conn.CloseNow()
 	return nil
+}
+
+func (*coderOpenAIWSClientConn) RequiresReaderLoop() bool { return true }
+
+func (c *coderOpenAIWSClientConn) CloseNow() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.CloseNow()
 }

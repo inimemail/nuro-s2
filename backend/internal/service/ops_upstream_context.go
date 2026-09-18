@@ -61,6 +61,8 @@ type OpsStreamError struct {
 	IntendedStatus int
 	ErrType        string
 	Message        string
+	// Nil preserves the historical streaming default for existing callers.
+	Stream *bool
 }
 
 func MarkResponseCommitted(c *gin.Context) {

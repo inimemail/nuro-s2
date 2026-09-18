@@ -87,6 +87,41 @@
           </p>
         </div>
 
+        <div>
+          <label for="confirmPassword" class="input-label">{{ t('auth.confirmPassword') }}</label>
+          <div class="relative">
+            <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
+              <Icon name="lock" size="md" class="text-gray-400 dark:text-dark-500" />
+            </div>
+            <input
+              id="confirmPassword"
+              v-model="confirmPassword"
+              :type="showConfirmPassword ? 'text' : 'password'"
+              autocomplete="new-password"
+              required
+              :disabled="registrationActionDisabled"
+              :aria-invalid="!!errors.confirmPassword"
+              aria-describedby="confirm-password-feedback"
+              class="input pl-11 pr-11"
+              :class="{ 'input-error': errors.confirmPassword }"
+              :placeholder="t('auth.confirmPasswordRequired')"
+            />
+            <button
+              type="button"
+              :disabled="registrationActionDisabled"
+              :aria-label="t('auth.confirmPassword')"
+              :aria-pressed="showConfirmPassword"
+              class="absolute inset-y-0 right-0 flex items-center rounded-r-lg px-3.5 text-gray-400 transition-colors hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:hover:text-dark-300"
+              @click="showConfirmPassword = !showConfirmPassword"
+            >
+              <Icon :name="showConfirmPassword ? 'eyeOff' : 'eye'" size="md" />
+            </button>
+          </div>
+          <p v-if="errors.confirmPassword" id="confirm-password-feedback" role="alert" class="mt-1.5 text-xs text-red-600 dark:text-red-400">
+            {{ errors.confirmPassword }}
+          </p>
+        </div>
+
         <!-- Invitation Code Input (Required when enabled) -->
         <div v-if="invitationCodeEnabled">
           <label for="invitation_code" class="input-label">
@@ -276,6 +311,7 @@
         <EmailOAuthButtons
           :disabled="registrationActionDisabled"
           :aff-code="formData.aff_code"
+          :promo-code="promoCodeEnabled ? formData.promo_code : ''"
           :github-enabled="githubOAuthEnabled"
           :google-enabled="googleOAuthEnabled"
           :show-divider="false"
@@ -285,6 +321,7 @@
           v-if="linuxdoOAuthEnabled"
           :disabled="registrationActionDisabled"
           :aff-code="formData.aff_code"
+          :promo-code="promoCodeEnabled ? formData.promo_code : ''"
           :show-divider="false"
         />
         <WechatOAuthSection
@@ -366,6 +403,8 @@ const isLoading = ref<boolean>(false)
 const settingsLoaded = ref<boolean>(false)
 const errorMessage = ref<string>('')
 const showPassword = ref<boolean>(false)
+const confirmPassword = ref('')
+const showConfirmPassword = ref(false)
 
 // Public settings
 const registrationEnabled = ref<boolean>(true)
@@ -425,6 +464,7 @@ const formData = reactive({
 const errors = reactive({
   email: '',
   password: '',
+  confirmPassword: '',
   turnstile: '',
   invitation_code: ''
 })
@@ -432,6 +472,7 @@ const errors = reactive({
 const validationToastMessage = computed(() =>
   errors.email ||
   errors.password ||
+  errors.confirmPassword ||
   (invitationValidation.invalid ? invitationValidation.message : '') ||
   errors.invitation_code ||
   (promoValidation.invalid ? promoValidation.message : '') ||
@@ -774,6 +815,7 @@ function validateForm(): boolean {
   // Reset errors
   errors.email = ''
   errors.password = ''
+  errors.confirmPassword = ''
   errors.turnstile = ''
   errors.invitation_code = ''
 
@@ -807,6 +849,14 @@ function validateForm(): boolean {
     isValid = false
   } else if (formData.password.length < 6) {
     errors.password = t('auth.passwordMinLength')
+    isValid = false
+  }
+
+  if (!confirmPassword.value) {
+    errors.confirmPassword = t('auth.confirmPasswordRequired')
+    isValid = false
+  } else if (formData.password !== confirmPassword.value) {
+    errors.confirmPassword = t('auth.passwordsDoNotMatch')
     isValid = false
   }
 

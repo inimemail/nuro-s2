@@ -83,7 +83,7 @@ func (f *ChannelMonitorQuotaFetcher) fetch(ctx context.Context, id int64, now ti
 		return monitorQuotaError("usage", err, now)
 	}
 	if account.IsCNProvider() {
-		if account.IsCodingPlan() {
+		if account.IsCodingPlan() || account.IsOpenCodeGoPlan() {
 			if f.cnQuota == nil {
 				return monitorQuotaError("cn_quota", fmt.Errorf("quota service unavailable"), now)
 			}

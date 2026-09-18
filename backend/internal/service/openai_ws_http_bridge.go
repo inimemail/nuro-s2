@@ -125,8 +125,9 @@ func (c *openAIWSToolCallReplayCollector) addItem(item gjson.Result) {
 func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	_ = message
 	event := map[string]any{
-		"type":   "response.failed",
-		"status": statusCode,
+		"type":            "response.failed",
+		"sequence_number": 0,
+		"status":          statusCode,
 		"response": map[string]any{
 			"status": "failed",
 			"output": []any{},
@@ -138,7 +139,7 @@ func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	}
 	body, err := json.Marshal(event)
 	if err != nil {
-		return []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
+		return []byte(`{"type":"response.failed","sequence_number":0,"response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
 	}
 	return body
 }

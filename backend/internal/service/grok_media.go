@@ -317,7 +317,15 @@ func (s *OpenAIGatewayService) BindGrokMediaVideoRequestAccount(ctx context.Cont
 	if sessionHash == "" || accountID <= 0 {
 		return ErrGrokMediaVideoBindingUnavailable
 	}
-	return s.BindStickySession(ctx, groupID, sessionHash, accountID)
+	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, s.grokMediaVideoBindingTTL())
+}
+
+func (s *OpenAIGatewayService) grokMediaVideoBindingTTL() time.Duration {
+	ttl := s.openAIWSSessionStickyTTL()
+	if ttl < 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return ttl
 }
 
 // SelectBoundGrokMediaVideoRequestAccount resolves an asynchronous video task
@@ -355,7 +363,7 @@ func (s *OpenAIGatewayService) SelectBoundGrokMediaVideoRequestAccount(ctx conte
 		return nil, true, err
 	}
 	if acquired != nil && acquired.Acquired {
-		_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIStickySessionTTLForHash(sessionHash, s.openAIWSSessionStickyTTL()))
+		_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.grokMediaVideoBindingTTL())
 		selection, selectionErr := s.newAcquiredSelectionResult(ctx, account, acquired.ReleaseFunc)
 		return selection, true, selectionErr
 	}

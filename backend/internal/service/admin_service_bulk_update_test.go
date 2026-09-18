@@ -473,6 +473,30 @@ func TestAdminServiceBulkUpdateAccounts_NormalizesCNProtocolPerPlatform(t *testi
 	require.Equal(t, "updated-key", anthropic.Updates.Credentials["api_key"])
 }
 
+func TestAdminServiceBulkUpdateAccounts_PreservesOpenCodeModeEndpoints(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{
+		{ID: 1, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Credentials: map[string]any{"account_mode": AccountModeGo}},
+		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Credentials: map[string]any{"account_mode": AccountModeZen}},
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{cnAPIProtocolExtraKey: APIProtocolAdaptive, cnAPIBaseURLsExtraKey: map[string]any{APIProtocolChatCompletions: "https://custom.example/v1"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Len(t, repo.bulkUpdateCalls, 2)
+	for i, call := range repo.bulkUpdateCalls {
+		require.Equal(t, []int64{int64(i + 1)}, call.IDs)
+		urls := cnStringMap(call.Updates.Extra[cnAPIBaseURLsExtraKey])
+		if i == 0 {
+			require.Equal(t, DefaultOpenCodeGoAnthropicBaseURL, urls[APIProtocolAnthropic])
+		} else {
+			require.Equal(t, DefaultOpenCodeZenAnthropicBaseURL, urls[APIProtocolAnthropic])
+		}
+	}
+}
+
 func TestAdminServiceBulkUpdateAccounts_CleansLegacyCredentialsPerAccount(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{
 		{ID: 1, Platform: PlatformKimi, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_protocol": APIProtocolAnthropic}},

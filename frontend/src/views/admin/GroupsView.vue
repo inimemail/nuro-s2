@@ -4049,6 +4049,8 @@ const platformOptions = computed(() => [
   { value: "kimi", label: "Kimi" },
   { value: "zhipu", label: "Zhipu" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "minimax", label: "MiniMax" },
+  { value: "opencode_go", label: "OpenCode" },
   { value: "composite", label: "Composite" },
 ]);
 
@@ -4062,6 +4064,8 @@ const platformFilterOptions = computed(() => [
   { value: "kimi", label: "Kimi" },
   { value: "zhipu", label: "Zhipu" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "minimax", label: "MiniMax" },
+  { value: "opencode_go", label: "OpenCode" },
   { value: "composite", label: "Composite" },
 ]);
 

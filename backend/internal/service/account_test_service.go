@@ -204,7 +204,14 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 
 	// Route to platform-specific test method
 	if account.IsCNProvider() {
-		switch account.GetAPIProtocol() {
+		protocol := account.GetAPIProtocol()
+		if account.IsOpenCodeGo() {
+			if strings.TrimSpace(modelID) == "" {
+				modelID = "glm-5.3"
+			}
+			protocol = account.ResolveOpenCodeGoUpstreamProtocol(account.GetMappedModel(modelID))
+		}
+		switch protocol {
 		case APIProtocolAnthropic, APIProtocolAdaptive:
 			clone := *account
 			clone.Credentials = cloneAccountCredentials(account.Credentials)

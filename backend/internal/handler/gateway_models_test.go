@@ -52,6 +52,19 @@ func newGatewayModelsHandlerForTest(repo service.AccountRepository) *GatewayHand
 	}
 }
 
+func TestGatewayModelRespectsCustomCatalog(t *testing.T) {
+	groupID := int64(23)
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{groupID: {{ID:1, Platform:service.PlatformOpenAI, Credentials:map[string]any{"model_mapping":map[string]any{"gpt-*":"gpt-*"}}}}}})
+	for _, model := range []string{"gpt-visible", "gpt-hidden"} {
+		rec:=httptest.NewRecorder();c,_:=gin.CreateTestContext(rec)
+		c.Request=httptest.NewRequest(http.MethodGet,"/v1/models/"+model,nil)
+		c.Params=gin.Params{{Key:"model",Value:model}}
+		c.Set(string(middleware2.ContextKeyAPIKey),&service.APIKey{Group:&service.Group{ID:groupID,Platform:service.PlatformOpenAI,ModelsListConfig:service.GroupModelsListConfig{Enabled:true,Models:[]string{"gpt-visible"}}}})
+		h.Model(c)
+		if model=="gpt-visible" {require.Equal(t,http.StatusOK,rec.Code)} else {require.Equal(t,http.StatusNotFound,rec.Code)}
+	}
+}
+
 func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

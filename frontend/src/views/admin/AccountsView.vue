@@ -456,7 +456,7 @@
     <AccountTestModal v-if="showTest" :show="showTest" :account="testingAcc" @close="closeTestModal" @account-updated="handleAccountUpdated" />
     <AccountStatsModal v-if="showStats" :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel v-if="showSchedulePanel" :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @revert-proxy-fallback="handleRevertProxyFallback" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" :duplicating="menu.acc != null && duplicatingAccountIDs.has(menu.acc.id)" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @revert-proxy-fallback="handleRevertProxyFallback" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal v-if="showSync" :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal v-if="showImportData" :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -2336,10 +2336,27 @@ const handleSchedule = async (a: Account) => {
 }
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
 const handleReAuth = (a: Account) => { warmAccountRowActionChunks(); reAuthAcc.value = a; showReAuth.value = true }
+const duplicatingAccountIDs = ref(new Set<number>())
+const handleDuplicateAccount = async (a: Account) => {
+  if (duplicatingAccountIDs.value.has(a.id)) return
+  duplicatingAccountIDs.value.add(a.id)
+  try {
+    const copy = await adminAPI.accounts.duplicate(a.id)
+    appStore.showSuccess(t('admin.accounts.duplicateSuccess', { name: copy.name }))
+    reload()
+  } catch (error: any) {
+    appStore.showError(error?.response?.data?.message || error?.message || t('admin.accounts.duplicateFailed'))
+  } finally {
+    duplicatingAccountIDs.value.delete(a.id)
+  }
+}
 const handleRefresh = async (a: Account) => {
   try {
-    const updated = await adminAPI.accounts.refreshCredentials(a.id)
-    patchAccountInList(updated)
+    const result = await adminAPI.accounts.refreshCredentials(a.id)
+    patchAccountInList(result.account)
+    if (result.warning === 'missing_project_id_temporary') {
+      appStore.showWarning(t('admin.accounts.refreshProjectPending'))
+    }
     enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to refresh credentials:', error)

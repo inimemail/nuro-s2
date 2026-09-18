@@ -28,6 +28,7 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	account *Account,
 	body []byte,
 ) (*ForwardResult, error) {
+	resetGeminiResponseSignal(c)
 	startTime := time.Now()
 
 	var ccReq apicompat.ChatCompletionsRequest
@@ -260,8 +261,17 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		failedOutcome = streamRes.failedOutcome
 		neutralOutcome = streamRes.neutralOutcome
 	} else if useUpstreamStream {
-		collected, usageObj, collectedNeutral, collectErr := collectGeminiSSE(resp.Body, account.Type == AccountTypeOAuth)
+		collected, usageObj, collectedNeutral, collectErr := collectGeminiSSE(resp.Body, account.Type == AccountTypeOAuth, func(payload []byte) { s.observeGeminiCollectedPayload(c, payload) })
 		usage = usageObj
+		if collected != nil {
+			if collectedBytes, marshalErr := json.Marshal(collected); marshalErr == nil {
+				if sig, ok := detectGeminiResponseSignalInBody(collectedBytes); ok {
+					s.markGeminiResponseSignal(c, account, sig, false, requestID)
+				} else if isGeminiEmptyResponseBody(collectedBytes) {
+					s.markGeminiEmptyResponse(c, account, false, requestID)
+				}
+			}
+		}
 		if collectErr != nil || collectedNeutral {
 			_ = s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
 			neutralOutcome = collectedNeutral
@@ -473,8 +483,14 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 		}
 		respBody = unwrappedBody
 	}
+	s.observeGeminiPayload(c, respBody, false)
 	if !geminiNativeResponseIsValid(respBody) {
 		return nil, false, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
+	}
+	if sig, ok := detectGeminiResponseSignalInBody(respBody); ok {
+		s.markGeminiResponseSignal(c, nil, sig, false, "")
+	} else if isGeminiEmptyResponseBody(respBody) {
+		s.markGeminiEmptyResponse(c, nil, false, "")
 	}
 
 	var geminiResp map[string]any
@@ -558,6 +574,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	sawPayload := false
 	sawTerminal := false
 	neutralOutcome := false
+	var bestSignal geminiResponseSignal
 	streamResult := func() *geminiStreamResult {
 		return &geminiStreamResult{
 			usage:          &usage,
@@ -675,11 +692,15 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 						}
 						rawBytes = innerBytes
 					}
+					s.observeGeminiPayload(c, rawBytes, true)
 					if !geminiNativeResponseIsValid(rawBytes) {
 						if !writeSafeStreamError() {
 							return disconnectedResult(), nil
 						}
 						return failedResult(), nil
+					}
+					if sig, ok := detectGeminiResponseSignal(rawBytes); ok && sig.Kind > bestSignal.Kind {
+						bestSignal = sig
 					}
 
 					var geminiResp map[string]any
@@ -830,6 +851,11 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 
 	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 		return disconnectedResult(), nil
+	}
+	if bestSignal.Kind != geminiSignalNone {
+		s.markGeminiResponseSignal(c, nil, bestSignal, true, "")
+	} else if !sawPayload {
+		s.markGeminiEmptyResponse(c, nil, true, "")
 	}
 	if !sawPayload || !sawTerminal {
 		if !writeSafeStreamError() {

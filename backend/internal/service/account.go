@@ -2334,7 +2334,7 @@ func (a *Account) IsOpenAICompatible() bool {
 		return false
 	}
 	switch a.Platform {
-	case PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
+	case PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo:
 		return true
 	default:
 		return false
@@ -2394,6 +2394,15 @@ func (a *Account) GetOpenAIBaseURL() string {
 			return a.GetCNProtocolBaseURL(APIProtocolResponses)
 		}
 		return a.GetCNProtocolBaseURL(APIProtocolChatCompletions)
+	}
+	if a.IsOpenCodeGo() {
+		if baseURL := a.GetCredential("base_url"); baseURL != "" {
+			return baseURL
+		}
+		if a.IsOpenCodeGoPlan() {
+			return DefaultOpenCodeGoBaseURL
+		}
+		return DefaultOpenCodeZenBaseURL
 	}
 	if a.Type == AccountTypeAPIKey || a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepSeek || a.Platform == PlatformMiniMax {
 		baseURL := a.GetCredential("base_url")

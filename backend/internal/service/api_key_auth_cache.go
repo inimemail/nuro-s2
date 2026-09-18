@@ -112,18 +112,18 @@ type APIKeyAuthGroupSnapshot struct {
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 	AllowLive             bool `json:"allow_live"`
 	// nil inherits the global Edge protection switch; false disables it for this group.
-	EdgeProtectionEnabled              *bool                             `json:"edge_protection_enabled,omitempty"`
-	RequireOAuthOnly                   bool                              `json:"require_oauth_only"`
-	RequirePrivacySet                  bool                              `json:"require_privacy_set"`
-	DefaultMappedModel                 string                            `json:"default_mapped_model,omitempty"`
-	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
-	ModelsListConfig                   GroupModelsListConfig             `json:"models_list_config,omitempty"`
-	CodexModelsManifestConfig          GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config,omitempty"`
-	StrictModelPriorityOnModelMismatch bool                              `json:"strict_model_priority_on_model_mismatch"`
-	AccountSchedulingStrategy          string                            `json:"account_scheduling_strategy"`
-	AdaptiveTTFTSwitchEnabled          bool                              `json:"adaptive_ttft_switch_enabled"`
-	AdaptiveTTFTSwitchThresholdSeconds int                               `json:"adaptive_ttft_switch_threshold_seconds"`
-	AdaptiveHealthSampleFreshnessMinutes int                              `json:"adaptive_health_sample_freshness_minutes"`
+	EdgeProtectionEnabled                *bool                             `json:"edge_protection_enabled,omitempty"`
+	RequireOAuthOnly                     bool                              `json:"require_oauth_only"`
+	RequirePrivacySet                    bool                              `json:"require_privacy_set"`
+	DefaultMappedModel                   string                            `json:"default_mapped_model,omitempty"`
+	MessagesDispatchModelConfig          OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
+	ModelsListConfig                     GroupModelsListConfig             `json:"models_list_config,omitempty"`
+	CodexModelsManifestConfig            GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config,omitempty"`
+	StrictModelPriorityOnModelMismatch   bool                              `json:"strict_model_priority_on_model_mismatch"`
+	AccountSchedulingStrategy            string                            `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled            bool                              `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds   int                               `json:"adaptive_ttft_switch_threshold_seconds"`
+	AdaptiveHealthSampleFreshnessMinutes int                               `json:"adaptive_health_sample_freshness_minutes"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 级联判断。
 	RPMLimit                    int                      `json:"rpm_limit"`

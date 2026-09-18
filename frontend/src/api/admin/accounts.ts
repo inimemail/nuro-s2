@@ -27,7 +27,7 @@ import type {
   OllamaCloudUsageSettings
 } from '@/types'
 
-export interface CNProviderQuotaTier { window: '5h' | 'weekly'; used_percent: number; reset_at?: string }
+export interface CNProviderQuotaTier { window: '5h' | 'weekly' | 'monthly'; used_percent: number; reset_at?: string }
 export interface CNProviderQuotaResult { provider: string; success: boolean; tiers?: CNProviderQuotaTier[]; error?: string; fetched_at?: number }
 export interface CNProviderBalanceEntry { currency: string; balance: number }
 export interface CNProviderBalanceResult { provider: string; success: boolean; balance: number; currency?: string; balances?: CNProviderBalanceEntry[]; available?: boolean; error?: string; fetched_at?: number }
@@ -54,8 +54,8 @@ export async function deleteOllamaCloudUsageSession(id: number): Promise<OllamaC
   const { data } = await apiClient.delete<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/session`)
   return data
 }
-export async function setOllamaCloudUsageAutoRefresh(id: number, enabled: boolean): Promise<OllamaCloudUsageState> {
-  const { data } = await apiClient.patch<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/auto-refresh`, { enabled })
+export async function setOllamaCloudUsageAutoRefresh(id: number, enabled: boolean, rateLimitRecovery?: boolean): Promise<OllamaCloudUsageState> {
+  const { data } = await apiClient.patch<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/auto-refresh`, { enabled, ...(rateLimitRecovery === undefined ? {} : { rate_limit_recovery_enabled: rateLimitRecovery }) })
   return data
 }
 export async function refreshOllamaCloudUsage(id: number): Promise<OllamaCloudUsageState> {
@@ -186,6 +186,28 @@ export async function create(accountData: CreateAccountRequest): Promise<Account
   return data
 }
 
+const duplicateOperationKeys = new Map<number, string>()
+
+// Keep an uncertain operation's identity across retries and page reloads.
+// Credentials stay on the server and are never resubmitted by the browser.
+export async function duplicate(id: number): Promise<Account> {
+  const storageKey = `sub2api:admin:account-duplicate:${id}`
+  let key = duplicateOperationKeys.get(id)
+  try { key ??= globalThis.sessionStorage?.getItem(storageKey) ?? undefined } catch { /* storage unavailable */ }
+  if (!key) {
+    const nonce = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    key = `account-duplicate-${id}-${nonce}`
+  }
+  duplicateOperationKeys.set(id, key)
+  try { globalThis.sessionStorage?.setItem(storageKey, key) } catch { /* in-memory retry remains available */ }
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/duplicate`, undefined, {
+    headers: { 'Idempotency-Key': key }
+  })
+  duplicateOperationKeys.delete(id)
+  try { globalThis.sessionStorage?.removeItem(storageKey) } catch { /* storage unavailable */ }
+  return data
+}
+
 /**
  * Update account
  * @param id - Account ID
@@ -250,9 +272,15 @@ export async function testAccount(id: number): Promise<{
  * @param id - Account ID
  * @returns Updated account
  */
-export async function refreshCredentials(id: number): Promise<Account> {
-  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/refresh`)
-  return data
+export interface RefreshCredentialsResult {
+  account: Account
+  warning?: 'missing_project_id_temporary'
+  message?: string
+}
+
+export async function refreshCredentials(id: number): Promise<RefreshCredentialsResult> {
+  const { data } = await apiClient.post<Account | RefreshCredentialsResult>(`/admin/accounts/${id}/refresh`)
+  return 'account' in data ? data : { account: data }
 }
 
 /**
@@ -947,6 +975,7 @@ export const accountsAPI = {
   listWithEtag,
   getById,
   create,
+  duplicate,
   update,
   checkMixedChannelRisk,
   delete: deleteAccount,

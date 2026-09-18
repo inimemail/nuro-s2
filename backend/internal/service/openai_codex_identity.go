@@ -137,7 +137,14 @@ func publishCodexIdentityEnforcement(enforce bool) {
 // Unlike inference requests, credential requests do not send a version header.
 func CodexCanonicalAuthIdentity() (userAgent, originator string) {
 	snapshot := currentCodexIdentityRuntime()
-	return snapshot.canonicalUserAgent, openai.DefaultOriginator
+	return safeCanonicalCodexUserAgent(snapshot), openai.DefaultOriginator
+}
+
+func safeCanonicalCodexUserAgent(snapshot *codexIdentityRuntimeSnapshot) string {
+	if _, ua, ok := openai.PairCodexClientIdentity(snapshot.canonicalUserAgent); ok {
+		return ua
+	}
+	return codexCLIUserAgent
 }
 
 // stripOpenAILegacyResponsesBeta removes only the retired OAuth Responses
@@ -183,7 +190,7 @@ func ensureCodexIdentityHeaders(h http.Header) {
 	}
 	snapshot := currentCodexIdentityRuntime()
 	if strings.TrimSpace(h.Get("user-agent")) == "" {
-		h.Set("user-agent", snapshot.canonicalUserAgent)
+		h.Set("user-agent", safeCanonicalCodexUserAgent(snapshot))
 	}
 	if strings.TrimSpace(h.Get("originator")) == "" {
 		h.Set("originator", "codex_cli_rs")
@@ -213,14 +220,14 @@ func enforceCodexIdentityHeaders(h http.Header) {
 	}
 	snapshot := currentCodexIdentityRuntime()
 	if snapshot.enforceIdentity {
-		h.Set("user-agent", snapshot.canonicalUserAgent)
+		h.Set("user-agent", safeCanonicalCodexUserAgent(snapshot))
 		h.Set("originator", "codex_cli_rs")
 		h.Set("version", snapshot.version)
 		return
 	}
 	originator, pairedUA, ok := openai.PairCodexClientIdentity(h.Get("user-agent"))
 	if !ok {
-		originator, pairedUA = "codex_cli_rs", snapshot.canonicalUserAgent
+		originator, pairedUA = "codex_cli_rs", safeCanonicalCodexUserAgent(snapshot)
 	}
 	h.Set("user-agent", pairedUA)
 	h.Set("originator", originator)

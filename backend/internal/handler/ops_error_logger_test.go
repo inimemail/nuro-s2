@@ -179,6 +179,34 @@ func TestOpsErrorLoggerMiddleware_RecordsStreamErrorOnSolidified200(t *testing.T
 	}
 }
 
+func TestOpsErrorLoggerMiddlewarePreservesNonStreamingInBandError(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	opsErrorLogOnce.Do(func() {})
+	opsErrorLogMu.Lock()
+	opsErrorLogQueue = make(chan opsErrorLogJob, 1)
+	opsErrorLogMu.Unlock()
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	r := gin.New()
+	r.Use(OpsErrorLoggerMiddleware(ops))
+	r.GET("/v1/chat/completions", func(c *gin.Context) {
+		setOpsRequestContext(c, "gemini-test", false)
+		setOpsSelectedAccount(c, 123, service.PlatformGemini)
+		stream := false
+		c.Set(service.OpsStreamErrorKey, service.OpsStreamError{IntendedStatus: 503, ErrType: "upstream_error", Message: "overloaded", Stream: &stream})
+		c.Status(http.StatusOK)
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	select {
+	case job := <-opsErrorLogQueue:
+		require.False(t, job.entry.Stream)
+		require.Equal(t, "overloaded", job.entry.ErrorMessage)
+	case <-time.After(time.Second):
+		t.Fatal("expected in-band error log")
+	}
+}
+
 func TestIsKnownOpsErrorType(t *testing.T) {
 	known := []string{
 		"invalid_request_error",

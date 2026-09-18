@@ -131,7 +131,7 @@ async function requestTokenPair(
     return payload.data
   } catch (error) {
     const responseStatus = (error as { response?: { status?: unknown } }).response?.status
-    const isTokenRejection = typeof responseStatus === 'number' && responseStatus >= 400 && responseStatus < 500
+    const isTokenRejection = responseStatus === 401 || responseStatus === 403
     const peerResult = await waitForPeerRefresh(
       snapshot,
       failedAccessToken,

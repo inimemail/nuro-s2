@@ -119,6 +119,7 @@ type openAIAccountSchedulerMetrics struct {
 	selectTotal            atomic.Int64
 	stickyPreviousHitTotal atomic.Int64
 	stickySessionHitTotal  atomic.Int64
+	stickyHitTotal         atomic.Int64
 	loadBalanceSelectTotal atomic.Int64
 	accountSwitchTotal     atomic.Int64
 	latencyMsTotal         atomic.Int64
@@ -289,6 +290,9 @@ func (m *openAIAccountSchedulerMetrics) recordSelect(decision OpenAIAccountSched
 	}
 	if decision.StickySessionHit {
 		m.stickySessionHitTotal.Add(1)
+	}
+	if decision.StickyPreviousHit || decision.StickySessionHit {
+		m.stickyHitTotal.Add(1)
 	}
 	if decision.Layer == openAIAccountScheduleLayerLoadBalance {
 		m.loadBalanceSelectTotal.Add(1)
@@ -658,7 +662,7 @@ func newDefaultOpenAIAccountScheduler(service *OpenAIGatewayService, stats *open
 func (s *defaultOpenAIAccountScheduler) Select(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
-) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+) (selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, err error) {
 	if IsOpenAINativeCompactionV2Context(ctx) {
 		req.RequireCompactCapability = true
 	}
@@ -681,7 +685,6 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			req.AdaptiveHealthFreshnessMinutes = group.AdaptiveHealthSampleFreshnessMinutes
 		}
 	}
-	decision := OpenAIAccountScheduleDecision{}
 	start := time.Now()
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
@@ -2714,6 +2717,7 @@ func (s *defaultOpenAIAccountScheduler) SnapshotMetrics() OpenAIAccountScheduler
 	selectTotal := s.metrics.selectTotal.Load()
 	prevHit := s.metrics.stickyPreviousHitTotal.Load()
 	sessionHit := s.metrics.stickySessionHitTotal.Load()
+	stickyHit := s.metrics.stickyHitTotal.Load()
 	switchTotal := s.metrics.accountSwitchTotal.Load()
 	latencyTotal := s.metrics.latencyMsTotal.Load()
 	loadSkewTotal := s.metrics.loadSkewMilliTotal.Load()
@@ -2735,7 +2739,7 @@ func (s *defaultOpenAIAccountScheduler) SnapshotMetrics() OpenAIAccountScheduler
 	snapshot.ExclusionsByReason = s.metrics.exclusions.snapshot()
 	if selectTotal > 0 {
 		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
-		snapshot.StickyHitRatio = float64(prevHit+sessionHit) / float64(selectTotal)
+		snapshot.StickyHitRatio = float64(stickyHit) / float64(selectTotal)
 		snapshot.AccountSwitchRate = float64(switchTotal) / float64(selectTotal)
 		snapshot.LoadSkewAvg = float64(loadSkewTotal) / 1000 / float64(selectTotal)
 	}
@@ -3432,20 +3436,75 @@ func openAIQuotaHeadroomFactor(account *Account, now time.Time) float64 {
 	if account == nil || len(account.Extra) == 0 || openAIQuotaHeadroomSnapshotStale(account.Extra, now) {
 		return openAIQuotaHeadroomNeutralFactor
 	}
-	primaryUsedPercent, ok := resolveAccountExtraNumber(account.Extra, "codex_primary_used_percent", "codex_7d_used_percent")
-	if !ok || openAIQuotaWindowResetAny(account.Extra, now, "primary", "7d") {
+	window5h, window7d := openAICanonicalQuotaWindows(account.Extra, now)
+	if !window7d.hasUsed || window7d.reset {
 		return openAIQuotaHeadroomNeutralFactor
 	}
 
-	factor := 1 - clamp01(primaryUsedPercent/100)
-	if secondaryUsedPercent, ok := resolveAccountExtraNumber(account.Extra, "codex_secondary_used_percent", "codex_5h_used_percent"); ok &&
-		!openAIQuotaWindowResetAny(account.Extra, now, "secondary", "5h") {
-		secondaryRemaining := 1 - clamp01(secondaryUsedPercent/100)
-		if secondaryRemaining < openAIQuotaHeadroomSecondaryLowRemain {
+	factor := 1 - clamp01(window7d.usedPercent/100)
+	if window5h.hasUsed && !window5h.reset {
+		remaining := 1 - clamp01(window5h.usedPercent/100)
+		if remaining < openAIQuotaHeadroomSecondaryLowRemain {
 			factor *= openAIQuotaHeadroomNeutralFactor
 		}
 	}
 	return factor
+}
+
+type openAICanonicalQuotaWindow struct {
+	usedPercent float64
+	hasUsed     bool
+	reset       bool
+}
+
+// Canonical 5h/7d fields take precedence. For legacy primary/secondary data,
+// use the provider-advertised window lengths to normalize the labels instead of
+// assuming primary is always the long window.
+func openAICanonicalQuotaWindows(extra map[string]any, now time.Time) (window5h, window7d openAICanonicalQuotaWindow) {
+	if used, ok := resolveAccountExtraNumber(extra, "codex_5h_used_percent"); ok {
+		window5h = openAICanonicalQuotaWindow{usedPercent: used, hasUsed: true, reset: openAIQuotaWindowReset(extra, "5h", now)}
+	}
+	if used, ok := resolveAccountExtraNumber(extra, "codex_7d_used_percent"); ok {
+		window7d = openAICanonicalQuotaWindow{usedPercent: used, hasUsed: true, reset: openAIQuotaWindowReset(extra, "7d", now)}
+	}
+	if window5h.hasUsed && window7d.hasUsed {
+		return window5h, window7d
+	}
+
+	snapshot := &OpenAICodexUsageSnapshot{}
+	if used, ok := resolveAccountExtraNumber(extra, "codex_primary_used_percent"); ok {
+		snapshot.PrimaryUsedPercent = &used
+	}
+	if used, ok := resolveAccountExtraNumber(extra, "codex_secondary_used_percent"); ok {
+		snapshot.SecondaryUsedPercent = &used
+	}
+	if minutes := parseExtraInt(extra["codex_primary_window_minutes"]); minutes > 0 {
+		snapshot.PrimaryWindowMinutes = &minutes
+	}
+	if minutes := parseExtraInt(extra["codex_secondary_window_minutes"]); minutes > 0 {
+		snapshot.SecondaryWindowMinutes = &minutes
+	}
+	normalized := snapshot.Normalize()
+	if normalized == nil {
+		return window5h, window7d
+	}
+	fromRaw := func(used *float64) openAICanonicalQuotaWindow {
+		if used == nil {
+			return openAICanonicalQuotaWindow{}
+		}
+		window := "secondary"
+		if used == snapshot.PrimaryUsedPercent {
+			window = "primary"
+		}
+		return openAICanonicalQuotaWindow{usedPercent: *used, hasUsed: true, reset: openAIQuotaWindowReset(extra, window, now)}
+	}
+	if !window5h.hasUsed {
+		window5h = fromRaw(normalized.Used5hPercent)
+	}
+	if !window7d.hasUsed {
+		window7d = fromRaw(normalized.Used7dPercent)
+	}
+	return window5h, window7d
 }
 
 func openAIQuotaHeadroomSnapshotStale(extra map[string]any, now time.Time) bool {

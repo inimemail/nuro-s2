@@ -99,11 +99,21 @@ func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedul
 }
 
 func (r *accountRepository) Create(ctx context.Context, account *service.Account) error {
+	if err := createAccountRecord(ctx, r.client, account); err != nil {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account create failed: account=%d err=%v", account.ID, err)
+	}
+	return nil
+}
+
+func createAccountRecord(ctx context.Context, client *dbent.Client, account *service.Account) error {
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
 
-	builder := r.client.Account.Create().
+	builder := client.Account.Create().
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
@@ -164,9 +174,6 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 	account.ID = created.ID
 	account.CreatedAt = created.CreatedAt
 	account.UpdatedAt = created.UpdatedAt
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account create failed: account=%d err=%v", account.ID, err)
-	}
 	return nil
 }
 
@@ -704,7 +711,7 @@ func ensureEnabledBillingGuardHasConfiguredGroup(ctx context.Context, exec sqlEx
 			JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 			WHERE ag.account_id = $1
 				AND g.platform = $2
-				AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax')
+				AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go')
 					AND (g.upstream_billing_guard_max_multiplier IS NOT NULL OR g.upstream_billing_guard_min_multiplier IS NOT NULL)
 		)
 	`, account.ID, account.Platform)
@@ -2459,6 +2466,36 @@ func (r *accountRepository) SetRateLimitedIfLater(ctx context.Context, id int64,
 	return nil
 }
 
+// SetRateLimitedIfUnchanged applies an async recovery horizon only when the
+// account row still represents the generation observed by the caller. This
+// prevents a late usage probe from resurrecting a cooldown after an admin
+// clear, credential change, or newer 429.
+func (r *accountRepository) SetRateLimitedIfUnchanged(ctx context.Context, id int64, expectedUpdatedAt time.Time, expectedLimitedAt, expectedResetAt *time.Time, resetAt time.Time) (bool, error) {
+	preds := []dbpredicate.Account{dbaccount.IDEQ(id), dbaccount.UpdatedAtEQ(expectedUpdatedAt)}
+	if expectedLimitedAt == nil {
+		preds = append(preds, dbaccount.RateLimitedAtIsNil())
+	} else {
+		preds = append(preds, dbaccount.RateLimitedAtEQ(*expectedLimitedAt))
+	}
+	if expectedResetAt == nil {
+		preds = append(preds, dbaccount.RateLimitResetAtIsNil())
+	} else {
+		preds = append(preds, dbaccount.RateLimitResetAtEQ(*expectedResetAt))
+	}
+	updated, err := r.client.Account.Update().Where(preds...).SetRateLimitedAt(time.Now()).SetRateLimitResetAt(resetAt).Save(ctx)
+	if err != nil || updated == 0 {
+		if err == nil {
+			r.syncSchedulerAccountSnapshot(ctx, id)
+		}
+		return updated > 0, err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue rate limit CAS failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
 func (r *accountRepository) ClearRateLimitIfObserved(
 	ctx context.Context,
 	id int64,
@@ -2804,7 +2841,7 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	query := "UPDATE accounts SET extra = " + extraExpr + ", updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL"
 	args := []any{string(payload), id}
 	if probeDisableRequested {
-		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax') AND type = $3 AND upstream_billing_guard_enabled = TRUE)"
+		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go') AND type = $3 AND upstream_billing_guard_enabled = TRUE)"
 		args = append(args, service.AccountTypeAPIKey)
 	}
 	result, err := client.ExecContext(ctx, query, args...)
@@ -3102,7 +3139,7 @@ func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Contex
 			END,
 			updated_at = NOW()
 		WHERE id = $2
-			AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax')
+			AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go')
 			AND type = $3
 			AND ($4 = TRUE OR upstream_billing_guard_enabled = FALSE)
 			AND deleted_at IS NULL
@@ -3145,7 +3182,7 @@ func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id i
 			upstream_billing_guard_blocked = FALSE,
 			updated_at = NOW()
 				WHERE id = $2
-					AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax')
+				AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go')
 					AND type = $3
 					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true' OR (`+upstreamBillingGuardManualMultiplierConfiguredNoAliasSQL+`))
 					AND deleted_at IS NULL
@@ -3379,7 +3416,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	// accounts untouched rather than persisting probe=false. Other accounts in
 	// the same batch may still be updated normally.
 	if probeDisableRequested {
-		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax') AND type = $" + itoa(idx) + " AND upstream_billing_guard_enabled = TRUE)"
+		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go') AND type = $" + itoa(idx) + " AND upstream_billing_guard_enabled = TRUE)"
 		args = append(args, service.AccountTypeAPIKey)
 	}
 

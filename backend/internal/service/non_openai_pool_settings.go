@@ -79,12 +79,13 @@ func defaultNonOpenAIPoolPlatforms() map[string]NonOpenAIPoolPlatformSettings {
 		PlatformGemini: "gemini-2.0-flash", PlatformAntigravity: "claude-sonnet-4-5",
 		PlatformGrok: "grok-4.5", PlatformKimi: "kimi-k2",
 		PlatformZhipu: "glm-4.7", PlatformDeepSeek: "deepseek-chat", PlatformMiniMax: "MiniMax-M2.5",
+		PlatformOpenCodeGo: "glm-5.3",
 	}
 	imageProbeModels := map[string]string{
 		PlatformGemini: "gemini-2.5-flash-image", PlatformAntigravity: "gemini-2.5-flash-image",
 		PlatformGrok: "grok-imagine-image",
 	}
-	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax} {
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo} {
 		platforms[platform] = NonOpenAIPoolPlatformSettings{
 			RecoveryProbeEnabled: true, RecoveryProbeModel: probeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5,
 			Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, RecoveryProbeModel: imageProbeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 360},

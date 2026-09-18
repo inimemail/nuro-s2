@@ -110,8 +110,8 @@ type UsageLog struct {
 	// UpstreamRequestID is the account-configured response-header correlation ID.
 	// It is observational metadata and is nil when not configured or unavailable.
 	UpstreamRequestID *string
-	SessionID *string
-	Model     string
+	SessionID         *string
+	Model             string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.
 	// Empty should be treated as Model for backward compatibility with historical rows.
 	RequestedModel string

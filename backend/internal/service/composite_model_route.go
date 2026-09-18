@@ -297,7 +297,7 @@ func DetectCompositeModelPlatform(model string) (string, bool) {
 
 func isCompositeConcretePlatform(platform string) bool {
 	switch platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
+	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo:
 		return true
 	default:
 		return false

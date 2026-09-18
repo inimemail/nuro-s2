@@ -4,8 +4,8 @@
       <!-- Backdrop: click anywhere outside to close -->
       <div class="fixed inset-0 z-[9998]" @click="emit('close')"></div>
       <div
-        class="action-menu-content fixed z-[9999] w-52 overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-black/5 dark:bg-dark-800"
-        :style="{ top: position.top + 'px', left: position.left + 'px' }"
+        class="action-menu-content fixed z-[9999] w-52 overflow-y-auto rounded-xl bg-white shadow-lg ring-1 ring-black/5 dark:bg-dark-800"
+        :style="{ top: position.top + 'px', left: position.left + 'px', maxHeight: `calc(100dvh - ${position.top + 8}px)` }"
         @click.stop
       >
         <div class="py-1">
@@ -21,6 +21,10 @@
             <button @click="$emit('schedule', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="clock" size="sm" class="text-orange-500" />
               {{ t('admin.scheduledTests.schedule') }}
+            </button>
+            <button v-if="canDuplicate" :disabled="duplicating" @click="$emit('duplicate', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 disabled:cursor-wait disabled:opacity-50 dark:hover:bg-dark-700">
+              <Icon name="copy" size="sm" class="text-sky-500" />
+              {{ t('admin.accounts.duplicateAccount') }}
             </button>
             <template v-if="(account.type === 'oauth' || account.type === 'setup-token') && !isShadow">
               <button @click="$emit('reauth', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-blue-600 hover:bg-gray-100 dark:hover:bg-dark-700">
@@ -67,8 +71,8 @@ import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 import { isPoolModeAccount } from '@/utils/accountPoolMode'
 
-const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'revert-proxy-fallback', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null; duplicating?: boolean }>()
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'revert-proxy-fallback', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
 const { t } = useI18n()
 const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
@@ -128,6 +132,7 @@ const hasProxyFallback = computed(() => Boolean(props.account?.proxy_fallback_or
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')
 const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && props.account?.type === 'oauth')
 const isShadow = computed(() => props.account?.parent_account_id != null)
+const canDuplicate = computed(() => !isShadow.value && ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account?.type ?? ''))
 const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
 const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
 const hasQuotaLimit = computed(() => {

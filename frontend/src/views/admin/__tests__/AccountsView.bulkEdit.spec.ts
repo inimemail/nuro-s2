@@ -12,6 +12,7 @@ const {
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   batchDelete,
+  duplicateAccount,
   showError,
   showSuccess
 } = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ const {
   getUpstreamBillingProbeSettings: vi.fn(),
   updateUpstreamBillingProbeSettings: vi.fn(),
   batchDelete: vi.fn(),
+  duplicateAccount: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn()
 }))
@@ -34,6 +36,7 @@ vi.mock('@/api/admin', () => ({
       listWithEtag,
       getBatchTodayStats,
       batchDelete,
+      duplicate: duplicateAccount,
       delete: vi.fn(),
       batchClearError: vi.fn(),
       batchRefresh: vi.fn(),
@@ -170,6 +173,7 @@ describe('admin AccountsView bulk edit scope', () => {
     getUpstreamBillingProbeSettings.mockReset()
     updateUpstreamBillingProbeSettings.mockReset()
     batchDelete.mockReset()
+    duplicateAccount.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
 
@@ -191,6 +195,40 @@ describe('admin AccountsView bulk edit scope', () => {
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: false, interval_seconds: 5 })
     updateUpstreamBillingProbeSettings.mockImplementation(async settings => settings)
     batchDelete.mockResolvedValue({ total: 0, success: 0, failed: 0 })
+  })
+
+  it('duplicates through the action menu once while pending and reloads the list', async () => {
+    let resolveCopy!: (value: unknown) => void
+    duplicateAccount.mockImplementationOnce(() => new Promise(resolve => { resolveCopy = resolve }))
+    const wrapper = mountAccountsView()
+    await flushPromises()
+    const menu = wrapper.getComponent({ name: 'AccountActionMenu' })
+    const account = { id: 42, name: 'source', type: 'apikey' }
+    const before = listAccounts.mock.calls.length
+    menu.vm.$emit('duplicate', account)
+    menu.vm.$emit('duplicate', account)
+    expect(duplicateAccount).toHaveBeenCalledTimes(1)
+    expect(duplicateAccount).toHaveBeenCalledWith(42)
+    resolveCopy({ id: 43, name: 'source (Copy)' })
+    await flushPromises()
+    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.duplicateSuccess')
+    expect(listAccounts.mock.calls.length).toBeGreaterThan(before)
+    wrapper.unmount()
+  })
+
+  it('reports duplication errors and allows another attempt', async () => {
+    duplicateAccount.mockRejectedValueOnce(new Error('duplicate failed'))
+    const wrapper = mountAccountsView()
+    await flushPromises()
+    const menu = wrapper.getComponent({ name: 'AccountActionMenu' })
+    menu.vm.$emit('duplicate', { id: 42 })
+    await flushPromises()
+    expect(showError).toHaveBeenCalledWith('duplicate failed')
+    duplicateAccount.mockResolvedValueOnce({ id: 43, name: 'copy' })
+    menu.vm.$emit('duplicate', { id: 42 })
+    await flushPromises()
+    expect(duplicateAccount).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 
   it('opens bulk edit in filtered-results mode from the bulk actions dropdown', async () => {

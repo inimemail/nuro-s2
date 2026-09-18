@@ -27,6 +27,7 @@ const (
 	PlatformZhipu       = "zhipu"
 	PlatformDeepSeek    = "deepseek"
 	PlatformMiniMax     = "minimax"
+	PlatformOpenCodeGo  = "opencode_go"
 	PlatformComposite   = "composite"
 )
 
@@ -38,6 +39,8 @@ const (
 	CNBillingModeCodingPlan = "coding_plan"
 	AccountModePayG         = "payg"
 	AccountModeCoding       = "coding"
+	AccountModeZen          = "zen"
+	AccountModeGo           = "go"
 )
 
 // Domestic provider upstream protocols. Missing or invalid values always

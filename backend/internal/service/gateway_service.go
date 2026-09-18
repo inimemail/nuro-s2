@@ -1284,9 +1284,8 @@ func (s *GatewayService) replaceModelInBody(body []byte, newModel string) []byte
 }
 
 type claudeOAuthNormalizeOptions struct {
-	injectMetadata          bool
-	metadataUserID          string
-	stripSystemCacheControl bool
+	injectMetadata bool
+	metadataUserID string
 }
 
 // sanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
@@ -1383,7 +1382,7 @@ func deleteJSONPathBytes(body []byte, path string) ([]byte, bool) {
 	return next, true
 }
 
-func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
+func normalizeClaudeOAuthSystemBody(body []byte, _ claudeOAuthNormalizeOptions) ([]byte, bool) {
 	sys := gjson.GetBytes(body, "system")
 	if !sys.Exists() {
 		return body, false
@@ -1415,13 +1414,6 @@ func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOption
 							modified = true
 						}
 					}
-				}
-			}
-
-			if opts.stripSystemCacheControl && item.Get("cache_control").Exists() {
-				if next, ok := deleteJSONPathBytes(out, fmt.Sprintf("system.%d.cache_control", index)); ok {
-					out = next
-					modified = true
 				}
 			}
 
@@ -1628,15 +1620,12 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	}
 
 	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
-	systemRewritten := false
 	if systemPromptInjectionEnabled {
 		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks)
 	} else {
 		body = rewriteSystemForNonClaudeCode(body, systemRaw)
 	}
-	systemRewritten = true
-
-	normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
+	normalizeOpts := claudeOAuthNormalizeOptions{}
 
 	if s.identityService != nil && c != nil && c.Request != nil {
 		if fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header); err == nil && fp != nil {
@@ -2550,7 +2539,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group), group.AccountSchedulingStrategy, adaptiveTTFTSwitchPolicyForGroup(group)); legacyErr != nil {
+		strategy := ""
+		if group != nil {
+			strategy = group.AccountSchedulingStrategy
+		}
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, cfg, groupUsesHealthFirst(group), strategy, adaptiveTTFTSwitchPolicyForGroup(group)); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -6555,18 +6548,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// 检测到"有 CC prompt 但无 billing block"的不一致而判为 third-party。
 		// Parrot 的 transform_request 从不检查客户端 system 内容，直接覆盖。
 		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
-		systemRewritten := false
 		if systemPromptInjectionEnabled {
 			body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, parsed.System, systemPrompt, systemPromptBlocks)
 		} else {
 			body = rewriteSystemForNonClaudeCode(body, parsed.System)
 		}
-		systemRewritten = true
-
-		// system 被重写时保留 CC prompt 的 cache_control: ephemeral（匹配真实 Claude Code 行为）；
-		// 未重写时剥离客户端 cache_control，与原有行为一致。
-		// 两种情况下 enforceCacheControlLimit 都会兜底处理上限。
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
+		// Preserve client cache breakpoints; the outgoing limit guard caps them.
+		normalizeOpts := claudeOAuthNormalizeOptions{}
 		if s.identityService != nil {
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
@@ -11862,7 +11850,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	shouldMimicClaudeCode := shouldApplyClaudeCodeOAuthMimicry(account, isClaudeCodeCT)
 
 	if shouldMimicClaudeCode {
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
+		normalizeOpts := claudeOAuthNormalizeOptions{}
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
 
 		body = s.rewriteMessageCacheControlIfEnabled(ctx, body)
@@ -11874,6 +11862,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
+	body = enforceCacheControlLimit(body)
 	// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
 	if account.Platform == PlatformAntigravity {
 		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this platform")

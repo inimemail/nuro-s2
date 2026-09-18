@@ -159,6 +159,10 @@ func monitorAccountQuotaCapability(account *Account) error {
 		return ErrChannelMonitorAccountRequired
 	}
 	switch account.Platform {
+	case PlatformOpenCodeGo:
+		if account.Type != AccountTypeAPIKey || !account.IsOpenCodeGoPlan() {
+			return ErrChannelMonitorAccountNotSupportable
+		}
 	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
 		if account.IsCodingPlan() {
 			if account.GetCodingPlanProvider() == "" {

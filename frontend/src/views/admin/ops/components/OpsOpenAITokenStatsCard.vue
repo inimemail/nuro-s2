@@ -30,6 +30,7 @@ const viewMode = ref<ViewMode>('topn')
 const topN = ref<number>(20)
 const page = ref<number>(1)
 const pageSize = ref<number>(20)
+const scope = ref<'all' | 'openai_legacy'>('openai_legacy')
 
 const items = computed(() => response.value?.items ?? [])
 const total = computed(() => response.value?.total ?? 0)
@@ -50,6 +51,10 @@ const timeRangeOptions = computed(() => [
 const viewModeOptions = computed(() => [
   { value: 'topn', label: t('admin.ops.openaiTokenStats.viewModeTopN') },
   { value: 'pagination', label: t('admin.ops.openaiTokenStats.viewModePagination') }
+])
+const scopeOptions = computed(() => [
+  { value: 'openai_legacy', label: t('admin.ops.openaiTokenStats.scopeOpenAILegacy') },
+  { value: 'all', label: t('admin.ops.openaiTokenStats.scopeAll') }
 ])
 
 const topNOptions = computed(() => [
@@ -81,6 +86,7 @@ function buildParams() {
     time_range: timeRange.value,
     platform: props.platformFilter || undefined,
     group_id: typeof props.groupIdFilter === 'number' && props.groupIdFilter > 0 ? props.groupIdFilter : undefined
+    ,scope: scope.value
   }
 
   if (viewMode.value === 'topn') {
@@ -118,6 +124,7 @@ watch(
     topN: topN.value,
     page: page.value,
     pageSize: pageSize.value,
+    scope: scope.value,
     platform: props.platformFilter,
     groupId: props.groupIdFilter,
     refreshToken: props.refreshToken
@@ -129,6 +136,7 @@ watch(
       next.timeRange !== prev.timeRange ||
       next.viewMode !== prev.viewMode ||
       next.pageSize !== prev.pageSize ||
+      next.scope !== prev.scope ||
       next.platform !== prev.platform ||
       next.groupId !== prev.groupId
 
@@ -191,6 +199,9 @@ function onNextPage() {
             {{ t('admin.ops.openaiTokenStats.pageInfo', { page, total: totalPages }) }}
           </span>
         </template>
+        <div class="w-36">
+          <Select v-model="scope" :options="scopeOptions" />
+        </div>
       </div>
     </div>
 

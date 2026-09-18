@@ -146,10 +146,10 @@ type Group struct {
 	CodexModelsManifestConfig   GroupCodexModelsManifestConfig
 	// Legacy API/database field: true permits model-mismatch fallback to lower
 	// priorities; false keeps the highest eligible priority layer strict.
-	StrictModelPriorityOnModelMismatch bool
-	AccountSchedulingStrategy          string
-	AdaptiveTTFTSwitchEnabled          bool
-	AdaptiveTTFTSwitchThresholdSeconds int
+	StrictModelPriorityOnModelMismatch   bool
+	AccountSchedulingStrategy            string
+	AdaptiveTTFTSwitchEnabled            bool
+	AdaptiveTTFTSwitchThresholdSeconds   int
 	AdaptiveHealthSampleFreshnessMinutes int
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。

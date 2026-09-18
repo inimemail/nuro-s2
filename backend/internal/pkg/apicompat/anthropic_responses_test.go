@@ -508,12 +508,13 @@ func TestResponsesEventToAnthropicEvents_ResponseDone(t *testing.T) {
 			Usage:  &ResponsesUsage{InputTokens: 12, OutputTokens: 4},
 		},
 	}, state)
-	require.Len(t, events, 2)
-	assert.Equal(t, "message_delta", events[0].Type)
-	assert.Equal(t, "end_turn", events[0].Delta.StopReason)
-	assert.Equal(t, 12, events[0].Usage.InputTokens)
-	assert.Equal(t, 4, events[0].Usage.OutputTokens)
-	assert.Equal(t, "message_stop", events[1].Type)
+	require.Len(t, events, 3)
+	assert.Equal(t, "message_start", events[0].Type)
+	assert.Equal(t, "message_delta", events[1].Type)
+	assert.Equal(t, "end_turn", events[1].Delta.StopReason)
+	assert.Equal(t, 12, events[1].Usage.InputTokens)
+	assert.Equal(t, 4, events[1].Usage.OutputTokens)
+	assert.Equal(t, "message_stop", events[2].Type)
 	assert.Nil(t, FinalizeResponsesAnthropicStream(state))
 }
 
@@ -535,13 +536,14 @@ func TestResponsesEventToAnthropicEvents_TopLevelTerminalUsage(t *testing.T) {
 		},
 	}, state)
 
-	require.Len(t, events, 2)
-	assert.Equal(t, "message_delta", events[0].Type)
-	require.NotNil(t, events[0].Usage)
-	assert.Equal(t, 15, events[0].Usage.InputTokens)
-	assert.Equal(t, 5, events[0].Usage.CacheReadInputTokens)
-	assert.Equal(t, 6, events[0].Usage.OutputTokens)
-	assert.Equal(t, "message_stop", events[1].Type)
+	require.Len(t, events, 3)
+	assert.Equal(t, "message_start", events[0].Type)
+	assert.Equal(t, "message_delta", events[1].Type)
+	require.NotNil(t, events[1].Usage)
+	assert.Equal(t, 15, events[1].Usage.InputTokens)
+	assert.Equal(t, 5, events[1].Usage.CacheReadInputTokens)
+	assert.Equal(t, 6, events[1].Usage.OutputTokens)
+	assert.Equal(t, "message_stop", events[2].Type)
 }
 
 func TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete(t *testing.T) {
@@ -556,10 +558,11 @@ func TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete(t *testing.T) {
 			Usage:             &ResponsesUsage{InputTokens: 12, OutputTokens: 4},
 		},
 	}, state)
-	require.Len(t, events, 2)
-	assert.Equal(t, "message_delta", events[0].Type)
-	assert.Equal(t, "max_tokens", events[0].Delta.StopReason)
-	assert.Equal(t, "message_stop", events[1].Type)
+	require.Len(t, events, 3)
+	assert.Equal(t, "message_start", events[0].Type)
+	assert.Equal(t, "message_delta", events[1].Type)
+	assert.Equal(t, "max_tokens", events[1].Delta.StopReason)
+	assert.Equal(t, "message_stop", events[2].Type)
 	assert.Nil(t, FinalizeResponsesAnthropicStream(state))
 }
 

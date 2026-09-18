@@ -49,6 +49,10 @@
         </div>
       </div>
 
+      <label v-if="state?.configured" class="flex items-start gap-3 rounded-lg bg-emerald-50 p-3 dark:bg-emerald-950/20">
+        <Toggle :model-value="!!state.rate_limit_recovery_enabled" :disabled="busy" @update:model-value="toggleRecovery" />
+        <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.ollamaRecoveryTitle') }}<span class="mt-1 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.accounts.ollamaRecoveryHint') }}</span></span>
+      </label>
       <div v-if="state?.snapshot?.data" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <UsageProgress :label="t('admin.accounts.ollamaFiveHour')" :window="state.snapshot.data.five_hour" />
         <UsageProgress :label="t('admin.accounts.ollamaSevenDay')" :window="state.snapshot.data.seven_day" />
@@ -110,7 +114,7 @@ const busy = computed(() => busyAction.value !== '')
 
 const eligible = computed(() => {
   const baseURL = String((props.account.credentials as Record<string, unknown> | undefined)?.base_url || '').replace(/\/$/, '').toLowerCase()
-  return props.account.type === 'apikey' && ['openai', 'anthropic'].includes(props.account.platform) && ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
+  return props.account.type === 'apikey' && ['openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax'].includes(props.account.platform) && ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
 })
 
 const statusLabel = computed(() => {
@@ -166,6 +170,7 @@ async function save() { if (session.value.trim()) await run('save', async () => 
 async function refresh() { await run('refresh', () => adminAPI.accounts.refreshOllamaCloudUsage(props.account.id)) }
 async function remove() { await run('remove', () => adminAPI.accounts.deleteOllamaCloudUsageSession(props.account.id)) }
 async function toggle(enabled: boolean) { await run('toggle', () => adminAPI.accounts.setOllamaCloudUsageAutoRefresh(props.account.id, enabled)) }
+async function toggleRecovery(enabled: boolean) { await run('recovery', () => adminAPI.accounts.setOllamaCloudUsageAutoRefresh(props.account.id, !!state.value?.auto_refresh_enabled, enabled)) }
 async function saveGlobal() {
   if (!globalSettings.value) return
   busyAction.value = 'settings'; error.value = ''

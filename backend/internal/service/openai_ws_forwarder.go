@@ -2195,6 +2195,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
 	}
+	if !strongIsolationEnabled {
+		if scope := resolveOpenAIWSExecutionScope(c, openAIWSExecutionScopeBody(reqBody), getAPIKeyIDFromContext(c)); scope != "" {
+			sessionHash = scope
+		}
+	}
 	if turnState == "" && stateStore != nil && sessionHash != "" {
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 			turnState = savedTurnState
@@ -3371,10 +3376,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	sessionHash := ""
 	preferredConnID := ""
 	storeDisabled := false
-	refreshIngressRouteState := func(payload openAIWSClientPayload) {
+	executionScope := ""
+	routeStateInitialized := false
+	refreshIngressRouteState := func(payload openAIWSClientPayload) bool {
+		nextScope := ""
+		if !strongIsolationEnabled {
+			nextScope = resolveOpenAIWSExecutionScope(c, payload.payloadRaw, getAPIKeyIDFromContext(c))
+		}
+		scopeChanged := routeStateInitialized && executionScope != nextScope
+		executionScope = nextScope
+		routeStateInitialized = true
+		if scopeChanged {
+			turnState = ""
+			c.Request.Header.Del(openAIWSTurnStateHeader)
+		}
 		sessionHash = ""
 		if !strongIsolationEnabled {
 			sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+			if nextScope != "" {
+				sessionHash = nextScope
+			}
 		}
 		if turnState == "" && stateStore != nil && sessionHash != "" {
 			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
@@ -3395,6 +3416,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				preferredConnID = connID
 			}
 		}
+		return scopeChanged
 	}
 	refreshIngressRouteState(firstPayload)
 
@@ -3557,7 +3579,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return parseErr
 			}
 			currentBridgePayload = nextPayload
-			refreshIngressRouteState(currentBridgePayload)
+			if refreshIngressRouteState(currentBridgePayload) {
+				bridgeReplayInput = nil
+				bridgeReplayInputExists = false
+				grokCacheSeedPayload = currentBridgePayload.payloadRaw
+			}
 		}
 	}
 
@@ -4702,7 +4728,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if parseErr != nil {
 			return parseErr
 		}
-		if nextPayload.promptCacheKey != "" {
+		scopeChanged := !strongIsolationEnabled && executionScope != resolveOpenAIWSExecutionScope(c, nextPayload.payloadRaw, getAPIKeyIDFromContext(c))
+		if scopeChanged {
+			resetSessionLease(true)
+			refreshIngressRouteState(nextPayload)
+			lastTurnResponseID = ""
+			lastTurnPayload = nil
+			lastTurnStrictState = nil
+			lastTurnReplayInput = nil
+			lastTurnReplayInputExists = false
+			currentTurnReplayInput = nil
+			currentTurnReplayInputExists = false
+		}
+		if nextPayload.promptCacheKey != "" || scopeChanged {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
 			updatedHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)

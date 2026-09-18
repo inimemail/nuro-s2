@@ -265,7 +265,7 @@ func isDeepSeekModel(model string) bool {
 	case "deepseek-chat", "deepseek-reasoner":
 		return true
 	default:
-		return strings.HasPrefix(model, "deepseek-v4-flash") ||
+		return strings.HasPrefix(model, "deepseek-flash") || strings.HasPrefix(model, "deepseek-v4-flash") ||
 			strings.HasPrefix(model, "deepseek-v4-pro")
 	}
 }
@@ -387,6 +387,8 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken: 0.15e-6,
 		SupportsCacheBreakdown: false,
 	}
+	s.fallbackPrices["gemini-3.7-flash"] = &ModelPricing{InputPricePerToken: 0.75e-6, OutputPricePerToken: 3.75e-6, CacheReadPricePerToken: 0.075e-6}
+	s.fallbackPrices["gemini-3.8-flash"] = &ModelPricing{InputPricePerToken: 0.75e-6, OutputPricePerToken: 3.75e-6, CacheReadPricePerToken: 0.075e-6}
 
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
@@ -789,6 +791,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.6-flash") || strings.Contains(modelLower, "gemini-3-6-flash") {
 		return s.fallbackPrices["gemini-3.6-flash"]
+	}
+	if strings.Contains(modelLower, "gemini-3.7-flash") || strings.Contains(modelLower, "gemini-3-7-flash") {
+		return s.fallbackPrices["gemini-3.7-flash"]
+	}
+	if strings.Contains(modelLower, "gemini-3.8-flash") || strings.Contains(modelLower, "gemini-3-8-flash") {
+		return s.fallbackPrices["gemini-3.8-flash"]
 	}
 
 	// DeepSeek V4 系列：显式 vision 分支必须先于 flash 前缀分支。

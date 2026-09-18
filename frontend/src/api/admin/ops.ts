@@ -107,7 +107,7 @@ export interface OpsThroughputTrendResponse {
 
 export type OpsRequestKind = 'success' | 'error'
 export type OpsRequestDetailsKind = OpsRequestKind | 'all'
-export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc'
+export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc' | 'ttft_desc'
 
 export interface OpsRequestDetail {
   kind: OpsRequestKind
@@ -117,6 +117,7 @@ export interface OpsRequestDetail {
   platform?: string
   model?: string
   duration_ms?: number | null
+  first_token_ms?: number | null
   status_code?: number | null
 
   error_id?: number | null
@@ -228,6 +229,7 @@ export interface OpsOpenAITokenStatsResponse {
   end_time: string
   platform?: string
   group_id?: number | null
+  scope?: 'all' | 'openai_legacy'
   items: OpsOpenAITokenStatsItem[]
   total: number
   page?: number
@@ -239,6 +241,7 @@ export interface OpsOpenAITokenStatsParams {
   time_range?: OpsOpenAITokenStatsTimeRange
   platform?: string
   group_id?: number | null
+  scope?: 'all' | 'openai_legacy'
   page?: number
   page_size?: number
   top_n?: number

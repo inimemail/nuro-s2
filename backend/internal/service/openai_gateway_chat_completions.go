@@ -80,7 +80,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
-	if account.IsCNProvider() {
+	if account.IsOpenCodeGo() {
+		model := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), defaultMappedModel)
+		switch account.ResolveOpenCodeGoUpstreamProtocol(model) {
+		case APIProtocolAnthropic:
+			return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
+		case APIProtocolChatCompletions:
+			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+		}
+	} else if account.IsCNProvider() {
 		if account.IsAdaptiveAPIProtocol() {
 			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
@@ -103,7 +111,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 	// APIKey auto/unknown goes raw chat completions so a real user request does
 	// not pay an extra /responses 404/405 RTT before fallback.
-	if account.Type == AccountTypeAPIKey && !shouldForwardAPIKeyChatViaResponses(account) {
+	if account.Type == AccountTypeAPIKey && !account.IsOpenCodeGo() && !shouldForwardAPIKeyChatViaResponses(account) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	attempt := newOpenAIUpstreamAttempt()

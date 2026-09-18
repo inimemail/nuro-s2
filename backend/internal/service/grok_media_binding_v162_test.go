@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,4 +30,12 @@ func TestGrokMediaVideoBindingV162FailsClosedWithoutCache(t *testing.T) {
 	err := (&OpenAIGatewayService{}).
 		BindGrokMediaVideoRequestAccount(context.Background(), nil, "request-1", 10, 20, 30)
 	require.ErrorIs(t, err, ErrGrokMediaVideoBindingUnavailable)
+}
+
+func TestGrokMediaVideoBindingTTLDoesNotShortenAsyncTaskLifetime(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	require.Equal(t, 24*time.Hour, svc.grokMediaVideoBindingTTL())
 }

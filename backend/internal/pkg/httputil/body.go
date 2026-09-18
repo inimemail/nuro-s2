@@ -42,11 +42,10 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 		}
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, capHint))
-	if _, err := io.Copy(buf, req.Body); err != nil {
+	raw, err := readRequestBodyChunks(req.Body, capHint)
+	if err != nil {
 		return nil, err
 	}
-	raw := buf.Bytes()
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
@@ -63,6 +62,59 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 	req.ContentLength = int64(len(decoded))
 
 	return decoded, nil
+}
+
+// Grow in bounded chunks; never allocate an untrusted Content-Length eagerly.
+// Assemble only once so large inline images don't repeatedly double a buffer.
+func readRequestBodyChunks(reader io.Reader, capacity int) ([]byte, error) {
+	if capacity < requestBodyReadInitCap {
+		capacity = requestBodyReadInitCap
+	}
+	if capacity > requestBodyReadMaxInitCap {
+		capacity = requestBodyReadMaxInitCap
+	}
+	var chunks [][]byte
+	total, emptyReads := 0, 0
+	for {
+		chunk := make([]byte, capacity)
+		n := 0
+		var err error
+		for n < len(chunk) && err == nil {
+			var read int
+			read, err = reader.Read(chunk[n:])
+			n += read
+			if read == 0 && err == nil {
+				emptyReads++
+				if emptyReads >= 100 {
+					return nil, io.ErrNoProgress
+				}
+			} else {
+				emptyReads = 0
+			}
+		}
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n > 0 {
+			chunks = append(chunks, chunk[:n])
+			total += n
+		}
+		if err == io.EOF {
+			if len(chunks) == 0 {
+				return []byte{}, nil
+			}
+			if len(chunks) == 1 {
+				return chunks[0], nil
+			}
+			body := make([]byte, total)
+			offset := 0
+			for _, part := range chunks {
+				offset += copy(body[offset:], part)
+			}
+			return body, nil
+		}
+		capacity = min(capacity*2, requestBodyReadMaxInitCap)
+	}
 }
 
 // ReadLenientJSONRequestBodyWithPrealloc reads a request body and normalizes

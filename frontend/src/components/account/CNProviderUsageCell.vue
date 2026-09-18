@@ -7,7 +7,7 @@
       </button>
     </div>
     <template v-if="isCodingPlan">
-      <QuotaBar v-for="tier in quotaTiers" :key="tier.window" :label="tier.window === '5h' ? '5h' : '7d'" :value="tier.used_percent" />
+      <QuotaBar v-for="tier in quotaTiers" :key="tier.window" :label="tier.window === '5h' ? '5h' : tier.window === 'weekly' ? '7d' : '1mo'" :value="tier.used_percent" :title="tier.reset_at || ''" />
     </template>
     <template v-else-if="balance">
       <div class="flex items-center justify-between gap-2 rounded bg-gray-50 px-1.5 py-1 dark:bg-dark-800">
@@ -43,6 +43,7 @@ const isOllamaCloud = computed(() => {
   return ['https://ollama.com', 'https://ollama.com/v1'].includes(baseURL)
 })
 const isCodingPlan = computed(() => {
+  if (props.account.platform === 'opencode_go') return (props.account.credentials?.account_mode ?? props.account.extra?.account_mode) !== 'zen'
   if (!['kimi', 'zhipu', 'minimax'].includes(props.account.platform)) return false
   const extraMode = props.account.extra?.cn_billing_mode
   const legacyMode = props.account.credentials?.account_mode
@@ -52,10 +53,10 @@ const isCodingPlan = computed(() => {
 // visible only for its Coding Plan quota, while retaining balance probes for
 // providers that actually expose one.
 const eligible = computed(() =>
-  ['kimi', 'zhipu', 'deepseek', 'minimax'].includes(props.account.platform) &&
+  ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'].includes(props.account.platform) &&
   props.account.type === 'apikey' &&
   !isOllamaCloud.value &&
-  (props.account.platform !== 'minimax' || isCodingPlan.value)
+  (!['minimax', 'opencode_go'].includes(props.account.platform) || isCodingPlan.value)
 )
 const snapshot = computed(() => props.account.extra || {})
 const QuotaBar = defineComponent({ props: { label: { type: String, required: true }, value: { type: Number, default: 0 } }, setup(p) { return () => h('div', { class: 'flex items-center gap-1.5' }, [h('span', { class: 'w-5 shrink-0 text-gray-400' }, p.label), h('div', { class: 'h-1 flex-1 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700' }, [h('div', { class: p.value >= 90 ? 'h-full bg-red-500' : p.value >= 70 ? 'h-full bg-amber-500' : 'h-full bg-emerald-500', style: { width: `${Math.max(0, Math.min(100, p.value))}%` } })]), h('span', { class: 'w-7 text-right tabular-nums text-gray-500 dark:text-gray-400' }, `${Math.round(p.value)}%`)]) } })
@@ -67,6 +68,8 @@ function loadSnapshot() {
     const weekly = Number(snapshot.value[`${provider}_weekly_used_percent`])
     if (Number.isFinite(five)) tiers.push({ window: '5h', used_percent: five })
     if (Number.isFinite(weekly)) tiers.push({ window: 'weekly', used_percent: weekly })
+    const monthly = Number(snapshot.value[`${provider}_monthly_used_percent`])
+    if (provider === 'opencode_go' && Number.isFinite(monthly)) tiers.push({ window: 'monthly', used_percent: monthly })
     quotaTiers.value = tiers
   } else {
     const value = Number(snapshot.value[`${provider}_balance`])

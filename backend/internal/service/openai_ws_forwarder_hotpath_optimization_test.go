@@ -112,7 +112,7 @@ func TestSanitizeOpenAIWSErrorEventForClient(t *testing.T) {
 
 func TestBuildOpenAIWSHTTPBridgeErrorEventUsesResponsesTerminalShape(t *testing.T) {
 	payload := buildOpenAIWSHTTPBridgeErrorEvent(http.StatusBadGateway, "private upstream detail")
-	require.JSONEq(t, `{"type":"response.failed","status":502,"response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`, string(payload))
+	require.JSONEq(t, `{"type":"response.failed","sequence_number":0,"status":502,"response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`, string(payload))
 }
 
 func TestNormalizeOpenAIWSUpstreamEventForSafety(t *testing.T) {

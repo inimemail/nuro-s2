@@ -1153,6 +1153,7 @@
                           | 'priority'
                           | 'ultrafast'
                           | 'flex'
+                          | 'missing'
                       "
                       :options="openaiFastPolicyTierOptions"
                     />
@@ -8766,6 +8767,7 @@ const tablePageSizeMax = 1000;
 const tablePageSizeDefault = 20;
 const quotaPlatforms = PLATFORM_QUOTA_PLATFORMS;
 const platformQuotaLabels: Record<PlatformType, string> = {
+  opencode_go: "OpenCode",
   anthropic: "Anthropic",
   openai: "OpenAI",
   gemini: "Gemini",
@@ -8865,6 +8867,7 @@ const nonOpenAIPoolPlatforms = [
   { key: "zhipu", label: "Zhipu", image: false },
   { key: "deepseek", label: "DeepSeek", image: false },
   { key: "minimax", label: "MiniMax", image: false },
+  { key: "opencode_go", label: "OpenCode", image: false },
 ] as const;
 
 const nonOpenAIPoolProbeModelDefaults: Record<string, string> = {
@@ -11325,6 +11328,7 @@ async function loadBetaPolicySettings() {
 // ==================== OpenAI Fast/Flex Policy ====================
 
 const openaiFastPolicyTierOptions = computed(() => [
+  { value: "missing", label: t("admin.settings.openaiFastPolicy.tierMissing") },
   { value: "all", label: t("admin.settings.openaiFastPolicy.tierAll") },
   {
     value: "priority",

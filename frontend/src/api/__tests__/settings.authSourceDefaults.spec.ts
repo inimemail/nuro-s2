@@ -20,6 +20,7 @@ const allNullQuotas: DefaultPlatformQuotasMap = {
   zhipu:     { daily: null, weekly: null, monthly: null },
   deepseek:  { daily: null, weekly: null, monthly: null },
   minimax:   { daily: null, weekly: null, monthly: null },
+  opencode_go: { daily: null, weekly: null, monthly: null },
 }
 
 describe("admin settings auth source defaults helpers", () => {
@@ -237,6 +238,10 @@ describe("admin settings auth source defaults helpers", () => {
 });
 
 describe("normalizePlatformQuotasMap", () => {
+  it("保存其他设置时保留 OpenCode 限额", () => {
+    const input = { opencode_go: { daily: 0, weekly: 25, monthly: null } };
+    expect(sanitizePlatformQuotasMap(normalizePlatformQuotasMap(input)).opencode_go).toEqual(input.opencode_go);
+  });
   it("填充缺失的平台为全 null 三档", () => {
     const result = normalizePlatformQuotasMap({ anthropic: { daily: 5, weekly: null, monthly: null } });
     expect(result.anthropic).toEqual({ daily: 5, weekly: null, monthly: null });

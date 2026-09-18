@@ -29,6 +29,24 @@ func (r *subscriptionRenewalLockRepoStub) ExtendExpiry(_ context.Context, _ int6
 	return nil
 }
 
+func (r *subscriptionRenewalLockRepoStub) GetByID(context.Context, int64) (*UserSubscription, error) {
+	copy := *r.locked
+	copy.ExpiresAt = r.extendedTo
+	return &copy, nil
+}
+
+func TestExtendSubscriptionUsesLockedExpiryV025(t *testing.T) {
+	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+	repo := &subscriptionRenewalLockRepoStub{locked: &UserSubscription{
+		ID: 19, Status: SubscriptionStatusActive, ExpiresAt: now.Add(48 * time.Hour),
+	}}
+	svc := &SubscriptionService{userSubRepo: repo, now: func() time.Time { return now }}
+	updated, err := svc.ExtendSubscription(context.Background(), 19, 7)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.lockCalls)
+	require.Equal(t, now.AddDate(0, 0, 9), updated.ExpiresAt)
+}
+
 func TestSubscriptionRenewalUsesLockedExpirySnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 	lockedExpiry := now.Add(48 * time.Hour)

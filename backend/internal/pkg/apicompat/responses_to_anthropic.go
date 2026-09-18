@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -184,6 +186,7 @@ type ResponsesEventToAnthropicState struct {
 
 	// OutputIndexToBlockIdx maps Responses output_index → Anthropic content block index.
 	OutputIndexToBlockIdx map[int]int
+	textByPart            map[[2]int]*strings.Builder
 
 	InputTokens              int
 	OutputTokens             int
@@ -199,6 +202,7 @@ type ResponsesEventToAnthropicState struct {
 func NewResponsesEventToAnthropicState() *ResponsesEventToAnthropicState {
 	return &ResponsesEventToAnthropicState{
 		OutputIndexToBlockIdx: make(map[int]int),
+		textByPart:            make(map[[2]int]*strings.Builder),
 		Created:               time.Now().Unix(),
 	}
 }
@@ -208,7 +212,20 @@ func NewResponsesEventToAnthropicState() *ResponsesEventToAnthropicState {
 func ResponsesEventToAnthropicEvents(
 	evt *ResponsesStreamEvent,
 	state *ResponsesEventToAnthropicState,
-) []AnthropicStreamEvent {
+) (events []AnthropicStreamEvent) {
+	if evt == nil || state == nil || state.MessageStopSent {
+		return nil
+	}
+	// Some compatible upstreams omit response.created. Start the message only
+	// when conversion actually produces output, so empty/unknown frames do not
+	// commit the downstream stream and disable early failover.
+	defer func() {
+		if len(events) == 0 || state.MessageStartSent || evt.Type == "response.failed" ||
+			(evt.Response != nil && evt.Response.Status == "failed") {
+			return
+		}
+		events = append(resToAnthHandleCreated(evt, state), events...)
+	}()
 	switch evt.Type {
 	case "response.created":
 		return resToAnthHandleCreated(evt, state)
@@ -217,7 +234,7 @@ func ResponsesEventToAnthropicEvents(
 	case "response.output_text.delta":
 		return resToAnthHandleTextDelta(evt, state)
 	case "response.output_text.done":
-		return resToAnthHandleBlockDone(state)
+		return append(resToAnthRecoverText(evt, state), resToAnthHandleBlockDone(state)...)
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		return resToAnthHandleFuncArgsDelta(evt, state)
 	case "response.function_call_arguments.done":
@@ -285,6 +302,9 @@ func ResponsesAnthropicEventToSSE(evt AnthropicStreamEvent) (string, error) {
 // --- internal handlers ---
 
 func resToAnthHandleCreated(evt *ResponsesStreamEvent, state *ResponsesEventToAnthropicState) []AnthropicStreamEvent {
+	if state.MessageStartSent {
+		return nil
+	}
 	if evt.Response != nil {
 		state.ResponseID = evt.Response.ID
 		// Only use upstream model if no override was set (e.g. originalModel)
@@ -293,8 +313,8 @@ func resToAnthHandleCreated(evt *ResponsesStreamEvent, state *ResponsesEventToAn
 		}
 	}
 
-	if state.MessageStartSent {
-		return nil
+	if state.ResponseID == "" {
+		state.ResponseID = "msg_" + uuid.NewString()
 	}
 	state.MessageStartSent = true
 
@@ -398,6 +418,14 @@ func resToAnthHandleTextDelta(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	}
 
 	idx := state.ContentBlockIndex
+	part := [2]int{evt.OutputIndex, evt.ContentIndex}
+	if b := state.textByPart[part]; b != nil {
+		_, _ = b.WriteString(evt.Delta)
+	} else {
+		b := &strings.Builder{}
+		_, _ = b.WriteString(evt.Delta)
+		state.textByPart[part] = b
+	}
 	events = append(events, AnthropicStreamEvent{
 		Type:  "content_block_delta",
 		Index: &idx,
@@ -407,6 +435,21 @@ func resToAnthHandleTextDelta(evt *ResponsesStreamEvent, state *ResponsesEventTo
 		},
 	})
 	return events
+}
+
+func resToAnthRecoverText(evt *ResponsesStreamEvent, state *ResponsesEventToAnthropicState) []AnthropicStreamEvent {
+	part := [2]int{evt.OutputIndex, evt.ContentIndex}
+	b := state.textByPart[part]
+	delivered := ""
+	if b != nil {
+		delivered = b.String()
+	}
+	if evt.Text == "" || evt.Text == delivered || !strings.HasPrefix(evt.Text, delivered) {
+		return nil
+	}
+	copyEvt := *evt
+	copyEvt.Delta = evt.Text[len(delivered):]
+	return resToAnthHandleTextDelta(&copyEvt, state)
 }
 
 func resToAnthHandleFuncArgsDelta(evt *ResponsesStreamEvent, state *ResponsesEventToAnthropicState) []AnthropicStreamEvent {
@@ -522,6 +565,15 @@ func resToAnthHandleOutputItemDone(evt *ResponsesStreamEvent, state *ResponsesEv
 	if evt.Item == nil {
 		return nil
 	}
+	if evt.Item.Type == "message" && evt.Item.Status != "failed" {
+		var events []AnthropicStreamEvent
+		for i, part := range evt.Item.Content {
+			if part.Type == "output_text" {
+				events = append(events, resToAnthRecoverText(&ResponsesStreamEvent{Text: part.Text, OutputIndex: evt.OutputIndex, ContentIndex: i}, state)...)
+			}
+		}
+		return append(events, closeCurrentBlock(state)...)
+	}
 
 	// Handle web_search_call → synthesize server_tool_use + web_search_tool_result blocks.
 	if evt.Item.Type == "web_search_call" && evt.Item.Status == "completed" {
@@ -601,6 +653,17 @@ func resToAnthHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 
 	var events []AnthropicStreamEvent
 	events = append(events, closeCurrentBlock(state)...)
+	if evt.Response != nil && evt.Type != "response.failed" && evt.Response.Status != "failed" {
+		for oi, item := range evt.Response.Output {
+			for ci, part := range item.Content {
+				if part.Type == "output_text" && part.Text != "" {
+					e := &ResponsesStreamEvent{Text: part.Text, OutputIndex: oi, ContentIndex: ci}
+					events = append(events, resToAnthRecoverText(e, state)...)
+				}
+			}
+		}
+		events = append(events, closeCurrentBlock(state)...)
+	}
 
 	stopReason := "end_turn"
 	if evt.Usage != nil {

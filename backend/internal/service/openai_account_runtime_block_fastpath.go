@@ -38,7 +38,7 @@ func isOpenAIAccount(account *Account) bool {
 }
 
 func isOpenAICompatibleSchedulingAccount(account *Account) bool {
-	return account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok || account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek || account.Platform == PlatformMiniMax)
+	return account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok || account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek || account.Platform == PlatformMiniMax || account.Platform == PlatformOpenCodeGo)
 }
 
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) bool {

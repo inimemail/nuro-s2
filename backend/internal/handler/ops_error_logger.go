@@ -1146,7 +1146,7 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 			}
 			return ""
 		}(),
-		Stream:           true,
+		Stream:           streamErr.Stream == nil || *streamErr.Stream,
 		InboundEndpoint:  GetInboundEndpoint(c),
 		UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
 		RequestedModel:   modelName,

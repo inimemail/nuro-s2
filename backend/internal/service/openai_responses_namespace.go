@@ -51,6 +51,59 @@ func shouldStripOpenAIResponsesInputNamespaces(account *Account, transport OpenA
 	return transport != OpenAIUpstreamTransportResponsesWebsocketV2
 }
 
+// shouldKeepOpenAIResponsesToolCallNamespaces keeps namespace metadata on
+// historical tool-call items only when the selected upstream understands the
+// namespace extension. Responses Lite carries declarations in input items, so
+// those declarations are included in the same decision.
+func shouldKeepOpenAIResponsesToolCallNamespaces(account *Account, transport OpenAIUpstreamTransport, passthroughEnabled bool, compactPath bool, body []byte) bool {
+	if account == nil || compactPath {
+		return false
+	}
+	if account.IsOpenAIApiKey() {
+		return hasOpenAIResponsesNamespaceToolDeclaration(body)
+	}
+	if !account.IsOpenAIOAuthLike() {
+		return false
+	}
+	return !shouldFlattenOpenAIResponsesNamespaces(account, transport, passthroughEnabled, compactPath)
+}
+
+func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
+	hasNamespaceTool := func(tools gjson.Result) bool {
+		if !tools.IsArray() {
+			return false
+		}
+		found := false
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "namespace") {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	if hasNamespaceTool(gjson.GetBytes(body, "tools")) {
+		return true
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	found := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "additional_tools") {
+			return true
+		}
+		if hasNamespaceTool(item.Get("tools")) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, error) {
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil

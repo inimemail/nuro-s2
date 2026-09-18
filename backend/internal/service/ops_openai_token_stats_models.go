@@ -3,6 +3,7 @@ package service
 import "time"
 
 type OpsOpenAITokenStatsFilter struct {
+	Scope     string
 	TimeRange string
 	StartTime time.Time
 	EndTime   time.Time

@@ -3208,6 +3208,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	sawTerminal := false
 
 	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity gemini")
+	normalizedEventTerminated := false
 
 	// 仅发送一次错误事件，避免多次写入导致协议混乱
 	errorEventSent := false
@@ -3302,10 +3303,16 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				}
 
 				cw.Fprintf("data: %s\n\n", payload)
+				normalizedEventTerminated = true
 				continue
 			}
 
 			trimmed = strings.TrimSpace(trimmed)
+			if trimmed == "" && normalizedEventTerminated {
+				// The rewritten data frame already emitted its SSE separator.
+				normalizedEventTerminated = false
+				continue
+			}
 			if trimmed == "" || strings.HasPrefix(trimmed, ":") || strings.HasPrefix(strings.ToLower(trimmed), "event:") {
 				cw.Fprintf("%s\n", line)
 				continue

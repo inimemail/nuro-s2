@@ -1,3 +1,5 @@
+import { openCodeModels } from '@/utils/opencode'
+
 // =====================
 // 模型列表（硬编码，与 new-api 一致）
 // =====================
@@ -414,6 +416,7 @@ export const commonErrorCodes = [
 // 按平台获取模型
 export function getModelsByPlatform(platform: string): string[] {
   switch (platform) {
+    case 'opencode_go': return [...openCodeModels]
     case 'openai': return openaiModels
     case 'anthropic':
     case 'claude': return claudeModels
@@ -447,7 +450,7 @@ export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'antigravity') return antigravityPresetMappings
   if (platform === 'grok') return grokPresetMappings
   if (platform === 'bedrock') return bedrockPresetMappings
-  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax') return []
+  if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax' || platform === 'opencode_go') return []
   return anthropicPresetMappings
 }
 

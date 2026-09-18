@@ -32,25 +32,26 @@ func shouldStripOpenAIResponsesInputItemID(itemType, id string) bool {
 }
 
 func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
-	input := gjson.GetBytes(body, "input")
+	// A read-only view avoids copying the entire image-bearing input array.
+	input := gjson.Parse(openAIWSPayloadStringView(body)).Get("input")
 	if !input.IsArray() {
 		return body, false, nil
 	}
 
-	items := make([][]byte, 0)
+	items := make([]string, 0)
 	changed := false
 	var sanitizeErr error
 	index := 0
 	input.ForEach(func(_, item gjson.Result) bool {
 		currentIndex := index
 		index++
-		itemBody := []byte(item.Raw)
+		itemBody := item.Raw
 		if item.IsObject() {
 			itemType := item.Get("type")
 			id := item.Get("id")
 			if itemType.Type == gjson.String && id.Type == gjson.String &&
 				shouldStripOpenAIResponsesInputItemID(itemType.String(), id.String()) {
-				itemBody, sanitizeErr = sjson.DeleteBytes(itemBody, "id")
+				itemBody, sanitizeErr = sjson.Delete(itemBody, "id")
 				if sanitizeErr != nil {
 					sanitizeErr = fmt.Errorf("delete input.%d.id: %w", currentIndex, sanitizeErr)
 					return false
@@ -68,7 +69,15 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 		return body, false, nil
 	}
 
-	rebuilt := make([]byte, 0, len(input.Raw))
+	size := len(body) - len(input.Raw) + 2
+	for i, item := range items {
+		size += len(item)
+		if i > 0 {
+			size++
+		}
+	}
+	rebuilt := make([]byte, 0, size)
+	rebuilt = append(rebuilt, body[:input.Index]...)
 	rebuilt = append(rebuilt, '[')
 	for index, item := range items {
 		if index > 0 {
@@ -77,9 +86,6 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 		rebuilt = append(rebuilt, item...)
 	}
 	rebuilt = append(rebuilt, ']')
-	sanitized, err := sjson.SetRawBytes(body, "input", rebuilt)
-	if err != nil {
-		return nil, false, fmt.Errorf("replace sanitized input: %w", err)
-	}
-	return sanitized, true, nil
+	rebuilt = append(rebuilt, body[input.Index+len(input.Raw):]...)
+	return rebuilt, true, nil
 }

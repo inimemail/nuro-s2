@@ -45,6 +45,11 @@ func TestStripOpenAIResponsesInputNamespaces(t *testing.T) {
 	require.Equal(t, gjson.GetBytes(body, "input.0.large").Raw, gjson.GetBytes(got, "input.0.large").Raw)
 }
 
+func TestHasOpenAIResponsesNamespaceToolDeclaration_Lite(t *testing.T) {
+	require.True(t, hasOpenAIResponsesNamespaceToolDeclaration([]byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"codex_app","tools":[]}]}]}`)))
+	require.False(t, hasOpenAIResponsesNamespaceToolDeclaration([]byte(`{"input":[{"type":"message","role":"user","content":"namespace"}]}`)))
+}
+
 func TestStripOpenAIResponsesInputNamespacesNoop(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`{"input":"text","namespace":"top"}`),

@@ -1063,7 +1063,8 @@ export default {
       antigravity: 'Antigravity',
       kimi: 'Kimi',
       zhipu: '智谱',
-      deepseek: 'DeepSeek'
+      deepseek: 'DeepSeek',
+      opencode_go: 'OpenCode Go'
     },
     checkMode: {
       probe: '可用性探测',
@@ -1285,6 +1286,7 @@ export default {
     codeRedeemSuccess: '兑换成功！',
     failedToRedeem: '兑换失败，请检查兑换码后重试。',
     subscriptionRefreshFailed: '兑换成功，但订阅状态刷新失败。',
+    userRefreshFailed: '兑换成功，但账户信息刷新失败。',
     pleaseEnterCode: '请输入兑换码'
   },
 
@@ -3393,6 +3395,7 @@ export default {
 
     // Accounts Management
     accounts: {
+      refreshProjectPending: '凭据已刷新，但项目 ID 暂未获取到，请稍后重试。',
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
       createAccount: '添加账号',
@@ -3465,6 +3468,9 @@ export default {
         '已有账号仅同步 CRS 返回的字段，缺失字段保持原值；凭据按键合并，不会清空未下发的键；未勾选"同步代理"时保留原有代理。',
       crsBack: '返回',
       editAccount: '编辑账号',
+      duplicateAccount: '复制账号',
+      duplicateSuccess: '已复制为「{name}」，默认暂停调度，请确认配置后再启用',
+      duplicateFailed: '复制账号失败',
       deleteAccount: '删除账号',
       createSparkShadow: '创建 Spark 影子账号',
       createSparkShadowConfirm: "确定要为 OpenAI OAuth 账号 '{name}' 创建 Spark 独立额度影子账号吗？影子账号会复用父账号凭证，并继承代理与调度基础配置。",
@@ -3939,6 +3945,17 @@ export default {
       setupTokenLongLived: 'Setup Token（长期有效）',
       baseUrl: 'Base URL',
       baseUrlHint: '留空使用官方 Anthropic API',
+      openCode: {
+        // OpenCode account configuration
+        goDesc: '订阅套餐 · 5 小时 / 每周 / 每月用量窗口',
+        zenDesc: '按量付费 · 使用 Zen 模型目录与端点',
+        rules: '模型协议规则',
+        rulesHint: '按上游模型名从上到下匹配，支持末尾 *。未命中时使用 Chat Completions；固定协议模式下不使用规则。',
+        customize: '自定义规则', restore: '恢复默认规则', pattern: '模型匹配表达式', addRule: '添加规则',
+        invalidRules: '请填写有效模型名；仅支持末尾一个 *，最多 64 条规则。'
+      },
+      ollamaRecoveryTitle: '429 用量恢复探测',
+      ollamaRecoveryHint: '默认关闭。开启后在限流时异步查询用量；仅在窗口已耗尽且重置时间可信时更新冷却。探测失败保留原冷却。',
       cnProviders: {
         payg: '按量付费',
         paygDesc: '消耗账户余额，按 Token 计费。余额不足时自动冷却。',
@@ -5689,6 +5706,8 @@ export default {
         custom: '自定义'
       },
       openaiTokenStats: {
+        scopeOpenAILegacy: 'OpenAI 模型',
+        scopeAll: '全部平台',
         title: 'OpenAI Token 请求统计',
         viewModeTopN: 'TopN',
         viewModePagination: '分页',
@@ -7578,6 +7597,7 @@ export default {
         saveHint: '保存时随系统设置一起提交（点击页面底部「保存」按钮）。',
         serviceTier: 'service_tier 匹配',
         tierAll: '全部 tier',
+        tierMissing: '未指定 service_tier',
         tierPriority: 'priority（fast）',
         tierUltrafast: 'ultrafast',
         tierFlex: 'flex',

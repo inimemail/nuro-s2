@@ -1257,6 +1257,43 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	})
 }
 
+// Model returns one model from the same group-scoped catalog as Models.
+func (h *GatewayHandler) Model(c *gin.Context) {
+	modelID := strings.TrimSpace(c.Param("model"))
+	if modelID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "model not found"}})
+		return
+	}
+	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
+	var groupID *int64
+	platform := ""
+	if apiKey != nil && apiKey.Group != nil {
+		groupID = &apiKey.Group.ID
+		platform = apiKey.Group.Platform
+	}
+	if forced, ok := middleware2.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forced) != "" {
+		platform = forced
+	}
+	models := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+		models = filterModelsByCustomList(models, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
+	} else if len(models) == 0 {
+		models = defaultModelIDsForPlatform(platform)
+	}
+	found := false
+	for _, id := range models {
+		if id == modelID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "model not found"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": modelID, "object": "model", "owned_by": platform})
+}
+
 func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 	if platform == service.PlatformGrok {
 		writeGrokModelsList(c, modelIDs)
@@ -1414,7 +1451,7 @@ func customModelsListAllowsModel(availablePatterns []string, model string) bool 
 
 func defaultModelIDsForPlatform(platform string) []string {
 	switch platform {
-	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax:
+	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax, service.PlatformOpenCodeGo:
 		return service.DefaultCNModelIDs(platform)
 	case service.PlatformOpenAI:
 		return openai.DefaultModelIDs()

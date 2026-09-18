@@ -1059,7 +1059,8 @@ export default {
       antigravity: 'Antigravity',
       kimi: 'Kimi',
       zhipu: 'Zhipu',
-      deepseek: 'DeepSeek'
+      deepseek: 'DeepSeek',
+      opencode_go: 'OpenCode Go'
     },
     checkMode: {
       probe: 'Availability',
@@ -1281,6 +1282,7 @@ export default {
     codeRedeemSuccess: 'Code redeemed successfully!',
     failedToRedeem: 'Failed to redeem code. Please check the code and try again.',
     subscriptionRefreshFailed: 'Redeemed successfully, but failed to refresh subscription status.',
+    userRefreshFailed: 'Redeemed successfully, but failed to refresh account information.',
     pleaseEnterCode: 'Please enter a redeem code'
   },
 
@@ -3319,6 +3321,7 @@ export default {
 
     // Accounts
     accounts: {
+      refreshProjectPending: 'Credentials refreshed, but the project ID is not available yet. Please retry later.',
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',
@@ -3392,6 +3395,9 @@ export default {
         'Existing accounts only sync fields returned by CRS; missing fields keep their current values. Credentials are merged by key — keys not returned by CRS are preserved. Proxies are kept when "Sync proxies" is unchecked.',
       crsBack: 'Back',
       editAccount: 'Edit Account',
+      duplicateAccount: 'Duplicate Account',
+      duplicateSuccess: 'Created "{name}" with scheduling paused. Review its configuration before enabling it.',
+      duplicateFailed: 'Failed to duplicate account',
       deleteAccount: 'Delete Account',
       createSparkShadow: 'Create Spark Shadow',
       createSparkShadowConfirm: "Create a Spark quota shadow account for OpenAI OAuth account '{name}'? The shadow account reuses the parent credentials and inherits proxy plus baseline scheduling settings.",
@@ -3788,6 +3794,16 @@ export default {
       setupTokenLongLived: 'Setup Token (Long-lived)',
       baseUrl: 'Base URL',
       baseUrlHint: 'Leave default for official Anthropic API',
+      openCode: {
+        goDesc: 'Subscription · 5-hour, weekly and monthly usage windows',
+        zenDesc: 'Pay as you go · Zen model catalog and endpoints',
+        rules: 'Model protocol rules',
+        rulesHint: 'Match upstream model names in order, with an optional trailing *. Unmatched models use Chat Completions. Fixed protocol mode ignores these rules.',
+        customize: 'Customize rules', restore: 'Restore defaults', pattern: 'Model pattern', addRule: 'Add rule',
+        invalidRules: 'Enter valid model patterns with at most one trailing *. Maximum 64 rules.'
+      },
+      ollamaRecoveryTitle: '429 usage recovery probe',
+      ollamaRecoveryHint: 'Off by default. Query usage asynchronously after a rate limit. Update cooldown only for an exhausted window with a known reset time; keep the existing cooldown on probe failure.',
       cnProviders: {
         payg: 'Pay as you go',
         paygDesc: 'Consume account balance and pay per token. The account cools down when the balance is low.',
@@ -5546,6 +5562,8 @@ export default {
         '30d': 'Last 30 days'
       },
       openaiTokenStats: {
+        scopeOpenAILegacy: 'OpenAI models',
+        scopeAll: 'All platforms',
         title: 'OpenAI Token Request Stats',
         viewModeTopN: 'TopN',
         viewModePagination: 'Pagination',
@@ -7436,6 +7454,7 @@ export default {
         saveHint: 'Saved together with system settings (click the global Save button at the bottom of the page).',
         serviceTier: 'service_tier match',
         tierAll: 'All tiers',
+        tierMissing: 'service_tier not specified',
         tierPriority: 'priority (fast)',
         tierUltrafast: 'ultrafast',
         tierFlex: 'flex',

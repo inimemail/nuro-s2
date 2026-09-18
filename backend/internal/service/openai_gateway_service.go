@@ -1907,7 +1907,7 @@ func openAICompactSupportTier(account *Account, native ...bool) int {
 // compact-support checks used during account selection.
 func normalizeOpenAICompatibleRequestPlatform(platform string) string {
 	switch strings.TrimSpace(platform) {
-	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax:
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo:
 		return strings.TrimSpace(platform)
 	default:
 		return PlatformOpenAI
@@ -2172,26 +2172,31 @@ func openAICodexSnapshotStaleForPause(extra map[string]any, now time.Time) bool 
 // timestamp and falls back to codex_<window>_reset_after_seconds anchored at
 // codex_usage_updated_at, mirroring AccountUsageService's window-progress logic.
 func openAIQuotaWindowReset(extra map[string]any, window string, now time.Time) bool {
+	resetAt, ok := openAICodexWindowResetAt(extra, window)
+	return ok && !now.Before(resetAt)
+}
+
+// Absolute reset timestamps are authoritative. Relative reset values are
+// anchored to the snapshot timestamp; anchoring them to the current score
+// time would move the reset window forward on every scheduler pass.
+func openAICodexWindowResetAt(extra map[string]any, window string) (time.Time, bool) {
 	if len(extra) == 0 {
-		return false
+		return time.Time{}, false
 	}
 	if resetAtRaw, ok := extra["codex_"+window+"_reset_at"]; ok {
 		if resetAt, err := parseTime(fmt.Sprint(resetAtRaw)); err == nil {
-			return !now.Before(resetAt)
+			return resetAt, true
 		}
 	}
 	resetAfter := parseExtraInt(extra["codex_"+window+"_reset_after_seconds"])
 	if resetAfter <= 0 {
-		return false
+		return time.Time{}, false
 	}
-	base := now
-	if updatedRaw, ok := extra["codex_usage_updated_at"]; ok {
-		if updatedAt, err := parseTime(fmt.Sprint(updatedRaw)); err == nil {
-			base = updatedAt
-		}
+	updatedAt, err := parseTime(fmt.Sprint(extra["codex_usage_updated_at"]))
+	if err != nil {
+		return time.Time{}, false
 	}
-	resetAt := base.Add(time.Duration(resetAfter) * time.Second)
-	return !now.Before(resetAt)
+	return updatedAt.Add(time.Duration(resetAfter) * time.Second), true
 }
 
 func readOpenAIQuotaUsedPercent(extra map[string]any, window string) float64 {
@@ -4035,7 +4040,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", fmt.Errorf("unsupported grok account type: %s", account.Type)
 		}
 	}
-	if account != nil && (account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek || account.Platform == PlatformMiniMax) {
+	if account != nil && (account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek || account.Platform == PlatformMiniMax || account.Platform == PlatformOpenCodeGo) {
 		if account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream {
 			return "", "", fmt.Errorf("unsupported %s account type: %s", account.Platform, account.Type)
 		}
@@ -4488,8 +4493,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		body = sanitizedBody
 	}
 	clearOpenAIResponsesNamespaceNames(c)
+	if account != nil && account.IsOpenCodeGo() {
+		reqModel, _, _ := extractOpenAIRequestMetaFromBody(body)
+		switch account.ResolveOpenCodeGoUpstreamProtocol(resolveOpenAIForwardModel(account, reqModel, "")) {
+		case APIProtocolAnthropic:
+			return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
+		case APIProtocolChatCompletions:
+			return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+		}
+	}
 	if account != nil && (account.IsAnthropicProtocol() ||
-		(account.IsCNProvider() && account.IsAdaptiveAPIProtocol() && !account.IsDeepSeek())) {
+		(account.IsCNProvider() && account.IsAdaptiveAPIProtocol() && !account.IsDeepSeek() && !account.IsOpenCodeGo())) {
 		reqModel, _, _ := extractOpenAIRequestMetaFromBody(body)
 		return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
 	}
@@ -4590,7 +4604,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
 	if shouldStripOpenAIResponsesInputNamespaces(account, wsDecision.Transport, passthroughEnabled) {
-		keepToolCallNamespaces := account.IsOpenAIOAuthLike() && !compactPath && !shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath)
+		keepToolCallNamespaces := shouldKeepOpenAIResponsesToolCallNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath, body)
 		strippedBody, stripErr := stripOpenAIResponsesInputNamespaces(body, keepToolCallNamespaces)
 		if stripErr != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, stripErr.Error(), "")
@@ -6316,6 +6330,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		targetURL = chatgptCodexURL
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
+		if account.IsOpenCodeGo() {
+			requestedModel, _, _ := extractOpenAIRequestMetaFromBody(body)
+			if account.ResolveOpenCodeGoUpstreamProtocol(requestedModel) == APIProtocolResponses {
+				baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+			}
+		}
 		if account.IsDeepSeek() && account.IsAdaptiveAPIProtocol() {
 			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
 		}
@@ -8494,6 +8514,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
+		if account.IsOpenCodeGo() {
+			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
 		if baseURL == "" {
 			targetURL = openaiPlatformAPIURL
 		} else {
@@ -12596,6 +12619,19 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 			changed = true
 		}
 	}
+	if input := gjson.GetBytes(normalized, "input"); input.IsArray() {
+		for i, item := range input.Array() {
+			if !item.IsObject() || !item.Get("internal_chat_message_metadata_passthrough").Exists() {
+				continue
+			}
+			next, err := sjson.DeleteBytes(normalized, fmt.Sprintf("input.%d.internal_chat_message_metadata_passthrough", i))
+			if err != nil {
+				return body, false, fmt.Errorf("normalize oauth input metadata: %w", err)
+			}
+			normalized = next
+			changed = true
+		}
+	}
 
 	if compact {
 		if store := gjson.GetBytes(normalized, "store"); store.Exists() {
@@ -12783,7 +12819,7 @@ func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, us
 				continue
 			}
 			ruleTier := strings.ToLower(strings.TrimSpace(rule.ServiceTier))
-			if ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier {
+			if (tier == OpenAIFastTierMissing && ruleTier != OpenAIFastTierMissing) || (tier != OpenAIFastTierMissing && ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier) {
 				continue
 			}
 			eff := BetaPolicyRule{
@@ -12797,6 +12833,14 @@ func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, us
 		}
 	}
 	return BetaPolicyActionPass, ""
+}
+
+func (s *OpenAIGatewayService) shouldForceOpenAIFastPriorityForMissingTier(ctx context.Context, account *Account, model string) bool {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
+	action, _ := s.evaluateOpenAIFastPolicy(ctx, account, model, OpenAIFastTierMissing)
+	return action == OpenAIFastPolicyActionForcePriority
 }
 
 func openAIFastPolicyUserID(ctx context.Context) int64 {
@@ -12883,10 +12927,10 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 		body = updated
 	}
 	rawTier := gjson.GetBytes(body, "service_tier").String()
-	if rawTier == "" {
-		return body, nil
-	}
 	normTier := normalizedOpenAIServiceTierValue(rawTier)
+	if rawTier == "" && account != nil && account.Platform == PlatformOpenAI {
+		normTier = OpenAIFastTierMissing
+	}
 	if normTier == "" {
 		return body, nil
 	}
@@ -12912,7 +12956,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 		return updated, nil
 	default:
 		// pass：把别名（如 "fast"）写回为规范值（"priority"）。
-		if normTier == rawTier {
+		if normTier == rawTier || normTier == OpenAIFastTierMissing {
 			return body, nil
 		}
 		updated, err := sjson.SetBytes(body, "service_tier", normTier)
@@ -12995,7 +13039,11 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 	}
 	rawTier := gjson.GetBytes(frame, "service_tier").String()
 	if rawTier == "" {
-		return frame, nil, nil
+		updated, err := s.applyOpenAIFastPolicyToBody(ctx, account, model, frame)
+		if blocked, ok := err.(*OpenAIFastBlockedError); ok {
+			return frame, blocked, nil
+		}
+		return updated, nil, err
 	}
 	normTier := normalizedOpenAIServiceTierValue(rawTier)
 	if normTier == "" {

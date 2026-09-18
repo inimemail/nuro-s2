@@ -52,6 +52,7 @@ vi.mock('vue-i18n', async () => {
 
 import EditAccountModal from '../EditAccountModal.vue'
 import OpenAIPlanTypeSelect from '../OpenAIPlanTypeSelect.vue'
+import OpenCodeSettings from '../OpenCodeSettings.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -366,6 +367,32 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('round-trips OpenCode mode and rules and can restore default rules', async () => {
+    const account = buildKimiResponsesAccount()
+    account.platform = 'opencode_go'
+    account.credentials = { api_key: 'test-key', base_url: 'https://opencode.ai/zen/go/v1', account_mode: 'go', protocol_rules: [{ pattern: 'custom-*', protocol: 'responses' }] }
+    account.extra = { cn_api_mode: 'adaptive' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await flushPromises()
+    const settings = wrapper.getComponent(OpenCodeSettings)
+    expect(settings.props('rules')).toEqual(account.credentials.protocol_rules)
+    settings.vm.$emit('update:mode', 'zen')
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials.account_mode).toBe('zen')
+    expect(credentials.base_url).toBe('https://opencode.ai/zen/v1')
+    expect(credentials.protocol_rules).toEqual(account.credentials.protocol_rules)
+    settings.vm.$emit('update:rules', null)
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[1]?.[1]?.credentials.protocol_rules).toBeNull()
+    wrapper.unmount()
+  })
   it.each(['', 'business', 'enterprise', 'future_plan'])('preserves the %s tier when saving unrelated edits', async (tier) => {
     const account = buildOpenAIOAuthAccount()
     if (tier) account.credentials.plan_type = tier

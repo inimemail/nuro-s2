@@ -252,6 +252,7 @@ import {
   PROVIDER_KIMI,
   PROVIDER_ZHIPU,
   PROVIDER_DEEPSEEK,
+  PROVIDER_OPENCODE_GO,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
 } from '@/constants/channelMonitor'
@@ -275,6 +276,7 @@ const providerTabs = computed<{ value: Provider; label: string }[]>(() => [
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
+  { value: PROVIDER_OPENCODE_GO, label: t('monitorCommon.providers.opencode_go') },
   { value: 'minimax', label: 'MiniMax' },
 ])
 
@@ -296,6 +298,7 @@ const countByProvider = computed<Record<Provider, number>>(() => {
     kimi: 0,
     zhipu: 0,
     deepseek: 0,
+    opencode_go: 0,
     minimax: 0,
   }
   for (const t of templates.value) out[t.provider]++

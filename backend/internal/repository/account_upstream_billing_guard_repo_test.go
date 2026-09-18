@@ -215,7 +215,7 @@ func TestEnsureEnabledBillingGuardRequiresConfiguredSamePlatformGroup(t *testing
 		Type:                        service.AccountTypeAPIKey,
 		UpstreamBillingGuardEnabled: true,
 	}
-	mock.ExpectQuery(`(?s)SELECT EXISTS.*g\.platform = \$2.*g\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax'\).*g\.upstream_billing_guard_max_multiplier IS NOT NULL`).
+	mock.ExpectQuery(`(?s)SELECT EXISTS.*g\.platform = \$2.*g\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'\).*g\.upstream_billing_guard_max_multiplier IS NOT NULL`).
 		WithArgs(account.ID, account.Platform).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 

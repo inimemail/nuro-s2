@@ -94,7 +94,8 @@
           </div>
         </div>
         <div v-if="isCNProvider" class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600">
-          <div>
+          <OpenCodeSettings v-if="account?.platform === 'opencode_go'" :mode="openCodeMode" v-model:rules="openCodeRules" :adaptive="cnApiMode === 'adaptive'" @update:mode="selectOpenCodeMode" />
+          <div v-else>
             <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
             <div class="mt-2 grid gap-3 sm:grid-cols-2" data-testid="cn-account-type-options">
               <button
@@ -3898,6 +3899,8 @@ import PromptCacheCreationOptimizationControl from '@/components/account/PromptC
 import DownstreamCacheMarkupControl from '@/components/account/DownstreamCacheMarkupControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import OpenCodeSettings from '@/components/account/OpenCodeSettings.vue'
+import { openCodeBaseURL, validOpenCodeRules, type OpenCodeMode, type OpenCodeRule } from '@/utils/opencode'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import PoolModeRetryConditions from '@/components/account/PoolModeRetryConditions.vue'
 import PoolModeRaceRetryConditions, { type PoolModeRaceRetryRule } from '@/components/account/PoolModeRaceRetryConditions.vue'
@@ -4868,6 +4871,7 @@ const tempUnschedPresets = computed(() => [
 
 // Computed: default base URL based on platform
 const defaultBaseUrl = computed(() => {
+  if (props.account?.platform === 'opencode_go') return openCodeBaseURL(openCodeMode.value, cnApiMode.value)
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
   if (props.account?.platform === 'grok') return 'https://api.x.ai/v1'
@@ -4882,11 +4886,21 @@ type CNBillingMode = 'payg' | 'coding_plan'
 type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 const cnBillingMode = ref<CNBillingMode>('payg')
 const cnApiMode = ref<CNApiMode>('adaptive')
+const openCodeMode = ref<OpenCodeMode>('go')
+const openCodeRules = ref<OpenCodeRule[] | null>(null)
+function selectOpenCodeMode(mode: OpenCodeMode) {
+  const oldDefault = openCodeBaseURL(openCodeMode.value, cnApiMode.value)
+  openCodeMode.value = mode
+  if (!editBaseUrl.value || editBaseUrl.value === oldDefault) editBaseUrl.value = openCodeBaseURL(mode, cnApiMode.value)
+  for (const option of cnAdaptiveProtocolOptions.value) {
+    if (!adaptiveBaseUrlOverrides.value[option.value]) adaptiveBaseUrls.value[option.value] = option.url
+  }
+}
 const adaptiveBaseUrls = ref<Record<string, string>>({})
 const adaptiveBaseUrlOverrides = ref<Record<string, boolean>>({})
 const editZhipuOrganization = ref('')
 const editZhipuProject = ref('')
-const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek', 'minimax'].includes(props.account?.platform || ''))
+const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'].includes(props.account?.platform || ''))
 const cnBillingPlanSupported = computed(() => ['kimi', 'zhipu', 'minimax'].includes(props.account?.platform || ''))
 const cnApiProtocolOptions = computed(() => {
   const options: Array<{ value: CNApiMode; label: string; description: string }> = [
@@ -4902,10 +4916,11 @@ const cnApiProtocolOptions = computed(() => {
       description: t('admin.accounts.cnProviders.anthropicDesc')
     }
   ]
-  if (props.account?.platform === 'deepseek' || props.account?.platform === 'kimi' || props.account?.platform === 'minimax') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
+  if (props.account?.platform === 'deepseek' || props.account?.platform === 'kimi' || props.account?.platform === 'minimax' || props.account?.platform === 'opencode_go') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
   return options
 })
 const cnAdaptiveProtocolOptions = computed(() => {
+  if (props.account?.platform === 'opencode_go') return ['chat_completions', 'anthropic', 'responses'].map(value => ({ value, label: value === 'chat_completions' ? 'Chat Completions' : value === 'anthropic' ? 'Anthropic' : 'Responses', url: openCodeBaseURL(openCodeMode.value, value) }))
   const options = [
     { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : props.account?.platform === 'zhipu' ? (cnBillingMode.value === 'coding_plan' ? 'https://open.bigmodel.cn/api/coding/paas/v4' : 'https://open.bigmodel.cn/api/paas/v4') : props.account?.platform === 'deepseek' ? 'https://api.deepseek.com/v1' : 'https://api.minimaxi.com/v1' },
     { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : props.account?.platform === 'deepseek' ? 'https://api.deepseek.com/anthropic' : 'https://api.minimaxi.com/anthropic' }
@@ -4927,6 +4942,7 @@ function restoreAdaptiveUrlLink(protocol: string, fallback: string) {
   adaptiveBaseUrls.value[protocol] = protocol === 'chat_completions' ? editBaseUrl.value.trim() || fallback : fallback
 }
 const cnBaseUrlPresets = computed(() => {
+  if (props.account?.platform === 'opencode_go') return [{ label: `OpenCode ${openCodeMode.value === 'go' ? 'Go' : 'Zen'}`, url: openCodeBaseURL(openCodeMode.value, cnApiMode.value) }]
   if (props.account?.platform === 'kimi' && cnApiMode.value === 'anthropic') return [{ label: t('admin.accounts.cnProviders.anthropic'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic' }]
   if (props.account?.platform === 'kimi' && cnApiMode.value === 'responses') return [{ label: t('admin.accounts.cnProviders.responses'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1' }]
   if (props.account?.platform === 'kimi') return [
@@ -5495,9 +5511,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     newAccount.platform === 'zhipu' && typeof credentials?.zhipu_project === 'string'
       ? credentials.zhipu_project
       : ''
-  const storedCNApiMode = accountExtra.cn_api_mode ?? credentials?.api_protocol
+  openCodeMode.value = (credentials?.account_mode ?? accountExtra.account_mode) === 'zen' ? 'zen' : 'go'
+  openCodeRules.value = Array.isArray(credentials?.protocol_rules) ? credentials.protocol_rules.map(rule => ({ ...rule })) as OpenCodeRule[] : null
+  const storedCNApiMode = accountExtra.cn_api_mode ?? credentials?.api_protocol ?? (newAccount.platform === 'opencode_go' ? 'adaptive' : 'chat_completions')
   cnApiMode.value = storedCNApiMode === 'adaptive' || storedCNApiMode === 'anthropic' ||
-    (storedCNApiMode === 'responses' && ['deepseek', 'kimi', 'minimax'].includes(newAccount.platform))
+    (storedCNApiMode === 'responses' && ['deepseek', 'kimi', 'minimax', 'opencode_go'].includes(newAccount.platform))
     ? storedCNApiMode as CNApiMode
     : 'chat_completions'
   const configuredAdaptiveUrls = (accountExtra.cn_api_base_urls ?? credentials?.api_base_urls) as Record<string, unknown> | undefined
@@ -6655,6 +6673,14 @@ const handleSubmit = async () => {
         delete newCredentials.api_base_urls
       }
 
+      if (props.account.platform === 'opencode_go') {
+        if (!validOpenCodeRules(openCodeRules.value)) {
+          appStore.showError(t('admin.accounts.openCode.invalidRules'))
+          return
+        }
+        newCredentials.account_mode = openCodeMode.value
+        newCredentials.protocol_rules = openCodeRules.value
+      }
       if (props.account.platform === 'zhipu' && cnBillingMode.value === 'coding_plan') {
         const organization = editZhipuOrganization.value.trim()
         const project = editZhipuProject.value.trim()

@@ -235,8 +235,12 @@ type openAIWSConn struct {
 	closedCh  chan struct{}
 	closeOnce sync.Once
 
-	readMu  sync.Mutex
-	writeMu sync.Mutex
+	readMu         sync.Mutex
+	writeMu        sync.Mutex
+	readerResults  chan []byte
+	readerErrMu    sync.Mutex
+	readerErr      error
+	onReaderClosed atomic.Pointer[func()]
 
 	waiters       atomic.Int32
 	createdAtNano atomic.Int64
@@ -256,7 +260,46 @@ func newOpenAIWSConn(id string, _ int64, ws openAIWSClientConn, handshakeHeaders
 	conn.leaseCh <- struct{}{}
 	conn.createdAtNano.Store(now.UnixNano())
 	conn.lastUsedNano.Store(now.UnixNano())
+	if capable, ok := ws.(openAIWSReaderLoopCapable); ok && capable.RequiresReaderLoop() {
+		conn.readerResults = make(chan []byte, 1)
+		go conn.runReaderLoop()
+	}
 	return conn
+}
+
+func (c *openAIWSConn) runReaderLoop() {
+	defer close(c.readerResults)
+	for {
+		payload, err := c.ws.ReadMessage(context.Background())
+		if err != nil {
+			c.readerErrMu.Lock()
+			c.readerErr = err
+			c.readerErrMu.Unlock()
+			c.close()
+			if callback := c.onReaderClosed.Load(); callback != nil {
+				(*callback)()
+			}
+			return
+		}
+		select {
+		case c.readerResults <- payload:
+		case <-c.closedCh:
+			return
+		}
+	}
+}
+
+func (c *openAIWSConn) readerError() error {
+	c.readerErrMu.Lock()
+	defer c.readerErrMu.Unlock()
+	if c.readerErr != nil {
+		return c.readerErr
+	}
+	return errOpenAIWSConnClosed
+}
+
+func (c *openAIWSConn) leaseHasPendingData() bool {
+	return c.readerResults != nil && len(c.readerResults) > 0
 }
 
 func (c *openAIWSConn) tryAcquire() bool {
@@ -270,6 +313,10 @@ func (c *openAIWSConn) tryAcquire() bool {
 	}
 	select {
 	case <-c.leaseCh:
+		if c.leaseHasPendingData() {
+			c.close()
+			return false
+		}
 		select {
 		case <-c.closedCh:
 			c.release()
@@ -293,6 +340,10 @@ func (c *openAIWSConn) acquire(ctx context.Context) error {
 		case <-c.closedCh:
 			return errOpenAIWSConnClosed
 		case <-c.leaseCh:
+			if c.leaseHasPendingData() {
+				c.close()
+				return errOpenAIWSConnClosed
+			}
 			select {
 			case <-c.closedCh:
 				c.release()
@@ -322,7 +373,11 @@ func (c *openAIWSConn) close() {
 	c.closeOnce.Do(func() {
 		close(c.closedCh)
 		if c.ws != nil {
-			_ = c.ws.Close()
+			if closer, ok := c.ws.(openAIWSForceCloser); ok {
+				_ = closer.CloseNow()
+			} else {
+				_ = c.ws.Close()
+			}
 		}
 		select {
 		case c.leaseCh <- struct{}{}:
@@ -380,7 +435,9 @@ func (c *openAIWSConn) readMessageWithContextTimeout(parent context.Context, tim
 	}
 	select {
 	case <-c.closedCh:
-		return nil, errOpenAIWSConnClosed
+		if c.readerResults == nil {
+			return nil, errOpenAIWSConnClosed
+		}
 	default:
 	}
 
@@ -403,6 +460,29 @@ func (c *openAIWSConn) readMessage(readCtx context.Context) ([]byte, error) {
 	}
 	if readCtx == nil {
 		readCtx = context.Background()
+	}
+	if c.readerResults != nil {
+		// Drain an already-read terminal before observing a peer close. Buffered
+		// responses must not disappear when the upstream closes immediately.
+		select {
+		case payload, ok := <-c.readerResults:
+			if !ok {
+				return nil, c.readerError()
+			}
+			c.touch()
+			return payload, nil
+		default:
+		}
+		select {
+		case payload, ok := <-c.readerResults:
+			if !ok {
+				return nil, c.readerError()
+			}
+			c.touch()
+			return payload, nil
+		case <-readCtx.Done():
+			return nil, readCtx.Err()
+		}
 	}
 	payload, err := c.ws.ReadMessage(readCtx)
 	if err != nil {
@@ -831,13 +911,25 @@ func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireReque
 	return p.acquire(ctx, cloneOpenAIWSAcquireRequest(req), 0)
 }
 
-func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireRequest, retry int) (*openAIWSConnLease, error) {
+func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireRequest, retry int) (result *openAIWSConnLease, retErr error) {
 	if p == nil || req.Account == nil || req.Account.ID <= 0 {
 		return nil, errors.New("invalid ws acquire request")
 	}
 	if stringsTrim(req.WSURL) == "" {
 		return nil, errors.New("ws url is empty")
 	}
+	var reselectQueueWait time.Duration
+	queueCounted := false
+	defer func() {
+		// A pool-change wakeup can return through any fast acquisition path.
+		// Preserve time already spent waiting even when that path has no wait.
+		if reselectQueueWait > 0 {
+			p.metrics.acquireQueueWaitMs.Add(reselectQueueWait.Milliseconds())
+			if result != nil {
+				result.queueWait += reselectQueueWait
+			}
+		}
+	}()
 
 retryAcquire:
 	accountID := req.Account.ID
@@ -851,7 +943,7 @@ retryAcquire:
 	ap.mu.Lock()
 	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&req)
 	now := time.Now()
-	if ap.lastCleanupAt.IsZero() || now.Sub(ap.lastCleanupAt) >= openAIWSAcquireCleanupInterval {
+	if ap.lastCleanupAt.IsZero() || now.Sub(ap.lastCleanupAt) >= openAIWSAcquireCleanupInterval || accountPoolHasClosedConnLocked(ap) {
 		evicted = p.cleanupAccountLocked(ap, now, effectiveMaxConns)
 		ap.lastCleanupAt = now
 	}
@@ -1051,6 +1143,9 @@ retryAcquire:
 		}
 	}
 
+	if accountPoolHasClosedConnLocked(ap) {
+		evicted = append(evicted, p.cleanupAccountLocked(ap, now, effectiveMaxConns)...)
+	}
 	if req.ForceNewConn && len(ap.conns)+ap.creating >= effectiveMaxConns {
 		if idle := p.pickOldestIdleConnLocked(ap); idle != nil {
 			delete(ap.conns, idle.id)
@@ -1127,18 +1222,27 @@ retryAcquire:
 		return nil, errOpenAIWSConnQueueFull
 	}
 	target.waiters.Add(1)
+	changedCh := ap.changeChannelLocked()
 	ap.mu.Unlock()
 	closeOpenAIWSConns(evicted)
-	defer target.waiters.Add(-1)
 	waitStart := time.Now()
-	p.metrics.acquireQueueWaitTotal.Add(1)
+	if !queueCounted {
+		p.metrics.acquireQueueWaitTotal.Add(1)
+		queueCounted = true
+	}
 
-	if err := target.acquire(ctx); err != nil {
+	if err := target.acquireOrPoolChange(ctx, changedCh); err != nil {
+		target.waiters.Add(-1)
+		if errors.Is(err, errOpenAIWSPoolChanged) {
+			reselectQueueWait += time.Since(waitStart)
+			goto retryAcquire
+		}
 		if errors.Is(err, errOpenAIWSConnClosed) && retry < 1 {
 			return p.acquire(ctx, req, retry+1)
 		}
 		return nil, err
 	}
+	target.waiters.Add(-1)
 	if p.shouldHealthCheckConn(target) {
 		if err := target.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
 			target.release()
@@ -1665,7 +1769,48 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
 	pooledConn.betaFeatures = normalizeOpenAIWSBetaFeatures(req.Headers)
+	callback := func() { p.evictConn(req.Account.ID, id) }
+	pooledConn.onReaderClosed.Store(&callback)
 	return pooledConn, nil
+}
+
+var errOpenAIWSPoolChanged = errors.New("openai ws account pool changed")
+
+func accountPoolHasClosedConnLocked(ap *openAIWSAccountPool) bool {
+	for _, conn := range ap.conns {
+		if conn == nil {
+			continue
+		}
+		select {
+		case <-conn.closedCh:
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+func (c *openAIWSConn) acquireOrPoolChange(ctx context.Context, changed <-chan struct{}) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-changed:
+		return errOpenAIWSPoolChanged
+	case <-c.closedCh:
+		return errOpenAIWSConnClosed
+	case <-c.leaseCh:
+		if c.leaseHasPendingData() {
+			c.close()
+			return errOpenAIWSConnClosed
+		}
+		select {
+		case <-c.closedCh:
+			c.release()
+			return errOpenAIWSConnClosed
+		default:
+			return nil
+		}
+	}
 }
 
 func (p *openAIWSConnPool) nextConnID(accountID int64) string {

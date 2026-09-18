@@ -151,7 +151,7 @@ apiClient.interceptors.response.use(
             const tokens = await refreshAuthTokens({ failedAccessToken })
             if (originalRequest.headers) originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`
             return apiClient(originalRequest)
-          } catch {
+          } catch (refreshError) {
             const sessionChanged = localStorage.getItem('refresh_token') !== refreshToken || localStorage.getItem('auth_user') !== refreshSessionUser
             if (sessionChanged) {
               return Promise.reject({
@@ -159,6 +159,21 @@ apiClient.interceptors.response.use(
                 code: 'AUTH_SESSION_CHANGED',
                 message: 'Authentication session changed while refreshing.'
               })
+            }
+
+            // A network/server failure is not proof that the refresh token is
+            // invalid. Keep the session so the next user action can retry.
+            if (axios.isAxiosError(refreshError)) {
+              const refreshStatus = refreshError.response?.status ?? 0
+              if (refreshStatus === 0 || refreshStatus === 429 || refreshStatus >= 500) {
+                return Promise.reject({
+                  status: refreshStatus,
+                  code: 'TOKEN_REFRESH_UNAVAILABLE',
+                  message: getLocale().startsWith('zh')
+                    ? '登录服务暂时不可用，请稍后重试。'
+                    : 'Authentication service is temporarily unavailable. Please try again.'
+                })
+              }
             }
 
             // Clear tokens and redirect to login

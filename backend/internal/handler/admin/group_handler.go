@@ -192,7 +192,7 @@ func NewGroupHandler(adminService service.AdminService, dashboardService *servic
 type CreateGroupRequest struct {
 	Name                              string                        `json:"name" binding:"required"`
 	Description                       string                        `json:"description"`
-	Platform                          string                        `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax composite"`
+	Platform                          string                        `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go composite"`
 	RateMultiplier                    float64                       `json:"rate_multiplier"`
 	UpstreamBillingGuardMaxMultiplier optionalLimitField            `json:"upstream_billing_guard_max_multiplier"`
 	UpstreamBillingGuardMinMultiplier optionalLimitField            `json:"upstream_billing_guard_min_multiplier"`
@@ -238,20 +238,20 @@ type CreateGroupRequest struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string `json:"supported_model_scopes"`
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch              bool                                      `json:"allow_messages_dispatch"`
-	AllowLive                          bool                                      `json:"allow_live"`
-	EdgeProtectionEnabled              *bool                                     `json:"edge_protection_enabled"`
-	RequireOAuthOnly                   bool                                      `json:"require_oauth_only"`
-	RequirePrivacySet                  bool                                      `json:"require_privacy_set"`
-	DefaultMappedModel                 string                                    `json:"default_mapped_model"`
-	MessagesDispatchModelConfig        service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig                   service.GroupModelsListConfig             `json:"models_list_config"`
-	CodexModelsManifestConfig          service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
-	StrictModelPriorityOnModelMismatch bool                                      `json:"strict_model_priority_on_model_mismatch"`
-	AccountSchedulingStrategy          string                                    `json:"account_scheduling_strategy"`
-	AdaptiveTTFTSwitchEnabled          *bool                                     `json:"adaptive_ttft_switch_enabled"`
-	AdaptiveTTFTSwitchThresholdSeconds *int                                      `json:"adaptive_ttft_switch_threshold_seconds"`
-	AdaptiveHealthSampleFreshnessMinutes *int                                    `json:"adaptive_health_sample_freshness_minutes"`
+	AllowMessagesDispatch                bool                                      `json:"allow_messages_dispatch"`
+	AllowLive                            bool                                      `json:"allow_live"`
+	EdgeProtectionEnabled                *bool                                     `json:"edge_protection_enabled"`
+	RequireOAuthOnly                     bool                                      `json:"require_oauth_only"`
+	RequirePrivacySet                    bool                                      `json:"require_privacy_set"`
+	DefaultMappedModel                   string                                    `json:"default_mapped_model"`
+	MessagesDispatchModelConfig          service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
+	ModelsListConfig                     service.GroupModelsListConfig             `json:"models_list_config"`
+	CodexModelsManifestConfig            service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
+	StrictModelPriorityOnModelMismatch   bool                                      `json:"strict_model_priority_on_model_mismatch"`
+	AccountSchedulingStrategy            string                                    `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled            *bool                                     `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds   *int                                      `json:"adaptive_ttft_switch_threshold_seconds"`
+	AdaptiveHealthSampleFreshnessMinutes *int                                      `json:"adaptive_health_sample_freshness_minutes"`
 	// 分组 RPM 上限（0 = 不限制）
 	RPMLimit                    int                              `json:"rpm_limit"`
 	ForceOpenAIFast             bool                             `json:"force_openai_fast"`
@@ -266,7 +266,7 @@ type CreateGroupRequest struct {
 type UpdateGroupRequest struct {
 	Name                              string                         `json:"name"`
 	Description                       string                         `json:"description"`
-	Platform                          string                         `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax composite"`
+	Platform                          string                         `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go composite"`
 	RateMultiplier                    *float64                       `json:"rate_multiplier"`
 	UpstreamBillingGuardMaxMultiplier optionalLimitField             `json:"upstream_billing_guard_max_multiplier"`
 	UpstreamBillingGuardMinMultiplier optionalLimitField             `json:"upstream_billing_guard_min_multiplier"`
@@ -313,20 +313,20 @@ type UpdateGroupRequest struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string `json:"supported_model_scopes"`
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch              *bool                                      `json:"allow_messages_dispatch"`
-	AllowLive                          *bool                                      `json:"allow_live"`
-	EdgeProtectionEnabled              optionalBoolField                          `json:"edge_protection_enabled"`
-	RequireOAuthOnly                   *bool                                      `json:"require_oauth_only"`
-	RequirePrivacySet                  *bool                                      `json:"require_privacy_set"`
-	DefaultMappedModel                 *string                                    `json:"default_mapped_model"`
-	MessagesDispatchModelConfig        *service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig                   *service.GroupModelsListConfig             `json:"models_list_config"`
-	CodexModelsManifestConfig          *service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
-	StrictModelPriorityOnModelMismatch *bool                                      `json:"strict_model_priority_on_model_mismatch"`
-	AccountSchedulingStrategy          *string                                    `json:"account_scheduling_strategy"`
-	AdaptiveTTFTSwitchEnabled          *bool                                      `json:"adaptive_ttft_switch_enabled"`
-	AdaptiveTTFTSwitchThresholdSeconds *int                                       `json:"adaptive_ttft_switch_threshold_seconds"`
-	AdaptiveHealthSampleFreshnessMinutes *int                                     `json:"adaptive_health_sample_freshness_minutes"`
+	AllowMessagesDispatch                *bool                                      `json:"allow_messages_dispatch"`
+	AllowLive                            *bool                                      `json:"allow_live"`
+	EdgeProtectionEnabled                optionalBoolField                          `json:"edge_protection_enabled"`
+	RequireOAuthOnly                     *bool                                      `json:"require_oauth_only"`
+	RequirePrivacySet                    *bool                                      `json:"require_privacy_set"`
+	DefaultMappedModel                   *string                                    `json:"default_mapped_model"`
+	MessagesDispatchModelConfig          *service.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
+	ModelsListConfig                     *service.GroupModelsListConfig             `json:"models_list_config"`
+	CodexModelsManifestConfig            *service.GroupCodexModelsManifestConfig    `json:"codex_models_manifest_config"`
+	StrictModelPriorityOnModelMismatch   *bool                                      `json:"strict_model_priority_on_model_mismatch"`
+	AccountSchedulingStrategy            *string                                    `json:"account_scheduling_strategy"`
+	AdaptiveTTFTSwitchEnabled            *bool                                      `json:"adaptive_ttft_switch_enabled"`
+	AdaptiveTTFTSwitchThresholdSeconds   *int                                       `json:"adaptive_ttft_switch_threshold_seconds"`
+	AdaptiveHealthSampleFreshnessMinutes *int                                       `json:"adaptive_health_sample_freshness_minutes"`
 	// 分组 RPM 上限（0 = 不限制）；nil 表示未提供不改动
 	RPMLimit                    *int                              `json:"rpm_limit"`
 	ForceOpenAIFast             *bool                             `json:"force_openai_fast"`
@@ -448,70 +448,70 @@ func (h *GroupHandler) Create(c *gin.Context) {
 	}
 
 	group, err := h.adminService.CreateGroup(c.Request.Context(), &service.CreateGroupInput{
-		Name:                               req.Name,
-		Description:                        req.Description,
-		Platform:                           req.Platform,
-		RateMultiplier:                     req.RateMultiplier,
-		UpstreamBillingGuardMaxMultiplier:  req.UpstreamBillingGuardMaxMultiplier.ToOptionalServiceInput(),
-		UpstreamBillingGuardMinMultiplier:  req.UpstreamBillingGuardMinMultiplier.ToOptionalServiceInput(),
-		IsExclusive:                        req.IsExclusive,
-		SubscriptionType:                   req.SubscriptionType,
-		DailyLimitUSD:                      req.DailyLimitUSD.ToServiceInput(),
-		WeeklyLimitUSD:                     req.WeeklyLimitUSD.ToServiceInput(),
-		MonthlyLimitUSD:                    req.MonthlyLimitUSD.ToServiceInput(),
-		LongContextPricingEnabled:          req.LongContextPricingEnabled,
-		ModelPricing:                       req.ModelPricing,
-		AllowImageGeneration:               req.AllowImageGeneration,
-		AllowBatchImageGeneration:          req.AllowBatchImageGeneration,
-		ImageRateIndependent:               req.ImageRateIndependent,
-		ImageRateMultiplier:                req.ImageRateMultiplier,
-		BatchImageDiscountMultiplier:       req.BatchImageDiscountMultiplier,
-		BatchImageHoldMultiplier:           req.BatchImageHoldMultiplier,
-		PeakRateEnabled:                    req.PeakRateEnabled,
-		PeakStart:                          req.PeakStart,
-		PeakEnd:                            req.PeakEnd,
-		PeakRateMultiplier:                 req.PeakRateMultiplier,
-		ImagePrice1K:                       req.ImagePrice1K,
-		ImagePrice2K:                       req.ImagePrice2K,
-		ImagePrice4K:                       req.ImagePrice4K,
-		VideoRateIndependent:               req.VideoRateIndependent,
-		VideoRateMultiplier:                req.VideoRateMultiplier,
-		VideoPrice480P:                     req.VideoPrice480P,
-		VideoPrice720P:                     req.VideoPrice720P,
-		VideoPrice1080P:                    req.VideoPrice1080P,
-		VideoModelPrices:                   req.VideoModelPrices,
-		WebSearchPricePerCall:              req.WebSearchPricePerCall,
-		SearchPricePer1K:                   req.SearchPricePer1K,
-		AudioRealtimePricePerMin:           req.AudioRealtimePricePerMin,
-		AudioTTSPricePerMillionChars:       req.AudioTtsPricePerMillionChars,
-		AudioSTTPricePerHour:               req.AudioSttPricePerHour,
-		ClaudeCodeOnly:                     req.ClaudeCodeOnly,
-		FallbackGroupID:                    req.FallbackGroupID,
-		FallbackGroupIDOnInvalidRequest:    req.FallbackGroupIDOnInvalidRequest,
-		ModelRouting:                       req.ModelRouting,
-		ModelRoutingEnabled:                req.ModelRoutingEnabled,
-		MCPXMLInject:                       req.MCPXMLInject,
-		SupportedModelScopes:               req.SupportedModelScopes,
-		AllowMessagesDispatch:              req.AllowMessagesDispatch,
-		AllowLive:                          req.AllowLive,
-		EdgeProtectionEnabled:              req.EdgeProtectionEnabled,
-		RequireOAuthOnly:                   req.RequireOAuthOnly,
-		RequirePrivacySet:                  req.RequirePrivacySet,
-		DefaultMappedModel:                 req.DefaultMappedModel,
-		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
-		ModelsListConfig:                   req.ModelsListConfig,
-		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
-		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
-		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
-		AdaptiveTTFTSwitchEnabled:          req.AdaptiveTTFTSwitchEnabled,
-		AdaptiveTTFTSwitchThresholdSeconds: req.AdaptiveTTFTSwitchThresholdSeconds,
+		Name:                                 req.Name,
+		Description:                          req.Description,
+		Platform:                             req.Platform,
+		RateMultiplier:                       req.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:    req.UpstreamBillingGuardMaxMultiplier.ToOptionalServiceInput(),
+		UpstreamBillingGuardMinMultiplier:    req.UpstreamBillingGuardMinMultiplier.ToOptionalServiceInput(),
+		IsExclusive:                          req.IsExclusive,
+		SubscriptionType:                     req.SubscriptionType,
+		DailyLimitUSD:                        req.DailyLimitUSD.ToServiceInput(),
+		WeeklyLimitUSD:                       req.WeeklyLimitUSD.ToServiceInput(),
+		MonthlyLimitUSD:                      req.MonthlyLimitUSD.ToServiceInput(),
+		LongContextPricingEnabled:            req.LongContextPricingEnabled,
+		ModelPricing:                         req.ModelPricing,
+		AllowImageGeneration:                 req.AllowImageGeneration,
+		AllowBatchImageGeneration:            req.AllowBatchImageGeneration,
+		ImageRateIndependent:                 req.ImageRateIndependent,
+		ImageRateMultiplier:                  req.ImageRateMultiplier,
+		BatchImageDiscountMultiplier:         req.BatchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:             req.BatchImageHoldMultiplier,
+		PeakRateEnabled:                      req.PeakRateEnabled,
+		PeakStart:                            req.PeakStart,
+		PeakEnd:                              req.PeakEnd,
+		PeakRateMultiplier:                   req.PeakRateMultiplier,
+		ImagePrice1K:                         req.ImagePrice1K,
+		ImagePrice2K:                         req.ImagePrice2K,
+		ImagePrice4K:                         req.ImagePrice4K,
+		VideoRateIndependent:                 req.VideoRateIndependent,
+		VideoRateMultiplier:                  req.VideoRateMultiplier,
+		VideoPrice480P:                       req.VideoPrice480P,
+		VideoPrice720P:                       req.VideoPrice720P,
+		VideoPrice1080P:                      req.VideoPrice1080P,
+		VideoModelPrices:                     req.VideoModelPrices,
+		WebSearchPricePerCall:                req.WebSearchPricePerCall,
+		SearchPricePer1K:                     req.SearchPricePer1K,
+		AudioRealtimePricePerMin:             req.AudioRealtimePricePerMin,
+		AudioTTSPricePerMillionChars:         req.AudioTtsPricePerMillionChars,
+		AudioSTTPricePerHour:                 req.AudioSttPricePerHour,
+		ClaudeCodeOnly:                       req.ClaudeCodeOnly,
+		FallbackGroupID:                      req.FallbackGroupID,
+		FallbackGroupIDOnInvalidRequest:      req.FallbackGroupIDOnInvalidRequest,
+		ModelRouting:                         req.ModelRouting,
+		ModelRoutingEnabled:                  req.ModelRoutingEnabled,
+		MCPXMLInject:                         req.MCPXMLInject,
+		SupportedModelScopes:                 req.SupportedModelScopes,
+		AllowMessagesDispatch:                req.AllowMessagesDispatch,
+		AllowLive:                            req.AllowLive,
+		EdgeProtectionEnabled:                req.EdgeProtectionEnabled,
+		RequireOAuthOnly:                     req.RequireOAuthOnly,
+		RequirePrivacySet:                    req.RequirePrivacySet,
+		DefaultMappedModel:                   req.DefaultMappedModel,
+		MessagesDispatchModelConfig:          req.MessagesDispatchModelConfig,
+		ModelsListConfig:                     req.ModelsListConfig,
+		CodexModelsManifestConfig:            req.CodexModelsManifestConfig,
+		StrictModelPriorityOnModelMismatch:   req.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:            req.AccountSchedulingStrategy,
+		AdaptiveTTFTSwitchEnabled:            req.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds:   req.AdaptiveTTFTSwitchThresholdSeconds,
 		AdaptiveHealthSampleFreshnessMinutes: req.AdaptiveHealthSampleFreshnessMinutes,
-		RPMLimit:                           req.RPMLimit,
-		ForceOpenAIFast:                    req.ForceOpenAIFast,
-		MaxReasoningEffort:                 req.MaxReasoningEffort,
-		MaxReasoningEffortOverLimit:        req.MaxReasoningEffortOverLimit,
-		ReasoningEffortMappings:            req.ReasoningEffortMappings,
-		CopyAccountsFromGroupIDs:           req.CopyAccountsFromGroupIDs,
+		RPMLimit:                             req.RPMLimit,
+		ForceOpenAIFast:                      req.ForceOpenAIFast,
+		MaxReasoningEffort:                   req.MaxReasoningEffort,
+		MaxReasoningEffortOverLimit:          req.MaxReasoningEffortOverLimit,
+		ReasoningEffortMappings:              req.ReasoningEffortMappings,
+		CopyAccountsFromGroupIDs:             req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -537,71 +537,71 @@ func (h *GroupHandler) Update(c *gin.Context) {
 	}
 
 	group, err := h.adminService.UpdateGroup(c.Request.Context(), groupID, &service.UpdateGroupInput{
-		Name:                               req.Name,
-		Description:                        req.Description,
-		Platform:                           req.Platform,
-		RateMultiplier:                     req.RateMultiplier,
-		UpstreamBillingGuardMaxMultiplier:  req.UpstreamBillingGuardMaxMultiplier.ToNullableServiceInput(),
-		UpstreamBillingGuardMinMultiplier:  req.UpstreamBillingGuardMinMultiplier.ToNullableServiceInput(),
-		IsExclusive:                        req.IsExclusive,
-		Status:                             req.Status,
-		SubscriptionType:                   req.SubscriptionType,
-		DailyLimitUSD:                      req.DailyLimitUSD.ToServiceInput(),
-		WeeklyLimitUSD:                     req.WeeklyLimitUSD.ToServiceInput(),
-		MonthlyLimitUSD:                    req.MonthlyLimitUSD.ToServiceInput(),
-		LongContextPricingEnabled:          req.LongContextPricingEnabled,
-		ModelPricing:                       req.ModelPricing,
-		AllowImageGeneration:               req.AllowImageGeneration,
-		AllowBatchImageGeneration:          req.AllowBatchImageGeneration,
-		ImageRateIndependent:               req.ImageRateIndependent,
-		ImageRateMultiplier:                req.ImageRateMultiplier,
-		BatchImageDiscountMultiplier:       req.BatchImageDiscountMultiplier,
-		BatchImageHoldMultiplier:           req.BatchImageHoldMultiplier,
-		PeakRateEnabled:                    req.PeakRateEnabled,
-		PeakStart:                          req.PeakStart,
-		PeakEnd:                            req.PeakEnd,
-		PeakRateMultiplier:                 req.PeakRateMultiplier,
-		ImagePrice1K:                       req.ImagePrice1K,
-		ImagePrice2K:                       req.ImagePrice2K,
-		ImagePrice4K:                       req.ImagePrice4K,
-		VideoRateIndependent:               req.VideoRateIndependent,
-		VideoRateMultiplier:                req.VideoRateMultiplier,
-		VideoPrice480P:                     req.VideoPrice480P,
-		VideoPrice720P:                     req.VideoPrice720P,
-		VideoPrice1080P:                    req.VideoPrice1080P,
-		VideoModelPrices:                   req.VideoModelPrices,
-		WebSearchPricePerCall:              req.WebSearchPricePerCall,
-		SearchPricePer1K:                   req.SearchPricePer1K,
-		AudioRealtimePricePerMin:           req.AudioRealtimePricePerMin,
-		AudioTTSPricePerMillionChars:       req.AudioTtsPricePerMillionChars,
-		AudioSTTPricePerHour:               req.AudioSttPricePerHour,
-		ClaudeCodeOnly:                     req.ClaudeCodeOnly,
-		FallbackGroupID:                    req.FallbackGroupID,
-		FallbackGroupIDOnInvalidRequest:    req.FallbackGroupIDOnInvalidRequest,
-		ModelRouting:                       req.ModelRouting,
-		ModelRoutingEnabled:                req.ModelRoutingEnabled,
-		MCPXMLInject:                       req.MCPXMLInject,
-		SupportedModelScopes:               req.SupportedModelScopes,
-		AllowMessagesDispatch:              req.AllowMessagesDispatch,
-		AllowLive:                          req.AllowLive,
-		EdgeProtectionEnabled:              req.EdgeProtectionEnabled.ToNullableServiceInput(),
-		RequireOAuthOnly:                   req.RequireOAuthOnly,
-		RequirePrivacySet:                  req.RequirePrivacySet,
-		DefaultMappedModel:                 req.DefaultMappedModel,
-		MessagesDispatchModelConfig:        req.MessagesDispatchModelConfig,
-		ModelsListConfig:                   req.ModelsListConfig,
-		CodexModelsManifestConfig:          req.CodexModelsManifestConfig,
-		StrictModelPriorityOnModelMismatch: req.StrictModelPriorityOnModelMismatch,
-		AccountSchedulingStrategy:          req.AccountSchedulingStrategy,
-		AdaptiveTTFTSwitchEnabled:          req.AdaptiveTTFTSwitchEnabled,
-		AdaptiveTTFTSwitchThresholdSeconds: req.AdaptiveTTFTSwitchThresholdSeconds,
+		Name:                                 req.Name,
+		Description:                          req.Description,
+		Platform:                             req.Platform,
+		RateMultiplier:                       req.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:    req.UpstreamBillingGuardMaxMultiplier.ToNullableServiceInput(),
+		UpstreamBillingGuardMinMultiplier:    req.UpstreamBillingGuardMinMultiplier.ToNullableServiceInput(),
+		IsExclusive:                          req.IsExclusive,
+		Status:                               req.Status,
+		SubscriptionType:                     req.SubscriptionType,
+		DailyLimitUSD:                        req.DailyLimitUSD.ToServiceInput(),
+		WeeklyLimitUSD:                       req.WeeklyLimitUSD.ToServiceInput(),
+		MonthlyLimitUSD:                      req.MonthlyLimitUSD.ToServiceInput(),
+		LongContextPricingEnabled:            req.LongContextPricingEnabled,
+		ModelPricing:                         req.ModelPricing,
+		AllowImageGeneration:                 req.AllowImageGeneration,
+		AllowBatchImageGeneration:            req.AllowBatchImageGeneration,
+		ImageRateIndependent:                 req.ImageRateIndependent,
+		ImageRateMultiplier:                  req.ImageRateMultiplier,
+		BatchImageDiscountMultiplier:         req.BatchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:             req.BatchImageHoldMultiplier,
+		PeakRateEnabled:                      req.PeakRateEnabled,
+		PeakStart:                            req.PeakStart,
+		PeakEnd:                              req.PeakEnd,
+		PeakRateMultiplier:                   req.PeakRateMultiplier,
+		ImagePrice1K:                         req.ImagePrice1K,
+		ImagePrice2K:                         req.ImagePrice2K,
+		ImagePrice4K:                         req.ImagePrice4K,
+		VideoRateIndependent:                 req.VideoRateIndependent,
+		VideoRateMultiplier:                  req.VideoRateMultiplier,
+		VideoPrice480P:                       req.VideoPrice480P,
+		VideoPrice720P:                       req.VideoPrice720P,
+		VideoPrice1080P:                      req.VideoPrice1080P,
+		VideoModelPrices:                     req.VideoModelPrices,
+		WebSearchPricePerCall:                req.WebSearchPricePerCall,
+		SearchPricePer1K:                     req.SearchPricePer1K,
+		AudioRealtimePricePerMin:             req.AudioRealtimePricePerMin,
+		AudioTTSPricePerMillionChars:         req.AudioTtsPricePerMillionChars,
+		AudioSTTPricePerHour:                 req.AudioSttPricePerHour,
+		ClaudeCodeOnly:                       req.ClaudeCodeOnly,
+		FallbackGroupID:                      req.FallbackGroupID,
+		FallbackGroupIDOnInvalidRequest:      req.FallbackGroupIDOnInvalidRequest,
+		ModelRouting:                         req.ModelRouting,
+		ModelRoutingEnabled:                  req.ModelRoutingEnabled,
+		MCPXMLInject:                         req.MCPXMLInject,
+		SupportedModelScopes:                 req.SupportedModelScopes,
+		AllowMessagesDispatch:                req.AllowMessagesDispatch,
+		AllowLive:                            req.AllowLive,
+		EdgeProtectionEnabled:                req.EdgeProtectionEnabled.ToNullableServiceInput(),
+		RequireOAuthOnly:                     req.RequireOAuthOnly,
+		RequirePrivacySet:                    req.RequirePrivacySet,
+		DefaultMappedModel:                   req.DefaultMappedModel,
+		MessagesDispatchModelConfig:          req.MessagesDispatchModelConfig,
+		ModelsListConfig:                     req.ModelsListConfig,
+		CodexModelsManifestConfig:            req.CodexModelsManifestConfig,
+		StrictModelPriorityOnModelMismatch:   req.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:            req.AccountSchedulingStrategy,
+		AdaptiveTTFTSwitchEnabled:            req.AdaptiveTTFTSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds:   req.AdaptiveTTFTSwitchThresholdSeconds,
 		AdaptiveHealthSampleFreshnessMinutes: req.AdaptiveHealthSampleFreshnessMinutes,
-		RPMLimit:                           req.RPMLimit,
-		ForceOpenAIFast:                    req.ForceOpenAIFast,
-		MaxReasoningEffort:                 req.MaxReasoningEffort,
-		MaxReasoningEffortOverLimit:        req.MaxReasoningEffortOverLimit,
-		ReasoningEffortMappings:            req.ReasoningEffortMappings,
-		CopyAccountsFromGroupIDs:           req.CopyAccountsFromGroupIDs,
+		RPMLimit:                             req.RPMLimit,
+		ForceOpenAIFast:                      req.ForceOpenAIFast,
+		MaxReasoningEffort:                   req.MaxReasoningEffort,
+		MaxReasoningEffortOverLimit:          req.MaxReasoningEffortOverLimit,
+		ReasoningEffortMappings:              req.ReasoningEffortMappings,
+		CopyAccountsFromGroupIDs:             req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

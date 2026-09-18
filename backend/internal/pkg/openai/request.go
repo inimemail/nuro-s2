@@ -3,6 +3,8 @@ package openai
 import (
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 const codexUserAgentVersionMaxLen = 64
@@ -171,6 +173,10 @@ func matchCodexClientHeaderStrictPrefixes(value string, prefixes []string) bool 
 // UA 首段，保证两者一致。上游 /backend-api/codex 会校验 originator 与 UA 首段是否配套；
 // 错配（如 originator=codex_cli_rs + UA=codex-tui/...）会被拒绝。
 func PairCodexClientIdentity(userAgent string) (originator string, pairedUA string, ok bool) {
+	// Validate before trimming: control bytes must not become a valid identity.
+	if !httpguts.ValidHeaderFieldValue(userAgent) || strings.ContainsAny(userAgent, "\r\n") {
+		return "", "", false
+	}
 	ua := strings.TrimSpace(userAgent)
 	slash := strings.IndexByte(ua, '/')
 	if slash <= 0 {

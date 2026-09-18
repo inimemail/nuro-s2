@@ -105,7 +105,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		zap.Bool("stream", clientStream),
 	)
 
-	apiKey := account.GetOpenAIApiKey()
+	apiKey := account.GetOpenAIProtocolAPIKey()
 	if apiKey == "" {
 		return nil, fmt.Errorf("account %d missing api_key", account.ID)
 	}

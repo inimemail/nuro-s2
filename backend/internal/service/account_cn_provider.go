@@ -51,6 +51,11 @@ func (a *Account) IsCNProvider() bool {
 	return a != nil && IsCNProvider(a.Platform)
 }
 
+func (a *Account) IsOpenCodeGo() bool { return a != nil && a.Platform == PlatformOpenCodeGo }
+func (a *Account) IsOpenCodeGoPlan() bool {
+	return a.GetOpenCodeAccountMode() == AccountModeGo
+}
+
 // normalizeCNProviderStoredConfig canonicalizes both the current Extra
 // representation and the legacy credential representation. Domestic protocol
 // selection is deliberately lossless so adaptive routing and its per-protocol
@@ -64,6 +69,9 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 		normalizedExtra = make(map[string]any)
 	}
 	protocol := APIProtocolChatCompletions
+	if platform == PlatformOpenCodeGo {
+		protocol = APIProtocolAdaptive
+	}
 	requestedProtocol := strings.TrimSpace(valueAsString(normalizedExtra[cnAPIProtocolExtraKey]))
 	if requestedProtocol == "" {
 		requestedProtocol = strings.TrimSpace(valueAsString(credentials["api_protocol"]))
@@ -72,7 +80,7 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		protocol = requestedProtocol
 	case APIProtocolResponses:
-		if platform == PlatformDeepSeek || platform == PlatformKimi || platform == PlatformMiniMax {
+		if platform == PlatformDeepSeek || platform == PlatformKimi || platform == PlatformMiniMax || platform == PlatformOpenCodeGo {
 			protocol = requestedProtocol
 		}
 	}
@@ -348,6 +356,9 @@ func (a *Account) IsCodingPlan() bool {
 }
 
 func (a *Account) GetCodingPlanProvider() string {
+	if a.IsOpenCodeGoPlan() {
+		return PlatformOpenCodeGo
+	}
 	if a == nil || !a.IsCodingPlan() {
 		return ""
 	}
@@ -363,7 +374,7 @@ func (a *Account) GetCodingPlanProvider() string {
 // Responses is supported by DeepSeek, Kimi and MiniMax; all domestic providers support
 // adaptive, Chat Completions, and native Anthropic routing.
 func (a *Account) GetAPIProtocol() string {
-	if a == nil || !a.IsCNProvider() {
+	if a == nil || (!a.IsCNProvider() && !a.IsOpenCodeGo()) {
 		return APIProtocolChatCompletions
 	}
 	protocol := strings.TrimSpace(a.getExtraString(cnAPIProtocolExtraKey))
@@ -374,9 +385,12 @@ func (a *Account) GetAPIProtocol() string {
 	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
 		return protocol
 	case APIProtocolResponses:
-		if a.IsDeepSeek() || a.IsKimi() || a.IsMiniMax() {
+		if a.IsDeepSeek() || a.IsKimi() || a.IsMiniMax() || a.IsOpenCodeGo() {
 			return protocol
 		}
+	}
+	if a.IsOpenCodeGo() {
+		return APIProtocolAdaptive
 	}
 	return APIProtocolChatCompletions
 }
@@ -402,7 +416,7 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a == nil {
 		return ""
 	}
-	if a.IsCNProvider() {
+	if a.IsCNProvider() || a.IsOpenCodeGo() {
 		return a.GetCNAPIKey()
 	}
 	return a.GetOpenAIApiKey()
@@ -430,6 +444,12 @@ func (a *Account) getCNConfiguredProtocolBaseURL(protocol string) string {
 func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 	switch protocol {
 	case APIProtocolAnthropic:
+		if a.IsOpenCodeGo() {
+			if a.IsOpenCodeZen() {
+				return DefaultOpenCodeZenAnthropicBaseURL
+			}
+			return DefaultOpenCodeGoAnthropicBaseURL
+		}
 		switch a.Platform {
 		case PlatformKimi:
 			if a.IsCodingPlan() {
@@ -447,6 +467,15 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultMiniMaxCNAnthropicBaseURL
 		}
 	case APIProtocolResponses:
+		if a.IsOpenCodeGo() {
+			if configured := strings.TrimSpace(a.GetCredential("base_url")); configured != "" {
+				return configured
+			}
+			if a.IsOpenCodeZen() {
+				return DefaultOpenCodeZenBaseURL
+			}
+			return DefaultOpenCodeGoBaseURL
+		}
 		switch a.Platform {
 		case PlatformDeepSeek:
 			return DefaultDeepSeekResponsesBaseURL
@@ -462,6 +491,12 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultMiniMaxCNBaseURL
 		}
 	case APIProtocolChatCompletions:
+		if a.IsOpenCodeGo() {
+			if a.IsOpenCodeZen() {
+				return DefaultOpenCodeZenBaseURL
+			}
+			return DefaultOpenCodeGoBaseURL
+		}
 		switch a.Platform {
 		case PlatformKimi:
 			if a.IsCodingPlan() {
@@ -503,6 +538,11 @@ func DeriveCNAdaptiveBaseURLs(platform, billingMode, primaryURL string) map[stri
 
 func defaultCNChatBaseURL(platform, billingMode string) string {
 	switch platform {
+	case PlatformOpenCodeGo:
+		if billingMode == AccountModeZen {
+			return DefaultOpenCodeZenBaseURL
+		}
+		return DefaultOpenCodeGoBaseURL
 	case PlatformKimi:
 		if billingMode == CNBillingModeCodingPlan {
 			return DefaultKimiCodingBaseURL
@@ -560,6 +600,10 @@ func normalizeCNAdaptiveBaseURLs(platform string, extra, credentials map[string]
 	}
 	primary := strings.TrimSpace(valueAsString(credentials["base_url"]))
 	billingMode := strings.TrimSpace(valueAsString(extra[cnBillingModeExtraKey]))
+	if platform == PlatformOpenCodeGo {
+		account := &Account{Platform: platform, Credentials: credentials, Extra: extra}
+		billingMode = account.GetOpenCodeAccountMode()
+	}
 	derived := DeriveCNAdaptiveBaseURLs(platform, billingMode, primary)
 	configured := cnStringMap(extra[cnAPIBaseURLsExtraKey])
 	overrides := cnBoolMap(extra[cnAPIBaseURLOverridesExtraKey])
@@ -611,6 +655,19 @@ func cnBoolMap(value any) map[string]bool {
 func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
+	}
+	if a.IsOpenCodeGo() {
+		if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" {
+			return configured
+		}
+		if protocol == a.GetAPIProtocol() || (a.IsAdaptiveAPIProtocol() && protocol == APIProtocolChatCompletions) {
+			if configured := strings.TrimSpace(a.GetCredential("base_url")); configured != "" {
+				return configured
+			}
+		}
+		if protocol == APIProtocolChatCompletions || protocol == APIProtocolAnthropic || protocol == APIProtocolResponses {
+			return a.defaultCNProtocolBaseURL(protocol)
+		}
 	}
 	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() && !a.IsMiniMax() {
 		return ""

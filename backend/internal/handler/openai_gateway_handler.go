@@ -2064,13 +2064,25 @@ func validCodexAutomationLastRun(value string) bool {
 func validCodexAutomationHeartbeat(value string) bool {
 	decoder := xml.NewDecoder(strings.NewReader(value))
 	var rootSeen, idSeen bool
-	var id bytes.Buffer
+	var childName string
+	var childText bytes.Buffer
+	fields := make(map[string]string, 3)
 	depth := 0
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
-			value := id.String()
-			return rootSeen && idSeen && depth == 0 && strings.TrimSpace(value) == value && validCodexAutomationID(value)
+			id := fields["automation_id"]
+			timestamp, hasTime := fields["current_time_iso"]
+			instructions, hasInstructions := fields["instructions"]
+			if hasTime != hasInstructions {
+				return false
+			}
+			if hasTime {
+				if _, parseErr := time.Parse(time.RFC3339Nano, timestamp); parseErr != nil || strings.TrimSpace(instructions) == "" {
+					return false
+				}
+			}
+			return rootSeen && idSeen && depth == 0 && strings.TrimSpace(id) == id && validCodexAutomationID(id)
 		}
 		if err != nil {
 			return false
@@ -2086,13 +2098,25 @@ func validCodexAutomationHeartbeat(value string) bool {
 					return false
 				}
 				rootSeen = true
-			} else if idSeen || current.Name.Local != "automation_id" {
-				return false
+			} else {
+				childName = current.Name.Local
+				switch childName {
+				case "automation_id", "current_time_iso", "instructions":
+				default:
+					return false
+				}
+				if _, duplicate := fields[childName]; duplicate {
+					return false
+				}
+				childText.Reset()
 			}
-			idSeen = depth == 2
 		case xml.EndElement:
 			if current.Name.Space != "" {
 				return false
+			}
+			if depth == 2 {
+				fields[childName] = childText.String()
+				idSeen = idSeen || childName == "automation_id"
 			}
 			depth--
 			if depth < 0 {
@@ -2100,7 +2124,7 @@ func validCodexAutomationHeartbeat(value string) bool {
 			}
 		case xml.CharData:
 			if depth == 2 {
-				_, _ = id.Write(current)
+				_, _ = childText.Write(current)
 			} else if len(bytes.TrimSpace(current)) != 0 {
 				return false
 			}

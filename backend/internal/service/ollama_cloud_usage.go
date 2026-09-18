@@ -18,22 +18,23 @@ import (
 )
 
 const (
-	OllamaCloudUsageSessionExtraKey     = "ollama_cloud_usage_session"
-	OllamaCloudUsageAutoRefreshExtraKey = "ollama_cloud_usage_auto_refresh"
-	OllamaCloudUsageSnapshotExtraKey    = "ollama_cloud_usage_snapshot"
-	SettingKeyOllamaCloudUsageSettings  = "ollama_cloud_usage_settings"
-	ollamaCloudSettingsURL              = "https://ollama.com/settings"
-	ollamaCloudMaxBodyBytes             = 512 * 1024
-	ollamaCloudMaxRefreshEntries        = 4096
-	ollamaCloudDefaultIntervalMinutes   = 60
-	ollamaCloudDefaultDebounceMinutes   = 1
-	ollamaCloudMinIntervalMinutes       = 15
-	ollamaCloudMaxIntervalMinutes       = 1440
-	ollamaCloudMinDebounceMinutes       = 1
-	ollamaCloudMaxDebounceMinutes       = 60
-	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute
-	ollamaCloudUsageMaxPerCycle         = 20
-	ollamaCloudUsageWorkers             = 4
+	OllamaCloudUsageSessionExtraKey           = "ollama_cloud_usage_session"
+	OllamaCloudUsageAutoRefreshExtraKey       = "ollama_cloud_usage_auto_refresh"
+	OllamaCloudUsageSnapshotExtraKey          = "ollama_cloud_usage_snapshot"
+	OllamaCloudUsageRateLimitRecoveryExtraKey = "ollama_cloud_usage_rate_limit_recovery_enabled"
+	SettingKeyOllamaCloudUsageSettings        = "ollama_cloud_usage_settings"
+	ollamaCloudSettingsURL                    = "https://ollama.com/settings"
+	ollamaCloudMaxBodyBytes                   = 512 * 1024
+	ollamaCloudMaxRefreshEntries              = 4096
+	ollamaCloudDefaultIntervalMinutes         = 60
+	ollamaCloudDefaultDebounceMinutes         = 1
+	ollamaCloudMinIntervalMinutes             = 15
+	ollamaCloudMaxIntervalMinutes             = 1440
+	ollamaCloudMinDebounceMinutes             = 1
+	ollamaCloudMaxDebounceMinutes             = 60
+	OllamaCloudUsageMinFetchInterval          = 15 * time.Minute
+	ollamaCloudUsageMaxPerCycle               = 20
+	ollamaCloudUsageWorkers                   = 4
 )
 
 var (
@@ -50,8 +51,9 @@ type OllamaCloudUsageSettings struct {
 	DebounceMinutes int  `json:"debounce_minutes"`
 }
 type OllamaCloudUsageWindow struct {
-	UsedPercent float64 `json:"used_percent"`
-	ResetText   string  `json:"reset_text,omitempty"`
+	UsedPercent float64    `json:"used_percent"`
+	ResetText   string     `json:"reset_text,omitempty"`
+	ResetAt     *time.Time `json:"reset_at,omitempty"`
 }
 type OllamaCloudUsageModel struct {
 	Model    string `json:"model"`
@@ -75,12 +77,13 @@ type OllamaCloudUsageSnapshot struct {
 	LastError     string                `json:"last_error,omitempty"`
 }
 type OllamaCloudUsageState struct {
-	AccountID               int64                     `json:"account_id"`
-	Eligible                bool                      `json:"eligible"`
-	Configured              bool                      `json:"configured"`
-	AutoRefreshEnabled      bool                      `json:"auto_refresh_enabled"`
-	EncryptionKeyConfigured bool                      `json:"encryption_key_configured"`
-	Snapshot                *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
+	AccountID                int64                     `json:"account_id"`
+	Eligible                 bool                      `json:"eligible"`
+	Configured               bool                      `json:"configured"`
+	AutoRefreshEnabled       bool                      `json:"auto_refresh_enabled"`
+	RateLimitRecoveryEnabled bool                      `json:"rate_limit_recovery_enabled"`
+	EncryptionKeyConfigured  bool                      `json:"encryption_key_configured"`
+	Snapshot                 *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
 }
 
 type ollamaCloudUsageRepository interface {
@@ -123,19 +126,28 @@ type OllamaCloudUsageService struct {
 	refreshMu               sync.Mutex
 	refreshAt               map[int64]time.Time
 	stopped                 bool
+	probeMu                 sync.Mutex
+	probeQueue              []ollamaCloudUsageProbeRequest
+	probeWake               chan struct{}
+	probeInFlight           map[int64]bool
 }
 
 func NewOllamaCloudUsageService(repo AccountRepository, upstream HTTPUpstream, settings *SettingService, encryptor SecretEncryptor, keyConfigured bool) *OllamaCloudUsageService {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &OllamaCloudUsageService{accountRepo: repo, httpUpstream: upstream, settingService: settings, encryptor: encryptor, encryptionKeyConfigured: keyConfigured, ctx: ctx, cancel: cancel, refreshAt: make(map[int64]time.Time)}
-	s.wg.Add(1)
+	s := &OllamaCloudUsageService{accountRepo: repo, httpUpstream: upstream, settingService: settings, encryptor: encryptor, encryptionKeyConfigured: keyConfigured, ctx: ctx, cancel: cancel, refreshAt: make(map[int64]time.Time), probeWake: make(chan struct{}, 1)}
+	s.wg.Add(1 + ollamaCloudUsageWorkers)
 	go s.run()
+	for range ollamaCloudUsageWorkers {
+		go s.runProbeLoop()
+	}
 	return s
 }
 
-func ProvideOllamaCloudUsageService(repo AccountRepository, upstream HTTPUpstream, settings *SettingService, encryptor SecretEncryptor, cfg *config.Config) *OllamaCloudUsageService {
+func ProvideOllamaCloudUsageService(repo AccountRepository, upstream HTTPUpstream, settings *SettingService, encryptor SecretEncryptor, cfg *config.Config, rateLimit *RateLimitService) *OllamaCloudUsageService {
 	configured := cfg != nil && cfg.Totp.EncryptionKeyConfigured
-	return NewOllamaCloudUsageService(repo, upstream, settings, encryptor, configured)
+	svc := NewOllamaCloudUsageService(repo, upstream, settings, encryptor, configured)
+	rateLimit.SetOllamaCloudUsageProbeScheduler(svc)
+	return svc
 }
 
 func (s *OllamaCloudUsageService) Stop() {
@@ -150,6 +162,97 @@ func (s *OllamaCloudUsageService) Stop() {
 	s.refreshMu.Unlock()
 	s.wg.Wait()
 }
+
+type ollamaCloudUsageProbeRequest struct {
+	accountID   int64
+	onExhausted func(context.Context, time.Time)
+}
+
+// ScheduleOllamaCloudUsageRateLimitProbe is intentionally asynchronous. A model
+// 429 must never wait for the settings page or a database write.
+func (s *OllamaCloudUsageService) ScheduleOllamaCloudUsageRateLimitProbe(accountID int64, cb func(context.Context, time.Time)) bool {
+	if s == nil || accountID <= 0 || cb == nil {
+		return false
+	}
+	s.refreshMu.Lock()
+	stopped := s.stopped
+	s.refreshMu.Unlock()
+	if stopped {
+		return false
+	}
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	if s.probeInFlight[accountID] {
+		return false
+	}
+	if len(s.probeQueue) >= 256 {
+		return false
+	}
+	for i := range s.probeQueue {
+		if s.probeQueue[i].accountID == accountID {
+			s.probeQueue[i].onExhausted = cb
+			return true
+		}
+	}
+	s.probeQueue = append(s.probeQueue, ollamaCloudUsageProbeRequest{accountID: accountID, onExhausted: cb})
+	select {
+	case s.probeWake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *OllamaCloudUsageService) runProbeLoop() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.probeWake:
+		}
+		for {
+			if s.ctx.Err() != nil {
+				return
+			}
+			s.probeMu.Lock()
+			if len(s.probeQueue) == 0 {
+				s.probeMu.Unlock()
+				break
+			}
+			req := s.probeQueue[0]
+			s.probeQueue = s.probeQueue[1:]
+			if s.probeInFlight == nil {
+				s.probeInFlight = make(map[int64]bool)
+			}
+			s.probeInFlight[req.accountID] = true
+			if len(s.probeQueue) > 0 {
+				select {
+				case s.probeWake <- struct{}{}:
+				default:
+				}
+			}
+			s.probeMu.Unlock()
+			probeCtx, cancel := context.WithTimeout(s.ctx, 45*time.Second)
+			account, err := s.accountRepo.GetByID(probeCtx, req.accountID)
+			if err == nil && account != nil && ollamaCloudRateLimitRecoveryEnabled(account) && ollamaCloudConfigured(account) {
+				// A recovery probe must not update Extra before its callback:
+				// doing so invalidates the account-generation CAS it protects.
+				snapshot, refreshErr := s.fetchAccountUsage(probeCtx, req.accountID, 1, false)
+				if refreshErr == nil {
+					now := time.Now().UTC()
+					if resetAt, ok := ollamaCloudUsageExhaustionResetAt(snapshot, now, now.Add(-2*time.Minute)); ok {
+						req.onExhausted(probeCtx, resetAt)
+					}
+				}
+			}
+			cancel()
+			s.probeMu.Lock()
+			delete(s.probeInFlight, req.accountID)
+			s.probeMu.Unlock()
+		}
+	}
+}
+
 func (s *OllamaCloudUsageService) run() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(time.Minute)
@@ -262,21 +365,29 @@ func (s *OllamaCloudUsageService) DeleteSession(ctx context.Context, id int64) (
 	if !IsOllamaCloudUsageAccount(a) {
 		return nil, ErrOllamaCloudUsageAccountInvalid
 	}
-	_, err = s.accountRepo.BulkUpdate(ctx, []int64{id}, AccountBulkUpdate{ExtraRemoveKeys: []string{OllamaCloudUsageSessionExtraKey, OllamaCloudUsageAutoRefreshExtraKey, OllamaCloudUsageSnapshotExtraKey}})
+	_, err = s.accountRepo.BulkUpdate(ctx, []int64{id}, AccountBulkUpdate{ExtraRemoveKeys: []string{OllamaCloudUsageSessionExtraKey, OllamaCloudUsageAutoRefreshExtraKey, OllamaCloudUsageSnapshotExtraKey, OllamaCloudUsageRateLimitRecoveryExtraKey}})
 	if err != nil {
 		return nil, err
 	}
 	return s.GetState(ctx, id)
 }
-func (s *OllamaCloudUsageService) SetAutoRefresh(ctx context.Context, id int64, enabled bool) (*OllamaCloudUsageState, error) {
+func (s *OllamaCloudUsageService) SetAutoRefresh(ctx context.Context, id int64, enabled bool, recovery ...*bool) (*OllamaCloudUsageState, error) {
 	a, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if enabled && !ollamaCloudConfigured(a) {
+	if !IsOllamaCloudUsageAccount(a) {
+		return nil, ErrOllamaCloudUsageAccountInvalid
+	}
+	recoveryEnabled := len(recovery) > 0 && recovery[0] != nil && *recovery[0]
+	if (enabled || recoveryEnabled) && !ollamaCloudConfigured(a) {
 		return nil, ErrOllamaCloudUsageSessionRequired
 	}
-	if err = s.accountRepo.UpdateExtra(ctx, id, map[string]any{OllamaCloudUsageAutoRefreshExtraKey: enabled}); err != nil {
+	updates := map[string]any{OllamaCloudUsageAutoRefreshExtraKey: enabled}
+	if len(recovery) > 0 && recovery[0] != nil {
+		updates[OllamaCloudUsageRateLimitRecoveryExtraKey] = *recovery[0]
+	}
+	if err = s.accountRepo.UpdateExtra(ctx, id, updates); err != nil {
 		return nil, err
 	}
 	return s.GetState(ctx, id)
@@ -359,6 +470,10 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 }
 
 func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, id int64, interval int) (*OllamaCloudUsageSnapshot, error) {
+	return s.fetchAccountUsage(ctx, id, interval, true)
+}
+
+func (s *OllamaCloudUsageService) fetchAccountUsage(ctx context.Context, id int64, interval int, persist bool) (*OllamaCloudUsageSnapshot, error) {
 	if s == nil || !s.encryptionKeyConfigured || s.encryptor == nil {
 		return nil, ErrOllamaCloudUsageEncryptionKey
 	}
@@ -400,7 +515,9 @@ func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, id int64, 
 		}
 		snap.Status = "failed"
 		snap.LastError = "request_failed"
-		_ = s.accountRepo.UpdateExtra(ctx, id, map[string]any{OllamaCloudUsageSnapshotExtraKey: snap})
+		if persist {
+			_ = s.accountRepo.UpdateExtra(ctx, id, map[string]any{OllamaCloudUsageSnapshotExtraKey: snap})
+		}
 		return snap, err
 	}
 	defer resp.Body.Close()
@@ -422,7 +539,9 @@ func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, id int64, 
 		t := now
 		snap.FetchedAt = &t
 	}
-	_ = s.accountRepo.UpdateExtra(ctx, id, map[string]any{OllamaCloudUsageSnapshotExtraKey: snap})
+	if persist {
+		_ = s.accountRepo.UpdateExtra(ctx, id, map[string]any{OllamaCloudUsageSnapshotExtraKey: snap})
+	}
 	if snap.Status != "ok" {
 		return snap, ErrOllamaCloudUsageUnavailable
 	}
@@ -438,6 +557,7 @@ func ollamaCloudState(a *Account, keyConfigured bool) *OllamaCloudUsageState {
 	st.Eligible = IsOllamaCloudUsageAccount(a)
 	st.Configured = ollamaCloudConfigured(a)
 	st.AutoRefreshEnabled = ollamaCloudAutoRefresh(a)
+	st.RateLimitRecoveryEnabled = ollamaCloudRateLimitRecoveryEnabled(a)
 	if raw, ok := a.Extra[OllamaCloudUsageSnapshotExtraKey]; ok {
 		b, _ := json.Marshal(raw)
 		_ = json.Unmarshal(b, &st.Snapshot)
@@ -456,6 +576,14 @@ func ollamaCloudAutoRefresh(a *Account) bool {
 		return false
 	}
 	v, _ := a.Extra[OllamaCloudUsageAutoRefreshExtraKey].(bool)
+	return v
+}
+
+func ollamaCloudRateLimitRecoveryEnabled(a *Account) bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	v, _ := a.Extra[OllamaCloudUsageRateLimitRecoveryExtraKey].(bool)
 	return v
 }
 func ollamaCloudDue(a *Account) bool {
@@ -541,6 +669,7 @@ func normalizeOllamaCloudCookie(raw string) (string, error) {
 // important for decimal values such as 12.5%; a greedy prefix would backtrack
 // to the final digit and report 5 instead.
 var ollamaPercentRE = regexp.MustCompile(`(?i)(?:usage|used|utilization)[^%]{0,80}?(\d{1,3}(?:\.\d+)?)%`)
+var ollamaResetRE = regexp.MustCompile(`(?i)resets?\s+in\s+([0-9]+(?:\.[0-9]+)?)\s*(minutes?|mins?|hours?|hrs?|days?)`)
 
 func parseOllamaCloudUsageHTML(raw string) *OllamaCloudUsageData {
 	d := &OllamaCloudUsageData{}
@@ -549,12 +678,21 @@ func parseOllamaCloudUsageHTML(raw string) *OllamaCloudUsageData {
 		d.Plan = strings.TrimSpace(strings.Split(strings.TrimSpace(raw[i+4:]), "<")[0])
 	}
 	matches := ollamaPercentRE.FindAllStringSubmatch(raw, -1)
+	// Only a labeled window may supply a recovery time. Independently matching
+	// percentage/reset lists can attach the weekly reset to the session window.
+	d.FiveHour, d.SevenDay = parseOllamaLabeledWindows(raw)
+	if d.FiveHour != nil || d.SevenDay != nil {
+		return d
+	}
+	// Keep legacy display support, but never use unlabeled values for recovery.
 	for _, m := range matches {
 		p, _ := strconv.ParseFloat(m[1], 64)
 		if d.FiveHour == nil {
-			d.FiveHour = &OllamaCloudUsageWindow{UsedPercent: p}
+			window := &OllamaCloudUsageWindow{UsedPercent: p}
+			d.FiveHour = window
 		} else if d.SevenDay == nil {
-			d.SevenDay = &OllamaCloudUsageWindow{UsedPercent: p}
+			window := &OllamaCloudUsageWindow{UsedPercent: p}
+			d.SevenDay = window
 		}
 	}
 	return d

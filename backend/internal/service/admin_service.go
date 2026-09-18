@@ -507,8 +507,8 @@ type UpdateProxyInput struct {
 	Protocol       string
 	Host           string
 	Port           int
-	Username       string
-	Password       string
+	Username       *string
+	Password       *string
 	Status         string
 	ExpiresAt      *time.Time
 	FallbackMode   string
@@ -2226,7 +2226,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		peakRateMultiplier,
 	)
 	if err := ValidatePeakRateConfig(subscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
-		return nil, err
+		return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
 	}
 	// 校验降级分组
 	if input.FallbackGroupID != nil {
@@ -2711,7 +2711,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	peakRateEnabled, peakStart, peakEnd, peakRateMultiplier = NormalizePeakRateConfig(group.SubscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier)
 	if err := ValidatePeakRateConfig(group.SubscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
-		return nil, err
+		return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
 	}
 	group.PeakRateEnabled = peakRateEnabled
 	group.PeakStart = peakStart
@@ -3813,6 +3813,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
+	if input.Platform == PlatformOpenCodeGo {
+		if err := NormalizeOpenCodeProtocolRulesCredentials(input.Credentials); err != nil {
+			return nil, infraerrors.BadRequest("INVALID_OPENCODE_PROTOCOL_RULES", err.Error())
+		}
+	}
 	accountExtra, input.Credentials = normalizeCNProviderStoredConfig(input.Platform, accountExtra, input.Credentials)
 	// Quota and billing observations are runtime-owned. Never accept a
 	// client-provided snapshot on create; only the tri-state override is
@@ -4183,6 +4188,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 		}
 		account.Extra, account.Credentials = normalizeCNProviderStoredConfig(account.Platform, account.Extra, account.Credentials)
+		if account.IsOpenCodeGo() {
+			if err := NormalizeOpenCodeProtocolRulesCredentials(account.Credentials); err != nil {
+				return nil, infraerrors.BadRequest("INVALID_OPENCODE_PROTOCOL_RULES", err.Error())
+			}
+		}
 	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
 		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
@@ -4704,6 +4714,9 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	var err error
+	if err := NormalizeOpenCodeProtocolRulesCredentials(input.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_OPENCODE_PROTOCOL_RULES", err.Error())
+	}
 	if raw, exists := input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey]; exists && raw == nil {
 		input.Extra[AdaptiveUpstreamMultiplierFactorExtraKey] = float64(1)
 	}
@@ -5017,6 +5030,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				_, hasLegacyBaseURLs := updates.Credentials["api_base_urls"]
 				groupKey = account.Platform + "\x00" + valueAsString(updates.Extra[cnAPIProtocolExtraKey]) +
 					"\x00" + strconv.FormatBool(hasLegacyProtocol) + "\x00" + strconv.FormatBool(hasLegacyBaseURLs)
+				// Different modes/endpoints must not inherit the first account's
+				// normalized update just because the protocol is the same.
+				payload, err := json.Marshal(updates)
+				if err != nil {
+					return nil, err
+				}
+				groupKey += "\x00" + string(payload)
 			}
 			group := groups[groupKey]
 			if group == nil {
@@ -5521,11 +5541,11 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if input.Port != 0 {
 		proxy.Port = input.Port
 	}
-	if input.Username != "" {
-		proxy.Username = input.Username
+	if input.Username != nil {
+		proxy.Username = strings.TrimSpace(*input.Username)
 	}
-	if input.Password != "" {
-		proxy.Password = input.Password
+	if input.Password != nil {
+		proxy.Password = strings.TrimSpace(*input.Password)
 	}
 	if input.Status != "" {
 		proxy.Status = input.Status

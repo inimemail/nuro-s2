@@ -38,6 +38,29 @@ func TestGetSharedReqClient_ForceHTTP2SeparatesCache(t *testing.T) {
 	require.NotEqual(t, buildReqClientKey(base), buildReqClientKey(force))
 }
 
+func TestGetSharedReqClient_ProfileSeparatesManagementClient(t *testing.T) {
+	sharedReqClients = sync.Map{}
+	base := reqClientOptions{
+		ProxyURL:    "http://proxy.local:8080",
+		Timeout:     30 * time.Second,
+		Impersonate: true,
+	}
+	privacy := base
+	privacy.Profile = reqClientProfilePrivacy
+
+	inferenceClient, err := getSharedReqClient(base)
+	require.NoError(t, err)
+	privacyClient, err := getSharedReqClient(privacy)
+	require.NoError(t, err)
+
+	require.NotSame(t, inferenceClient, privacyClient)
+	require.NotEqual(t, buildReqClientKey(base), buildReqClientKey(privacy))
+
+	privacyAgain, err := getSharedReqClient(privacy)
+	require.NoError(t, err)
+	require.Same(t, privacyClient, privacyAgain)
+}
+
 func TestGetSharedReqClient_ReuseCachedClient(t *testing.T) {
 	sharedReqClients = sync.Map{}
 	opts := reqClientOptions{

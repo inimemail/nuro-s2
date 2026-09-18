@@ -161,7 +161,7 @@
             Grok
           </button>
           <button
-            v-for="provider in [{ value: 'kimi', label: 'Kimi' }, { value: 'zhipu', label: 'Zhipu' }, { value: 'deepseek', label: 'DeepSeek' }, { value: 'minimax', label: 'MiniMax' }]"
+            v-for="provider in [{ value: 'kimi', label: 'Kimi' }, { value: 'zhipu', label: 'Zhipu' }, { value: 'deepseek', label: 'DeepSeek' }, { value: 'minimax', label: 'MiniMax' }, { value: 'opencode_go', label: 'OpenCode Go' }]"
             :key="provider.value"
             type="button"
             @click="form.platform = provider.value as AccountPlatform"
@@ -310,8 +310,9 @@
 
       <!-- Account type and upstream protocol for CN OpenAI-compatible providers -->
       <div v-if="isCNProvider">
-        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid gap-3 sm:grid-cols-2" data-testid="cn-account-type-options">
+        <OpenCodeSettings v-if="form.platform === 'opencode_go'" :mode="openCodeMode" v-model:rules="openCodeRules" :adaptive="cnApiMode === 'adaptive'" @update:mode="selectOpenCodeMode" />
+        <label v-else class="input-label">{{ t('admin.accounts.accountType') }}</label>
+        <div v-if="form.platform !== 'opencode_go'" class="mt-2 grid gap-3 sm:grid-cols-2" data-testid="cn-account-type-options">
           <button
             type="button"
             data-testid="cn-billing-payg"
@@ -1251,7 +1252,9 @@
                         ? 'https://open.bigmodel.cn/api/paas/v4'
                       : form.platform === 'deepseek'
                           ? cnApiMode === 'responses' ? 'https://api.deepseek.com' : 'https://api.deepseek.com/v1'
-                  : form.platform === 'minimax'
+                      : form.platform === 'opencode_go'
+                        ? 'https://opencode.ai/zen/go/v1'
+                      : form.platform === 'minimax'
                         ? 'https://api.minimaxi.com/v1'
                   : 'https://api.anthropic.com'
             "
@@ -1314,6 +1317,8 @@
                       : form.platform === 'zhipu'
                         ? 'id.secret'
                         : form.platform === 'deepseek'
+                          ? 'sk-...'
+                        : form.platform === 'opencode_go'
                           ? 'sk-...'
                         : form.platform === 'minimax'
                           ? 'sk-...'
@@ -4601,6 +4606,8 @@ import PromptCacheCreationOptimizationControl from '@/components/account/PromptC
 import DownstreamCacheMarkupControl from '@/components/account/DownstreamCacheMarkupControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import OpenCodeSettings from '@/components/account/OpenCodeSettings.vue'
+import { openCodeBaseURL, validOpenCodeRules, type OpenCodeMode, type OpenCodeRule } from '@/utils/opencode'
 import PoolModeRetryConditions from '@/components/account/PoolModeRetryConditions.vue'
 import PoolModeRaceRetryConditions, { type PoolModeRaceRetryRule } from '@/components/account/PoolModeRaceRetryConditions.vue'
 import {
@@ -4766,13 +4773,23 @@ type CNBillingMode = 'payg' | 'coding_plan'
 type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 const cnBillingMode = ref<CNBillingMode>('payg')
 const cnApiMode = ref<CNApiMode>('adaptive')
+const openCodeMode = ref<OpenCodeMode>('go')
+const openCodeRules = ref<OpenCodeRule[] | null>(null)
+function selectOpenCodeMode(mode: OpenCodeMode) {
+  const oldDefault = openCodeBaseURL(openCodeMode.value, cnApiMode.value)
+  openCodeMode.value = mode
+  if (!apiKeyBaseUrl.value || apiKeyBaseUrl.value === oldDefault) apiKeyBaseUrl.value = openCodeBaseURL(mode, cnApiMode.value)
+  for (const option of cnAdaptiveProtocolOptions.value) {
+    if (!adaptiveBaseUrlOverrides.value[option.value]) adaptiveBaseUrls.value[option.value] = option.url
+  }
+}
 const adaptiveBaseUrls = ref<Record<string, string>>({})
 const adaptiveBaseUrlOverrides = ref<Record<string, boolean>>({})
 const zhipuOrganization = ref('')
 const zhipuProject = ref('')
 
 const isCNProvider = computed(() =>
-  form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek' || form.platform === 'minimax'
+  form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek' || form.platform === 'minimax' || form.platform === 'opencode_go'
 )
 const cnBillingPlanSupported = computed(() => form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'minimax')
 const cnApiProtocolOptions = computed(() => {
@@ -4789,7 +4806,7 @@ const cnApiProtocolOptions = computed(() => {
       description: t('admin.accounts.cnProviders.anthropicDesc')
     },
   ]
-  if (form.platform === 'deepseek' || form.platform === 'kimi' || form.platform === 'minimax') {
+  if (form.platform === 'deepseek' || form.platform === 'kimi' || form.platform === 'minimax' || form.platform === 'opencode_go') {
     options.push({
       value: 'responses',
       label: t('admin.accounts.cnProviders.responses'),
@@ -4800,12 +4817,13 @@ const cnApiProtocolOptions = computed(() => {
 })
 const cnAdaptiveProtocolOptions = computed(() => {
   const options = [
-    { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: form.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : form.platform === 'zhipu' ? (cnBillingMode.value === 'coding_plan' ? 'https://open.bigmodel.cn/api/coding/paas/v4' : 'https://open.bigmodel.cn/api/paas/v4') : form.platform === 'deepseek' ? 'https://api.deepseek.com/v1' : 'https://api.minimaxi.com/v1' },
-    { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: form.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : form.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : form.platform === 'deepseek' ? 'https://api.deepseek.com/anthropic' : 'https://api.minimaxi.com/anthropic' }
+    { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: form.platform === 'opencode_go' ? openCodeBaseURL(openCodeMode.value) : form.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : form.platform === 'zhipu' ? (cnBillingMode.value === 'coding_plan' ? 'https://open.bigmodel.cn/api/coding/paas/v4' : 'https://open.bigmodel.cn/api/paas/v4') : form.platform === 'deepseek' ? 'https://api.deepseek.com/v1' : 'https://api.minimaxi.com/v1' },
+    { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: form.platform === 'opencode_go' ? openCodeBaseURL(openCodeMode.value, 'anthropic') : form.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : form.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : form.platform === 'deepseek' ? 'https://api.deepseek.com/anthropic' : 'https://api.minimaxi.com/anthropic' }
   ]
   if (form.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.deepseek.com' })
   if (form.platform === 'kimi') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1' })
   if (form.platform === 'minimax') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.minimaxi.com/v1' })
+  if (form.platform === 'opencode_go') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: openCodeBaseURL(openCodeMode.value) })
   return options
 })
 function resetAdaptiveBaseUrls() {
@@ -4820,6 +4838,7 @@ function restoreAdaptiveUrlLink(protocol: string, fallback: string) {
   adaptiveBaseUrls.value[protocol] = protocol === 'chat_completions' ? apiKeyBaseUrl.value.trim() || fallback : fallback
 }
 const cnBaseUrlPresets = computed(() => {
+  if (form.platform === 'opencode_go') return [{ key: 'opencode', label: `OpenCode ${openCodeMode.value === 'go' ? 'Go' : 'Zen'}`, url: openCodeBaseURL(openCodeMode.value, cnApiMode.value) }]
   if (form.platform === 'kimi') {
     if (cnApiMode.value === 'anthropic') {
       return [{ key: 'kimiAnthropic', label: t('admin.accounts.cnProviders.anthropic'), url: cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic' }]
@@ -5771,7 +5790,12 @@ watch(
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
     } else {
-      if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek' || newPlatform === 'minimax') {
+      if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek' || newPlatform === 'minimax' || newPlatform === 'opencode_go') {
+        if (newPlatform === 'opencode_go') {
+          openCodeMode.value = 'go'
+          openCodeRules.value = null
+          apiKeyBaseUrl.value = openCodeBaseURL('go')
+        }
         accountCategory.value = 'apikey'
         cnBillingMode.value = 'payg'
         cnApiMode.value = 'adaptive'
@@ -6967,6 +6991,10 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'opencode_go' && !validOpenCodeRules(openCodeRules.value)) {
+    appStore.showError(t('admin.accounts.openCode.invalidRules'))
+    return
+  }
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!form.name.trim()) {
@@ -7150,6 +7178,10 @@ const handleSubmit = async () => {
   const credentials: Record<string, unknown> = {
     base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
     api_key: apiKeyValue.value.trim()
+  }
+  if (form.platform === 'opencode_go') {
+    credentials.account_mode = openCodeMode.value
+    credentials.protocol_rules = openCodeRules.value
   }
   if (isCNProvider.value && cnApiMode.value === 'adaptive') {
     credentials.base_url = (adaptiveBaseUrls.value.chat_completions || defaultBaseUrl).trim()

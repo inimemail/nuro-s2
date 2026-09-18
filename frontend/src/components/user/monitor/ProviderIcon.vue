@@ -71,6 +71,9 @@ const PROVIDER_ICONS: Record<Provider, IconData> = {
   minimax: {
     paths: ['M4 5h3l5 6 5-6h3v14h-3v-8l-5 6-5-6v8H4z'],
   },
+  opencode_go: {
+    paths: ['M7 4h10v4H7zM5 10h14v4H5zM7 16h10v4H7z'],
+  },
 }
 
 const props = withDefaults(defineProps<{

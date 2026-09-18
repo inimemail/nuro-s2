@@ -27,6 +27,7 @@
   <svg v-else-if="platform === 'zhipu'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h16v3L9.2 16H20v3H4v-3l10.8-8H4z" /></svg>
   <svg v-else-if="platform === 'deepseek'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h7.5a5.5 5.5 0 1 1 0 11H8v3H4zm4 4v3h3.5a1.5 1.5 0 0 0 0-3z" /></svg>
   <svg v-else-if="platform === 'minimax'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h3l5 6 5-6h3v14h-3v-8l-5 6-5-6v8H4z" /></svg>
+  <svg v-else-if="platform === 'opencode_go'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 4h10v4H7zM5 10h14v4H5zM7 16h10v4H7z" /></svg>
   <svg v-else-if="platform === 'composite'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <path d="M8 8h8v8H8z" /><path d="M4 4h4M16 4h4M4 20h4M16 20h4" /><path d="M4 4l4 4M20 4l-4 4M4 20l4-4M20 20l-4-4" />
   </svg>

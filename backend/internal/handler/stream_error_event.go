@@ -28,11 +28,12 @@ type responsesFailedBody struct {
 	Error  responsesFailedError `json:"error"`
 }
 
-// responsesFailedEvent 是写入 SSE data 行的顶层结构。
-// 故意不带 sequence_number：spec 标记可选，且本函数被调用时无法可靠拿到 last seq。
+// responsesFailedEvent 是写入 SSE data 行的顶层结构。严格 Responses 客户端
+// 将 sequence_number 视为必填；未知时使用 0，因为该事件会终止当前流。
 type responsesFailedEvent struct {
-	Type     string              `json:"type"`
-	Response responsesFailedBody `json:"response"`
+	Type           string              `json:"type"`
+	SequenceNumber int                 `json:"sequence_number"`
+	Response       responsesFailedBody `json:"response"`
 }
 
 // writeResponsesFailedSSE emits a `response.failed` SSE event in the OpenAI
@@ -59,7 +60,8 @@ func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
 	}
 
 	payload, err := json.Marshal(responsesFailedEvent{
-		Type: "response.failed",
+		Type:           "response.failed",
+		SequenceNumber: 0,
 		Response: responsesFailedBody{
 			ID:     synthesizeResponseID(c),
 			Object: "response",

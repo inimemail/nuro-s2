@@ -232,9 +232,7 @@ func (p *AntigravityTokenProvider) markBackfillAttempted(accountID int64) {
 }
 
 func AntigravityTokenCacheKey(account *Account) string {
-	projectID := strings.TrimSpace(account.GetCredential("project_id"))
-	if projectID != "" {
-		return "ag:" + projectID
-	}
+	// A project may be shared by different credentials. Never share auth tokens
+	// (or refresh locks) across accounts, even when their project IDs match.
 	return "ag:account:" + strconv.FormatInt(account.ID, 10)
 }

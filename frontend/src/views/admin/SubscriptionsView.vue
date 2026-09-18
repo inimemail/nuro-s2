@@ -1116,13 +1116,20 @@ const clearFilterUser = () => {
 
 // User search with debounce
 const debounceSearchUsers = () => {
+  userSearchGeneration++
+  if (selectedUser.value && userSearchKeyword.value.trim() !== selectedUser.value.email) {
+    selectedUser.value = null
+    assignForm.user_id = null
+  }
   if (userSearchTimeout) {
     clearTimeout(userSearchTimeout)
   }
   userSearchTimeout = setTimeout(searchUsers, 300)
 }
 
+let userSearchGeneration = 0
 const searchUsers = async () => {
+  const generation = ++userSearchGeneration
   const keyword = userSearchKeyword.value.trim()
 
   // Clear selection if user modified the search keyword
@@ -1133,21 +1140,27 @@ const searchUsers = async () => {
 
   if (!keyword) {
     userSearchResults.value = []
+    userSearchLoading.value = false
     return
   }
 
   userSearchLoading.value = true
   try {
-    userSearchResults.value = await adminAPI.usage.searchUsers(keyword)
+    const result = await adminAPI.users.list(1, 30, { search: keyword, sort_by: 'email', sort_order: 'asc' })
+    if (generation === userSearchGeneration && userSearchKeyword.value.trim() === keyword) {
+      userSearchResults.value = result.items.map(user => ({ id: user.id, email: user.email, deleted: false }))
+    }
   } catch (error) {
     console.error('Failed to search users:', error)
-    userSearchResults.value = []
+    if (generation === userSearchGeneration) userSearchResults.value = []
   } finally {
-    userSearchLoading.value = false
+    if (generation === userSearchGeneration) userSearchLoading.value = false
   }
 }
 
 const selectUser = (user: SimpleUser) => {
+  userSearchGeneration++
+  userSearchLoading.value = false
   selectedUser.value = user
   userSearchKeyword.value = user.email
   showUserDropdown.value = false
@@ -1155,6 +1168,8 @@ const selectUser = (user: SimpleUser) => {
 }
 
 const clearUserSelection = () => {
+  userSearchGeneration++
+  userSearchLoading.value = false
   selectedUser.value = null
   userSearchKeyword.value = ''
   userSearchResults.value = []

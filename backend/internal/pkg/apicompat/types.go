@@ -644,8 +644,9 @@ type ResponsesStreamEvent struct {
 	Code  string `json:"code,omitempty"`
 	Param string `json:"param,omitempty"`
 
-	// Sequence number for ordering events
-	SequenceNumber int `json:"sequence_number,omitempty"`
+	// Strict Responses clients require this field on every event. Zero is a
+	// valid first-event value and is used by synthesized terminal events.
+	SequenceNumber int `json:"sequence_number"`
 }
 
 // ---------------------------------------------------------------------------

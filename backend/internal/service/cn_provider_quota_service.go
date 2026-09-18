@@ -132,7 +132,7 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 
 func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, account *Account) (*CNProviderQuotaProbeResult, error) {
 	provider := account.GetCodingPlanProvider()
-	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax {
+	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax && provider != PlatformOpenCodeGo {
 		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a supported coding plan account")
 	}
 
@@ -148,6 +148,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		zhipuOrg   string
 	)
 	switch provider {
+	case PlatformOpenCodeGo:
+		targetURL = strings.TrimRight(account.GetCNProtocolBaseURL(APIProtocolChatCompletions), "/") + "/usage"
+		authHeader = "Bearer " + apiKey
 	case PlatformKimi:
 		targetURL = kimiQuotaURL(baseURL)
 		authHeader = "Bearer " + apiKey
@@ -242,6 +245,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 
 	var tiers []CNQuotaTier
 	switch provider {
+	case PlatformOpenCodeGo:
+		tiers = parseOpenCodeGoUsageTiers(bodyBytes)
+		result.PlanLevel = "OpenCode Go"
 	case PlatformKimi:
 		tiers = parseKimiUsageTiers(bodyBytes)
 	case PlatformZhipu:
@@ -287,6 +293,9 @@ func validateCodingPlanAccount(account *Account) error {
 	}
 	if !account.IsCNProvider() {
 		return infraerrors.New(http.StatusBadRequest, "CN_QUOTA_INVALID_PLATFORM", "account is not a CN provider account")
+	}
+	if account.IsOpenCodeGoPlan() && account.Type == AccountTypeAPIKey {
+		return nil
 	}
 	if !account.IsCodingPlan() {
 		return infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a coding plan account")
@@ -596,6 +605,11 @@ func cnQuotaExtraUpdates(provider string, tiers []CNQuotaTier, now time.Time) ma
 			updates[cnExtraKey(provider, cnExtraSuffixWeeklyUsed)] = t.UsedPercent
 			if t.ResetAt != "" {
 				updates[cnExtraKey(provider, cnExtraSuffixWeeklyReset)] = t.ResetAt
+			}
+		case "monthly":
+			updates[cnExtraKey(provider, "monthly_used_percent")] = t.UsedPercent
+			if t.ResetAt != "" {
+				updates[cnExtraKey(provider, "monthly_reset_at")] = t.ResetAt
 			}
 		}
 	}

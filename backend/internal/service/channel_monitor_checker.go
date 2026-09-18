@@ -601,6 +601,14 @@ func joinURL(base, path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	if u, err := url.Parse(base); err == nil {
+		basePath := u.EscapedPath()
+		for end := strings.LastIndex(path, "/"); end > 0; end = strings.LastIndex(path[:end], "/") {
+			if strings.HasSuffix(basePath, path[:end]) {
+				return base + path[end:]
+			}
+		}
+	}
 	return base + path
 }
 

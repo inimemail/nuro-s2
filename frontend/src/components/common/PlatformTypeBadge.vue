@@ -103,7 +103,7 @@ const typeLabel = computed(() => {
 
 const planLabel = computed(() => {
   if (!props.planType) return ''
-  const lower = props.planType.toLowerCase()
+  const lower = props.planType.toLowerCase().replace(/[\s_-]+/g, '')
   switch (lower) {
     case 'plus':
       return 'Plus'
@@ -111,7 +111,11 @@ const planLabel = computed(() => {
       return 'Team'
     case 'chatgptpro':
     case 'pro':
-      return 'Pro'
+      return 'Pro 20x'
+    case 'prolite':
+      return 'Pro 5x'
+    case 'selfservebusinessprolite':
+      return 'Business Premium'
     case 'free':
       return 'Free'
     case 'abnormal':

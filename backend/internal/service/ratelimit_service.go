@@ -33,8 +33,19 @@ type RateLimitService struct {
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
 	runtimeBlocker        AccountRuntimeBlocker
+	ollamaCloudUsageProbe ollamaCloudUsageProbeScheduler
 	usageCacheMu          sync.RWMutex
 	usageCache            map[int64]*geminiUsageCacheEntry
+}
+
+type ollamaCloudUsageProbeScheduler interface {
+	ScheduleOllamaCloudUsageRateLimitProbe(int64, func(context.Context, time.Time)) bool
+}
+
+func (s *RateLimitService) SetOllamaCloudUsageProbeScheduler(probe ollamaCloudUsageProbeScheduler) {
+	if s != nil {
+		s.ollamaCloudUsageProbe = probe
+	}
 }
 
 type AccountRuntimeBlocker interface {
@@ -955,6 +966,39 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 // handle429 处理429限流错误
 // 解析响应头获取重置时间，标记账号为限流状态
 func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
+	if account != nil && IsOllamaCloudUsageAccount(account) && ollamaCloudRateLimitRecoveryEnabled(account) && s.ollamaCloudUsageProbe != nil {
+		cooldown, enabled := s.get429FallbackCooldown(ctx, account)
+		if enabled {
+			resetAt := time.Now().Add(cooldown)
+			if extender, ok := s.accountRepo.(interface {
+				SetRateLimitedIfLater(context.Context, int64, time.Time) error
+			}); ok {
+				_ = extender.SetRateLimitedIfLater(ctx, account.ID, resetAt)
+			} else {
+				_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
+			}
+			s.notifyAccountSchedulingBlocked(account, resetAt, "ollama_429")
+		}
+		if s.ollamaCloudUsageProbe != nil && ollamaCloudRateLimitRecoveryEnabled(account) {
+			authoritative, loadErr := s.accountRepo.GetByID(ctx, account.ID)
+			if loadErr == nil && authoritative != nil {
+				expectedUpdatedAt := authoritative.UpdatedAt
+				expectedLimitedAt := cloneTimePtr(authoritative.RateLimitedAt)
+				expectedResetAt := cloneTimePtr(authoritative.RateLimitResetAt)
+				_ = s.ollamaCloudUsageProbe.ScheduleOllamaCloudUsageRateLimitProbe(account.ID, func(probeCtx context.Context, resetAt time.Time) {
+					if setter, ok := s.accountRepo.(interface {
+						SetRateLimitedIfUnchanged(context.Context, int64, time.Time, *time.Time, *time.Time, time.Time) (bool, error)
+					}); ok {
+						updated, err := setter.SetRateLimitedIfUnchanged(probeCtx, account.ID, expectedUpdatedAt, expectedLimitedAt, expectedResetAt, resetAt)
+						if err == nil && updated {
+							s.notifyAccountSchedulingBlocked(account, resetAt, "ollama_429_probe")
+						}
+					}
+				})
+			}
+		}
+		return
+	}
 	// 1. OpenAI 平台：优先尝试解析 x-codex-* 响应头（用于 rate_limit_exceeded）
 	if account.Platform == PlatformOpenAI {
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)

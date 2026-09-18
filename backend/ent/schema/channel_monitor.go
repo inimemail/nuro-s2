@@ -35,7 +35,7 @@ func (ChannelMonitor) Fields() []ent.Field {
 			NotEmpty().
 			MaxLen(100),
 		field.Enum("provider").
-			Values("openai", "anthropic", "gemini", "grok", "antigravity", "kimi", "zhipu", "deepseek", "minimax"),
+			Values("openai", "anthropic", "gemini", "grok", "antigravity", "kimi", "zhipu", "deepseek", "minimax", "opencode_go"),
 		field.String("check_mode").Default("probe").MaxLen(32),
 		field.Int64("account_id").Optional().Nillable(),
 		field.String("api_mode").
