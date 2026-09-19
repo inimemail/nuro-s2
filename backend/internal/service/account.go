@@ -2731,6 +2731,14 @@ func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
 }
 
 func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapability) bool {
+	if a == nil {
+		return false
+	}
+	// Text and provider-native requests have no OpenAI Images requirement.
+	// Their platform/endpoint checks are performed separately by the scheduler.
+	if capability == "" {
+		return true
+	}
 	if !a.IsOpenAI() {
 		return false
 	}

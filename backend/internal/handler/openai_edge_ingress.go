@@ -15,6 +15,8 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -57,6 +59,10 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	if !cfg.Enabled || !cfg.InternalAPIEnabled || !cfg.IngressProxyEnabled {
 		return false
 	}
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || !openAIEdgeSupportsRequestPlatform(c.Request.Context(), apiKey) {
+		return false
+	}
 	if strings.ToLower(strings.TrimSpace(cfg.Mode)) != "relay" {
 		return false
 	}
@@ -92,7 +98,9 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	if target == "" {
 		return false
 	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, bytes.NewReader(body))
+	edgeCtx, cancelEdge := context.WithCancel(c.Request.Context())
+	defer cancelEdge()
+	req, err := http.NewRequestWithContext(edgeCtx, c.Request.Method, target, bytes.NewReader(body))
 	if err != nil {
 		return false
 	}
@@ -114,12 +122,14 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		// The edge relay is an internal hop. Never copy an upstream/CDN error
-		// page or its headers to the public client.
+		// Error classification must not wait indefinitely for an incomplete body.
+		timer := time.AfterFunc(time.Second, cancelEdge)
+		errType, message := openAIEdgeIngressClientError(resp.StatusCode, resp.Body)
+		timer.Stop()
 		c.JSON(resp.StatusCode, gin.H{
 			"error": gin.H{
-				"type":    "upstream_error",
-				"message": "Upstream request failed",
+				"type":    errType,
+				"message": message,
 			},
 		})
 		return true
@@ -132,6 +142,40 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	c.Writer.Flush()
 	copyOpenAIEdgeResponseBody(c, resp.Body, strings.HasSuffix(strings.TrimSuffix(c.Request.URL.Path, "/"), "/responses"))
 	return true
+}
+
+// The Edge control plane selects and compiles OpenAI accounts only. Composite
+// groups must also stay on Go: their resolved platform/model is request context
+// and is not carried through the Edge authentication/prepare boundary.
+func openAIEdgeSupportsRequestPlatform(ctx context.Context, apiKey *service.APIKey) bool {
+	if apiKey == nil {
+		return false
+	}
+	if apiKey.Group != nil && apiKey.Group.Platform != service.PlatformOpenAI {
+		return false
+	}
+	return openAICompatibleRequestPlatform(ctx, apiKey) == service.PlatformOpenAI
+}
+
+func openAIEdgeIngressClientError(status int, body io.Reader) (string, string) {
+	// Preserve only known public routing errors from the Go fallback. Rebuild
+	// the envelope so upstream/CDN details, extra fields and headers cannot leak.
+	const limit = 8 << 10
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err == nil && len(data) <= limit && gjson.ValidBytes(data) {
+		errType := gjson.GetBytes(data, "error.type").String()
+		message := gjson.GetBytes(data, "error.message").String()
+		switch {
+		case status == http.StatusServiceUnavailable && errType == "api_error" && message == "Service temporarily unavailable":
+			return errType, message
+		case status == http.StatusServiceUnavailable && errType == "compact_not_supported" &&
+			(message == "No available accounts support /responses/compact" || message == "No available accounts support native remote compaction v2"):
+			return errType, message
+		case status == http.StatusBadRequest && errType == "invalid_request_error" && message == service.OpenAIPoolModelRoutingClientMessage():
+			return errType, message
+		}
+	}
+	return "upstream_error", "Upstream request failed"
 }
 
 func clearOpenAIEdgeFallbackHeaders(header http.Header) {

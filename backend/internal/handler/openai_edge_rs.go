@@ -2077,6 +2077,9 @@ func (h *OpenAIGatewayHandler) authenticateOpenAIEdgeClient(c *gin.Context, req 
 		ctx := context.WithValue(c.Request.Context(), ctxkey.Group, apiKey.Group)
 		c.Request = c.Request.WithContext(ctx)
 	}
+	if !openAIEdgeSupportsRequestPlatform(c.Request.Context(), apiKey) {
+		return nil, middleware2.AuthSubject{}, nil, "platform_requires_go"
+	}
 	var subscription *service.UserSubscription
 	if apiKey.Group != nil && apiKey.Group.IsSubscriptionType() {
 		sub, subErr := h.apiKeyService.GetActiveSubscriptionForAPIKey(c.Request.Context(), apiKey)
