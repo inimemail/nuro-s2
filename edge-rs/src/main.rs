@@ -1,4 +1,5 @@
 mod http_lane_pool;
+mod stream_session;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -145,8 +146,6 @@ async fn wait_for_retry_after(delay_ms: Option<u64>, deadline: Option<Instant>) 
     true
 }
 const DEFAULT_UPSTREAM_ERROR_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const FALLBACK_GO_RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const FALLBACK_GO_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const WS_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTLEMENT_RETRY_CONCURRENCY: usize = 32;
 const SETTLEMENT_RETRY_QUEUE_SIZE: usize = 65_536;
@@ -1009,6 +1008,10 @@ struct EdgeConfig {
     queue_max_bytes: usize,
     max_header_bytes: usize,
     ingress_body_max_bytes: usize,
+    ingress_body_idle_timeout_ms: u64,
+    ingress_body_total_timeout_ms: u64,
+    fallback_header_timeout_ms: u64,
+    fallback_body_idle_timeout_ms: u64,
     global_workers: usize,
     per_account_workers: usize,
     max_relay_domains: usize,
@@ -1070,11 +1073,14 @@ struct StreamOnlyRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 struct EdgePlan {
+    settlement_context: Option<String>,
     action: String,
     reason: Option<String>,
     edge_request_id: String,
     lease_id: Option<String>,
     lease_ttl_ms: Option<u64>,
+    lease_renew_grace_ms: Option<u64>,
+    lease_renew_ttl_ms: Option<u64>,
     account_id: Option<i64>,
     account_type: Option<String>,
     transport: Option<String>,
@@ -1313,6 +1319,7 @@ struct RelayHeaderGuard {
 
 #[derive(Clone, Debug, Default)]
 struct LeaseIdentity {
+    settlement_context: Option<String>,
     lease_id: Option<String>,
     account_id: Option<i64>,
 }
@@ -1329,6 +1336,9 @@ fn update_lease_identity(identity: &SharedLeaseIdentity, plan: &EdgePlan) {
         }
         if plan.account_id.is_some() {
             current.account_id = plan.account_id;
+        }
+        if plan.settlement_context.is_some() {
+            current.settlement_context = plan.settlement_context.clone();
         }
     }
 }
@@ -1601,6 +1611,8 @@ struct RenewRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CompleteRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settlement_context: Option<String>,
     edge_request_id: String,
     lease_id: Option<String>,
     account_id: Option<i64>,
@@ -2368,6 +2380,7 @@ struct ClientDisconnectCompleteGuard {
     state: AppState,
     started_at: Instant,
     request: Mutex<CompleteRequest>,
+    prior_usage: Mutex<Usage>,
     lease_identity: Option<SharedLeaseIdentity>,
     definitive_failure: AtomicBool,
     done: AtomicBool,
@@ -2375,6 +2388,7 @@ struct ClientDisconnectCompleteGuard {
 
 struct LeaseRenewalGuard {
     stop: Option<oneshot::Sender<()>>,
+    lost: tokio::sync::watch::Receiver<bool>,
 }
 
 impl LeaseRenewalGuard {
@@ -2387,25 +2401,123 @@ impl LeaseRenewalGuard {
         let request = RenewRequest {
             edge_request_id: plan.edge_request_id.clone(),
             lease_id: lease_id.to_string(),
-            account_id: plan.account_id,
+            // Renewal belongs to the logical lease. During a staged account
+            // switch the old account can cease owning it before the new plan
+            // arrives; that handoff must not be mistaken for lease loss.
+            account_id: None,
         };
-        let interval = Duration::from_millis((ttl_ms / 3).clamp(250, 30_000));
         let renew_state = state.clone();
+        Some(Self::with_renewal_windows(
+            ttl_ms,
+            plan.lease_renew_grace_ms.unwrap_or(0),
+            plan.lease_renew_ttl_ms
+                .filter(|ttl| *ttl > 0)
+                .unwrap_or(ttl_ms),
+            move || {
+                let state = renew_state.clone();
+                let request = request.clone();
+                async move {
+                    let result = send_renew_once(&state, &request).await;
+                    if let Err(err) = &result {
+                        state
+                            .metrics
+                            .lease_renew_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                        warn!(
+                            "edge lease renew failed edge_request_id={}: {}",
+                            request.edge_request_id,
+                            safe_edge_error(err)
+                        );
+                    }
+                    result
+                }
+            },
+        ))
+    }
+
+    #[cfg(test)]
+    fn with_renewal<F, Fut>(ttl_ms: u64, renew: F) -> Self
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        Self::with_renewal_window(ttl_ms, 0, renew)
+    }
+
+    #[cfg(test)]
+    fn with_renewal_window<F, Fut>(ttl_ms: u64, grace_ms: u64, renew: F) -> Self
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        Self::with_renewal_windows(ttl_ms, grace_ms, ttl_ms, renew)
+    }
+
+    fn with_renewal_windows<F, Fut>(ttl_ms: u64, grace_ms: u64, renew_ttl_ms: u64, renew: F) -> Self
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let mut interval = Duration::from_millis((ttl_ms / 4).clamp(1, 30_000));
+        let renewed_interval = Duration::from_millis((renew_ttl_ms / 4).clamp(1, 30_000));
+        let renewed_safe_ttl = Duration::from_millis(
+            (renew_ttl_ms.saturating_mul(2) / 3)
+                .saturating_add(grace_ms)
+                .max(1),
+        );
+        // Reserve time for cancellation to propagate before Go releases slots.
+        let safe_ttl = Duration::from_millis(
+            (ttl_ms.saturating_mul(2) / 3)
+                .saturating_add(grace_ms)
+                .max(1),
+        );
         let (stop, mut stopped) = oneshot::channel();
+        let (lost_tx, lost) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
+            let mut deadline = Instant::now() + safe_ttl;
             loop {
+                let attempt_started = Instant::now();
                 tokio::select! {
-                    _ = tokio::time::sleep(interval) => {
-                        if let Err(err) = send_renew_once(&renew_state, &request).await {
-                            renew_state.metrics.lease_renew_failures.fetch_add(1, Ordering::Relaxed);
-                            warn!("edge lease renew failed edge_request_id={}: {}", request.edge_request_id, safe_edge_error(&err));
+                    result = tokio::time::timeout_at(deadline.into(), renew()) => {
+                        match result {
+                        Ok(Ok(())) => { deadline = attempt_started + renewed_safe_ttl; interval = renewed_interval; }
+                        Ok(Err(err)) => {
+                            if settlement_error_is_permanent(&err) {
+                                let _ = lost_tx.send(true); return;
+                            }
+                        }
+                        Err(_) => { let _ = lost_tx.send(true); return; }
                         }
                     }
                     _ = &mut stopped => return,
                 }
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline.into()) => { let _ = lost_tx.send(true); return; }
+                    _ = tokio::time::sleep(interval) => {},
+                    _ = &mut stopped => return,
+                }
             }
         });
-        Some(Self { stop: Some(stop) })
+        Self {
+            stop: Some(stop),
+            lost,
+        }
+    }
+
+    async fn wait_lost(guard: &Option<Self>) {
+        let Some(guard) = guard else {
+            std::future::pending::<()>().await;
+            return;
+        };
+        let mut lost = guard.lost.clone();
+        loop {
+            if *lost.borrow() {
+                return;
+            }
+            if lost.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 
@@ -2417,12 +2529,53 @@ impl Drop for LeaseRenewalGuard {
     }
 }
 
+// The pump owns the HTTP response, so lease loss closes it even when a slow
+// downstream is not polling its response body. At most one chunk is queued.
+fn lease_fenced_stream<S>(
+    source: S,
+    guard: &Option<LeaseRenewalGuard>,
+) -> futures_util::stream::BoxStream<'static, S::Item>
+where
+    S: futures_util::Stream + Send + 'static,
+    S::Item: Send + 'static,
+{
+    let Some(guard) = guard else {
+        return source.boxed();
+    };
+    let mut lost = guard.lost.clone();
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(async move {
+        let mut source = source.boxed();
+        loop {
+            if *lost.borrow() {
+                return;
+            }
+            let item = tokio::select! {
+                biased;
+                _ = lost.changed() => return,
+                _ = tx.closed() => return,
+                next = source.next() => match next { Some(item) => item, None => return },
+            };
+            tokio::select! {
+                biased;
+                _ = lost.changed() => return,
+                result = tx.send(item) => if result.is_err() { return; },
+            }
+        }
+    });
+    futures_util::stream::unfold(rx, |mut rx| async {
+        rx.recv().await.map(|item| (item, rx))
+    })
+    .boxed()
+}
+
 impl ClientDisconnectCompleteGuard {
     fn new(state: AppState, started_at: Instant, request: CompleteRequest) -> Self {
         Self {
             state,
             started_at,
             request: Mutex::new(request),
+            prior_usage: Mutex::new(Usage::default()),
             lease_identity: None,
             definitive_failure: AtomicBool::new(false),
             done: AtomicBool::new(false),
@@ -2463,6 +2616,7 @@ impl ClientDisconnectCompleteGuard {
         request.model = summary.model.clone();
         request.upstream_model = summary.upstream_model.clone();
         request.usage = summary.usage.clone();
+        request.usage.add_assign(&self.prior_usage.lock().unwrap());
         request.duration_ms = self.started_at.elapsed().as_millis() as i64;
         request.upstream_header_ms = upstream_header_ms;
         request.upstream_first_byte_ms = upstream_first_byte_ms;
@@ -2478,8 +2632,10 @@ impl ClientDisconnectCompleteGuard {
         request.upstream_status_code = upstream_status_code;
         request.terminal_event_type = summary.terminal_event_type(None);
         request.cyber_blocked = summary.cyber_blocked;
-        request.failure_class =
-            classify_stream_failure_with_status(success, false, summary, upstream_status_code);
+        if request.failure_class.as_deref() != Some("lease_lost") {
+            request.failure_class =
+                classify_stream_failure_with_status(success, false, summary, upstream_status_code);
+        }
         if definitive_failure {
             self.definitive_failure.store(true, Ordering::SeqCst);
         }
@@ -2489,10 +2645,27 @@ impl ClientDisconnectCompleteGuard {
         self.done.store(true, Ordering::SeqCst);
     }
 
-    fn update_lease_identity(&self, lease_id: Option<String>, account_id: Option<i64>) {
+    fn set_prior_usage(&self, usage: &Usage) {
+        // Same lock order as snapshot updates. A drop during replacement
+        // setup must retain every completed attempt's billable usage.
+        let mut request = self.request.lock().unwrap();
+        *self.prior_usage.lock().unwrap() = usage.clone();
+        request.usage = usage.clone();
+    }
+
+    fn mark_lease_lost(&self) {
         if let Ok(mut request) = self.request.lock() {
-            request.lease_id = lease_id;
-            request.account_id = account_id;
+            request.failure_class = Some("lease_lost".to_string());
+            request.error_type = Some("edge_lease_lost".to_string());
+        }
+        self.definitive_failure.store(true, Ordering::SeqCst);
+    }
+
+    fn update_lease_identity(&self, plan: &EdgePlan) {
+        if let Ok(mut request) = self.request.lock() {
+            request.lease_id = plan.lease_id.clone();
+            request.account_id = plan.account_id;
+            request.settlement_context = plan.settlement_context.clone();
         }
     }
 }
@@ -2520,6 +2693,7 @@ fn pending_stream_complete_request(
     edge_retry_count: i64,
 ) -> CompleteRequest {
     CompleteRequest {
+        settlement_context: None,
         edge_request_id,
         lease_id,
         account_id,
@@ -2594,6 +2768,7 @@ impl Drop for ClientDisconnectCompleteGuard {
             let identity = lease_identity_snapshot(identity);
             request.lease_id = identity.lease_id;
             request.account_id = identity.account_id;
+            request.settlement_context = identity.settlement_context;
         }
         if self.definitive_failure.load(Ordering::SeqCst) {
             request.success = false;
@@ -2862,7 +3037,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/readyz", any(readyz))
         .route("/metrics", any(metrics))
         .route("/internal/drain", axum::routing::post(drain))
-        .route("/*path", any(handle_openai_edge))
+        .route(
+            "/internal/edge/stream-session/:id",
+            any(stream_session::control),
+        )
+        .route("/*path", any(stream_session::ingress))
         .with_state(state.clone());
 
     info!("sub2api-edge-rs listening on {}", cfg.listen_addr);
@@ -3279,7 +3458,11 @@ async fn handle_openai_edge(
         return text_response(StatusCode::SERVICE_UNAVAILABLE, "edge draining");
     }
     let _active_request = state.metrics.begin_request();
-    let edge_request_id = Uuid::new_v4().to_string();
+    let edge_request_id = req
+        .extensions()
+        .get::<stream_session::ExecutionID>()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let start = Instant::now();
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
@@ -3311,63 +3494,18 @@ async fn handle_openai_edge(
     if content_length.is_some_and(|length| length > MAX_BODY_BYTES) {
         return text_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
     }
-    let mut ingress_body_permits = Vec::new();
-    let body_bytes = if let Some(length) = content_length {
-        if length > 0 {
-            match state
-                .ingress_body_bytes
-                .clone()
-                .try_acquire_many_owned(length as u32)
-            {
-                Ok(permit) => ingress_body_permits.push(permit),
-                Err(_) => return overload_response(&state),
-            }
-        }
-        match to_bytes(body, MAX_BODY_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                state
-                    .metrics
-                    .prepare_failures
-                    .fetch_add(1, Ordering::Relaxed);
-                error!("read client body failed: {}", safe_edge_error(&err));
-                return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
-            }
-        }
-    } else {
-        let mut stream = body.into_data_stream();
-        let mut buffered = Vec::new();
-        while let Some(next) = stream.next().await {
-            let chunk = match next {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    state
-                        .metrics
-                        .prepare_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    error!("read chunked client body failed: {}", safe_edge_error(&err));
-                    return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
-                }
-            };
-            if buffered.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
-                return text_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
-            }
-            if !chunk.is_empty() {
-                let permit = match state
-                    .ingress_body_bytes
-                    .clone()
-                    .try_acquire_many_owned(chunk.len() as u32)
-                {
-                    Ok(permit) => permit,
-                    Err(_) => return overload_response(&state),
-                };
-                ingress_body_permits.push(permit);
-                buffered.extend_from_slice(&chunk);
-            }
-        }
-        Bytes::from(buffered)
+    let (body_bytes, _ingress_body_permits) = match read_ingress_body(
+        body,
+        state.ingress_body_bytes.clone(),
+        Duration::from_millis(state.cfg.ingress_body_idle_timeout_ms),
+        Duration::from_millis(state.cfg.ingress_body_total_timeout_ms),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(StatusCode::SERVICE_UNAVAILABLE) => return overload_response(&state),
+        Err(status) => return text_response(status, "failed to read request body"),
     };
-    let _ingress_body_permits = ingress_body_permits;
     let raw_prepare_body = openai_prepare_raw_body(&state, &body_bytes);
     let (stream, prepare_body) = if raw_prepare_body.is_some() {
         let stream = serde_json::from_slice::<StreamOnlyRequest>(&body_bytes)
@@ -4027,7 +4165,7 @@ async fn relay_ws_session(
         }
         return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
     }
-    let _lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
+    let lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
     // Setup failures are upstream/plan failures, not downstream disconnects.
     guard.set_client_disconnected(false);
     if plan.transport.as_deref() != Some("ws_v2") {
@@ -4090,6 +4228,16 @@ async fn relay_ws_session(
     // Setup failures are upstream failures, not downstream disconnects. Once
     // the first upstream message is sent, an unexpected task drop is treated
     // as a client disconnect unless the normal completion path says otherwise.
+    let (
+        mut upstream_write,
+        mut upstream_read,
+        upstream_request_id,
+        mut ws_response_active,
+        mut last_request_body,
+    ) = tokio::select! {
+        biased;
+        _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => anyhow::bail!("edge lease lost"),
+        result = async {
     let idle_conn = state.take_ws_idle(&plan).await;
     let reused_idle = idle_conn.is_some();
     let (upstream_socket, mut upstream_request_id) = if let Some(conn) = idle_conn {
@@ -4100,9 +4248,8 @@ async fn relay_ws_session(
     state.ensure_ws_idle(plan.clone()).await;
     let (mut upstream_write, mut upstream_read) = upstream_socket.split();
     let first_upstream_msg = edge_plan_ws_first_message(&plan, first_msg)?;
-    let mut ws_response_active = tungstenite_message_is_response_create(&first_upstream_msg);
-    let mut last_request_body = tungstenite_message_json(&first_upstream_msg);
-    let mut commit_state_for_turn = RETRY_COMMIT_NONE;
+    let ws_response_active = tungstenite_message_is_response_create(&first_upstream_msg);
+    let last_request_body = tungstenite_message_json(&first_upstream_msg);
     if let Err(first_error) = upstream_write.send(first_upstream_msg.clone()).await {
         if !reused_idle {
             return Err(first_error.into());
@@ -4114,6 +4261,10 @@ async fn relay_ws_session(
         upstream_read = fresh_read;
         upstream_request_id = fresh_request_id;
     }
+    Ok::<_, anyhow::Error>((upstream_write,upstream_read,upstream_request_id,ws_response_active,last_request_body))
+        } => result?,
+    };
+    let mut commit_state_for_turn = RETRY_COMMIT_NONE;
     drop(first_message_permit);
     guard.mark_relay_attempted();
     guard.set_client_disconnected(true);
@@ -4185,6 +4336,10 @@ async fn relay_ws_session(
         .flatten()
         .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
 
+    let lease_lost = tokio::select! {
+        biased;
+        _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => true,
+        _ = async {
     loop {
         tokio::select! {
             next = client_socket.recv() => {
@@ -4591,6 +4746,24 @@ async fn relay_ws_session(
         }
     }
 
+        }
+        => false,
+    };
+    // Drop both socket halves before settlement or a potentially blocked
+    // downstream write. This also fences awaits inside the WS relay loop.
+    drop(upstream_write);
+    drop(upstream_read);
+    if lease_lost {
+        success = false;
+        error_message = Some("edge lease lost".to_string());
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            client_socket.send(AxumWsMessage::Text(safe_ws_response_failed_event(
+                summary.response_id.as_deref(),
+            ))),
+        )
+        .await;
+    }
     prior_turns_successful &= summary.completed_successfully(Some("responses"));
     if summary.completed_successfully(Some("responses"))
         && current_turn_real_first_token_ms.is_some()
@@ -4623,11 +4796,14 @@ async fn relay_ws_session(
     call_complete(
         &state,
         CompleteRequest {
+            settlement_context: plan.settlement_context.clone(),
             edge_request_id: edge_request_id_complete,
             lease_id,
             account_id,
             success,
-            failure_class: if !success && !client_disconnected && session_failed {
+            failure_class: if error_message.as_deref() == Some("edge lease lost") {
+                Some("lease_lost".to_string())
+            } else if !success && !client_disconnected && session_failed {
                 Some("upstream_error".to_string())
             } else {
                 classify_stream_failure(success, client_disconnected, &summary)
@@ -4698,8 +4874,8 @@ async fn proxy_ws_to_go(
             }
         }
     }
-    let (upstream_socket, _) = tokio::time::timeout(
-        FALLBACK_GO_RESPONSE_HEADER_TIMEOUT,
+    let (upstream_socket, _) = optional_timeout(
+        state.cfg.fallback_header_timeout_ms,
         connect_async_tls_with_config(req, Some(WebSocketConfig::default()), false, None),
     )
     .await
@@ -4710,8 +4886,14 @@ async fn proxy_ws_to_go(
     upstream_write.send(first_upstream_message).await?;
     let (mut client_write, mut client_read) = client_socket.split();
     let mut summary = ChatStreamSummary::default();
-    let mut idle =
-        response_active.then(|| Box::pin(tokio::time::sleep(FALLBACK_GO_BODY_IDLE_TIMEOUT)));
+    let idle_timer = || {
+        (state.cfg.fallback_body_idle_timeout_ms > 0).then(|| {
+            Box::pin(tokio::time::sleep(Duration::from_millis(
+                state.cfg.fallback_body_idle_timeout_ms,
+            )))
+        })
+    };
+    let mut idle = if response_active { idle_timer() } else { None };
     loop {
         tokio::select! {
             next = client_read.next() => {
@@ -4721,7 +4903,7 @@ async fn proxy_ws_to_go(
                         if tungstenite_message_is_response_create(&msg) {
                             response_active = true;
                             summary = ChatStreamSummary::default();
-                            idle = Some(Box::pin(tokio::time::sleep(FALLBACK_GO_BODY_IDLE_TIMEOUT)));
+                            idle = idle_timer();
                         }
                         upstream_write.send(msg).await?
                     },
@@ -4733,7 +4915,7 @@ async fn proxy_ws_to_go(
                 match next {
                     Some(Ok(msg)) => {
                         if response_active {
-                            idle = Some(Box::pin(tokio::time::sleep(FALLBACK_GO_BODY_IDLE_TIMEOUT)));
+                            idle = idle_timer();
                             summary.observe_ws_message(&msg);
                             if summary.terminal_event_type(Some("responses")).is_some() {
                                 response_active = false;
@@ -6162,6 +6344,21 @@ async fn open_body_retry_upstream(
     retry_count: i64,
     response_header_budget_deadline: Option<Instant>,
 ) -> anyhow::Result<(reqwest::Response, UpstreamClientGuard)> {
+    let guard = LeaseRenewalGuard::start(state, plan);
+    tokio::select! {
+        biased;
+        _ = LeaseRenewalGuard::wait_lost(&guard) => anyhow::bail!("edge lease lost"),
+        result = open_body_retry_upstream_unfenced(state, plan, request_body, retry_count, response_header_budget_deadline) => result,
+    }
+}
+
+async fn open_body_retry_upstream_unfenced(
+    state: &AppState,
+    plan: &EdgePlan,
+    request_body: &Bytes,
+    retry_count: i64,
+    response_header_budget_deadline: Option<Instant>,
+) -> anyhow::Result<(reqwest::Response, UpstreamClientGuard)> {
     let upstream_url = plan
         .upstream_url
         .as_deref()
@@ -7223,7 +7420,12 @@ async fn relay_upstream_direct_core_impl(
         Ok::<_, anyhow::Error>((response, upstream_client_guard))
     });
 
-    let (upstream, mut upstream_client_guard) = match upstream_send.await {
+    let send_result = tokio::select! {
+        biased;
+        _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => Err(anyhow::anyhow!("edge lease lost")),
+        result = upstream_send => result,
+    };
+    let (upstream, mut upstream_client_guard) = match send_result {
         Ok(result) => result,
         Err(err)
             if early_placeholder_mode
@@ -7318,14 +7520,18 @@ async fn relay_upstream_direct_core_impl(
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
             .map(ToOwned::to_owned);
-        let error_body = read_upstream_error_body(upstream, edge_body_idle_timeout)
-            .await
-            .unwrap_or_else(|_| "upstream error body unavailable".to_string());
+        let error_body = tokio::select! {
+            biased;
+            _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => anyhow::bail!("edge lease lost"),
+            result = read_upstream_error_body(upstream, edge_body_idle_timeout) => result
+                .unwrap_or_else(|_| "upstream error body unavailable".to_string()),
+        };
         upstream_client_guard.release();
         if json_text_is_cyber_policy(&error_body) {
             if let Err(callback_err) = call_complete(
                 &state,
                 CompleteRequest {
+                    settlement_context: plan.settlement_context.clone(),
                     edge_request_id: plan.edge_request_id.clone(),
                     lease_id: plan.lease_id.clone(),
                     account_id: plan.account_id,
@@ -7507,7 +7713,7 @@ async fn relay_upstream_direct_core_impl(
     drop(header_guard);
     drop(ingress_permit);
     upstream_client_guard.mark_stream_open();
-    let mut bytes_stream = upstream.bytes_stream();
+    let mut bytes_stream = lease_fenced_stream(upstream.bytes_stream(), &lease_renewal_guard);
 
     let upstream_request_id = headers
         .get("x-request-id")
@@ -7539,6 +7745,7 @@ async fn relay_upstream_direct_core_impl(
             edge_retry_count,
         ),
     );
+    complete_guard.update_lease_identity(&initial_plan);
     let body_stream = stream! {
         let mut current_plan = initial_plan;
         let mut current_edge_retry_count = edge_retry_count;
@@ -7646,6 +7853,7 @@ async fn relay_upstream_direct_core_impl(
         let mut semantic_stall_failover_used = false;
 
         enum RelaySelectEvent {
+            LeaseLost,
             BootstrapComment,
             Heartbeat,
             FirstTokenTimeoutPlaceholder,
@@ -7660,8 +7868,11 @@ async fn relay_upstream_direct_core_impl(
                 || semantic_progress_timer.is_some()
                 || heartbeat_timer.as_ref().is_some()
                 || body_idle_timer.is_some()
+                || lease_renewal_guard.is_some()
             {
                 tokio::select! {
+                    biased;
+                    _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => RelaySelectEvent::LeaseLost,
                     _ = wait_optional_sleep(&mut bootstrap_timer), if !bootstrap_comment_sent => {
                         RelaySelectEvent::BootstrapComment
                     }
@@ -7685,6 +7896,24 @@ async fn relay_upstream_direct_core_impl(
                 RelaySelectEvent::Upstream(bytes_stream.next().await)
             };
             let next = match event {
+                RelaySelectEvent::LeaseLost => {
+                    success = false;
+                    completion_error_type = Some("edge_lease_lost".to_string());
+                    error_message = Some("edge lease lost".to_string());
+                    guard.mark_lease_lost();
+                    bytes_stream = futures_util::stream::empty().boxed();
+                    upstream_client_guard.release();
+                    preamble_gate.discard_pending();
+                    summary.failed = true;
+                    summary.failed_terminal_event_type = Some("response.failed".to_string());
+                    summary.terminal_event_type = Some(if response_dialect.as_deref() == Some("chat_completions") {
+                        "[DONE]".to_string()
+                    } else { "response.failed".to_string() });
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame_for_summary(
+                        response_dialect.as_deref(), &summary,
+                    )));
+                    break 'relay;
+                }
                 RelaySelectEvent::BootstrapComment => {
                     if first_flush_ms.is_none() {
                         first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
@@ -7809,10 +8038,7 @@ async fn relay_upstream_direct_core_impl(
                             continue 'relay;
                         }
                         current_plan = retry.plan.clone();
-                        guard.update_lease_identity(
-                            current_plan.lease_id.clone(),
-                            current_plan.account_id,
-                        );
+                        guard.update_lease_identity(&current_plan);
                         let next_safe_token_placeholder = current_plan.safe_token_placeholder;
                         let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
@@ -7827,7 +8053,7 @@ async fn relay_upstream_direct_core_impl(
                             lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
                             let next_request_id = next_upstream.headers().get("x-request-id")
                                 .and_then(|value| value.to_str().ok()).map(ToOwned::to_owned);
-                            bytes_stream = next_upstream.bytes_stream();
+                            bytes_stream = lease_fenced_stream(next_upstream.bytes_stream(), &lease_renewal_guard);
                             if let (Some(idle_timer), Some(idle_timeout)) =
                                 (body_idle_timer.as_mut(), edge_body_idle_timeout)
                             {
@@ -7837,6 +8063,7 @@ async fn relay_upstream_direct_core_impl(
                             }
                             upstream_client_guard = next_guard;
                             retried_attempt_usage.add_assign(&summary.usage);
+                            guard.set_prior_usage(&retried_attempt_usage);
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
@@ -7936,10 +8163,7 @@ async fn relay_upstream_direct_core_impl(
                     .await;
                     current_edge_retry_count = retry.retry_count;
                     current_plan = retry.plan.clone();
-                    guard.update_lease_identity(
-                        current_plan.lease_id.clone(),
-                        current_plan.account_id,
-                    );
+                    guard.update_lease_identity(&current_plan);
                     let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                         current_plan.first_token_timeout_placeholder_ms,
                         current_plan.account_type.as_deref(),
@@ -7956,7 +8180,7 @@ async fn relay_upstream_direct_core_impl(
                             .get("x-request-id")
                             .and_then(|value| value.to_str().ok())
                             .map(ToOwned::to_owned);
-                        bytes_stream = next_upstream.bytes_stream();
+                        bytes_stream = lease_fenced_stream(next_upstream.bytes_stream(), &lease_renewal_guard);
                         if let (Some(idle_timer), Some(idle_timeout)) =
                             (body_idle_timer.as_mut(), edge_body_idle_timeout)
                         {
@@ -7966,6 +8190,7 @@ async fn relay_upstream_direct_core_impl(
                         }
                         upstream_client_guard = next_guard;
                         retried_attempt_usage.add_assign(&summary.usage);
+                        guard.set_prior_usage(&retried_attempt_usage);
                         summary = ChatStreamSummary::with_pending(
                             complete_state.pools.take_sse_string(),
                             response_dialect.as_deref(),
@@ -8091,10 +8316,7 @@ async fn relay_upstream_direct_core_impl(
                             .await;
                             current_edge_retry_count = retry.retry_count;
                             current_plan = retry.plan.clone();
-                            guard.update_lease_identity(
-                                current_plan.lease_id.clone(),
-                                current_plan.account_id,
-                            );
+                            guard.update_lease_identity(&current_plan);
                             let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                                 current_plan.first_token_timeout_placeholder_ms,
                                 current_plan.account_type.as_deref(),
@@ -8111,7 +8333,7 @@ async fn relay_upstream_direct_core_impl(
                                     .get("x-request-id")
                                     .and_then(|value| value.to_str().ok())
                                     .map(ToOwned::to_owned);
-                                bytes_stream = next_upstream.bytes_stream();
+                                bytes_stream = lease_fenced_stream(next_upstream.bytes_stream(), &lease_renewal_guard);
                                 if let (Some(idle_timer), Some(idle_timeout)) =
                                     (body_idle_timer.as_mut(), edge_body_idle_timeout)
                                 {
@@ -8121,6 +8343,7 @@ async fn relay_upstream_direct_core_impl(
                                 }
                                 upstream_client_guard = next_guard;
                                 retried_attempt_usage.add_assign(&summary.usage);
+                                guard.set_prior_usage(&retried_attempt_usage);
                                 summary = ChatStreamSummary::with_pending(
                                     complete_state.pools.take_sse_string(),
                                     response_dialect.as_deref(),
@@ -8410,10 +8633,7 @@ async fn relay_upstream_direct_core_impl(
                         ).await;
                         current_edge_retry_count = retry.retry_count;
                         current_plan = retry.plan.clone();
-                        guard.update_lease_identity(
-                            current_plan.lease_id.clone(),
-                            current_plan.account_id,
-                        );
+                        guard.update_lease_identity(&current_plan);
                         let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
                             current_plan.account_type.as_deref(),
@@ -8427,7 +8647,7 @@ async fn relay_upstream_direct_core_impl(
                             lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
                             let next_request_id = next_upstream.headers().get("x-request-id")
                                 .and_then(|value| value.to_str().ok()).map(ToOwned::to_owned);
-                            bytes_stream = next_upstream.bytes_stream();
+                            bytes_stream = lease_fenced_stream(next_upstream.bytes_stream(), &lease_renewal_guard);
                             if let (Some(idle_timer), Some(idle_timeout)) =
                                 (body_idle_timer.as_mut(), edge_body_idle_timeout)
                             {
@@ -8437,6 +8657,7 @@ async fn relay_upstream_direct_core_impl(
                             }
                             upstream_client_guard = next_guard;
                             retried_attempt_usage.add_assign(&summary.usage);
+                            guard.set_prior_usage(&retried_attempt_usage);
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
@@ -8605,11 +8826,14 @@ async fn relay_upstream_direct_core_impl(
         complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
 
         if call_complete(&complete_state, CompleteRequest {
+            settlement_context: current_plan.settlement_context.clone(),
             edge_request_id,
             lease_id: current_plan.lease_id.clone(),
             account_id: current_plan.account_id,
             success,
-            failure_class: classify_stream_failure(success, false, &summary),
+            failure_class: if completion_error_type.as_deref() == Some("edge_lease_lost") {
+                Some("lease_lost".to_string())
+            } else { classify_stream_failure(success, false, &summary) },
             client_disconnected: false,
             request_id,
             response_id,
@@ -10861,19 +11085,46 @@ async fn send_settlement_once<T: Serialize + ?Sized>(
     req: &T,
 ) -> anyhow::Result<()> {
     let url = format!("{}{}", state.cfg.control_base_url, path);
+    // Complete now waits for billing durability (Go allows up to 30s). Keep
+    // the shorter control timeout for renew/commit so lease fencing stays fast.
+    let timeout_ms = if path == "/internal/edge/openai/complete" {
+        state.cfg.complete_timeout_ms.max(35_000)
+    } else {
+        state.cfg.complete_timeout_ms
+    };
     let resp = state
         .client
         .post(url)
         .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
-        .timeout(std::time::Duration::from_millis(
-            state.cfg.complete_timeout_ms,
-        ))
+        .timeout(std::time::Duration::from_millis(timeout_ms))
         .json(&req)
         .send()
         .await?;
     if !resp.status().is_success() {
         return Err(SettlementHttpError {
             status: resp.status(),
+        }
+        .into());
+    }
+    if path == "/internal/edge/openai/complete" || path == "/internal/edge/openai/renew" {
+        // Older Go returned ok=true for a missing lease. That is not evidence
+        // of settlement and must never remove a completion from the WAL.
+        let ack: Value = resp.json().await?;
+        validate_settlement_ack(&ack)?;
+    }
+    Ok(())
+}
+
+fn validate_settlement_ack(ack: &Value) -> anyhow::Result<()> {
+    let reason = ack
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if ack.get("ok").and_then(Value::as_bool) != Some(true)
+        || (!reason.is_empty() && reason != "already_settled")
+    {
+        return Err(SettlementHttpError {
+            status: StatusCode::CONFLICT,
         }
         .into());
     }
@@ -11102,6 +11353,12 @@ async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
             }
             Err(err) => {
                 if settlement_error_is_permanent(&err) {
+                    if matches!(&job, SettlementRetryJob::Complete(_)) {
+                        // Preserve unresolvable callbacks for reconciliation,
+                        // but don't let old/malformed jobs occupy every worker.
+                        error!("complete callback needs reconciliation; retained in WAL edge_request_id={edge_request_id}: {}", safe_edge_error(err));
+                        return;
+                    }
                     error!(
                         "{kind} callback rejected permanently edge_request_id={edge_request_id}: {}",
                         safe_edge_error(err)
@@ -11230,15 +11487,6 @@ async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Re
             acknowledge_settlement(state, &job).await;
             Ok(())
         }
-        Err(err) if settlement_error_is_permanent(&err) => {
-            error!(
-                "complete callback rejected permanently edge_request_id={}: {}",
-                req.edge_request_id,
-                safe_edge_error(err)
-            );
-            acknowledge_settlement(state, &job).await;
-            Ok(())
-        }
         Err(err) => {
             warn!(
                 "complete callback failed; queued for retry edge_request_id={}: {err}",
@@ -11313,6 +11561,56 @@ async fn read_upstream_error_body(
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
+// Body admission has its own clocks; these do not limit generation or SSE.
+async fn read_ingress_body(
+    body: Body,
+    budget: Arc<Semaphore>,
+    idle: Duration,
+    total: Duration,
+) -> Result<(Bytes, Vec<OwnedSemaphorePermit>), StatusCode> {
+    tokio::time::timeout(total, async {
+        let mut stream = body.into_data_stream();
+        let mut buffered = Vec::new();
+        let mut permits: Vec<OwnedSemaphorePermit> = Vec::new();
+        loop {
+            let next = tokio::time::timeout(idle, stream.next())
+                .await
+                .map_err(|_| StatusCode::REQUEST_TIMEOUT)?;
+            let Some(chunk) = next else { break };
+            let chunk = chunk.map_err(|_| StatusCode::BAD_REQUEST)?;
+            if buffered.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            if !chunk.is_empty() {
+                let permit = budget
+                    .clone()
+                    .try_acquire_many_owned(chunk.len() as u32)
+                    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                if let Some(held) = permits.last_mut() {
+                    held.merge(permit);
+                } else {
+                    permits.push(permit);
+                }
+                buffered.extend_from_slice(&chunk);
+            }
+        }
+        Ok((Bytes::from(buffered), permits))
+    })
+    .await
+    .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
+}
+
+async fn optional_timeout<T>(
+    ms: u64,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T, tokio::time::error::Elapsed> {
+    if ms == 0 {
+        Ok(future.await)
+    } else {
+        tokio::time::timeout(Duration::from_millis(ms), future).await
+    }
+}
+
 async fn fallback_to_go(
     state: AppState,
     method: Method,
@@ -11364,8 +11662,8 @@ async fn fallback_to_go(
     if let Some(token) = timing.continuation_token.as_deref() {
         req = req.header(EDGE_CONTINUATION_HEADER, token);
     }
-    let upstream = match tokio::time::timeout(
-        FALLBACK_GO_RESPONSE_HEADER_TIMEOUT,
+    let upstream = match optional_timeout(
+        state.cfg.fallback_header_timeout_ms,
         req.body(body_bytes).send(),
     )
     .await
@@ -11382,7 +11680,7 @@ async fn fallback_to_go(
         let _stream_guard = stream_guard;
         let mut bytes = upstream.bytes_stream();
         loop {
-            match tokio::time::timeout(FALLBACK_GO_BODY_IDLE_TIMEOUT, bytes.next()).await {
+            match optional_timeout(state.cfg.fallback_body_idle_timeout_ms, bytes.next()).await {
                 Ok(Some(item)) => {
                     yield item.map_err(|err| std::io::Error::other(err.to_string()));
                 }
@@ -12434,6 +12732,20 @@ impl EdgeConfig {
                 2 * 1024 * 1024 * 1024,
             )
             .min(u32::MAX as usize),
+            ingress_body_idle_timeout_ms: env_u64(
+                "SUB2API_EDGE_INGRESS_BODY_IDLE_TIMEOUT_MS",
+                30_000,
+            )
+            .max(1),
+            ingress_body_total_timeout_ms: env_u64(
+                "SUB2API_EDGE_INGRESS_BODY_TOTAL_TIMEOUT_MS",
+                300_000,
+            )
+            .max(1),
+            // Go owns queue/upstream/stream budgets. An optional deployment
+            // ceiling must not silently replace those policies with 30s/180s.
+            fallback_header_timeout_ms: env_u64("SUB2API_EDGE_FALLBACK_HEADER_TIMEOUT_MS", 0),
+            fallback_body_idle_timeout_ms: env_u64("SUB2API_EDGE_FALLBACK_BODY_IDLE_TIMEOUT_MS", 0),
             global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 9_999).clamp(1, 999_999_999),
             per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 0),
             max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
@@ -12599,6 +12911,247 @@ fn b64_value(byte: u8) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settlement_ack_must_confirm_durable_completion() {
+        for ack in [
+            serde_json::json!({"ok":true}),
+            serde_json::json!({"ok":true,"reason":"already_settled"}),
+        ] {
+            assert!(validate_settlement_ack(&ack).is_ok());
+        }
+        for ack in [
+            serde_json::json!({}),
+            serde_json::json!({"ok":false}),
+            serde_json::json!({"ok":true,"reason":"lease_not_found_or_already_released"}),
+            serde_json::json!({"ok":true,"reason":"account_mismatch"}),
+        ] {
+            assert!(validate_settlement_ack(&ack).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn lease_renewal_tolerates_transient_errors_but_fences_expiry_and_rejection() {
+        let attempts = Arc::new(AtomicU64::new(0));
+        let count = attempts.clone();
+        let guard = Some(LeaseRenewalGuard::with_renewal(120, move || {
+            let n = count.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if n == 0 {
+                    anyhow::bail!("transient control failure")
+                }
+                Ok(())
+            }
+        }));
+        assert!(tokio::time::timeout(
+            Duration::from_millis(160),
+            LeaseRenewalGuard::wait_lost(&guard)
+        )
+        .await
+        .is_err());
+        assert!(attempts.load(Ordering::Relaxed) >= 2);
+        drop(guard);
+        let guard = Some(LeaseRenewalGuard::with_renewal(60, || async {
+            std::future::pending::<anyhow::Result<()>>().await
+        }));
+        tokio::time::timeout(Duration::from_secs(1), LeaseRenewalGuard::wait_lost(&guard))
+            .await
+            .unwrap();
+        let guard = Some(LeaseRenewalGuard::with_renewal(120_000, || async {
+            Err(SettlementHttpError {
+                status: StatusCode::CONFLICT,
+            }
+            .into())
+        }));
+        tokio::time::timeout(Duration::from_secs(1), LeaseRenewalGuard::wait_lost(&guard))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ingress_body_timeouts_release_byte_budget() {
+        let budget = Arc::new(Semaphore::new(1024));
+        let body = Body::from_stream(stream! {
+            yield Ok::<_, std::io::Error>(Bytes::from_static(b"hello"));
+            std::future::pending::<()>().await;
+        });
+        let result = read_ingress_body(
+            body,
+            budget.clone(),
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(budget.available_permits(), 1024);
+        let body = Body::from_stream(stream! {
+            loop {
+                yield Ok::<_, std::io::Error>(Bytes::from_static(b"x"));
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        });
+        let result = read_ingress_body(
+            body,
+            budget.clone(),
+            Duration::from_secs(1),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(budget.available_permits(), 1024);
+        let (bytes, permits) = read_ingress_body(
+            Body::from("hello"),
+            budget.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(bytes, Bytes::from_static(b"hello"));
+        assert_eq!(budget.available_permits(), 1019);
+        drop(permits);
+        assert_eq!(budget.available_permits(), 1024);
+    }
+
+    #[tokio::test]
+    async fn advertised_lease_grace_recovers_transient_control_outage() {
+        let began = Instant::now();
+        let count = Arc::new(AtomicU64::new(0));
+        let calls = count.clone();
+        let guard = Some(LeaseRenewalGuard::with_renewal_window(
+            120,
+            240,
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if began.elapsed() < Duration::from_millis(160) {
+                        anyhow::bail!("control plane temporarily unavailable");
+                    }
+                    Ok(())
+                }
+            },
+        ));
+        // Outage exceeds the old 80ms fence, but is within Go's advertised
+        // slot-retention window. Renewal succeeds and generation stays alive.
+        assert!(tokio::time::timeout(
+            Duration::from_millis(400),
+            LeaseRenewalGuard::wait_lost(&guard)
+        )
+        .await
+        .is_err());
+        assert!(count.load(Ordering::Relaxed) >= 3);
+        drop(guard);
+        let guard = Some(LeaseRenewalGuard::with_renewal_window(120, 120, || async {
+            anyhow::bail!("still unavailable")
+        }));
+        tokio::time::timeout(Duration::from_secs(1), LeaseRenewalGuard::wait_lost(&guard))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_lease_uses_full_ttl_after_first_confirmed_renewal() {
+        let attempts = Arc::new(AtomicU64::new(0));
+        let calls = attempts.clone();
+        let guard = Some(LeaseRenewalGuard::with_renewal_windows(
+            30,
+            0,
+            300,
+            move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async { Ok(()) }
+            },
+        ));
+        assert!(tokio::time::timeout(
+            Duration::from_millis(400),
+            LeaseRenewalGuard::wait_lost(&guard)
+        )
+        .await
+        .is_err());
+        let count = attempts.load(Ordering::Relaxed);
+        assert!(
+            (3..=10).contains(&count),
+            "must not keep the expired plan's millisecond renewal cadence: {count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_timeout_defers_to_go_unless_explicitly_configured() {
+        assert_eq!(
+            optional_timeout(0, async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                7
+            })
+            .await
+            .unwrap(),
+            7
+        );
+        assert!(optional_timeout(1, std::future::pending::<()>())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn lost_lease_closes_upstream_even_without_downstream_polling() {
+        struct DropSignal(Option<oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let (tx, lost) = tokio::sync::watch::channel(false);
+        let guard = Some(LeaseRenewalGuard { stop: None, lost });
+        let (drop_tx, drop_rx) = oneshot::channel();
+        let marker = DropSignal(Some(drop_tx));
+        let source = stream! {
+            let _marker = marker;
+            loop { yield Bytes::from_static(b"chunk"); }
+        };
+        let mut downstream = lease_fenced_stream(source, &guard);
+        assert_eq!(
+            downstream.next().await.unwrap(),
+            Bytes::from_static(b"chunk")
+        );
+        tokio::task::yield_now().await;
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), drop_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        LeaseRenewalGuard::wait_lost(&guard).await;
+    }
+
+    #[test]
+    fn settlement_context_survives_plan_switch_and_wal_serialization() {
+        let plan: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action":"relay","edge_request_id":"edge","lease_id":"lease","account_id":7,"settlement_context":"encrypted-token"
+        })).unwrap();
+        let identity = Arc::new(Mutex::new(LeaseIdentity::default()));
+        update_lease_identity(&identity, &plan);
+        assert_eq!(
+            lease_identity_snapshot(&identity).settlement_context,
+            plan.settlement_context
+        );
+        let mut req = pending_stream_complete_request(
+            "edge".into(),
+            Some("lease".into()),
+            Some(7),
+            None,
+            None,
+            None,
+            None,
+            0,
+        );
+        req.settlement_context = plan.settlement_context;
+        let restored: CompleteRequest =
+            serde_json::from_slice(&serde_json::to_vec(&req).unwrap()).unwrap();
+        assert_eq!(
+            restored.settlement_context.as_deref(),
+            Some("encrypted-token")
+        );
+    }
 
     struct TestDirectory(PathBuf);
 
@@ -14602,11 +15155,14 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn early_placeholder_retry_plan_preserves_body_and_disables_duplicate_timer() {
         let mut plan = EdgePlan {
+            settlement_context: None,
             action: "relay".to_string(),
             reason: None,
             edge_request_id: "edge-retry".to_string(),
             lease_id: Some("lease-retry".to_string()),
             lease_ttl_ms: Some(120_000),
+            lease_renew_grace_ms: None,
+            lease_renew_ttl_ms: None,
             account_id: Some(84),
             account_type: Some("apikey".to_string()),
             transport: Some("http2_sse".to_string()),
@@ -14662,6 +15218,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn lease_identity_snapshot_tracks_cross_account_retry() {
         let identity = Arc::new(Mutex::new(LeaseIdentity {
+            settlement_context: None,
             lease_id: Some("lease-1".to_string()),
             account_id: Some(101),
         }));
@@ -14678,6 +15235,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn lease_identity_snapshot_survives_legacy_retry_plan_without_identity() {
         let identity = Arc::new(Mutex::new(LeaseIdentity {
+            settlement_context: None,
             lease_id: Some("lease-1".to_string()),
             account_id: Some(101),
         }));
@@ -15201,11 +15759,14 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn take_request_body_prefers_raw_base64_and_clears_plan_body() {
         let mut plan = EdgePlan {
+            settlement_context: None,
             action: "relay".to_string(),
             reason: None,
             edge_request_id: "edge-1".to_string(),
             lease_id: Some("lease-1".to_string()),
             lease_ttl_ms: Some(120_000),
+            lease_renew_grace_ms: None,
+            lease_renew_ttl_ms: None,
             account_id: Some(42),
             account_type: None,
             transport: Some("http2_sse".to_string()),
@@ -15354,11 +15915,14 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn relay_queue_key_uses_account_proxy_and_host() {
         let plan = EdgePlan {
+            settlement_context: None,
             action: "relay".to_string(),
             reason: None,
             edge_request_id: "edge-1".to_string(),
             lease_id: Some("lease-1".to_string()),
             lease_ttl_ms: Some(120_000),
+            lease_renew_grace_ms: None,
+            lease_renew_ttl_ms: None,
             account_id: Some(42),
             account_type: None,
             transport: Some("http2_sse".to_string()),

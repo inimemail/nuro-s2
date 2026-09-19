@@ -46,6 +46,9 @@ func TestOpenAIEdgeIngressPlatformRouting(t *testing.T) {
 				calls := 0
 				body := `{"model":"grok-4.6","input":"hi","stream":true}`
 				openAIEdgeIngressClient = &http.Client{Transport: grokEdgeTestTransport(func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodPut {
+						return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: http.NoBody}, nil
+					}
 					calls++
 					got, err := io.ReadAll(r.Body)
 					require.NoError(t, err)
@@ -155,6 +158,9 @@ func TestOpenAIEdgeIngressErrorResponseSanitizedAndBounded(t *testing.T) {
 			original := openAIEdgeIngressClient
 			t.Cleanup(func() { openAIEdgeIngressClient = original })
 			openAIEdgeIngressClient = &http.Client{Transport: grokEdgeTestTransport(func(r *http.Request) (*http.Response, error) {
+				if r.Method == http.MethodPut {
+					return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: http.NoBody}, nil
+				}
 				var body io.ReadCloser = io.NopCloser(strings.NewReader(`{"error":{"type":"api_error","message":"Service temporarily unavailable","secret":"private-token"}}`))
 				if stalled {
 					body = edgeErrorContextBody{ctx: r.Context()}
@@ -191,6 +197,10 @@ func TestOpenAIEdgeIngressRealTransportTimeoutScope(t *testing.T) {
 				protocol := make(chan int, 1)
 				finished := make(chan struct{})
 				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodPut {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
 					defer close(finished)
 					protocol <- r.ProtoMajor
 					if stalledError {

@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"errors"
 	"io"
 	"mime"
 	"net"
 	"net/http"
-	"regexp"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -25,10 +27,6 @@ import (
 const openAIEdgeFallbackHeader = "X-Sub2API-Edge-Fallback"
 const openAIEdgeFallbackReasonHeader = "X-Sub2API-Edge-Fallback-Reason"
 const openAIEdgeContinuationHeader = "X-Sub2API-Edge-Continuation"
-
-// JSON permits whitespace around the colon. A successfully completed Edge
-// stream must not gain a synthetic failure solely because of its formatting.
-var openAIEdgeTerminalJSONPattern = regexp.MustCompile(`"type"\s*:\s*"response\.(?:completed|failed|incomplete|cancelled|canceled|done)"`)
 
 var openAIEdgeIngressClient = &http.Client{
 	Transport: &http.Transport{
@@ -112,13 +110,55 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 		}
 	}
 	req.ContentLength = int64(len(body))
+	// Gateway POSTs are not made idempotent by a forwarded client header.
+	// Disable net/http's implicit replay of a reusable body as well.
+	req.GetBody = nil
 	req.Host = c.Request.Host
 	addForwardedHeaders(req.Header, c)
-
-	resp, err := openAIEdgeIngressClient.Do(req)
-	if err != nil {
-		restoreBody()
+	session, available := reserveEdgeStreamSession(req, body, cfg.ListenAddr, cfg.InternalSecret)
+	if !available {
 		return false
+	}
+	if session != nil {
+		defer session.close()
+	}
+
+	// GotConn is deliberately conservative: once transport owns a connection,
+	// an EOF/reset cannot prove that the POST was not accepted by Edge.
+	var connected atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}))
+	var resp *http.Response
+	if session != nil {
+		resp, err = session.start(req)
+		if err == nil && resp.StatusCode == http.StatusGone && resp.Header.Get(edgeStreamSessionHeader) == "absent" {
+			_ = resp.Body.Close()
+			return false // Edge rejected this first send before any execution.
+		}
+	} else {
+		resp, err = doEdgeSessionRequest(req)
+	}
+	if err != nil && session != nil && c.Request.Context().Err() == nil {
+		resp, err = session.resume(0)
+	}
+	if err != nil {
+		if session == nil && !connected.Load() && c.Request.Context().Err() == nil {
+			// Only a definite connection establishment failure may use Go.
+			var dialErr *net.OpError
+			if errors.As(err, &dialErr) && dialErr.Op == "dial" {
+				restoreBody()
+				return false
+			}
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"type": "upstream_error", "message": "Upstream request failed",
+		}})
+		return true
+	}
+	if session != nil && resp.StatusCode < 400 {
+		resp.Body = &edgeResumingBody{ReadCloser: resp.Body, session: session,
+			terminal: openAIEdgeTerminalScanner{responses: strings.HasSuffix(strings.TrimSuffix(c.Request.URL.Path, "/"), "/responses")}}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -136,6 +176,9 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	}
 
 	copyOpenAIEdgeResponseHeaders(c.Writer.Header(), resp.Header)
+	c.Writer.Header().Del(edgeStreamSessionHeader)
+	c.Writer.Header().Del(edgeStreamOffsetHeader)
+	c.Writer.Header().Del(edgeStreamBindingHeader)
 	c.Status(resp.StatusCode)
 	// Commit the SSE headers immediately. This removes the extra Go-hop header
 	// delay for systemd deployments where public traffic enters on port 8080.
@@ -191,6 +234,9 @@ func clearOpenAIEdgeFallbackHeaders(header http.Header) {
 		"X-Sub2API-Edge-Relay-Start-Ms",
 		"X-Sub2API-Edge-Retry-Count",
 		openAIEdgeSecretHeader,
+		edgeStreamSessionHeader,
+		edgeStreamBindingHeader,
+		edgeStreamOffsetHeader,
 	} {
 		header.Del(name)
 	}
@@ -306,38 +352,23 @@ func copyOpenAIEdgeResponseBody(c *gin.Context, src io.Reader, responsesDialect 
 	}
 	dst := c.Writer
 	buf := make([]byte, 32*1024)
-	const terminalScanTail = 128
-	var tail []byte
-	terminalSeen := false
+	terminal := openAIEdgeTerminalScanner{responses: responsesDialect}
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			scan := make([]byte, 0, len(tail)+len(chunk))
-			scan = append(scan, tail...)
-			scan = append(scan, chunk...)
-			if openAIEdgeTerminalJSONPattern.Match(scan) ||
-				bytes.Contains(scan, []byte("event: response.completed")) ||
-				bytes.Contains(scan, []byte("event: response.failed")) ||
-				bytes.Contains(scan, []byte("event: response.incomplete")) ||
-				bytes.Contains(scan, []byte("event: response.cancelled")) ||
-				bytes.Contains(scan, []byte("event: response.canceled")) ||
-				bytes.Contains(scan, []byte("event: response.done")) ||
-				bytes.Contains(scan, []byte("data: [DONE]")) {
-				terminalSeen = true
-			}
-			if len(scan) > terminalScanTail {
-				tail = append(tail[:0], scan[len(scan)-terminalScanTail:]...)
-			} else {
-				tail = append(tail[:0], scan...)
-			}
+			terminal.feed(chunk)
 			if _, writeErr := dst.Write(chunk); writeErr != nil {
 				return
 			}
 			dst.Flush()
 		}
 		if readErr != nil {
-			if !terminalSeen {
+			if !terminal.seen {
+				// Recovery can exhaust in the middle of an SSE frame. Separate
+				// the failure event from its partial data instead of concatenating
+				// event:/data: into malformed tool or JSON payload bytes.
+				_, _ = dst.Write([]byte("\n\n"))
 				if responsesDialect {
 					_ = writeResponsesFailedSSE(c, "server_error", "Upstream request failed")
 				} else {

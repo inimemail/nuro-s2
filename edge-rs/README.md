@@ -58,6 +58,99 @@ $env:RUST_LOG = "warn"
 cargo run --manifest-path edge-rs/Cargo.toml
 ```
 
+Request-body admission has independent idle and total limits:
+`SUB2API_EDGE_INGRESS_BODY_IDLE_TIMEOUT_MS` (default 30000) and
+`SUB2API_EDGE_INGRESS_BODY_TOTAL_TIMEOUT_MS` (default 300000). These only cover
+uploading the request, never model generation or SSE. Timeout releases both
+the request permit and accumulated body-byte permits.
+
+Go fallback now inherits Go's queue/upstream/stream timeout policies instead
+of imposing fixed 30-second header and 180-second stream limits. Optional
+deployment ceilings are `SUB2API_EDGE_FALLBACK_HEADER_TIMEOUT_MS` and
+`SUB2API_EDGE_FALLBACK_BODY_IDLE_TIMEOUT_MS`; both default to 0 (no additional
+Edge limit). Configure Go's timeout policies or these ceilings when an overall
+limit is required. These settings cover both HTTP and WebSocket fallback.
+
+Completion callbacks carry an authenticated encrypted billing snapshot issued
+by Go, retained with the callback in the settlement WAL. Go can recover billing
+after lease expiry, a Go restart, or delivery to another Go node, and only
+acknowledges completion after idempotent billing succeeds. Missing/negative
+acknowledgements remain pending. Permanently rejected callbacks remain in the
+WAL for reconciliation without occupying retry workers indefinitely; transient
+failures continue automatic retries. Deploy both Go and Edge for this protection;
+older callbacks without a snapshot cannot reconstruct lost context. Keep the
+same internal secret on control nodes and preserve it and the WAL across
+restarts; rotating it while callbacks are pending prevents snapshot recovery.
+Snapshots are internal data and must never be exposed in public responses or
+logs. Lease renewal now fences active work before the last confirmed lease
+expires, or immediately upon a definitive renewal rejection.
+New leases carry a stable billing identity, independent of missing or late
+provider request IDs. Snapshots from older leases retain their original identity
+rules. Retry usage already observed is also retained when a client disconnects.
+Pricing is still resolved by Go's existing billing service. A delayed replay
+whose usage or recalculated price conflicts with an already committed charge
+returns a conflict and stays in the WAL for reconciliation; it is not charged
+again and does not monopolize an automatic retry worker.
+
+## Internal stream recovery
+
+With both binaries updated, Go reserves an authenticated stream session before
+sending an eligible OpenAI SSE request to Edge. This adds one internal round
+trip before execution. The session starts at most once. If the Go-to-Edge
+connection fails, Go keeps its downstream connection open and reads the original
+session at the exact byte offset already received; tools, preamble events,
+comments and progress placeholders are not generated again. The upstream relay
+and its usage collector continue independently of that internal connection.
+Recovery never re-enters prepare or billing for already forwarded bytes.
+
+Sessions use a 512 KiB rolling replay window and a 256-session admission limit
+(at most 128 MiB of replay bytes, excluding in-flight relay chunks, headers and
+metadata). A full session registry falls back to Go **before execution**.
+Each journal is also capped at 1,024 chunks so tiny upstream fragments cannot
+create unbounded metadata. Attached readers release consumed chunks as needed.
+Detached sessions expire after 75 seconds; Go retries unreachable internal
+transport for up to 25 seconds. A live session still waiting for upstream
+headers reports pending and keeps the original upstream timeout policy.
+Internal sockets also switch to recovery after 15 seconds without initial
+headers after the POST upload finishes, or 35 seconds without body bytes; these cancel only the Go-to-Edge
+socket, not the upstream execution or the downstream connection.
+An explicit downstream cancellation stops the session immediately when the
+cancel message arrives; expiry bounds orphan execution if it cannot arrive.
+Session data is process-local: Go must address the same Edge process for reserve,
+start, read and cancel. Do not put those requests behind random per-request load
+balancing. A missing session, an expired replay cursor or an Edge process crash
+does not authorize a fresh generation. Public WebSocket/direct-to-Edge client
+reconnects and a broken upstream stream are outside this recovery mechanism.
+The one exception is a first POST explicitly rejected by Edge before execution
+because its reservation is absent; Go may then handle the untouched request.
+This fallback is never used after an ambiguous transport failure.
+
+New Go leases advertise an additional 120-second renewal grace and retain their
+actual user/account concurrency slots during it. Rust uses the advertised grace
+when tolerating transient control-plane failures, and stops before slot release
+if renewal never recovers. Cancellation, ownership conflicts and missing leases
+still stop execution; this does not reconstruct live leases after a Go restart.
+With the default 120-second lease, the safety fence is approximately 200 seconds
+after the last confirmed renewal attempt began, while Go retains slots for 240
+seconds. Normal completion/cancellation releases slots without waiting for this
+deadline. Older Go plans omit grace and retain the conservative renewal policy.
+A replacement plan initially advertises only the remaining ownership window;
+after a confirmed renewal, Rust uses the advertised full renewal TTL again.
+The 75-second replay journal does not change the separate 24-hour prompt-cache
+policy or cap the lifetime of an attached generation.
+
+Local cross-language fault injection can be run after building Edge:
+
+```sh
+cd backend
+NURO_EDGE_TEST_BINARY=/absolute/path/to/sub2api-edge-rs go test -race -tags unit ./internal/handler -run TestEdgeStreamRealRustTransportRecovery -count=1
+```
+
+The test closes real internal TCP responses before headers and inside SSE
+frames, checks exact output, one upstream execution and complete usage delivery.
+It uses local upstream/control fixtures; it does not validate production Redis,
+PostgreSQL replicas, external load balancers or provider behavior.
+
 The upstream lane pool is enabled by default. A client lane is an independent
 `reqwest::Client` and connection pool used to distribute in-flight attempts; it
 is not a promise that exactly one physical TCP or HTTP/2 connection exists.

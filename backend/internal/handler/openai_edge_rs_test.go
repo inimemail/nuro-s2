@@ -685,6 +685,11 @@ func TestOpenAIEdgeCallbacksRequireSecretAndAck(t *testing.T) {
 	} {
 		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/"+tc.name, tc.body, "edge-secret")
 		tc.call(c)
+		if tc.name == "complete" {
+			require.Equal(t, http.StatusConflict, w.Code)
+			require.Contains(t, w.Body.String(), `"ok":false`)
+			continue
+		}
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s: expected 200, got %d: %s", tc.name, w.Code, w.Body.String())
 		}
@@ -1788,7 +1793,8 @@ func TestOpenAIEdgeCompleteRejectsAccountMismatch(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &ack); err != nil {
 		t.Fatalf("decode ack: %v", err)
 	}
-	if !ack.OK || ack.Reason != "account_mismatch" {
+	require.Equal(t, http.StatusConflict, w.Code)
+	if ack.OK || ack.Reason != "account_mismatch" {
 		t.Fatalf("expected account mismatch ack, got %#v", ack)
 	}
 	if h.openAIEdgeLeases["lease-1"] == nil {

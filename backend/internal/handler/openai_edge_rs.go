@@ -47,6 +47,8 @@ type openAIEdgeLease struct {
 	leaseID                  string
 	createdAt                time.Time
 	expiresAt                time.Time
+	renewGrace               time.Duration
+	settlementBillingID      string
 	releaseOnce              sync.Once
 	userReleaseFunc          func()
 	accountReleaseFunc       func()
@@ -800,6 +802,21 @@ func (h *OpenAIGatewayHandler) storeOpenAIEdgeLease(lease *openAIEdgeLease, ttl 
 	if ttl <= 0 {
 		ttl = defaultOpenAIEdgeLeaseTTL
 	}
+	if lease.apiKey != nil && lease.account != nil {
+		lease.settlementBillingID = "edge-settlement:" + lease.leaseID
+		// Retain actual concurrency ownership throughout transient control-plane
+		// outages. Advertise this explicitly; old Go plans grant no extra grace.
+		lease.renewGrace = 2 * time.Minute
+		lease.lastPlan.LeaseRenewTTLMS = int(ttl / time.Millisecond)
+		lease.expiresAt = lease.expiresAt.Add(lease.renewGrace)
+		ttl += lease.renewGrace
+		lease.lastPlan.LeaseRenewGraceMS = int(lease.renewGrace / time.Millisecond)
+		token, err := h.sealEdgeSettlement(edgeSettlementSnapshot(lease))
+		if err != nil {
+			return false
+		}
+		lease.lastPlan.SettlementContext = token
+	}
 	edgeRequestID := strings.TrimSpace(lease.edgeRequestID)
 	h.openAIEdgeLeaseMu.Lock()
 	now := time.Now()
@@ -869,10 +886,10 @@ func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, gen
 		return
 	}
 	expired := false
+	lease.retryMu.Lock()
+	lease.mu.Lock()
 	h.openAIEdgeLeaseMu.Lock()
 	if h.openAIEdgeLeases[lease.leaseID] == lease {
-		lease.retryMu.Lock()
-		lease.mu.Lock()
 		if !lease.settled && lease.timerGeneration == generation {
 			if remaining := time.Until(lease.expiresAt); remaining > 0 {
 				h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, remaining)
@@ -886,10 +903,10 @@ func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, gen
 				expired = true
 			}
 		}
-		lease.mu.Unlock()
-		lease.retryMu.Unlock()
 	}
 	h.openAIEdgeLeaseMu.Unlock()
+	lease.mu.Unlock()
+	lease.retryMu.Unlock()
 	if expired {
 		h.settleOpenAIEdgeStallAction(lease, false)
 		lease.release()
@@ -902,8 +919,8 @@ func (h *OpenAIGatewayHandler) renewOpenAIEdgeLeaseForRequest(leaseID, edgeReque
 	}
 	leaseID = strings.TrimSpace(leaseID)
 	edgeRequestID = strings.TrimSpace(edgeRequestID)
-	h.openAIEdgeLeaseMu.Lock()
-	defer h.openAIEdgeLeaseMu.Unlock()
+	lease, unlock := h.lockOpenAIEdgeLease(leaseID, "")
+	defer unlock()
 	if leaseID == "" || edgeRequestID == "" {
 		return "lease_not_found"
 	}
@@ -913,14 +930,9 @@ func (h *OpenAIGatewayHandler) renewOpenAIEdgeLeaseForRequest(leaseID, edgeReque
 		}
 		return "lease_mismatch"
 	}
-	lease := h.openAIEdgeLeases[leaseID]
 	if lease == nil {
 		return "lease_not_found"
 	}
-	lease.retryMu.Lock()
-	defer lease.retryMu.Unlock()
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
 	if lease.settled {
 		return "lease_not_found"
 	}
@@ -930,8 +942,11 @@ func (h *OpenAIGatewayHandler) renewOpenAIEdgeLeaseForRequest(leaseID, edgeReque
 	if accountID != 0 && (lease.account == nil || lease.account.ID != accountID) {
 		return "account_mismatch"
 	}
-	lease.expiresAt = time.Now().Add(ttl)
-	h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, ttl)
+	if !lease.expiresAt.After(time.Now()) {
+		return "lease_expired"
+	}
+	lease.expiresAt = time.Now().Add(ttl + lease.renewGrace)
+	h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, ttl+lease.renewGrace)
 	return ""
 }
 
@@ -941,8 +956,8 @@ func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeReques
 	}
 	leaseID = strings.TrimSpace(leaseID)
 	edgeRequestID = strings.TrimSpace(edgeRequestID)
-	h.openAIEdgeLeaseMu.Lock()
-	defer h.openAIEdgeLeaseMu.Unlock()
+	lease, unlock := h.lockOpenAIEdgeLease(leaseID, edgeRequestID)
+	defer unlock()
 	if leaseID != "" && edgeRequestID != "" {
 		if currentLeaseID := h.openAIEdgeLeaseByRequest[edgeRequestID]; currentLeaseID != "" && currentLeaseID != leaseID {
 			return nil, "lease_mismatch"
@@ -954,14 +969,9 @@ func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeReques
 	if leaseID == "" {
 		return nil, ""
 	}
-	lease := h.openAIEdgeLeases[leaseID]
 	if lease == nil {
 		return nil, ""
 	}
-	lease.retryMu.Lock()
-	defer lease.retryMu.Unlock()
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
 	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
 		return nil, "request_mismatch"
 	}
@@ -983,8 +993,8 @@ func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequ
 	}
 	leaseID = strings.TrimSpace(leaseID)
 	edgeRequestID = strings.TrimSpace(edgeRequestID)
-	h.openAIEdgeLeaseMu.Lock()
-	defer h.openAIEdgeLeaseMu.Unlock()
+	lease, unlock := h.lockOpenAIEdgeLease(leaseID, edgeRequestID)
+	defer unlock()
 	if leaseID != "" && edgeRequestID != "" {
 		if currentLeaseID := h.openAIEdgeLeaseByRequest[edgeRequestID]; currentLeaseID != "" && currentLeaseID != leaseID {
 			return nil, "lease_mismatch"
@@ -993,12 +1003,7 @@ func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequ
 	if leaseID == "" && edgeRequestID != "" {
 		leaseID = h.openAIEdgeLeaseByRequest[edgeRequestID]
 	}
-	lease := h.openAIEdgeLeases[leaseID]
 	if lease != nil {
-		lease.retryMu.Lock()
-		defer lease.retryMu.Unlock()
-		lease.mu.Lock()
-		defer lease.mu.Unlock()
 		if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
 			return nil, "request_mismatch"
 		}
@@ -1019,6 +1024,33 @@ func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequ
 	return lease, ""
 }
 
+// Never wait for a lease while holding the registry lock. Revalidate after
+// locking the lease so expiry/completion cannot hand out a removed identity.
+// The returned unlock releases the registry and (if present) lease locks.
+func (h *OpenAIGatewayHandler) lockOpenAIEdgeLease(leaseID, requestID string) (*openAIEdgeLease, func()) {
+	for {
+		h.openAIEdgeLeaseMu.Lock()
+		id := leaseID
+		if id == "" {
+			id = h.openAIEdgeLeaseByRequest[requestID]
+		}
+		lease := h.openAIEdgeLeases[id]
+		if lease == nil {
+			return nil, h.openAIEdgeLeaseMu.Unlock
+		}
+		h.openAIEdgeLeaseMu.Unlock()
+		lease.retryMu.Lock()
+		lease.mu.Lock()
+		h.openAIEdgeLeaseMu.Lock()
+		if h.openAIEdgeLeases[id] == lease && (leaseID != "" || h.openAIEdgeLeaseByRequest[requestID] == id) {
+			return lease, func() { h.openAIEdgeLeaseMu.Unlock(); lease.mu.Unlock(); lease.retryMu.Unlock() }
+		}
+		h.openAIEdgeLeaseMu.Unlock()
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+	}
+}
+
 func (h *OpenAIGatewayHandler) getOpenAIEdgeLease(leaseID string) *openAIEdgeLease {
 	if h == nil || strings.TrimSpace(leaseID) == "" {
 		return nil
@@ -1032,21 +1064,16 @@ func (h *OpenAIGatewayHandler) releaseOpenAIEdgeRetryPayload(leaseID, edgeReques
 	if h == nil {
 		return nil, "lease_not_found"
 	}
-	h.openAIEdgeLeaseMu.Lock()
-	defer h.openAIEdgeLeaseMu.Unlock()
 	leaseID = strings.TrimSpace(leaseID)
 	edgeRequestID = strings.TrimSpace(edgeRequestID)
+	lease, unlock := h.lockOpenAIEdgeLease(leaseID, edgeRequestID)
+	defer unlock()
 	if leaseID == "" && edgeRequestID != "" {
 		leaseID = h.openAIEdgeLeaseByRequest[edgeRequestID]
 	}
-	lease := h.openAIEdgeLeases[leaseID]
 	if lease == nil {
 		return nil, "lease_not_found"
 	}
-	lease.retryMu.Lock()
-	defer lease.retryMu.Unlock()
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
 	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
 		return nil, "request_mismatch"
 	}
@@ -1117,14 +1144,21 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 	}
 	var stale []*openAIEdgeLease
 	h.openAIEdgeLeaseMu.Lock()
-	for leaseID, lease := range h.openAIEdgeLeases {
+	candidates := make([]*openAIEdgeLease, 0, len(h.openAIEdgeLeases))
+	for _, lease := range h.openAIEdgeLeases {
+		candidates = append(candidates, lease)
+	}
+	h.openAIEdgeLeaseMu.Unlock()
+	for _, lease := range candidates {
 		if lease == nil || strings.TrimSpace(lease.edgeNodeID) != edgeNodeID ||
 			strings.TrimSpace(lease.edgeInstanceID) == "" || lease.edgeInstanceID == currentInstanceID {
 			continue
 		}
 		lease.retryMu.Lock()
 		lease.mu.Lock()
-		if !lease.settled {
+		h.openAIEdgeLeaseMu.Lock()
+		leaseID := lease.leaseID
+		if !lease.settled && h.openAIEdgeLeases[leaseID] == lease {
 			lease.settled = true
 			stopOpenAIEdgeLeaseExpiryLocked(lease)
 			delete(h.openAIEdgeLeases, leaseID)
@@ -1134,10 +1168,10 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 			h.markOpenAIEdgeCancelledLocked(lease.edgeRequestID, time.Until(lease.expiresAt))
 			stale = append(stale, lease)
 		}
+		h.openAIEdgeLeaseMu.Unlock()
 		lease.mu.Unlock()
 		lease.retryMu.Unlock()
 	}
-	h.openAIEdgeLeaseMu.Unlock()
 	for _, lease := range stale {
 		h.settleOpenAIEdgeStallAction(lease, false)
 		lease.release()
@@ -1473,6 +1507,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	}
 	releaseUserOnFailure = false
 	releaseAccountOnFailure = false
+	plan.SettlementContext = lease.lastPlan.SettlementContext
+	plan.LeaseRenewGraceMS = lease.lastPlan.LeaseRenewGraceMS
+	plan.LeaseRenewTTLMS = lease.lastPlan.LeaseRenewTTLMS
 	return plan, true
 }
 
@@ -1703,6 +1740,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	}
 	releaseUserOnFailure = false
 	releaseAccountOnFailure = false
+	plan.SettlementContext = lease.lastPlan.SettlementContext
+	plan.LeaseRenewGraceMS = lease.lastPlan.LeaseRenewGraceMS
+	plan.LeaseRenewTTLMS = lease.lastPlan.LeaseRenewTTLMS
 	return plan, true
 }
 
@@ -1918,6 +1958,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	}
 	releaseUserOnFailure = false
 	releaseAccountOnFailure = false
+	plan.SettlementContext = lease.lastPlan.SettlementContext
+	plan.LeaseRenewGraceMS = lease.lastPlan.LeaseRenewGraceMS
+	plan.LeaseRenewTTLMS = lease.lastPlan.LeaseRenewTTLMS
 	return plan, true
 }
 
@@ -2246,6 +2289,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 					return fallback("responses_rejected_field_state_failed")
 				}
 				plan := lease.lastPlan
+				setOpenAIEdgePlanLeaseWindow(&plan, time.Until(lease.expiresAt), lease.renewGrace)
 				plan.Body = nil
 				plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(nextBody)
 				h.applyOpenAIEdgeProtection(&plan)
@@ -2810,14 +2854,26 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 	}
 	plan.EdgeRequestID = lease.edgeRequestID
 	plan.LeaseID = lease.leaseID
-	plan.LeaseTTLMS = int(time.Until(lease.expiresAt) / time.Millisecond)
-	if plan.LeaseTTLMS <= 0 {
-		plan.LeaseTTLMS = 1
-	}
+	setOpenAIEdgePlanLeaseWindow(&plan, time.Until(lease.expiresAt), lease.renewGrace)
+	plan.LeaseRenewTTLMS = lease.lastPlan.LeaseRenewTTLMS
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	h.applyOpenAIEdgeProtection(&plan)
 	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
+	if lease.apiKey != nil && account != nil {
+		snapshot := edgeSettlementSnapshot(lease)
+		snapshot.Account = account
+		snapshot.Model = prepared.Model
+		snapshot.BillingModel = prepared.BillingModel
+		snapshot.UpstreamModel = prepared.UpstreamModel
+		snapshot.ReasoningEffort = prepared.ReasoningEffort
+		snapshot.ServiceTier = prepared.ServiceTier
+		snapshot.UpstreamEndpoint = service.OpenAIEdgeRawUpstreamEndpointForInbound(account, lease.inboundEndpoint)
+		plan.SettlementContext, err = h.sealEdgeSettlement(snapshot)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &openAIEdgePreparedRetryPlan{
 		plan:               plan,
 		account:            account,
@@ -2832,6 +2888,16 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 		cachePolicyEnabled: plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: plan.PromptCacheCreationOptimizationApplied,
 	}, nil
+}
+
+// A replacement plan must never grant a fresh grace beyond the current slot
+// retention deadline. Once inside grace, advertise only the remaining window.
+func setOpenAIEdgePlanLeaseWindow(plan *service.OpenAIEdgePlan, remaining, grace time.Duration) {
+	if remaining <= grace {
+		grace = 0
+	}
+	plan.LeaseTTLMS = max(1, int((remaining-grace)/time.Millisecond))
+	plan.LeaseRenewGraceMS = int(grace / time.Millisecond)
 }
 
 func applyOpenAIEdgePreparedRetryPlan(lease *openAIEdgeLease, prepared *openAIEdgePreparedRetryPlan) {
@@ -2976,17 +3042,23 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	}
 	lease, mismatchReason := h.takeOpenAIEdgeLeaseForRequest(req.LeaseID, req.EdgeRequestID, req.AccountID, true)
 	if mismatchReason != "" {
-		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: mismatchReason})
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: mismatchReason})
 		return
 	}
+	restored := lease == nil
 	if lease == nil {
-		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "lease_not_found_or_already_released"})
-		return
+		var err error
+		lease, err = h.restoreEdgeSettlement(req)
+		if err != nil {
+			// Never acknowledge an unknown completion as settled. Edge retains
+			// it in the WAL, including callbacks from older binaries.
+			c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "settlement_context_unavailable"})
+			return
+		}
 	}
 	lease.release()
-	// Complete is sent only after the downstream stream terminates. Flush after
-	// this control response is written so body cloning and queue admission stay
-	// outside both prepare and client first-token paths.
+	// Completion runs after the stream. Audit flush and durable billing stay
+	// outside prepare and first-token paths.
 	defer h.flushOpenAIEdgePromptAudit(lease)
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
@@ -3003,7 +3075,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		// protocol-level incomplete terminal event: that event is not a successful
 		// terminal response and represents the same non-terminal upstream break.
 		// Client/local/cache-policy outcomes remain neutral.
-		if openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
+		if !restored && openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
 			h.gatewayService.RecordOpenAIEdgeStreamOutcome(
 				lease.account,
 				req.FailureClass,
@@ -3019,7 +3091,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		if !successfulTerminal {
 			firstTokenMs = nil
 		}
-		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); successfulTerminal && realFirstTokenMs != nil {
+		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); !restored && successfulTerminal && realFirstTokenMs != nil {
 			guardSampleAtUnixNS := int64(0)
 			if req.GuardSampleAtUnixNS != nil {
 				guardSampleAtUnixNS = *req.GuardSampleAtUnixNS
@@ -3031,7 +3103,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 				guardSampleAtUnixNS,
 			)
 		}
-		if successfulTerminal && req.MaxSemanticGapMS != nil && *req.MaxSemanticGapMS > 0 {
+		if !restored && successfulTerminal && req.MaxSemanticGapMS != nil && *req.MaxSemanticGapMS > 0 {
 			h.gatewayService.RecordOpenAIStreamSemanticGapSample(lease.account, lease.openAIRoutingModel(), lease.reasoningEffort, *req.MaxSemanticGapMS)
 		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
@@ -3061,67 +3133,91 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			EdgeFallbackReason:         edgeFallbackReason,
 			EdgeRetryCount:             intPointerFromInt64(req.EdgeRetryCount),
 		}
-		switch {
-		case successfulTerminal:
-			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
-			if lease.sessionHash != "" && lease.apiKey != nil && lease.apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(lease.apiKey.Group.AccountSchedulingStrategy) {
-				_ = h.gatewayService.BindStickySession(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account.ID)
-			}
-		case neutralOutcome || cachePolicyCompatibilityFailure:
-			// Client cancellation, request-local Edge protection, and protocol-level
-			// incomplete/cancelled terminal states are not account-health samples.
-			// Optional cache policy incompatibility after an early flush is also neutral.
-		default:
-			statusCode := req.UpstreamStatusCode
-			if statusCode < http.StatusBadRequest {
-				statusCode = http.StatusBadGateway
-			}
-			message := openAIEdgeSafeErrorMessage(req.ErrorMessage)
-			responseBody := []byte(message)
-			h.gatewayService.HandleOpenAIAccountUpstreamErrorAfterCommittedResponse(
-				c.Request.Context(), lease.account, statusCode, nil, responseBody, lease.openAIRoutingModel(),
-			)
-			h.gatewayService.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
-				lease.account, statusCode, message, responseBody, true, true,
-			)
-			h.gatewayService.RecordOpenAIPoolFailureAfterCommittedResponse(
-				c.Request.Context(), lease.account, statusCode, responseBody, lease.openAIRoutingModel(), message,
-			)
-			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
+		if upstreamRequestID := strings.TrimSpace(req.RequestID); upstreamRequestID != "" {
+			result.UpstreamHeaders = http.Header{"X-Request-Id": []string{upstreamRequestID}}
 		}
-		if openAIEdgeShouldRefreshHealthProbeSuccess(lease, successfulTerminal) {
-			h.recordOpenAIHealthProbeRecentSuccess(lease.apiKey.ID, lease.requestPlatform, lease.routingModel)
+		// Provider request IDs can be missing, reused, or arrive late. New
+		// leases use one authenticated billing identity across all callbacks.
+		if lease.settlementBillingID != "" {
+			result.RequestID = lease.settlementBillingID
+		}
+		if strings.TrimSpace(result.RequestID) == "" {
+			result.RequestID = "edge-settlement:" + lease.leaseID
+		}
+		if !restored {
+			switch {
+			case successfulTerminal:
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
+				if lease.sessionHash != "" && lease.apiKey != nil && lease.apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(lease.apiKey.Group.AccountSchedulingStrategy) {
+					_ = h.gatewayService.BindStickySession(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account.ID)
+				}
+			case neutralOutcome || cachePolicyCompatibilityFailure:
+				// Client cancellation, request-local Edge protection, and protocol-level
+				// incomplete/cancelled terminal states are not account-health samples.
+				// Optional cache policy incompatibility after an early flush is also neutral.
+			default:
+				statusCode := req.UpstreamStatusCode
+				if statusCode < http.StatusBadRequest {
+					statusCode = http.StatusBadGateway
+				}
+				message := openAIEdgeSafeErrorMessage(req.ErrorMessage)
+				responseBody := []byte(message)
+				h.gatewayService.HandleOpenAIAccountUpstreamErrorAfterCommittedResponse(
+					c.Request.Context(), lease.account, statusCode, nil, responseBody, lease.openAIRoutingModel(),
+				)
+				h.gatewayService.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
+					lease.account, statusCode, message, responseBody, true, true,
+				)
+				h.gatewayService.RecordOpenAIPoolFailureAfterCommittedResponse(
+					c.Request.Context(), lease.account, statusCode, responseBody, lease.openAIRoutingModel(), message,
+				)
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
+			}
+			if openAIEdgeShouldRefreshHealthProbeSuccess(lease, successfulTerminal) {
+				h.recordOpenAIHealthProbeRecentSuccess(lease.apiKey.ID, lease.requestPlatform, lease.routingModel)
+			}
 		}
 
 		if successfulTerminal || openAIEdgeUsageIsBillable(result.Usage) || req.CyberBlocked {
 			usageCtx := service.WithRequestedReasoningEffort(context.Background(), lease.requestedReasoningEffort)
-			h.submitOpenAIUsageRecordTask(usageCtx, result, func(ctx context.Context) {
-				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-					Result:                  result,
-					APIKey:                  lease.apiKey,
-					User:                    lease.apiKey.User,
-					Account:                 lease.account,
-					Subscription:            lease.subscription,
-					QuotaPlatform:           lease.quotaPlatform,
-					InboundEndpoint:         lease.inboundEndpoint,
-					UpstreamEndpoint:        lease.upstreamEndpoint,
-					UserAgent:               lease.userAgent,
-					IPAddress:               lease.clientIP,
-					RequestPayloadHash:      lease.requestPayloadHash,
-					SessionID:               lease.sessionID,
-					PromptCacheAffinityHash: lease.sessionHash,
-					PromptCacheGroupID:      lease.apiKey.GroupID,
-					SkipSuccessSideEffects:  !successfulTerminal,
-					APIKeyService:           h.apiKeyService,
-					ChannelUsageFields:      lease.channelUsageFields,
-					CyberBlocked:            req.CyberBlocked,
-				}); err != nil {
-					requestLogger(c, "handler.openai_edge.complete").Error("openai_edge.record_usage_failed",
-						zap.Int64("account_id", lease.account.ID),
-						zap.Error(err),
-					)
+			// Acknowledge only after the idempotent billing transaction succeeds.
+			// This runs after streaming; a lost HTTP ack is safe to retry from WAL.
+			ctx, cancel := context.WithTimeout(usageCtx, 30*time.Second)
+			defer cancel()
+			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+				Result:                  result,
+				APIKey:                  lease.apiKey,
+				User:                    lease.apiKey.User,
+				Account:                 lease.account,
+				Subscription:            lease.subscription,
+				QuotaPlatform:           lease.quotaPlatform,
+				InboundEndpoint:         lease.inboundEndpoint,
+				UpstreamEndpoint:        lease.upstreamEndpoint,
+				UserAgent:               lease.userAgent,
+				IPAddress:               lease.clientIP,
+				RequestPayloadHash:      lease.requestPayloadHash,
+				SessionID:               lease.sessionID,
+				PromptCacheAffinityHash: lease.sessionHash,
+				PromptCacheGroupID:      lease.apiKey.GroupID,
+				SkipSuccessSideEffects:  restored || !successfulTerminal,
+				APIKeyService:           h.apiKeyService,
+				ChannelUsageFields:      lease.channelUsageFields,
+				CyberBlocked:            req.CyberBlocked,
+			}); err != nil {
+				requestLogger(c, "handler.openai_edge.complete").Error("openai_edge.record_usage_failed",
+					zap.Int64("account_id", lease.account.ID),
+					zap.Error(err),
+				)
+				if errors.Is(err, service.ErrUsageBillingRequestConflict) {
+					// A committed request with different usage/pricing needs
+					// reconciliation. Retain its WAL entry without permanently
+					// occupying a transient-failure retry worker.
+					c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "usage_record_conflict"})
+					return
 				}
-			})
+				c.JSON(http.StatusServiceUnavailable, service.OpenAIEdgeAck{OK: false, Reason: "usage_record_failed"})
+				return
+			}
 		}
 	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
@@ -3162,7 +3258,7 @@ func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) b
 		return false
 	}
 	errorType := strings.ToLower(strings.TrimSpace(req.ErrorType))
-	if errorType == openAIEdgeResponseHeaderTimeoutErrorType {
+	if errorType == openAIEdgeResponseHeaderTimeoutErrorType || errorType == "edge_lease_lost" {
 		return true
 	}
 	if errorType == "edge_semantic_progress_timeout" {
@@ -3176,7 +3272,7 @@ func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) b
 
 func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 	switch strings.ToLower(strings.TrimSpace(failureClass)) {
-	case "client_cancelled", "local_capacity_rejected", "queue_timeout", "prepare_failed", "complete_failed", "abort_failed":
+	case "lease_lost", "client_cancelled", "local_capacity_rejected", "queue_timeout", "prepare_failed", "complete_failed", "abort_failed":
 		return true
 	default:
 		return false
@@ -3274,6 +3370,7 @@ func openAIEdgeUsageIsBillable(usage service.OpenAIUsage) bool {
 func openAIEdgeAbortReasonIsNeutral(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	return strings.Contains(reason, "edge_queue_wait_timeout") ||
+		strings.Contains(reason, "edge lease lost") ||
 		strings.Contains(reason, "edge_relay_queue_full") ||
 		strings.Contains(reason, "edge relay queue full") ||
 		strings.Contains(reason, "queue wait budget") ||
