@@ -48,23 +48,33 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 
-	// 强制 antigravity 模式：返回 antigravity 支持的模型列表
-	if forcePlatform == service.PlatformAntigravity {
-		c.JSON(http.StatusOK, antigravity.FallbackGeminiModelsList())
+	// Explicit group lists retain precedence over account discovery.
+	if models, ok := customGeminiModelsList(apiKey.Group); ok {
+		models.Models = allowedGeminiDiscoveryModels(models.Models, apiKey.Group)
+		c.JSON(http.StatusOK, models)
 		return
 	}
-	if models, ok := customGeminiModelsList(apiKey.Group); ok {
-		c.JSON(http.StatusOK, models)
+	agModels := make([]gemini.Model, 0)
+	if h.geminiCompatService != nil {
+		ids, discoveryErr := h.geminiCompatService.AntigravityGeminiModelIDs(c.Request.Context(), apiKey.GroupID, forcePlatform != service.PlatformAntigravity)
+		if discoveryErr != nil && forcePlatform == service.PlatformAntigravity {
+			googleError(c, http.StatusServiceUnavailable, "Unable to list Antigravity models")
+			return
+		}
+		for _, id := range ids {
+			agModels = append(agModels, gemini.FallbackModel(id))
+		}
+	}
+	// Optional mixed discovery must not turn a healthy native list into a 503.
+	if forcePlatform == service.PlatformAntigravity {
+		c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: allowedGeminiDiscoveryModels(agModels, apiKey.Group)})
 		return
 	}
 
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
-		// 没有 gemini 账户，检查是否有 antigravity 账户可用
-		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
-		if hasAntigravity {
-			// antigravity 账户使用静态模型列表
-			c.JSON(http.StatusOK, gemini.FallbackModelsList())
+		if len(agModels) > 0 {
+			c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: allowedGeminiDiscoveryModels(agModels, apiKey.Group)})
 			return
 		}
 		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -78,8 +88,18 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
-		c.JSON(http.StatusOK, gemini.FallbackModelsList())
+		body, _ := json.Marshal(gemini.FallbackModelsList())
+		if merged, ok := appendUpstreamGeminiModels(body, agModels, apiKey.Group); ok {
+			c.Data(http.StatusOK, "application/json", merged)
+		} else {
+			c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: allowedGeminiDiscoveryModels(gemini.DefaultModels(), apiKey.Group)})
+		}
 		return
+	}
+	if res.StatusCode == http.StatusOK {
+		if merged, ok := appendUpstreamGeminiModels(res.Body, agModels, apiKey.Group); ok {
+			res.Body = merged
+		}
 	}
 	writeUpstreamResponse(c, res)
 }
@@ -120,8 +140,32 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		return
 	}
 
-	// 强制 antigravity 模式：返回 antigravity 模型信息
+	if !geminiDiscoveryModelAllowed(modelName, apiKey.Group) {
+		googleError(c, http.StatusNotFound, "Model not found")
+		return
+	}
+	if _, custom := customGeminiModelsList(apiKey.Group); custom {
+		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
+		return
+	}
+	agIDs, discoveryErr := h.geminiCompatService.AntigravityGeminiModelIDs(c.Request.Context(), apiKey.GroupID, forcePlatform != service.PlatformAntigravity)
+	agModel := false
+	for _, id := range agIDs {
+		if id == modelName {
+			agModel = true
+			break
+		}
+	}
+	// Forced discovery and single-model lookup use the same eligible mappings.
 	if forcePlatform == service.PlatformAntigravity {
+		if discoveryErr != nil {
+			googleError(c, http.StatusServiceUnavailable, "Unable to list Antigravity models")
+			return
+		}
+		if !agModel {
+			googleError(c, http.StatusNotFound, "Model not found")
+			return
+		}
 		c.JSON(http.StatusOK, antigravity.FallbackGeminiModel(modelName))
 		return
 	}
@@ -129,8 +173,7 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
 		// 没有 gemini 账户，检查是否有 antigravity 账户可用
-		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
-		if hasAntigravity {
+		if agModel {
 			// antigravity 账户使用静态模型信息
 			c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
 			return
@@ -145,7 +188,7 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		googleError(c, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
-	if shouldFallbackGeminiModel(modelName, res) {
+	if shouldFallbackGeminiModel(modelName, res) || (agModel && res != nil && res.StatusCode == http.StatusNotFound) {
 		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
 		return
 	}
@@ -208,6 +251,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		googleError(c, http.StatusBadRequest, "Request body is empty")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithGeminiThinkingVariantRequest(c.Request.Context(), body))
 
 	setOpsRequestContext(c, modelName, stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(stream, false)))

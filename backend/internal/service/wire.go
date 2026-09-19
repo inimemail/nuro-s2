@@ -45,6 +45,11 @@ func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiToke
 	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
+// Wire requires a concrete dependency for the optional constructor argument.
+func ProvideContentModerationService(settingRepo SettingRepository, repo ContentModerationRepository, hashCache ContentModerationHashCache, groupRepo GroupRepository, userRepo UserRepository, invalidator APIKeyAuthCacheInvalidator, email *EmailService, proxyRepo ProxyRepository) *ContentModerationService {
+	return NewContentModerationService(settingRepo, repo, hashCache, groupRepo, userRepo, invalidator, email, proxyRepo)
+}
+
 func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *BatchImageModelPricingResolver {
 	return &BatchImageModelPricingResolver{Resolver: resolver}
 }
@@ -55,9 +60,10 @@ func ProvideGroupService(groupRepo GroupRepository, authCacheInvalidator APIKeyA
 	return svc
 }
 
-func ProvideChannelService(repo ChannelRepository, groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, pricing *PricingService, plaza *ModelPlazaService) *ChannelService {
+func ProvideChannelService(repo ChannelRepository, groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, pricing *PricingService, plaza *ModelPlazaService, bus SchedulerEventBus) *ChannelService {
 	svc := NewChannelService(repo, groupRepo, authCacheInvalidator, pricing)
 	svc.SetModelPlazaInvalidator(plaza.Invalidate)
+	svc.SetSchedulerEventBus(bus)
 	return svc
 }
 
@@ -686,6 +692,7 @@ func ProvideAuthCacheInvalidationWorker(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewSeedanceService,
 	NewPasskeyService,
 	NewModelPlazaService,
 	// Core services
@@ -792,7 +799,7 @@ var ProviderSet = wire.NewSet(
 	NewBatchImageDownloadService,
 	NewBatchImageCleanupService,
 	ProvideBatchImageWorkerRuntime,
-	NewContentModerationService,
+	ProvideContentModerationService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,

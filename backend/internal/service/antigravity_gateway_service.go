@@ -2144,6 +2144,11 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	}
 
 	mappedModel := s.getMappedModel(account, originalModel)
+	schedulingModel := originalModel
+	if alias, matched := resolveGeminiThinkingVariantModel(account, originalModel, geminiThinkingLevelFromBody(body)); matched {
+		schedulingModel = alias
+		mappedModel = account.GetMappedModel(alias)
+	}
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
@@ -2212,7 +2217,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		settingService:  s.settingService,
 		accountRepo:     s.accountRepo,
 		handleError:     s.handleUpstreamError,
-		requestedModel:  originalModel,
+		requestedModel:  schedulingModel,
 		isStickySession: isStickySession, // ForwardGemini 由上层判断粘性会话
 		groupID:         0,               // ForwardGemini 方法没有 groupID，由上层处理粘性会话清除
 		sessionHash:     "",              // ForwardGemini 方法没有 sessionHash，由上层处理粘性会话清除
@@ -2312,7 +2317,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					settingService:  s.settingService,
 					accountRepo:     s.accountRepo,
 					handleError:     s.handleUpstreamError,
-					requestedModel:  originalModel,
+					requestedModel:  schedulingModel,
 					isStickySession: isStickySession,
 					groupID:         0,
 					sessionHash:     "",
@@ -2396,7 +2401,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if unwrapErr != nil || len(unwrappedForOps) == 0 {
 			unwrappedForOps = respBody
 		}
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
+		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, schedulingModel, 0, "", isStickySession)
 		upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(unwrappedForOps))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		upstreamDetail := s.getUpstreamErrorDetail(unwrappedForOps)
@@ -3196,6 +3201,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		keepaliveInterval = time.Duration(s.settingService.cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
 	var keepaliveTicker *time.Ticker
+	if downstreamRejectsSSEComments(c) {
+		keepaliveInterval = 0
+	}
 	if keepaliveInterval > 0 {
 		keepaliveTicker = time.NewTicker(keepaliveInterval)
 		defer keepaliveTicker.Stop()

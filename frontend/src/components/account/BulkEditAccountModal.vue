@@ -1295,6 +1295,15 @@
       </div>
 
       <!-- OpenAI API Key WS mode -->
+      <div v-if="allOpenAIAPIKey" class="rounded-xl border border-gray-200 bg-gray-50/70 p-4 dark:border-dark-600 dark:bg-dark-800/40">
+        <label class="input-label">Seedance</label>
+        <select v-model="seedanceChange" class="input mt-2 w-full" data-testid="bulk-seedance">
+          <option value="unchanged">{{ t('admin.accounts.openai.seedanceUnchanged') }}</option>
+          <option value="enabled">{{ t('admin.accounts.openai.seedanceEnabled') }}</option>
+          <option value="disabled">{{ t('admin.accounts.openai.seedanceDisabled') }}</option>
+        </select>
+        <p class="input-hint mt-2">{{ t('admin.accounts.openai.seedanceRequirements') }}</p>
+      </div>
       <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
@@ -2078,6 +2087,7 @@ interface ModelMapping {
 
 // State - field enable flags
 const enableBaseUrl = ref(false)
+const seedanceChange = ref<'unchanged' | 'enabled' | 'disabled'>('unchanged')
 const enableModelRestriction = ref(false)
 const enableCustomErrorCodes = ref(false)
 const enableInterceptWarmup = ref(false)
@@ -2441,6 +2451,10 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   const updates: Record<string, unknown> = {}
   const credentials: Record<string, unknown> = {}
   let credentialsChanged = false
+  if (allOpenAIAPIKey.value && seedanceChange.value !== 'unchanged') {
+    credentials.seedance_enabled = seedanceChange.value === 'enabled'
+    credentialsChanged = true
+  }
   const ensureExtra = (): Record<string, unknown> => {
     if (!updates.extra) {
       updates.extra = {}
@@ -2994,6 +3008,7 @@ watch(
       enableConcurrency.value = false
       enableLoadFactor.value = false
       enablePriority.value = false
+      seedanceChange.value = 'unchanged'
       enableRateMultiplier.value = false
       enableStatus.value = false
       enableGroups.value = false

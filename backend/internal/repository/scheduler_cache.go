@@ -708,6 +708,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"upstream_concurrency_race_transport_enabled",
 		"upstream_concurrency_race_transport_retry_count",
 		"openai_capabilities",
+		"seedance_enabled",
+		"seedance_max_inflight",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {

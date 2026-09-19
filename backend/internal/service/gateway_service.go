@@ -5453,6 +5453,7 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 // 对于 Antigravity 平台，会先获取映射后的最终模型名（包括 thinking 后缀）再检查支持
 func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
 	if account.Platform == PlatformAntigravity {
+		requestedModel = geminiThinkingVariantSchedulingModel(ctx, account, requestedModel)
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
 		}
@@ -11771,7 +11772,7 @@ func (s *GatewayService) isUpstreamModelRestrictedByChannel(ctx context.Context,
 	if s.channelService == nil {
 		return false
 	}
-	upstreamModel := resolveAccountUpstreamModel(account, requestedModel)
+	upstreamModel := resolveAccountUpstreamModel(account, geminiThinkingVariantSchedulingModel(ctx, account, requestedModel))
 	if upstreamModel == "" {
 		return false
 	}

@@ -86,17 +86,17 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		case APIProtocolAnthropic:
 			return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
 		case APIProtocolChatCompletions:
-			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+			return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 	} else if account.IsCNProvider() {
 		if account.IsAdaptiveAPIProtocol() {
-			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+			return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 		if account.IsAnthropicProtocol() {
 			return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
 		}
 		if account.GetAPIProtocol() == APIProtocolChatCompletions {
-			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+			return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 	}
 	if account.Platform == PlatformGrok {
@@ -107,12 +107,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				logger.L().Debug("grok chat_completions: using raw fallback", zap.Int64("account_id", account.ID), zap.String("reason", reason))
 			}
 		}
-		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+		return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	// APIKey auto/unknown goes raw chat completions so a real user request does
 	// not pay an extra /responses 404/405 RTT before fallback.
 	if account.Type == AccountTypeAPIKey && !account.IsOpenCodeGo() && !shouldForwardAPIKeyChatViaResponses(account) {
-		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+		return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	attempt := newOpenAIUpstreamAttempt()
 
@@ -505,7 +505,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				zap.Int("upstream_status", resp.StatusCode),
 				zap.String("upstream_message", upstreamMsg),
 			)
-			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+			return s.forwardAsCompatibleRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)

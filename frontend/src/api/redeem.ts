@@ -61,7 +61,11 @@ export async function getHistory(): Promise<RedeemHistoryItem[]> {
 
 export const redeemAPI = {
   redeem,
-  getHistory
+  getHistory,
+  async getHistoryPaginated(page = 1, page_size = 25) {
+    const { data } = await apiClient.get<{ items: RedeemHistoryItem[]; total: number; page: number; page_size: number; pages: number }>('/redeem/history', { params: { page, page_size } })
+    return data
+  }
 }
 
 export default redeemAPI

@@ -4,7 +4,7 @@
       <!-- Filters -->
       <div class="card p-4">
         <div class="flex flex-wrap items-center gap-3">
-          <Select v-model="currentFilter" :options="statusFilters" class="w-36" @change="fetchOrders" />
+          <Select v-model="currentFilter" :options="statusFilters" class="w-36" @change="handlePageChange(1)" />
           <div class="flex flex-1 items-center justify-end gap-2">
             <button @click="fetchOrders" :disabled="loading" class="btn btn-secondary" :title="t('common.refresh')">
               <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
@@ -117,7 +117,9 @@ const statusFilters = computed(() => [
   { value: 'REFUNDED', label: t('payment.status.refunded') },
 ])
 
+let ordersRequest = 0
 async function fetchOrders() {
+  const request = ++ordersRequest
   loading.value = true
   try {
     const res = await paymentAPI.getMyOrders({
@@ -125,12 +127,14 @@ async function fetchOrders() {
       page_size: pagination.page_size,
       status: currentFilter.value || undefined,
     })
+    if (request !== ordersRequest) return
     orders.value = res.data.items || []
     pagination.total = res.data.total || 0
   } catch (err: unknown) {
+    if (request !== ordersRequest) return
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
   } finally {
-    loading.value = false
+    if (request === ordersRequest) loading.value = false
   }
 }
 

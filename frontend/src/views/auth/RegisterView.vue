@@ -409,7 +409,7 @@ const showConfirmPassword = ref(false)
 // Public settings
 const registrationEnabled = ref<boolean>(true)
 const emailVerifyEnabled = ref<boolean>(false)
-const promoCodeEnabled = ref<boolean>(true)
+const promoCodeEnabled = ref<boolean>(appStore.cachedPublicSettings?.promo_code_enabled === true)
 const invitationCodeEnabled = ref<boolean>(false)
 const affiliateEnabled = ref<boolean>(false)
 const turnstileEnabled = ref<boolean>(false)

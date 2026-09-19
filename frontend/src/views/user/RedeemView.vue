@@ -335,6 +335,10 @@
               {{ t('redeem.historyWillAppear') }}
             </p>
           </div>
+          <div v-if="historyTotal > 0" class="mt-5 border-t border-gray-100 pt-4 dark:border-dark-700">
+            <Pagination :page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-size-options="[10, 25, 50, 100]"
+              @update:page="fetchHistory($event)" @update:page-size="fetchHistory(1, $event)" />
+          </div>
         </div>
       </div>
     </div>
@@ -350,6 +354,7 @@ import { useSubscriptionStore } from '@/stores/subscriptions'
 import { redeemAPI, authAPI, type RedeemHistoryItem } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import { formatDateTime } from '@/utils/format'
 
 const { t } = useI18n()
@@ -375,6 +380,10 @@ const errorMessage = ref('')
 // History data
 const history = ref<RedeemHistoryItem[]>([])
 const loadingHistory = ref(false)
+const historyPage = ref(1)
+const historyPageSize = ref(25)
+const historyTotal = ref(0)
+let historyRequest = 0
 const contactInfo = ref('')
 
 // Helper functions for history display
@@ -420,14 +429,22 @@ const formatHistoryValue = (item: RedeemHistoryItem) => {
   }
 }
 
-const fetchHistory = async () => {
+const fetchHistory = async (page = 1, pageSize = historyPageSize.value) => {
+  const request = ++historyRequest
   loadingHistory.value = true
   try {
-    history.value = await redeemAPI.getHistory()
+    const data = await redeemAPI.getHistoryPaginated(page, pageSize)
+    if (request !== historyRequest) return
+    history.value = data.items
+    historyTotal.value = data.total
+    historyPage.value = data.page
+    historyPageSize.value = data.page_size
   } catch (error) {
+    if (request !== historyRequest) return
+    appStore.showError(t('common.error'))
     console.error('Failed to fetch history:', error)
   } finally {
-    loadingHistory.value = false
+    if (request === historyRequest) loadingHistory.value = false
   }
 }
 

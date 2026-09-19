@@ -2920,6 +2920,7 @@
             </label>
           </div>
           <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
+          <SeedanceControl v-model="seedanceEnabled" class="mt-4" />
         </div>
       </div>
 
@@ -3868,6 +3869,8 @@
 </template>
 
 <script setup lang="ts">
+import SeedanceControl from './SeedanceControl.vue'
+import { isSeedanceEnabled } from '@/utils/seedance'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4465,6 +4468,7 @@ const openAIResponsesPassthroughCompatEnabled = ref(false)
 const openAIResponsesArgumentsObjectCompatEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+const seedanceEnabled = ref(false)
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -4755,6 +4759,7 @@ const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[])
 }
 
 const readOpenAIEndpointCapabilities = (credentials?: Record<string, unknown>): OpenAIEndpointCapability[] => {
+  seedanceEnabled.value = isSeedanceEnabled(credentials)
   const raw = credentials?.openai_capabilities
   if (Array.isArray(raw)) {
     return normalizeOpenAIEndpointCapabilities(
@@ -4796,6 +4801,7 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 }
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
+  credentials.seedance_enabled = seedanceEnabled.value
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
   if (capabilities.length === 2) {
     delete credentials.openai_capabilities
@@ -5604,6 +5610,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+  seedanceEnabled.value = false
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF

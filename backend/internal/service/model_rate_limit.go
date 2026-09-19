@@ -151,6 +151,7 @@ func OpenAIExplicitImageGenerationIntentFromContext(ctx context.Context) (bool, 
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {
+	requestedModel = geminiThinkingVariantSchedulingModel(ctx, account, requestedModel)
 	modelKey := mapAntigravityModel(account, requestedModel)
 	if modelKey == "" {
 		return ""

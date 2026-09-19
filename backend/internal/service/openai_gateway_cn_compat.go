@@ -229,6 +229,9 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 	}
 	request["store"] = false
 	delete(request, "previous_response_id")
+	if input, changed := apicompat.LiftResponsesToolOutputMedia(request["input"]); changed {
+		request["input"] = input
+	}
 	rebuilt, err := json.Marshal(request)
 	if err != nil {
 		return body

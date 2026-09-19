@@ -2599,6 +2599,13 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		}
 	}
 	switch capability {
+	case OpenAIEndpointCapabilitySeedance:
+		configured, found := a.openAIEndpointCapabilitySet()
+		enabled := found && configured["seedance"]
+		if explicit, ok := a.Credentials["seedance_enabled"].(bool); ok {
+			enabled = explicit
+		}
+		return a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey && !a.IsShadow() && strings.TrimSpace(a.GetCredential("base_url")) != "" && enabled
 	case OpenAIEndpointCapabilityChatCompletions:
 		if !a.IsOpenAI() && !a.IsGrok() {
 			return false

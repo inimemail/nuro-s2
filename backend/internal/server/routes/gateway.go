@@ -47,6 +47,13 @@ func RegisterGatewayRoutes(
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
+	// Native Ark aliases share exactly the same authentication and ownership.
+	for _, base := range []string{"/api/v3", "/v3", "/v1", ""} {
+		path := base + "/contents/generations/tasks"
+		r.POST(path, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.Seedance)
+		r.GET(path+"/:task_id", clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.Seedance)
+		r.DELETE(path+"/:task_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.Seedance)
+	}
 	compositeTarget := func(c *gin.Context) {
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
 		if ok && isCompositeGatewayAPIKey(apiKey) && c.Request != nil {

@@ -40,7 +40,15 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 
 	// Convert tools
 	if len(req.Tools) > 0 {
-		out.Tools = convertResponsesToAnthropicTools(req.Tools)
+		tools := append([]ResponsesTool(nil), req.Tools...)
+		for i := range tools {
+			parameters, err := normalizeAnthropicRootSchema(tools[i].Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q: %w", tools[i].Name, err)
+			}
+			tools[i].Parameters = parameters
+		}
+		out.Tools = convertResponsesToAnthropicTools(tools)
 	}
 
 	// Convert tool_choice (reverse of convertAnthropicToolChoiceToResponses)

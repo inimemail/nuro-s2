@@ -3781,6 +3781,9 @@ func validateOpenAIAPIKeyFirstTokenTimeoutTarget(account *Account, effectiveType
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
+	}
 	requestedProbeEnabled, err := reconcileUpstreamBillingProbeEnabled(input.Extra, input.ProbeEnabled)
 	if err != nil {
 		return nil, err
@@ -3947,6 +3950,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("load account %d for update: %w", id, err)
@@ -4713,6 +4719,9 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
+	}
 	var err error
 	if err := NormalizeOpenCodeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_OPENCODE_PROTOCOL_RULES", err.Error())

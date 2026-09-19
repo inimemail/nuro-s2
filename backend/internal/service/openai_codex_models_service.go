@@ -626,10 +626,6 @@ func validateCodexModelsManifestEnvelope(body []byte) error {
 	if len(models) == 0 || models[0] != '[' {
 		return errors.New("top-level models field is not an array")
 	}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(models, &entries); err != nil {
-		return fmt.Errorf("decode top-level models array: %w", err)
-	}
 	return nil
 }
 

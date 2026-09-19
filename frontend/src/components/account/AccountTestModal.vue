@@ -41,6 +41,7 @@
         </span>
       </div>
 
+      <SeedanceTaskTester v-if="show && account?.platform === 'openai' && account.type === 'apikey' && isSeedanceEnabled(account.credentials)" :model="selectedModelId" />
       <div v-if="grokNeedsModel" class="space-y-1.5">
         <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.accounts.selectTestModel') }}
@@ -262,6 +263,8 @@
 </template>
 
 <script setup lang="ts">
+import SeedanceTaskTester from './SeedanceTaskTester.vue'
+import { isSeedanceEnabled } from '@/utils/seedance'
 import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'

@@ -118,6 +118,26 @@ describe('AccountTestModal', () => {
     localStorage.clear()
   })
 
+  it.each([
+    { credentials: { seedance_enabled: true }, visible: true },
+    { credentials: { openai_capabilities: [' Seedance '] }, visible: true },
+    { credentials: { openai_capabilities: { seedance: true } }, visible: true },
+    { credentials: { seedance_enabled: false, openai_capabilities: ['seedance'] }, visible: false },
+    { credentials: {}, visible: false }
+  ])('uses the backend Seedance capability precedence in the test panel: %j', async ({ credentials, visible }) => {
+    const account = buildAccount()
+    account.type = 'apikey'
+    account.credentials = credentials
+    const wrapper = mount(AccountTestModal, {
+      props: { show: true, account },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true, SeedanceTaskTester: true } }
+    })
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'SeedanceTaskTester' }).exists()).toBe(visible)
+    expect(global.fetch).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each(['compact', 'compact_legacy'])('posts %s mode for the selected Compact protocol', async (mode) => {
     const wrapper = mount(AccountTestModal, {
       props: {

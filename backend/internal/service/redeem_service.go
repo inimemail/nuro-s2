@@ -645,6 +645,10 @@ func (s *RedeemService) GetStats(ctx context.Context) (map[string]any, error) {
 }
 
 // GetUserHistory 获取用户的兑换历史
+func (s *RedeemService) GetUserHistoryPaginated(ctx context.Context, userID int64, params pagination.PaginationParams) ([]RedeemCode, *pagination.PaginationResult, error) {
+	return s.redeemRepo.ListByUserPaginated(ctx, userID, params, "")
+}
+
 func (s *RedeemService) GetUserHistory(ctx context.Context, userID int64, limit int) ([]RedeemCode, error) {
 	codes, err := s.redeemRepo.ListByUser(ctx, userID, limit)
 	if err != nil {

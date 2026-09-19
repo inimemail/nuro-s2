@@ -312,6 +312,7 @@ func (s *GeminiMessagesCompatService) isAccountUsableForRequestWithPrecheck(
 	useMixedScheduling bool,
 	precheckResult map[int64]bool,
 ) bool {
+	requestedModel = geminiThinkingVariantSchedulingModel(ctx, account, requestedModel)
 	ctx = withNonOpenAIPoolModelKind(ctx, account, requestedModel)
 	// 检查模型调度能力
 	// Check model scheduling capability
@@ -3155,7 +3156,9 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 			} else if strings.TrimSpace(trimmed) == "" {
 				writeDownstream(line)
 			} else if strings.HasPrefix(strings.TrimSpace(trimmed), ":") {
-				writeDownstream(":\n")
+				if !downstreamRejectsSSEComments(c) {
+					writeDownstream(":\n")
+				}
 			} else {
 				if !sawPayload {
 					fallback.AddLine(trimmed)

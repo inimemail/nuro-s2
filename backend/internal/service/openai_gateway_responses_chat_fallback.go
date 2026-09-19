@@ -149,6 +149,10 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return nil, fmt.Errorf("invalid base_url: %w", err)
 	}
 	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
+	chatBody, err = normalizeStrictChatRequest(account, targetURL, chatBody)
+	if err != nil {
+		return nil, err
+	}
 
 	trackAttempt := account != nil && account.Platform == PlatformOpenAI
 	var attempt *OpenAIUpstreamAttempt

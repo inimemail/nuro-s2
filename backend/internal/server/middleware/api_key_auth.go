@@ -173,7 +173,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// Usage, billing observation, and async image task reads only require
 		// authentication; they do not initiate new billable upstream work.
-		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
+		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path) || isSeedanceTaskManagement(c.Request.Method, c.Request.URL.Path)
 
 		var subscription *service.UserSubscription
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -318,6 +318,20 @@ func isAsyncImageTaskRead(method, path string) bool {
 		return false
 	}
 	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/")
+}
+
+// Existing paid tasks must remain queryable/cancellable when balance or key
+// quota is exhausted. Authentication, user/group state and ownership still apply.
+func isSeedanceTaskManagement(method, path string) bool {
+	if method != http.MethodGet && method != http.MethodDelete {
+		return false
+	}
+	for _, prefix := range []string{"/api/v3", "/v3", "/v1", ""} {
+		if id, found := strings.CutPrefix(path, prefix+"/contents/generations/tasks/"); found {
+			return id != "" && id != "." && id != ".." && !strings.Contains(id, "/")
+		}
+	}
+	return false
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key

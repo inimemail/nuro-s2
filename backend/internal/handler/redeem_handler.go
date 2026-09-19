@@ -2,9 +2,11 @@ package handler
 
 import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -68,7 +70,26 @@ func (h *RedeemHandler) GetHistory(c *gin.Context) {
 		return
 	}
 
-	// Default limit is 25
+	if c.Request.URL.Query().Has("page") || c.Request.URL.Query().Has("page_size") {
+		page, e1 := strconv.Atoi(c.DefaultQuery("page", "1"))
+		size, e2 := strconv.Atoi(c.DefaultQuery("page_size", "25"))
+		if e1 != nil || e2 != nil || page < 1 || size < 1 || size > 100 || page-1 > int(^uint(0)>>1)/size {
+			response.BadRequest(c, "Invalid pagination: page must be positive and page_size must be 1–100")
+			return
+		}
+		codes, paging, err := h.redeemService.GetUserHistoryPaginated(c.Request.Context(), subject.UserID, pagination.PaginationParams{Page: page, PageSize: size})
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		out := make([]dto.RedeemCode, 0, len(codes))
+		for i := range codes {
+			out = append(out, *dto.RedeemCodeFromService(&codes[i]))
+		}
+		response.Success(c, response.PaginatedData{Items: out, Total: paging.Total, Page: paging.Page, PageSize: paging.PageSize, Pages: paging.Pages})
+		return
+	}
+	// Preserve the legacy array response for callers without pagination.
 	limit := 25
 
 	codes, err := h.redeemService.GetUserHistory(c.Request.Context(), subject.UserID, limit)

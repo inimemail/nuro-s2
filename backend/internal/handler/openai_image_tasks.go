@@ -976,6 +976,9 @@ func (h *OpenAIGatewayHandler) startPersistentImageTaskWorkers() {
 }
 
 func (h *OpenAIGatewayHandler) StopImageTaskWorkers() {
+	if h != nil && h.seedance != nil {
+		h.seedance.Stop()
+	}
 	if h == nil || h.imageTaskRepo == nil {
 		return
 	}

@@ -1350,6 +1350,26 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_responses_supported).toBe(true)
   })
 
+  it.each([
+    { openai_capabilities: ['chat_completions', 'seedance'] },
+    { openai_capabilities: { chat_completions: true, ' Seedance ': true } },
+    { seedance_enabled: null, openai_capabilities: { chat_completions: true, seedance: true } }
+  ])('preserves imported Seedance capability when saving other settings: %j', async (credentials) => {
+    const account = buildAccount()
+    Object.assign(account.credentials, credentials)
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.seedance_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['chat_completions'])
+    wrapper.unmount()
+  })
+
   it('submits OpenAI APIKey endpoint capabilities from credentials', async () => {
     const account = buildAccount()
     account.credentials.openai_capabilities = ['chat_completions']

@@ -88,6 +88,7 @@ func ProvideSchedulerEventBus(rdb *redis.Client, cfg *config.Config) service.Sch
 
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	NewSeedanceTaskRepository,
 	NewUserRepository,
 	NewAPIKeyRepository,
 	NewGroupRepository,
