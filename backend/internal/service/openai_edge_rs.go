@@ -62,25 +62,26 @@ type OpenAIEdgeControlSnapshot struct {
 }
 
 type OpenAIEdgePlan struct {
-	SettlementContext string            `json:"settlement_context,omitempty"`
-	Action            string            `json:"action"`
-	Reason            string            `json:"reason,omitempty"`
-	EdgeRequestID     string            `json:"edge_request_id"`
-	LeaseID           string            `json:"lease_id,omitempty"`
-	LeaseTTLMS        int               `json:"lease_ttl_ms,omitempty"`
-	LeaseRenewGraceMS int               `json:"lease_renew_grace_ms,omitempty"`
-	LeaseRenewTTLMS   int               `json:"lease_renew_ttl_ms,omitempty"`
-	AccountID         int64             `json:"account_id,omitempty"`
-	AccountType       string            `json:"account_type,omitempty"`
-	Transport         string            `json:"transport,omitempty"`
-	ResponseDialect   string            `json:"response_dialect,omitempty"`
-	UpstreamURL       string            `json:"upstream_url,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	Body              json.RawMessage   `json:"body,omitempty"`
-	BodyRawBase64     string            `json:"body_raw_base64,omitempty"`
-	ProxyURL          string            `json:"proxy_url,omitempty"`
-	LowLatencyMode    string            `json:"low_latency_mode,omitempty"`
-	Lane              string            `json:"lane,omitempty"`
+	OpsCallbackEnabled bool              `json:"ops_callback_enabled,omitempty"`
+	SettlementContext  string            `json:"settlement_context,omitempty"`
+	Action             string            `json:"action"`
+	Reason             string            `json:"reason,omitempty"`
+	EdgeRequestID      string            `json:"edge_request_id"`
+	LeaseID            string            `json:"lease_id,omitempty"`
+	LeaseTTLMS         int               `json:"lease_ttl_ms,omitempty"`
+	LeaseRenewGraceMS  int               `json:"lease_renew_grace_ms,omitempty"`
+	LeaseRenewTTLMS    int               `json:"lease_renew_ttl_ms,omitempty"`
+	AccountID          int64             `json:"account_id,omitempty"`
+	AccountType        string            `json:"account_type,omitempty"`
+	Transport          string            `json:"transport,omitempty"`
+	ResponseDialect    string            `json:"response_dialect,omitempty"`
+	UpstreamURL        string            `json:"upstream_url,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	Body               json.RawMessage   `json:"body,omitempty"`
+	BodyRawBase64      string            `json:"body_raw_base64,omitempty"`
+	ProxyURL           string            `json:"proxy_url,omitempty"`
+	LowLatencyMode     string            `json:"low_latency_mode,omitempty"`
+	Lane               string            `json:"lane,omitempty"`
 	// SafeTokenPlaceholder lets edge-rs mirror the Go Responses SSE behavior:
 	// after response.created, inject a non-content transport_progress.delta so
 	// compatible downstream panels can record an early first token without
@@ -215,6 +216,7 @@ type OpenAIEdgeRetryStageRequest struct {
 }
 
 type OpenAIEdgeCompleteRequest struct {
+	FailureDiagnostic   string      `json:"failure_diagnostic,omitempty"`
 	SettlementContext   string      `json:"settlement_context,omitempty"`
 	EdgeRequestID       string      `json:"edge_request_id"`
 	LeaseID             string      `json:"lease_id,omitempty"`

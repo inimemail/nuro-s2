@@ -1086,6 +1086,12 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 	if !ok {
 		return
 	}
+	// Edge failures must remain visible in the default status >= 400 query,
+	// even when preflush/placeholders have already committed HTTP 200.
+	// This only changes the log entry, never the response writer or other relays.
+	if c.GetBool(edgeOpsStreamFailureKey) && streamErr.IntendedStatus >= http.StatusBadRequest {
+		wireStatus = streamErr.IntendedStatus
+	}
 	if v, ok := c.Get(service.OpsSkipPassthroughKey); ok {
 		if skip, _ := v.(bool); skip {
 			return

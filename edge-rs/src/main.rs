@@ -1094,6 +1094,8 @@ struct StreamOnlyRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 struct EdgePlan {
+    #[serde(default)]
+    ops_callback_enabled: bool,
     settlement_context: Option<String>,
     action: String,
     reason: Option<String>,
@@ -1634,6 +1636,8 @@ struct RenewRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CompleteRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_diagnostic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     settlement_context: Option<String>,
     edge_request_id: String,
     lease_id: Option<String>,
@@ -1694,6 +1698,7 @@ impl Usage {
 
 #[derive(Clone, Debug, Default)]
 struct ChatStreamSummary {
+    failure_diagnostic: Option<String>,
     usage: Usage,
     request_id: Option<String>,
     response_id: Option<String>,
@@ -1763,7 +1768,7 @@ impl SseEventParser {
             }
             let frame = std::mem::take(&mut self.pending);
             if !frame.is_empty() {
-                frames.push(Bytes::from(frame));
+                frames.push(normalize_multiline_sse_event(Bytes::from(frame)));
             }
             self.line_start = 0;
         }
@@ -1783,6 +1788,37 @@ impl SseEventParser {
     fn overflowed(&self) -> bool {
         self.overflowed
     }
+}
+
+// All HTTP stream consumers (failure detection, usage/TTFT observation and
+// public sanitization) receive this same normalized event. Ordinary one-line
+// events retain their bytes and timing; only valid multiline JSON is folded.
+fn normalize_multiline_sse_event(frame: Bytes) -> Bytes {
+    let Ok(text) = std::str::from_utf8(&frame) else { return frame };
+    let mut parts = text.lines().filter_map(|line| {
+        line.trim_start().strip_prefix("data:").map(|v| v.strip_prefix(' ').unwrap_or(v))
+    });
+    let Some(first) = parts.next() else { return frame };
+    let Some(second) = parts.next() else { return frame };
+    let mut data = String::with_capacity(frame.len());
+    data.push_str(first);
+    data.push('\n');
+    data.push_str(second);
+    for part in parts { data.push('\n'); data.push_str(part); }
+    if serde_json::from_str::<Value>(&data).is_err() { return frame; }
+    let mut normalized = String::with_capacity(frame.len());
+    for line in text.lines() {
+        if !line.trim().is_empty() && !line.trim_start().starts_with("data:") {
+            normalized.push_str(line);
+            normalized.push('\n');
+        }
+    }
+    normalized.push_str("data: ");
+    // Valid JSON cannot contain literal CR/LF inside a string. Fold only that
+    // whitespace, preserving numeric precision, escaped arguments and key order.
+    normalized.extend(data.chars().map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }));
+    normalized.push_str("\n\n");
+    Bytes::from(normalized)
 }
 
 #[derive(Debug)]
@@ -1862,7 +1898,7 @@ fn extract_edge_stream_failure_message(value: &Value) -> Option<String> {
     .map(|message| message.chars().take(512).collect())
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 struct UpstreamFailureDiagnostic {
     event_type: Option<String>,
     error_type: Option<String>,
@@ -2776,6 +2812,7 @@ impl ClientDisconnectCompleteGuard {
             Some("stream_error".to_string())
         };
         request.error_message = error_message;
+        request.failure_diagnostic = summary.failure_diagnostic.clone();
         request.upstream_status_code = upstream_status_code;
         request.terminal_event_type = summary.terminal_event_type(None);
         request.cyber_blocked = summary.cyber_blocked;
@@ -2840,6 +2877,7 @@ fn pending_stream_complete_request(
     edge_retry_count: i64,
 ) -> CompleteRequest {
     CompleteRequest {
+        failure_diagnostic: None,
         settlement_context: None,
         edge_request_id,
         lease_id,
@@ -3815,6 +3853,7 @@ async fn handle_openai_edge(
     }
 
     state.metrics.relay_requests.fetch_add(1, Ordering::Relaxed);
+    let ops_callback_enabled = plan.ops_callback_enabled;
     let relay_identity = request_lease_identity;
     let timing_shared = Arc::new(Mutex::new(timing.clone()));
     match relay_upstream(
@@ -3836,6 +3875,9 @@ async fn handle_openai_edge(
     .await
     {
         Ok(mut resp) => {
+            if ops_callback_enabled {
+                resp.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+            }
             let defer_payload_commit = resp
                 .headers_mut()
                 .remove(EDGE_DEFER_PAYLOAD_COMMIT_HEADER)
@@ -3890,6 +3932,7 @@ async fn handle_openai_edge(
                 },
             )
             .await;
+            let ops_callback_owned = ops_callback_enabled && abort_result.is_ok();
             if let Err(callback_err) = abort_result {
                 error!(
                     "relay failure abort could not be delivered or queued: {}",
@@ -3899,12 +3942,16 @@ async fn handle_openai_edge(
                 request_abort_guard.mark_done();
             }
             if local_capacity && !relay_attempted {
-                return overload_response(&state);
+                let mut response = overload_response(&state);
+                if ops_callback_owned {
+                    response.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+                }
+                return response;
             }
             if !allow_go_fallback {
                 let timeout = is_edge_response_header_timeout(&err)
                     || err.to_string().contains("response header total budget");
-                let response = if timeout {
+                let mut response = if timeout {
                     openai_error_response(
                         StatusCode::GATEWAY_TIMEOUT,
                         "upstream_timeout",
@@ -3917,6 +3964,9 @@ async fn handle_openai_edge(
                         "Upstream request failed after the request was sent",
                     )
                 };
+                if ops_callback_owned {
+                    response.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+                }
                 return response;
             }
             let mut fallback_timing = edge_timing_snapshot(&timing_shared);
@@ -4965,6 +5015,7 @@ async fn relay_ws_session(
     call_complete(
         &state,
         CompleteRequest {
+            failure_diagnostic: summary.failure_diagnostic.clone(),
             settlement_context: plan.settlement_context.clone(),
             edge_request_id: edge_request_id_complete,
             lease_id,
@@ -7175,14 +7226,10 @@ async fn relay_upstream_direct(
                     );
                 }
             }
-            Ok(_) => {
+            Ok(response) => {
                 outer_complete_guard.mark_done();
-                let _ = placeholder_sent;
                 yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                    openai_stream_terminal_failure_frame_for_summary(
-                        response_dialect.as_deref(),
-                        &progress_summary,
-                    ),
+                    early_placeholder_error_frame(response, response_dialect.as_deref(), &progress_summary).await,
                 ));
             }
             Err(error) => {
@@ -7264,15 +7311,12 @@ async fn relay_upstream_direct(
                                 }
                                 return;
                             }
-                            Ok(_) => {
+                            Ok(response) => {
                                 // The core relay has already settled non-success
                                 // responses; do not issue a second abort here.
                                 outer_complete_guard.mark_done();
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                                    openai_stream_terminal_failure_frame_for_summary(
-                                        response_dialect.as_deref(),
-                                        &progress_summary,
-                                    ),
+                                        early_placeholder_error_frame(response, response_dialect.as_deref(), &progress_summary).await,
                                 ));
                                 return;
                             }
@@ -7695,6 +7739,7 @@ async fn relay_upstream_direct_core_impl(
             if let Err(callback_err) = call_complete(
                 &state,
                 CompleteRequest {
+                    failure_diagnostic: None,
                     settlement_context: plan.settlement_context.clone(),
                     edge_request_id: plan.edge_request_id.clone(),
                     lease_id: plan.lease_id.clone(),
@@ -8990,6 +9035,7 @@ async fn relay_upstream_direct_core_impl(
         complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
 
         if call_complete(&complete_state, CompleteRequest {
+            failure_diagnostic: summary.failure_diagnostic.clone(),
             settlement_context: current_plan.settlement_context.clone(),
             edge_request_id,
             lease_id: current_plan.lease_id.clone(),
@@ -9755,7 +9801,7 @@ fn sanitize_openai_sse_line_with_usage(
             || json_is_unsafe_upstream_diagnostic(&value)
             || (chat_dialect && !value.get("choices").is_some_and(Value::is_array));
         if has_error {
-            let output = safe_sse_error_line(chat_dialect, current_event_type.as_deref());
+            let output = safe_sse_error_from_payload(chat_dialect, current_event_type.as_deref(), Some(&value), None);
             if !chat_dialect {
                 *current_event_type = Some("response.failed".to_string());
             }
@@ -9803,21 +9849,76 @@ fn sanitize_openai_sse_line_with_usage(
 }
 
 fn safe_sse_error_line(chat_dialect: bool, current_event_type: Option<&str>) -> Vec<u8> {
+    safe_sse_error_from_payload(chat_dialect, current_event_type, None, None)
+}
+
+// Only protocol-owned categories leave the gateway. Never expose provider
+// messages, URLs or arbitrary codes while preserving actionable error meaning.
+fn safe_public_error(payload: Option<&Value>, status: Option<u16>) -> Value {
+    let error = payload.and_then(|v| v.pointer("/response/error").or_else(|| v.get("error")));
+    let kind = error.and_then(|v| v.get("type")).and_then(Value::as_str).unwrap_or("");
+    let code = error.and_then(|v| v.get("code")).and_then(Value::as_str).unwrap_or("");
+    let (kind, default_code) = if kind == "safety_error" || code == "cyber_policy" {
+        ("safety_error", "cyber_policy")
+    } else if kind == "rate_limit_error" || matches!(code, "rate_limit_exceeded" | "insufficient_quota") || status == Some(429) {
+        ("rate_limit_error", "rate_limit_exceeded")
+    } else if kind == "authentication_error" || code == "invalid_api_key" || status == Some(401) {
+        ("authentication_error", "invalid_api_key")
+    } else if kind == "permission_error" || code == "permission_denied" || status == Some(403) {
+        ("permission_error", "permission_denied")
+    } else if kind == "invalid_request_error" || matches!(code, "model_not_found" | "context_length_exceeded" | "invalid_request_error") || matches!(status, Some(400 | 404 | 413 | 422)) {
+        ("invalid_request_error", "invalid_request_error")
+    } else {
+        ("upstream_error", "server_error")
+    };
+    let code = match code {
+        "rate_limit_exceeded" | "insufficient_quota" | "model_not_found" |
+        "context_length_exceeded" | "invalid_request_error" | "invalid_api_key" |
+        "permission_denied" | "server_error" | "server_is_overloaded" | "cyber_policy" => code,
+        _ => default_code,
+    };
+    serde_json::json!({"type":kind,"code":code,"message":"Upstream request failed"})
+}
+
+fn safe_sse_error_from_payload(chat_dialect: bool, current_event_type: Option<&str>, payload: Option<&Value>, status: Option<u16>) -> Vec<u8> {
+    let error = safe_public_error(payload, status);
     if chat_dialect {
-        b"data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\n"
-            .to_vec()
+        format!("data: {}\n\n", serde_json::json!({"error":error})).into_bytes()
     } else {
         let event_prefix = if current_event_type != Some("response.failed") {
             "event: response.failed\n"
         } else {
             ""
         };
-        format!(
-            "{event_prefix}data: {}\n\n",
-            responses_failed_payload(None, None)
-        )
-        .into_bytes()
+        let id = payload.and_then(|v| v.pointer("/response/id").or_else(|| v.get("response_id")))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')));
+        let mut event: Value = serde_json::from_str(&responses_failed_payload(id, None)).expect("gateway failure JSON");
+        event["response"]["error"] = error;
+        if let Some(sequence) = payload.and_then(|v| v.get("sequence_number")).and_then(Value::as_u64) {
+            event["sequence_number"] = Value::from(sequence);
+        }
+        format!("{event_prefix}data: {event}\n\n").into_bytes()
     }
+}
+
+async fn early_placeholder_error_frame(response: Response, dialect: Option<&str>, summary: &ChatStreamSummary) -> String {
+    let status = response.status().as_u16();
+    // Error bodies are bounded and timed; a provider cannot stall an already
+    // committed placeholder stream while we extract a safe category.
+    let bytes = tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 8192)).await;
+    let mut payload = match bytes {
+        Ok(Ok(bytes)) => serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    if let Some(id) = summary.response_id.as_deref().or(summary.request_id.as_deref()) {
+        if !payload.is_object() { payload = serde_json::json!({}); }
+        payload["response_id"] = Value::String(id.to_string());
+    }
+    let chat = dialect == Some("chat_completions");
+    let mut frame = String::from_utf8(safe_sse_error_from_payload(chat, None, Some(&payload), Some(status))).expect("gateway UTF-8");
+    if chat { frame.push_str("data: [DONE]\n\n"); }
+    frame
 }
 
 // Once an Edge response has committed headers, terminate the stream with a
@@ -12211,6 +12312,7 @@ impl ChatStreamSummary {
         }
         let Ok(value) = serde_json::from_str::<Value>(payload) else {
             self.failed = true;
+            self.failure_diagnostic.get_or_insert_with(|| "{\"event_type\":\"edge.invalid_sse_json\",\"code\":\"invalid_sse_json\"}".to_string());
             if self.failed_terminal_event_type.is_none() {
                 self.failed_terminal_event_type = Some("error".to_string());
             }
@@ -12283,6 +12385,9 @@ impl ChatStreamSummary {
         let invalid_chat_payload = self.response_dialect.as_deref() == Some("chat_completions")
             && !value.get("choices").is_some_and(Value::is_array);
         if json_is_unsafe_upstream_diagnostic(value) || invalid_chat_payload {
+            if self.failure_diagnostic.is_none() {
+                self.failure_diagnostic = serde_json::to_string(&upstream_failure_diagnostic(value)).ok();
+            }
             self.failed = true;
             if self.failed_terminal_event_type.is_none() {
                 self.failed_terminal_event_type = Some("error".to_string());
@@ -14406,6 +14511,55 @@ mod tests {
     }
 
     #[test]
+    fn multiline_approval_sse_preserves_content_usage_and_placeholders() {
+        let text = "event: response.created\r\ndata: {\"type\":\"response.created\",\r\ndata: \"response\":{\"id\":\"resp_review\",\"model\":\"codex-auto-review\"}}\r\n\r\nevent: response.completed\ndata: {\"type\":\"response.completed\",\ndata: \"response\":{\"id\":\"resp_review\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"允许\\nread-only\"}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+        for chunk_size in [1, 7, text.len()] {
+            let mut parser = SseEventParser::default();
+            let mut summary = ChatStreamSummary::with_pending(String::new(), Some("responses"));
+            let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
+            let mut output = Vec::new();
+            let mut created = false;
+            for bytes in text.as_bytes().chunks(chunk_size) {
+                for frame in parser.push(bytes) {
+                    assert!(parse_sse_failure_event(&frame).is_none());
+                    let observed = summary.observe(&frame);
+                    created |= observed.saw_response_created;
+                    output.extend_from_slice(&sanitizer.push(&frame));
+                }
+            }
+            let output = String::from_utf8(output).unwrap();
+            assert!(!output.contains("response.failed"));
+            assert!(output.contains("允许\\nread-only"));
+            assert!(created, "created boundary for safe placeholder must survive");
+            assert!(summary.completed_successfully(Some("responses")));
+            assert_eq!(summary.usage.input_tokens, 12);
+            assert_eq!(summary.usage.output_tokens, 3);
+        }
+    }
+
+    #[test]
+    fn single_line_sse_bytes_and_arrival_boundary_stay_unchanged() {
+        let input = b":\n\nevent: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n";
+        let mut parser = SseEventParser::default();
+        let frames = parser.push(input);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames.concat(), input);
+    }
+
+    #[test]
+    fn multiline_sse_preserves_json_number_and_string_spelling() {
+        let input = b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\ndata: \"item\":{\"type\":\"function_call\",\"arguments\":\"{\\\"n\\\":1.2300,\\\"s\\\":\\\"a\\\\nb\\\"}\",\"metadata\":{\"value\":123456789012345678901234567890,\"decimal\":0.123456789012345678901234567890}}}\n\n";
+        let mut parser = SseEventParser::default();
+        let frames = parser.push(input);
+        assert_eq!(frames.len(), 1);
+        let text = std::str::from_utf8(&frames[0]).unwrap();
+        assert!(text.contains("123456789012345678901234567890"));
+        assert!(text.contains("0.123456789012345678901234567890"));
+        assert!(text.contains(r#""arguments":"{\"n\":1.2300,\"s\":\"a\\nb\"}""#));
+        assert!(parse_sse_failure_event(&frames[0]).is_none());
+    }
+
+    #[test]
     fn sse_failure_prefilter_skips_normal_deltas_and_keeps_failures() {
         assert!(!sse_frame_may_contain_failure(
             b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
@@ -14915,6 +15069,47 @@ mod tests {
         assert_eq!(output.matches("event: response.failed\n").count(), 1);
         assert_eq!(output.matches("data: {").count(), 1);
         assert!(output.contains("\"output\":[]"));
+    }
+
+    #[test]
+    fn sanitized_error_keeps_category_and_id_without_provider_details() {
+        for (kind, code) in [("rate_limit_error", "rate_limit_exceeded"), ("invalid_request_error", "model_not_found"), ("authentication_error", "invalid_api_key")] {
+            let payload = serde_json::json!({"type":"response.failed","response":{"id":"resp_correlation","error":{"type":kind,"code":code,"message":"secret at https://private.example"}}});
+            let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
+            let frame = format!("event: response.failed\ndata: {payload}\n\n");
+            let output = String::from_utf8(sanitizer.push(frame.as_bytes()).to_vec()).unwrap();
+            assert!(output.contains(kind));
+            assert!(output.contains(code));
+            assert!(output.contains("resp_correlation"));
+            assert!(!output.contains("private.example"));
+            assert!(!output.contains("secret"));
+            assert_eq!(output.matches("event: response.failed").count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn early_placeholder_failure_preserves_rate_limit_and_chat_terminal() {
+        for dialect in ["responses", "chat_completions"] {
+            let response = Response::builder().status(429).body(Body::from("private upstream error")).unwrap();
+            let frame = early_placeholder_error_frame(response, Some(dialect), &ChatStreamSummary::default()).await;
+            assert!(frame.contains("rate_limit_error"));
+            assert!(!frame.contains("private upstream"));
+            assert_eq!(frame.contains("data: [DONE]"), dialect == "chat_completions");
+        }
+    }
+
+    #[test]
+    fn public_error_codes_classify_without_provider_type() {
+        for (code, kind) in [
+            ("invalid_api_key", "authentication_error"),
+            ("permission_denied", "permission_error"),
+            ("model_not_found", "invalid_request_error"),
+        ] {
+            let payload = serde_json::json!({"error":{"code":code}});
+            let error = safe_public_error(Some(&payload), None);
+            assert_eq!(error["type"], kind);
+            assert_eq!(error["code"], code);
+        }
     }
 
     #[test]
@@ -15607,6 +15802,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn early_placeholder_retry_plan_preserves_body_and_disables_duplicate_timer() {
         let mut plan = EdgePlan {
+            ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
             reason: None,
@@ -16211,6 +16407,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn take_request_body_prefers_raw_base64_and_clears_plan_body() {
         let mut plan = EdgePlan {
+            ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
             reason: None,
@@ -16367,6 +16564,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn relay_queue_key_uses_account_proxy_and_host() {
         let plan = EdgePlan {
+            ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
             reason: None,

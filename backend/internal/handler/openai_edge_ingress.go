@@ -91,6 +91,7 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	if !gjson.GetBytes(body, "stream").Bool() {
 		return false
 	}
+	setOpsRequestContext(c, gjson.GetBytes(body, "model").String(), true)
 
 	target := openAIEdgeIngressURL(cfg.ListenAddr, c.Request.URL.RequestURI())
 	if target == "" {
@@ -162,6 +163,9 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
+		if resp.Header.Get("X-Sub2API-Edge-Ops-Owned") == "1" {
+			c.Set(service.OpsSkipPassthroughKey, true)
+		}
 		// Error classification must not wait indefinitely for an incomplete body.
 		timer := time.AfterFunc(time.Second, cancelEdge)
 		errType, message := openAIEdgeIngressClientError(resp.StatusCode, resp.Body)
@@ -176,6 +180,9 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	}
 
 	copyOpenAIEdgeResponseHeaders(c.Writer.Header(), resp.Header)
+	// Only the trusted local Edge response can designate callback ownership.
+	// Old binaries omit this header and retain ingress-side observation.
+	c.Set("edge_ops_callback_owned", resp.Header.Get("X-Sub2API-Edge-Ops-Owned") == "1")
 	c.Writer.Header().Del(edgeStreamSessionHeader)
 	c.Writer.Header().Del(edgeStreamOffsetHeader)
 	c.Writer.Header().Del(edgeStreamBindingHeader)
@@ -353,6 +360,15 @@ func copyOpenAIEdgeResponseBody(c *gin.Context, src io.Reader, responsesDialect 
 	dst := c.Writer
 	buf := make([]byte, 32*1024)
 	terminal := openAIEdgeTerminalScanner{responses: responsesDialect}
+	localFailure := false
+	defer func() {
+		callbackOwned, _ := c.Get("edge_ops_callback_owned")
+		if terminal.failed && (callbackOwned != true || localFailure) {
+			errType := edgeOpsErrorType(terminal.errorType)
+			c.Set(edgeOpsStreamFailureKey, true)
+			service.MarkOpsStreamError(c, edgeOpsFailureStatus(errType), errType, "Edge stream failed")
+		}
+	}()
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
@@ -365,6 +381,11 @@ func copyOpenAIEdgeResponseBody(c *gin.Context, src io.Reader, responsesDialect 
 		}
 		if readErr != nil {
 			if !terminal.seen {
+				// A downstream cancellation is not an upstream failure.
+				if c.Request == nil || c.Request.Context().Err() == nil {
+					terminal.failed = true
+					localFailure = true
+				}
 				// Recovery can exhaust in the middle of an SSE frame. Separate
 				// the failure event from its partial data instead of concatenating
 				// event:/data: into malformed tool or JSON payload bytes.

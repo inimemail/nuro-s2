@@ -99,6 +99,10 @@ type openAIEdgeLease struct {
 	stagedRetry              *openAIEdgeStagedRetry
 	activatedRetryID         string
 	currentAttemptID         string
+	lastFailureDiagnostic    string
+	lastFailureStatus        int
+	lastFailureRequestID     string
+	lastFailureResponseID    string
 	// retryReleaseQueue contains slot-release callbacks that must run after the
 	// retry operation drops its locks. Account selection and scheduler callbacks
 	// are external code and must never execute while a lease mutex is held.
@@ -1443,6 +1447,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
+	plan.OpsCallbackEnabled = h.opsService != nil
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1674,6 +1679,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
+	plan.OpsCallbackEnabled = h.opsService != nil
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1892,6 +1898,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
+	plan.OpsCallbackEnabled = h.opsService != nil
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -2206,6 +2213,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	}
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
+	lease.lastFailureDiagnostic = edgeOpsDiagnosticFromPayload(responseBody)
+	lease.lastFailureStatus = status
+	lease.lastFailureRequestID = req.UpstreamRequestID
+	lease.lastFailureResponseID = gjson.GetBytes(responseBody, "response.id").String()
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
 	errorType := strings.TrimSpace(req.ErrorType)
 	edgeSemanticProgressTimeout := status == 0 && errorType == "edge_semantic_progress_timeout"
@@ -2296,6 +2307,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
 				lease.lastPlan = plan
 				lease.currentAttemptID = uuid.NewString()
+				lease.clearFailureDiagnostic()
 				return service.OpenAIEdgeRetryDecision{
 					Action: service.OpenAIEdgeActionRelay,
 					Reason: "responses_rejected_field_" + strings.ReplaceAll(field, ".", "_"),
@@ -2847,6 +2859,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 		return nil, err
 	}
 	plan := prepared.Plan
+	plan.OpsCallbackEnabled = h.opsService != nil
 	plan.EdgeProtectionGroupEnabled = lease.lastPlan.EdgeProtectionGroupEnabled
 	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
 	if err != nil {
@@ -2905,6 +2918,8 @@ func applyOpenAIEdgePreparedRetryPlan(lease *openAIEdgeLease, prepared *openAIEd
 		return
 	}
 	lease.account = prepared.account
+	// Diagnostics belong to an attempt, never to the replacement account.
+	lease.clearFailureDiagnostic()
 	lease.accountReleaseFunc = prepared.release
 	lease.passthroughSeen = prepared.passthroughSeen
 	markSameAccountAttemptStart(lease.sameAccountStarted, prepared.account, time.Now())
@@ -3060,6 +3075,14 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	// Completion runs after the stream. Audit flush and durable billing stay
 	// outside prepare and first-token paths.
 	defer h.flushOpenAIEdgePromptAudit(lease)
+	terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
+	if !openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req) && !req.ClientDisconnected && terminalType != "response.incomplete" && terminalType != "response.cancelled" && terminalType != "response.canceled" {
+		detail := req.FailureDiagnostic
+		if detail == "" {
+			detail = req.ErrorMessage
+		}
+		h.recordOpenAIEdgeFailure(lease, "complete", req.ErrorType, detail, req.RequestID, req.ResponseID, req.UpstreamStatusCode)
+	}
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
 		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
@@ -3322,6 +3345,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	}
 	if lease != nil {
 		lease.release()
+		if !req.ClientDisconnected && !req.FallbackToGo {
+			h.recordOpenAIEdgeFailure(lease, "abort", req.FailureClass, req.Reason, "", "", 0)
+		}
 		if h.gatewayService != nil && lease.account != nil {
 			actionSuccess := req.ClientDisconnected || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || openAIEdgeAbortReasonIsNeutral(req.Reason)
 			h.settleOpenAIEdgeStallAction(lease, actionSuccess)

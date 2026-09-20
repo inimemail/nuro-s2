@@ -50,6 +50,9 @@ func openAIHealthProbeRetryDeadlineExpired(healthProbe bool, ctx context.Context
 
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
+	opsService               *service.OpsService
+	edgeOpsMu                sync.Mutex
+	edgeOpsSeen              map[string]time.Time
 	seedance                 *service.SeedanceService
 	gatewayService           *service.OpenAIGatewayService
 	billingCacheService      *service.BillingCacheService
@@ -308,6 +311,7 @@ func NewOpenAIGatewayHandler(
 	redisClient *redis.Client,
 	cfg *config.Config,
 	seedance *service.SeedanceService,
+	opsService *service.OpsService,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 3
@@ -318,6 +322,7 @@ func NewOpenAIGatewayHandler(
 		}
 	}
 	h := &OpenAIGatewayHandler{
+		opsService:               opsService,
 		seedance:                 seedance,
 		gatewayService:           gatewayService,
 		billingCacheService:      billingCacheService,

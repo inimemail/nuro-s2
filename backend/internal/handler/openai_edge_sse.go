@@ -16,6 +16,8 @@ type openAIEdgeTerminalScanner struct {
 	oversized   bool
 	cr          bool
 	lineHasData bool
+	failed      bool
+	errorType   string
 }
 
 func (s *openAIEdgeTerminalScanner) feed(chunk []byte) {
@@ -50,6 +52,13 @@ func (s *openAIEdgeTerminalScanner) endLine() {
 		if validObject {
 			if value := gjson.GetBytes(data, "type"); value.Exists() {
 				typ = value.String()
+			}
+			if typ == "response.failed" || typ == "error" || gjson.GetBytes(data, "error").IsObject() || gjson.GetBytes(data, "response.error").IsObject() {
+				s.failed = true
+				s.errorType = gjson.GetBytes(data, "response.error.type").String()
+				if s.errorType == "" {
+					s.errorType = gjson.GetBytes(data, "error.type").String()
+				}
 			}
 		}
 		if s.responses {

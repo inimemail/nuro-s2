@@ -273,7 +273,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	openAIImageTaskRepository := repository.NewOpenAIImageTaskRepository(db)
 	seedanceTaskRepository := repository.NewSeedanceTaskRepository(db)
 	seedanceService := service.NewSeedanceService(seedanceTaskRepository, openAIGatewayService, apiKeyService)
-	openAIGatewayHandler := handler.NewOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, securityauditService, openAIImageTaskRepository, imageStorageSettingService, redisClient, configConfig, seedanceService)
+	openAIGatewayHandler := handler.NewOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, securityauditService, openAIImageTaskRepository, imageStorageSettingService, redisClient, configConfig, seedanceService, opsService)
 	batchImageRepository := repository.NewBatchImageRepository(db)
 	batchImageQueue := repository.NewBatchImageQueue(redisClient, configConfig)
 	batchImageModelPricingResolver := service.ProvideBatchImageModelPricingResolver(modelPricingResolver)
