@@ -1,8 +1,11 @@
+mod disk_worker;
 mod http_lane_pool;
+mod relay_queue;
+mod retry_queue;
 mod stream_session;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     fmt::Display,
     future::{pending, Future},
@@ -176,7 +179,7 @@ struct AppState {
     ws_idle_last_used: Arc<tokio::sync::Mutex<HashMap<String, Instant>>>,
     ws_idle_connecting: Arc<tokio::sync::Mutex<HashSet<String>>>,
     pools: Arc<BufferPools>,
-    settlement_retry_tx: mpsc::Sender<SettlementRetryJob>,
+    settlement_retry_tx: mpsc::Sender<SettlementRetryTask>,
     payload_commit_tx: mpsc::Sender<CommitRequest>,
     payload_commit_overflow: Arc<Semaphore>,
     relay_tx: mpsc::Sender<RelayJob>,
@@ -432,11 +435,24 @@ struct LocalRouteHint {
 }
 
 struct SettlementWal {
+    worker: disk_worker::DiskWorker<SettlementWalDisk>,
+    startup_replay: Mutex<Option<Vec<SettlementRetryJob>>>,
+}
+
+impl std::ops::Deref for SettlementWal {
+    type Target = SettlementWalDisk;
+    fn deref(&self) -> &Self::Target {
+        &self.worker.data
+    }
+}
+
+struct SettlementWalDisk {
     dir: PathBuf,
     log_path: PathBuf,
     enabled: bool,
     healthy: AtomicBool,
     pending: AtomicU64,
+    deferred_count: AtomicU64,
     state: Mutex<SettlementWalState>,
     written_sequence: AtomicU64,
     flushed_sequence: AtomicU64,
@@ -445,10 +461,14 @@ struct SettlementWal {
     compact_bytes: u64,
 }
 
+#[derive(Default)]
 struct SettlementWalState {
     file: Option<std::fs::File>,
     pending: HashMap<String, SettlementRetryJob>,
     records_since_compaction: u64,
+    compacted_bytes: u64,
+    deferred: HashMap<String, DeferredSettlementRetry>,
+    deferred_order: VecDeque<String>,
 }
 
 struct ActiveRequestGuard {
@@ -806,7 +826,8 @@ impl EdgeMetrics {
             .max(1)
             .saturating_add(state.cfg.queue_buffer_size.max(128));
         let ingress_used = ingress_limit.saturating_sub(state.ingress_permits.available_permits());
-        let settlement_retry_depth = self.settlement_retry_queue_depth.load(Ordering::Relaxed);
+        let settlement_retry_depth = self.settlement_retry_queue_depth.load(Ordering::Relaxed)
+            + state.settlement_wal.deferred_count.load(Ordering::Relaxed);
         let payload_commit_depth = state
             .payload_commit_tx
             .max_capacity()
@@ -1224,6 +1245,7 @@ struct WsIdleConn {
 }
 
 struct RelayJob {
+    admission: Arc<relay_queue::Admission>,
     state: AppState,
     plan: EdgePlan,
     request_body: Vec<u8>,
@@ -1966,6 +1988,34 @@ enum SettlementRetryJob {
     Abort(AbortRequest),
 }
 
+struct SettlementRetryTask {
+    job: SettlementRetryJob,
+    attempts: usize,
+    delay: Duration,
+    replay_done: Vec<oneshot::Sender<()>>,
+}
+
+impl SettlementRetryTask {
+    fn new(job: SettlementRetryJob) -> Self {
+        Self {
+            job,
+            attempts: 0,
+            delay: SETTLEMENT_RETRY_INITIAL_DELAY,
+            replay_done: Vec::new(),
+        }
+    }
+}
+
+struct DeferredSettlementRetry {
+    due: Instant,
+    attempts: usize,
+    delay: Duration,
+    replay_done: Vec<oneshot::Sender<()>>,
+    // Healthy WAL jobs are referenced by key, not duplicated in this queue.
+    // Preserve in-memory callbacks too if WAL is disabled or has failed.
+    fallback_job: Option<SettlementRetryJob>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct RecoverRequest {
     edge_node_id: String,
@@ -2009,6 +2059,73 @@ enum SettlementWalRecord {
 
 impl SettlementWal {
     async fn new(cfg: &EdgeConfig) -> anyhow::Result<Self> {
+        let cfg = cfg.clone();
+        let worker = disk_worker::DiskWorker::start(4096, SETTLEMENT_RETRY_QUEUE_SIZE, move || {
+            SettlementWalDisk::new(&cfg)
+        })
+        .await?;
+        Self::from_worker(worker).await
+    }
+
+    async fn from_worker(worker: disk_worker::DiskWorker<SettlementWalDisk>) -> anyhow::Result<Self> {
+        // Capture once before serving requests. Reloading after admission
+        // could replay a live Put concurrently with its original callback.
+        let jobs = worker.run(|disk| disk.load()).await??;
+        Ok(Self { worker, startup_replay: Mutex::new(Some(jobs)) })
+    }
+
+    async fn unavailable(cfg: &EdgeConfig) -> anyhow::Result<Self> {
+        let cfg = cfg.clone();
+        let worker = disk_worker::DiskWorker::start(4096, SETTLEMENT_RETRY_QUEUE_SIZE,
+            move || Ok(SettlementWalDisk::unavailable(&cfg))).await?;
+        Ok(Self { worker, startup_replay: Mutex::new(None) })
+    }
+
+    fn key(job: &SettlementRetryJob) -> String {
+        SettlementWalDisk::key(job)
+    }
+
+    async fn append_record(&self, record: SettlementWalRecord) -> anyhow::Result<u64> {
+        self.worker.run(move |disk| disk.append_record(record)).await?
+    }
+
+    async fn persist(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
+        let sequence = self.append_record(SettlementWalRecord::Put {
+            key: Self::key(job),
+            job: job.clone(),
+        }).await?;
+        self.wait_flushed(sequence).await
+    }
+
+    async fn acknowledge(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
+        let sequence = self.append_record(SettlementWalRecord::Ack { key: Self::key(job) }).await?;
+        self.wait_flushed(sequence).await
+    }
+
+    #[cfg(test)]
+    async fn load(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
+        self.worker.run(|disk| disk.load()).await?
+    }
+
+    fn take_startup_replay(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
+        self.startup_replay.lock().map_err(|_| anyhow::anyhow!("startup WAL snapshot lock poisoned"))?
+            .take().ok_or_else(|| anyhow::anyhow!("startup WAL snapshot unavailable or already consumed"))
+    }
+
+    async fn flush(&self) -> anyhow::Result<()> {
+        self.worker.run(|disk| disk.flush()).await?
+    }
+
+    #[cfg(test)]
+    async fn new_for_test(dir: PathBuf, compact_records: u64, compact_bytes: u64) -> anyhow::Result<Self> {
+        Ok(Self { worker: disk_worker::DiskWorker::start(4, 8, move ||
+            SettlementWalDisk::new_for_test(dir, compact_records, compact_bytes)).await?,
+            startup_replay: Mutex::new(None) })
+    }
+}
+
+impl SettlementWalDisk {
+    fn new(cfg: &EdgeConfig) -> anyhow::Result<Self> {
         let dir = cfg.settlement_wal_dir.clone();
         let log_path = dir.join("settlements.log");
         let file = if cfg.settlement_wal_enabled {
@@ -2028,10 +2145,12 @@ impl SettlementWal {
             enabled: cfg.settlement_wal_enabled,
             healthy: AtomicBool::new(true),
             pending: AtomicU64::new(0),
+            deferred_count: AtomicU64::new(0),
             state: Mutex::new(SettlementWalState {
                 file,
                 pending: HashMap::new(),
                 records_since_compaction: 0,
+                ..SettlementWalState::default()
             }),
             written_sequence: AtomicU64::new(0),
             flushed_sequence: AtomicU64::new(0),
@@ -2048,10 +2167,12 @@ impl SettlementWal {
             enabled: cfg.settlement_wal_enabled,
             healthy: AtomicBool::new(false),
             pending: AtomicU64::new(0),
+            deferred_count: AtomicU64::new(0),
             state: Mutex::new(SettlementWalState {
                 file: None,
                 pending: HashMap::new(),
                 records_since_compaction: 0,
+                ..SettlementWalState::default()
             }),
             written_sequence: AtomicU64::new(0),
             flushed_sequence: AtomicU64::new(0),
@@ -2131,58 +2252,16 @@ impl SettlementWal {
         }
     }
 
-    async fn persist(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let sequence = self.append_record(SettlementWalRecord::Put {
-            key: Self::key(job),
-            job: job.clone(),
-        })?;
-        self.wait_flushed(sequence).await?;
-        Ok(())
-    }
-
     fn persist_sync(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let sequence = self.append_record(SettlementWalRecord::Put {
+        self.append_record(SettlementWalRecord::Put {
             key: Self::key(job),
             job: job.clone(),
         })?;
-        let sync_result = (|| -> anyhow::Result<()> {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
-            state
-                .file
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("settlement WAL file is unavailable"))?
-                .sync_data()?;
-            Ok(())
-        })();
-        if let Err(error) = sync_result {
-            self.mark_unhealthy();
-            return Err(error);
-        }
-        self.flushed_sequence.fetch_max(sequence, Ordering::Release);
-        self.flush_notify.notify_waiters();
-        Ok(())
+        // Same flush/compaction path as ordinary callbacks, on the disk thread.
+        self.flush()
     }
 
-    async fn acknowledge(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let sequence = self.append_record(SettlementWalRecord::Ack {
-            key: Self::key(job),
-        })?;
-        self.wait_flushed(sequence).await
-    }
-
-    async fn load(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
+    fn load(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
         if !self.enabled {
             return Ok(Vec::new());
         }
@@ -2235,7 +2314,7 @@ impl SettlementWal {
         Ok(jobs)
     }
 
-    async fn flush(&self) -> anyhow::Result<()> {
+    fn flush(&self) -> anyhow::Result<()> {
         if !self.enabled {
             return Ok(());
         }
@@ -2287,7 +2366,8 @@ impl SettlementWal {
             .and_then(|file| file.metadata().ok())
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        if state.records_since_compaction < self.compact_records && bytes < self.compact_bytes {
+        if state.records_since_compaction < self.compact_records
+            && bytes.saturating_sub(state.compacted_bytes) < self.compact_bytes {
             return Ok(());
         }
 
@@ -2306,6 +2386,7 @@ impl SettlementWal {
             std::io::Write::write_all(&mut compacted, &bytes)?;
         }
         compacted.sync_all()?;
+        let compacted_bytes = compacted.metadata()?.len();
         drop(compacted);
         state.file.take();
         if let Err(error) = std::fs::rename(&temp_path, &self.log_path) {
@@ -2314,7 +2395,10 @@ impl SettlementWal {
         }
         state.file = Some(Self::open_append_file(&self.log_path)?);
         Self::sync_directory(&self.dir)?;
-        state.records_since_compaction = state.pending.len() as u64;
+        // Count growth since this snapshot. A large live snapshot is not
+        // reclaimable garbage and must not trigger compaction on every flush.
+        state.records_since_compaction = 0;
+        state.compacted_bytes = compacted_bytes;
         Ok(())
     }
 
@@ -2323,6 +2407,60 @@ impl SettlementWal {
             .create(true)
             .append(true)
             .open(path)?)
+    }
+
+    fn defer_retry(&self, mut task: SettlementRetryTask, wait: Duration) -> anyhow::Result<()> {
+        let key = Self::key(&task.job);
+        let mut state = self.state.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+        if self.enabled && self.is_healthy() && !state.pending.contains_key(&key) {
+            // Another idempotent delivery already acknowledged this job.
+            for done in task.replay_done { let _ = done.send(()); }
+            return Ok(());
+        }
+        if let Some(existing) = state.deferred.get_mut(&key) {
+            existing.replay_done.append(&mut task.replay_done);
+            if !self.is_healthy() || !self.enabled {
+                existing.fallback_job = Some(task.job);
+            }
+            return Ok(());
+        }
+        let fallback_job = (!self.is_healthy() || !self.enabled || !state.pending.contains_key(&key)).then_some(task.job);
+        state.deferred_order.push_back(key.clone());
+        state.deferred.insert(key, DeferredSettlementRetry {
+            due: Instant::now() + wait, attempts: task.attempts, delay: task.delay,
+            replay_done: task.replay_done, fallback_job,
+        });
+        self.deferred_count.store(state.deferred.len() as u64, Ordering::Release);
+        Ok(())
+    }
+
+    fn take_deferred_retries(&self, limit: usize) -> anyhow::Result<Vec<SettlementRetryTask>> {
+        let mut state = self.state.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+        let mut jobs = Vec::new();
+        // Rotate a bounded scan, including entries not yet due, so neither a
+        // long backoff nor a large WAL monopolizes the disk worker.
+        let scan = state.deferred_order.len().min(limit.saturating_mul(4));
+        for _ in 0..scan {
+            if jobs.len() >= limit { break; }
+            let Some(key) = state.deferred_order.pop_front() else { break; };
+            let Some(mut deferred) = state.deferred.remove(&key) else { continue; };
+            if deferred.due > Instant::now() {
+                state.deferred_order.push_back(key.clone());
+                state.deferred.insert(key, deferred);
+                continue;
+            }
+            let job = deferred.fallback_job.take().or_else(|| state.pending.get(&key).cloned());
+            if let Some(job) = job {
+                jobs.push(SettlementRetryTask {
+                    job, attempts: deferred.attempts, delay: deferred.delay,
+                    replay_done: deferred.replay_done,
+                });
+            } else {
+                for done in deferred.replay_done { let _ = done.send(()); }
+            }
+        }
+        self.deferred_count.store(state.deferred.len() as u64, Ordering::Release);
+        Ok(jobs)
     }
 
     #[cfg(unix)]
@@ -2351,10 +2489,12 @@ impl SettlementWal {
             enabled: true,
             healthy: AtomicBool::new(true),
             pending: AtomicU64::new(0),
+            deferred_count: AtomicU64::new(0),
             state: Mutex::new(SettlementWalState {
                 file,
                 pending: HashMap::new(),
                 records_since_compaction: 0,
+                ..SettlementWalState::default()
             }),
             written_sequence: AtomicU64::new(0),
             flushed_sequence: AtomicU64::new(0),
@@ -2367,6 +2507,7 @@ impl SettlementWal {
 
 struct LeaseAbortGuard {
     state: AppState,
+    cleanup: Option<disk_worker::CleanupReservation<SettlementWalDisk>>,
     edge_request_id: String,
     lease_identity: SharedLeaseIdentity,
     reason: &'static str,
@@ -2378,6 +2519,7 @@ struct LeaseAbortGuard {
 
 struct ClientDisconnectCompleteGuard {
     state: AppState,
+    cleanup: Option<disk_worker::CleanupReservation<SettlementWalDisk>>,
     started_at: Instant,
     request: Mutex<CompleteRequest>,
     prior_usage: Mutex<Usage>,
@@ -2570,8 +2712,10 @@ where
 }
 
 impl ClientDisconnectCompleteGuard {
-    fn new(state: AppState, started_at: Instant, request: CompleteRequest) -> Self {
+    async fn new(state: AppState, started_at: Instant, request: CompleteRequest) -> Self {
+        let cleanup = state.settlement_wal.worker.reserve_cleanup(3).await;
         Self {
+            cleanup,
             state,
             started_at,
             request: Mutex::new(request),
@@ -2582,15 +2726,18 @@ impl ClientDisconnectCompleteGuard {
         }
     }
 
-    fn new_with_lease_identity(
+    async fn new_with_lease_identity(
         state: AppState,
         started_at: Instant,
         request: CompleteRequest,
         lease_identity: SharedLeaseIdentity,
     ) -> Self {
-        let mut guard = Self::new(state, started_at, request);
-        guard.lease_identity = Some(lease_identity);
-        guard
+        let cleanup = state.settlement_wal.worker.reserve_cleanup(2).await;
+        Self {
+            cleanup, state, started_at, request: Mutex::new(request),
+            prior_usage: Mutex::new(Usage::default()), lease_identity: Some(lease_identity),
+            definitive_failure: AtomicBool::new(false), done: AtomicBool::new(false),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2783,9 +2930,9 @@ impl Drop for ClientDisconnectCompleteGuard {
             );
         }
         stamp_complete_guard_sample(&mut request);
-        if let Err(err) =
-            enqueue_settlement_retry(&self.state, SettlementRetryJob::Complete(Box::new(request)))
-        {
+        if let Err(err) = enqueue_cleanup_settlement(
+            &self.state, self.cleanup.take(), SettlementRetryJob::Complete(Box::new(request)),
+        ) {
             error!(
                 "dropped-stream complete callback could not be queued: {}",
                 safe_edge_error(&err)
@@ -2795,14 +2942,16 @@ impl Drop for ClientDisconnectCompleteGuard {
 }
 
 impl LeaseAbortGuard {
-    fn new(
+    async fn new(
         state: AppState,
         edge_request_id: String,
         lease_identity: SharedLeaseIdentity,
         reason: &'static str,
         client_disconnected: bool,
     ) -> Self {
+        let cleanup = state.settlement_wal.worker.reserve_cleanup(0).await;
         Self {
+            cleanup,
             state,
             edge_request_id,
             lease_identity,
@@ -2814,7 +2963,7 @@ impl LeaseAbortGuard {
         }
     }
 
-    fn new_with_markers(
+    async fn new_with_markers(
         state: AppState,
         edge_request_id: String,
         lease_identity: SharedLeaseIdentity,
@@ -2823,7 +2972,9 @@ impl LeaseAbortGuard {
         relay_attempted: Arc<AtomicBool>,
         done: Arc<AtomicBool>,
     ) -> Self {
+        let cleanup = state.settlement_wal.worker.reserve_cleanup(1).await;
         Self {
+            cleanup,
             state,
             edge_request_id,
             lease_identity,
@@ -2924,7 +3075,7 @@ impl Drop for LeaseAbortGuard {
             self.client_disconnected,
             self.relay_attempted.load(Ordering::SeqCst),
         );
-        if let Err(err) = enqueue_settlement_retry(&self.state, SettlementRetryJob::Abort(req)) {
+        if let Err(err) = enqueue_cleanup_settlement(&self.state, self.cleanup.take(), SettlementRetryJob::Abort(req)) {
             self.done.store(false, Ordering::SeqCst);
             error!(
                 "dropped-request abort callback could not be queued: {}",
@@ -2944,8 +3095,20 @@ fn mark_lease_abort_transferred(marker: Option<&Arc<AtomicBool>>) {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let mut shutdown_wal = None;
+    let result = runtime.block_on(run_edge(&mut shutdown_wal));
+    // Runtime shutdown cancels detached stream tasks and runs their Drop
+    // handlers. Only then can the disk barrier include their final usage.
+    drop(runtime);
+    if let Some(wal) = shutdown_wal {
+        wal.worker.finish(|disk| disk.flush())??;
+    }
+    result
+}
+
+async fn run_edge(shutdown_wal: &mut Option<Arc<SettlementWal>>) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string()))
         .init();
@@ -2977,9 +3140,10 @@ async fn main() -> anyhow::Result<()> {
                 safe_edge_error(&error)
             );
             local_data_plane.disable_durable_settlement();
-            Arc::new(SettlementWal::unavailable(&cfg))
+            Arc::new(SettlementWal::unavailable(&cfg).await?)
         }
     };
+    *shutdown_wal = Some(settlement_wal.clone());
     let state = AppState {
         cfg: cfg.clone(),
         edge_instance_id: Arc::new(Uuid::new_v4().to_string()),
@@ -3017,6 +3181,7 @@ async fn main() -> anyhow::Result<()> {
         state.clone(),
         settlement_retry_rx,
     ));
+    tokio::spawn(run_deferred_settlement_retries(state.clone()));
     tokio::spawn(run_payload_commit_queue(state.clone(), payload_commit_rx));
     tokio::spawn(run_relay_executor(state.clone(), relay_rx));
     tokio::spawn(run_edge_resource_reaper(state.clone()));
@@ -3027,8 +3192,10 @@ async fn main() -> anyhow::Result<()> {
         // Complete durable callbacks while the previous Edge instance's Go
         // leases are still present. Releasing stale leases first would make a
         // replay look acknowledged while silently skipping usage settlement.
-        replay_settlement_wal(recovery_state.clone()).await;
-        recover_previous_edge_leases(recovery_state).await;
+        match replay_settlement_wal(recovery_state.clone()).await {
+            Ok(()) => recover_previous_edge_leases(recovery_state).await,
+            Err(error) => error!("settlement replay incomplete; retaining old leases for expiry/reconciliation: {}", safe_edge_error(error)),
+        }
     });
     let warm_client = state.client.clone();
     let dynamic_warm_state = state.clone();
@@ -3103,6 +3270,8 @@ async fn shutdown_signal(state: AppState) {
             .settlement_retry_queue_depth
             .load(Ordering::Acquire)
             > 0
+        || state.settlement_wal.worker.pending.load(Ordering::Acquire) > 0
+        || state.settlement_wal.deferred_count.load(Ordering::Acquire) > 0
         || state.payload_commit_tx.capacity() < state.payload_commit_tx.max_capacity())
         && Instant::now() < deadline
     {
@@ -3546,7 +3715,7 @@ async fn handle_openai_edge(
         request_lease_identity.clone(),
         "http_request_dropped_during_prepare_or_relay",
         true,
-    );
+    ).await;
     let prepare_started_at = Instant::now();
     let (plan, prepare_ms) = match call_prepare(&state, &prepare).await {
         Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
@@ -3572,7 +3741,7 @@ async fn handle_openai_edge(
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
-            ) {
+            ).await {
                 error!(
                     "prepare cancellation could not be queued: {}",
                     safe_edge_error(&queue_err)
@@ -4100,7 +4269,7 @@ async fn relay_ws_session(
         ws_lease_identity.clone(),
         "ws_session_dropped_during_prepare_or_relay",
         false,
-    );
+    ).await;
     let mut plan = match call_prepare(&state, &prepare).await {
         Ok(plan) => plan,
         Err(err) => {
@@ -4121,7 +4290,7 @@ async fn relay_ws_session(
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
-            ) {
+            ).await {
                 error!(
                     "ws prepare cancellation could not be queued: {}",
                     safe_edge_error(&queue_err)
@@ -6119,12 +6288,16 @@ async fn relay_upstream(
             queued_bytes,
         )?;
         let (response_tx, response_rx) = oneshot::channel();
+        let enqueued_at = Instant::now();
+        let admission = Arc::new(relay_queue::Admission::new(enqueued_at, state.cfg.queue_wait_budget_ms));
+        let queue_timing = timing_shared.clone();
         let job = RelayJob {
+            admission: admission.clone(),
             state: state.clone(),
             plan,
             request_body,
             started_at,
-            enqueued_at: Instant::now(),
+            enqueued_at,
             timing,
             timing_shared,
             lease_identity,
@@ -6144,9 +6317,13 @@ async fn relay_upstream(
             .relay_tx
             .try_send(job)
             .map_err(|err| anyhow::anyhow!("edge relay queue full or closed: {err}"))?;
-        return response_rx
-            .await
-            .map_err(|err| anyhow::anyhow!("edge relay worker dropped response: {err}"))?;
+        let response = admission.response(response_rx).await.and_then(|result| result);
+        if response.as_ref().is_err_and(|error| error.to_string().contains("edge_queue_wait_timeout")) {
+            update_edge_timing(queue_timing.as_ref(), |timing| {
+                timing.queue_wait_ms = Some(enqueued_at.elapsed().as_millis() as i64);
+            });
+        }
+        return response;
     }
     let ingress_permit = ingress_permit;
     let request_body = take_request_body_bytes(&mut plan)?;
@@ -6182,13 +6359,17 @@ fn try_reserve_relay_queue_bytes(
 }
 
 async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJob>) {
-    while let Some(job) = receiver.recv().await {
-        let permit = match state.relay_header_permits.clone().acquire_owned().await {
+    while let Some(mut job) = receiver.recv().await {
+        let permit = match job.admission.acquire(state.relay_header_permits.clone(), &mut job.response_tx).await {
             Ok(permit) => permit,
-            Err(_) => return,
+            Err(error) => {
+                let _ = job.response_tx.send(Err(error));
+                continue;
+            }
         };
         tokio::spawn(async move {
             let RelayJob {
+                admission,
                 state: job_state,
                 plan: job_plan,
                 request_body: job_request_body,
@@ -6209,7 +6390,7 @@ async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJ
                 _permit: permit,
                 _worker: job_state.metrics.begin_relay_work(),
             };
-            let mut lease_abort_guard = LeaseAbortGuard::new_with_markers(
+            let guard_future = LeaseAbortGuard::new_with_markers(
                 job_state.clone(),
                 job_plan.edge_request_id.clone(),
                 job_lease_identity.clone(),
@@ -6218,60 +6399,43 @@ async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJ
                 job_relay_attempted_marker,
                 job_abort_done_marker,
             );
+            let mut lease_abort_guard = tokio::select! {
+                guard = guard_future => guard,
+                _ = response_tx.closed() => return,
+            };
             if response_tx.is_closed() {
                 return;
             }
+            if let Err(error) = admission.start() {
+                if response_tx.send(Err(error)).is_ok() {
+                    lease_abort_guard.disarm();
+                }
+                return;
+            }
             let relay_attempted_marker = lease_abort_guard.relay_attempted_marker();
-            let retry_relay_attempted_marker = Arc::clone(&relay_attempted_marker);
             let abort_done_marker = lease_abort_guard.done_marker();
-            let retry_abort_done_marker = Arc::clone(&abort_done_marker);
             let queue_wait_ms = job_enqueued_at.elapsed().as_millis() as i64;
             job_timing.queue_wait_ms = Some(queue_wait_ms);
             update_edge_timing(job_timing_shared.as_ref(), |shared| {
                 shared.queue_wait_ms = Some(queue_wait_ms);
                 shared.retry_count = job_timing.retry_count;
             });
-            let result_future = async move {
-                if job_state.cfg.queue_wait_budget_ms > 0
-                    && queue_wait_ms > job_state.cfg.queue_wait_budget_ms as i64
-                {
-                    retry_after_queue_wait_budget(
-                        job_state,
-                        job_plan,
-                        queue_wait_ms,
-                        RelayAttemptContext {
-                            started_at: job_started_at,
-                            timing: job_timing,
-                            timing_shared: job_timing_shared,
-                            lease_identity: job_lease_identity,
-                            response_header_budget_deadline: job_response_header_budget_deadline,
-                            relay_attempted_marker: Some(retry_relay_attempted_marker),
-                            abort_done_marker: Some(retry_abort_done_marker),
-                            header_guard: Some(header_guard),
-                            ingress_permit: Some(ingress_permit),
-                        },
-                    )
-                    .await
-                } else {
-                    relay_upstream_direct(
-                        job_state,
-                        job_plan,
-                        job_request_body,
-                        RelayAttemptContext {
-                            started_at: job_started_at,
-                            timing: job_timing,
-                            timing_shared: job_timing_shared,
-                            lease_identity: job_lease_identity,
-                            response_header_budget_deadline: job_response_header_budget_deadline,
-                            relay_attempted_marker: Some(relay_attempted_marker),
-                            abort_done_marker: Some(abort_done_marker),
-                            header_guard: Some(header_guard),
-                            ingress_permit: Some(ingress_permit),
-                        },
-                    )
-                    .await
-                }
-            };
+            let result_future = relay_upstream_direct(
+                job_state,
+                job_plan,
+                job_request_body,
+                RelayAttemptContext {
+                    started_at: job_started_at,
+                    timing: job_timing,
+                    timing_shared: job_timing_shared,
+                    lease_identity: job_lease_identity,
+                    response_header_budget_deadline: job_response_header_budget_deadline,
+                    relay_attempted_marker: Some(relay_attempted_marker),
+                    abort_done_marker: Some(abort_done_marker),
+                    header_guard: Some(header_guard),
+                    ingress_permit: Some(ingress_permit),
+                },
+            );
             tokio::pin!(result_future);
             tokio::select! {
                 result = &mut result_future => {
@@ -6916,7 +7080,7 @@ async fn relay_upstream_direct(
             timing.retry_count,
         ),
         commit_lease_identity.clone(),
-    );
+    ).await;
     let inner = Box::pin(relay_upstream_direct_core_with_early_placeholder(
         state,
         inner_plan,
@@ -7744,7 +7908,7 @@ async fn relay_upstream_direct_core_impl(
             edge_fallback_reason.clone(),
             edge_retry_count,
         ),
-    );
+    ).await;
     complete_guard.update_lease_identity(&initial_plan);
     let body_stream = stream! {
         let mut current_plan = initial_plan;
@@ -8968,87 +9132,6 @@ async fn retry_after_race_response_header_budget(
             timing_shared,
             lease_identity,
             response_header_budget_deadline,
-            relay_attempted_marker,
-            abort_done_marker,
-            header_guard,
-            ingress_permit,
-        },
-    ))
-    .await
-}
-
-async fn retry_after_queue_wait_budget(
-    state: AppState,
-    plan: EdgePlan,
-    queue_wait_ms: i64,
-    context: RelayAttemptContext,
-) -> anyhow::Result<Response> {
-    let RelayAttemptContext {
-        started_at,
-        timing,
-        timing_shared,
-        lease_identity,
-        response_header_budget_deadline,
-        relay_attempted_marker,
-        abort_done_marker,
-        header_guard,
-        ingress_permit,
-    } = context;
-    let decision = call_retry(
-        &state,
-        RetryRequest {
-            edge_request_id: plan.edge_request_id.clone(),
-            lease_id: plan.lease_id.clone(),
-            account_id: plan.account_id,
-            upstream_status_code: None,
-            upstream_request_id: None,
-            retry_after_ms: None,
-            error_type: Some("edge_queue_wait_timeout".to_string()),
-            error_message: Some(format!(
-                "edge relay queue wait exceeded budget: {queue_wait_ms}ms"
-            )),
-            request_body: None,
-            response_body: None,
-            commit_state: RETRY_COMMIT_NONE.to_string(),
-            wrote_client_response: false,
-            supports_staged_retry: true,
-            execution_state: Some(EXECUTION_PRE_SEND.to_string()),
-        },
-    )
-    .await?;
-    if let Some(token) = decision.continuation_token.as_deref() {
-        update_edge_timing(timing_shared.as_ref(), |shared| {
-            shared.continuation_token = Some(token.to_string());
-        });
-    }
-    if decision.action != "relay" {
-        let reason = decision
-            .reason
-            .unwrap_or_else(|| "queue_wait_budget_fallback_go".to_string());
-        anyhow::bail!("queue wait budget requested Go fallback: {reason}");
-    }
-    let Some(next_plan) = decision.plan else {
-        anyhow::bail!("queue wait retry decision missing relay plan");
-    };
-    update_lease_identity(&lease_identity, &next_plan);
-    let mut next_timing = timing;
-    next_timing.retry_count += 1;
-    update_edge_timing(timing_shared.as_ref(), |shared| {
-        shared.retry_count = next_timing.retry_count;
-        shared.queue_wait_ms = next_timing.queue_wait_ms;
-    });
-    Box::pin(relay_upstream_retry_core(
-        state,
-        next_plan,
-        RelayAttemptContext {
-            started_at,
-            timing: next_timing,
-            timing_shared,
-            lease_identity,
-            response_header_budget_deadline,
-            // The queue timeout itself did not send an upstream request. Keep
-            // the shared marker attached so the recursive attempt marks it at
-            // the actual `send()` boundary.
             relay_attempted_marker,
             abort_done_marker,
             header_guard,
@@ -11286,11 +11369,37 @@ async fn send_settlement_job_once(
     }
 }
 
-fn enqueue_settlement_retry(state: &AppState, job: SettlementRetryJob) -> anyhow::Result<()> {
-    if let Err(error) = state.settlement_wal.persist_sync(&job) {
+async fn enqueue_settlement_retry(state: &AppState, job: SettlementRetryJob) -> anyhow::Result<()> {
+    if let Err(error) = state.settlement_wal.persist(&job).await {
         handle_settlement_wal_failure(state, "persisting queued settlement", &error);
     }
-    enqueue_persisted_settlement_retry(state, job)
+    enqueue_persisted_settlement_retry(state, job).await
+}
+
+fn enqueue_cleanup_settlement(
+    state: &AppState,
+    reservation: Option<disk_worker::CleanupReservation<SettlementWalDisk>>,
+    job: SettlementRetryJob,
+) -> anyhow::Result<()> {
+    let Some(reservation) = reservation else {
+        handle_settlement_wal_failure(state, "reserving cleanup", &anyhow::anyhow!("WAL worker unavailable"));
+        return try_enqueue_persisted_settlement_retry(state, SettlementRetryTask::new(job))
+            .map_err(|_| anyhow::anyhow!("settlement retry queue unavailable"));
+    };
+    let state = state.clone();
+    reservation.send(move |disk| {
+        // A callback cannot overtake its durable Put, even when its originating
+        // request/stream has already been cancelled. No Tokio task is needed.
+        if let Err(error) = disk.persist_sync(&job) {
+            handle_settlement_wal_failure(&state, "persisting cleanup", &error);
+        }
+        if let Err(task) = try_enqueue_persisted_settlement_retry(&state, SettlementRetryTask::new(job)) {
+            if let Err(error) = disk.defer_retry(*task, SETTLEMENT_RETRY_INITIAL_DELAY) {
+                error!("cleanup retry could not be scheduled; check WAL health: {}", safe_edge_error(error));
+            }
+        }
+    });
+    Ok(())
 }
 
 fn handle_settlement_wal_failure(state: &AppState, operation: &str, error: &anyhow::Error) {
@@ -11309,15 +11418,25 @@ async fn acknowledge_settlement(state: &AppState, job: &SettlementRetryJob) {
     }
 }
 
-fn enqueue_persisted_settlement_retry(
+async fn enqueue_persisted_settlement_retry(
     state: &AppState,
     job: SettlementRetryJob,
 ) -> anyhow::Result<()> {
+    if let Err(task) = try_enqueue_persisted_settlement_retry(state, SettlementRetryTask::new(job)) {
+        state.settlement_wal.worker.run(move |disk| disk.defer_retry(*task, SETTLEMENT_RETRY_INITIAL_DELAY)).await??;
+    }
+    Ok(())
+}
+
+fn try_enqueue_persisted_settlement_retry(
+    state: &AppState,
+    task: SettlementRetryTask,
+) -> Result<(), Box<SettlementRetryTask>> {
     state
         .metrics
         .settlement_retry_queue_depth
         .fetch_add(1, Ordering::Release);
-    if state.settlement_retry_tx.try_send(job).is_err() {
+    if let Err(error) = state.settlement_retry_tx.try_send(task) {
         state
             .metrics
             .settlement_retry_queue_depth
@@ -11326,85 +11445,84 @@ fn enqueue_persisted_settlement_retry(
             .metrics
             .settlement_retry_rejections
             .fetch_add(1, Ordering::Relaxed);
-        anyhow::bail!("settlement retry queue unavailable: full or closed")
+        return Err(Box::new(error.into_inner()));
     }
     Ok(())
 }
 
-async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
+async fn run_settlement_retry_attempt(
+    state: AppState,
+    mut task: SettlementRetryTask,
+) -> Option<(Duration, SettlementRetryTask)> {
+    let _worker = state.metrics.begin_callback_work(false);
+    state.metrics.settlement_retry_queue_depth.fetch_sub(1, Ordering::AcqRel);
+    task.attempts = task.attempts.saturating_add(1);
+    let job = &task.job;
     let kind = job.kind();
-    let edge_request_id = job.edge_request_id().to_string();
-    let mut attempts = 0usize;
-    let mut delay = SETTLEMENT_RETRY_INITIAL_DELAY;
-    loop {
-        attempts = attempts.saturating_add(1);
-        match send_settlement_job_once(&state, &job).await {
-            Ok(()) if attempts == 1 => {
-                debug!("{kind} callback delivered from queue edge_request_id={edge_request_id}");
-                acknowledge_settlement(&state, &job).await;
-                return;
-            }
-            Ok(()) => {
-                warn!(
-                    "{kind} callback recovered after {attempts} queued attempts edge_request_id={edge_request_id}"
-                );
-                acknowledge_settlement(&state, &job).await;
-                return;
-            }
-            Err(err) => {
-                if settlement_error_is_permanent(&err) {
-                    if matches!(&job, SettlementRetryJob::Complete(_)) {
-                        // Preserve unresolvable callbacks for reconciliation,
-                        // but don't let old/malformed jobs occupy every worker.
-                        error!("complete callback needs reconciliation; retained in WAL edge_request_id={edge_request_id}: {}", safe_edge_error(err));
-                        return;
-                    }
-                    error!(
-                        "{kind} callback rejected permanently edge_request_id={edge_request_id}: {}",
-                        safe_edge_error(err)
-                    );
-                    acknowledge_settlement(&state, &job).await;
-                    return;
-                }
-                if attempts == 1 || attempts.is_multiple_of(10) {
-                    warn!(
-                        "{kind} callback still pending attempts={attempts} edge_request_id={edge_request_id}: {}",
-                        safe_edge_error(err)
-                    );
-                }
+    let edge_request_id = job.edge_request_id();
+    match send_settlement_job_once(&state, job).await {
+        Ok(()) => {
+            debug!("{kind} callback delivered attempts={} edge_request_id={edge_request_id}", task.attempts);
+            acknowledge_settlement(&state, job).await;
+        }
+        Err(err) if settlement_error_is_permanent(&err) => {
+            if matches!(job, SettlementRetryJob::Complete(_)) {
+                error!("complete callback needs reconciliation; retained in WAL edge_request_id={edge_request_id}: {}", safe_edge_error(err));
+            } else {
+                error!("{kind} callback rejected permanently edge_request_id={edge_request_id}: {}", safe_edge_error(err));
+                acknowledge_settlement(&state, job).await;
             }
         }
-        tokio::time::sleep(delay).await;
-        delay = delay.saturating_mul(2).min(SETTLEMENT_RETRY_MAX_DELAY);
+        Err(err) => {
+            if task.attempts == 1 || task.attempts.is_multiple_of(10) {
+                warn!("{kind} callback still pending attempts={} edge_request_id={edge_request_id}: {}", task.attempts, safe_edge_error(err));
+            }
+            let delay = task.delay;
+            task.delay = delay.saturating_mul(2).min(SETTLEMENT_RETRY_MAX_DELAY);
+            state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+            return Some((delay, task));
+        }
     }
+    for done in task.replay_done {
+        let _ = done.send(());
+    }
+    None
 }
 
-async fn replay_settlement_wal(state: AppState) {
-    match state.settlement_wal.load().await {
+async fn replay_settlement_wal(state: AppState) -> anyhow::Result<()> {
+    match state.settlement_wal.take_startup_replay() {
         Ok(jobs) => {
             if !jobs.is_empty() {
                 info!("replaying {} durable settlement callbacks", jobs.len());
             }
-            futures_util::stream::iter(jobs)
-                .for_each_concurrent(Some(SETTLEMENT_RETRY_CONCURRENCY), |job| {
-                    let replay_state = state.clone();
-                    async move {
-                        let _worker_guard = replay_state.metrics.begin_callback_work(false);
-                        run_settlement_retry_job(replay_state, job).await;
-                    }
-                })
-                .await;
+            let mut completions = futures_util::stream::FuturesUnordered::new();
+            for job in jobs {
+                // Reserve before counting, so a cancelled/closed sender cannot
+                // leave phantom drain work. Live jobs and replay share FIFO.
+                let permit = state.settlement_retry_tx.reserve().await?;
+                let (tx, rx) = oneshot::channel();
+                let mut task = SettlementRetryTask::new(job);
+                task.replay_done.push(tx);
+                state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+                permit.send(task);
+                completions.push(rx);
+            }
+            // Preserve the lease-recovery ordering: do not release old leases
+            // while a durable callback still needs them for reconciliation.
+            while let Some(result) = completions.next().await {
+                result?;
+            }
         }
         Err(error) => {
             handle_settlement_wal_failure(&state, "loading settlement replay", &error);
+            return Err(error);
         }
     }
+    Ok(())
 }
 
 async fn run_settlement_wal_flusher(state: AppState) {
-    if !state.settlement_wal.enabled {
-        return;
-    }
+    if !state.settlement_wal.enabled { return; }
     let mut interval = tokio::time::interval(Duration::from_millis(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -11418,28 +11536,44 @@ async fn run_settlement_wal_flusher(state: AppState) {
 
 async fn run_settlement_retry_queue(
     state: AppState,
-    mut receiver: mpsc::Receiver<SettlementRetryJob>,
+    receiver: mpsc::Receiver<SettlementRetryTask>,
 ) {
-    let semaphore = Arc::new(Semaphore::new(SETTLEMENT_RETRY_CONCURRENCY));
+    let attempt_state = state.clone();
+    retry_queue::run(receiver, SETTLEMENT_RETRY_CONCURRENCY, SETTLEMENT_RETRY_QUEUE_SIZE,
+        move |task| run_settlement_retry_attempt(attempt_state.clone(), task),
+        move |delay, task| defer_settlement_retry(state.clone(), task, delay)).await;
+}
+
+async fn defer_settlement_retry(state: AppState, task: SettlementRetryTask, delay: Duration) {
+    let _worker = state.metrics.begin_callback_work(false);
+    // Transfer queued accounting to the deferred WAL index. Payload remains in
+    // the existing WAL pending map; no retry-limit acknowledgment is written.
+    let result = state.settlement_wal.worker.run(move |disk| disk.defer_retry(task, delay)).await;
+    state.metrics.settlement_retry_queue_depth.fetch_sub(1, Ordering::AcqRel);
+    if let Err(error) = result.and_then(|result| result) {
+        handle_settlement_wal_failure(&state, "deferring settlement retry", &error);
+    }
+}
+
+async fn run_deferred_settlement_retries(state: AppState) {
+    let mut interval = tokio::time::interval(Duration::from_millis(50));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let permit = match semaphore.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => return,
+        interval.tick().await;
+        if state.settlement_wal.deferred_count.load(Ordering::Acquire) == 0 { continue; }
+        let _worker = state.metrics.begin_callback_work(false);
+        let jobs = match state.settlement_wal.worker.run(|disk| disk.take_deferred_retries(32)).await.and_then(|result| result) {
+            Ok(jobs) => jobs,
+            Err(error) => {
+                handle_settlement_wal_failure(&state, "dispatching deferred settlements", &error);
+                return;
+            }
         };
-        let Some(job) = receiver.recv().await else {
-            return;
-        };
-        let retry_state = state.clone();
-        let worker_guard = retry_state.metrics.begin_callback_work(false);
-        retry_state
-            .metrics
-            .settlement_retry_queue_depth
-            .fetch_sub(1, Ordering::AcqRel);
-        tokio::spawn(async move {
-            let _permit = permit;
-            let _worker_guard = worker_guard;
-            run_settlement_retry_job(retry_state, job).await;
-        });
+        for task in jobs {
+            let Ok(permit) = state.settlement_retry_tx.reserve().await else { return; };
+            state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+            permit.send(task);
+        }
     }
 }
 
@@ -11492,7 +11626,7 @@ async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Re
                 "complete callback failed; queued for retry edge_request_id={}: {err}",
                 req.edge_request_id
             );
-            enqueue_persisted_settlement_retry(state, job)
+            enqueue_persisted_settlement_retry(state, job).await
         }
     }
 }
@@ -11531,7 +11665,7 @@ async fn call_abort(state: &AppState, req: AbortRequest) -> anyhow::Result<()> {
                 "abort callback failed; queued for retry edge_request_id={}: {err}",
                 req.edge_request_id
             );
-            enqueue_persisted_settlement_retry(state, job)
+            enqueue_persisted_settlement_retry(state, job).await
         }
     }
 }
@@ -13325,22 +13459,22 @@ mod tests {
     async fn settlement_wal_deduplicates_replays_and_acknowledges() {
         let dir = TestDirectory::new("wal-replay");
         let job = test_abort_job("edge-1");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&job),
             job: job.clone(),
         })
-        .unwrap();
+        .await.unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&job),
             job: job.clone(),
         })
-        .unwrap();
+        .await.unwrap();
         wal.flush().await.unwrap();
         assert_eq!(wal.pending.load(Ordering::Acquire), 1);
         drop(wal);
 
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         let jobs = replay.load().await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].edge_request_id(), "edge-1");
@@ -13352,7 +13486,7 @@ mod tests {
         flush_result.unwrap();
         drop(replay);
 
-        let empty = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let empty = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         assert!(empty.load().await.unwrap().is_empty());
         assert_eq!(empty.pending.load(Ordering::Acquire), 0);
     }
@@ -13361,12 +13495,12 @@ mod tests {
     async fn settlement_wal_repairs_incomplete_tail_before_appending() {
         let dir = TestDirectory::new("wal-tail");
         let first = test_abort_job("edge-first");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&first),
             job: first,
         })
-        .unwrap();
+        .await.unwrap();
         wal.flush().await.unwrap();
         drop(wal);
         let log_path = dir.0.join("settlements.log");
@@ -13378,7 +13512,7 @@ mod tests {
         file.sync_data().unwrap();
         drop(file);
 
-        let repaired = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let repaired = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         assert_eq!(repaired.load().await.unwrap().len(), 1);
         let second = test_abort_job("edge-second");
         repaired
@@ -13386,11 +13520,11 @@ mod tests {
                 key: SettlementWal::key(&second),
                 job: second,
             })
-            .unwrap();
+            .await.unwrap();
         repaired.flush().await.unwrap();
         drop(repaired);
 
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         assert_eq!(replay.load().await.unwrap().len(), 2);
     }
 
@@ -13399,7 +13533,7 @@ mod tests {
         let dir = TestDirectory::new("wal-corrupt-record");
         let log_path = dir.0.join("settlements.log");
         std::fs::write(&log_path, b"not-json\n").unwrap();
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
 
         assert!(wal.load().await.is_err());
     }
@@ -13420,18 +13554,18 @@ mod tests {
         let dir = TestDirectory::new("wal-compact");
         let first = test_abort_job("edge-first");
         let second = test_abort_job("edge-second");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap();
         for job in [&first, &second] {
             wal.append_record(SettlementWalRecord::Put {
                 key: SettlementWal::key(job),
                 job: job.clone(),
             })
-            .unwrap();
+            .await.unwrap();
         }
         wal.append_record(SettlementWalRecord::Ack {
             key: SettlementWal::key(&first),
         })
-        .unwrap();
+        .await.unwrap();
         wal.flush().await.unwrap();
 
         let records = std::fs::read_to_string(dir.0.join("settlements.log")).unwrap();
@@ -13441,16 +13575,229 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settlement_wal_large_live_snapshot_does_not_recompact_every_flush() {
+        let dir = TestDirectory::new("wal-compaction-growth");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 2, u64::MAX).await.unwrap();
+        wal.worker.run(|disk| {
+            disk.persist_sync(&test_abort_job("first"))?;
+            disk.persist_sync(&test_abort_job("second"))?;
+            disk.persist_sync(&test_abort_job("first"))?;
+            assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 3);
+
+        let dir = TestDirectory::new("wal-compaction-byte-growth");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 1000, 600).await.unwrap();
+        wal.worker.run(|disk| {
+            let mut job = test_abort_job("large-live-job");
+            if let SettlementRetryJob::Abort(request) = &mut job { request.reason = "x".repeat(1000); }
+            disk.persist_sync(&job)?;
+            assert!(disk.state.lock().unwrap().compacted_bytes > 600);
+            disk.append_record(SettlementWalRecord::Ack { key: "abort:unrelated".to_string() })?;
+            disk.flush()?;
+            assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_startup_snapshot_excludes_live_callbacks() {
+        let dir = TestDirectory::new("wal-startup-snapshot");
+        let old = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        old.worker.run(|disk| disk.persist_sync(&test_abort_job("history"))).await.unwrap().unwrap();
+        drop(old);
+        let path = dir.0.clone();
+        let worker = disk_worker::DiskWorker::start(4, 4, move || SettlementWalDisk::new_for_test(path, 100, u64::MAX)).await.unwrap();
+        let wal = SettlementWal::from_worker(worker).await.unwrap();
+        wal.worker.run(|disk| disk.persist_sync(&test_abort_job("live"))).await.unwrap().unwrap();
+        let replay = wal.take_startup_replay().unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].edge_request_id(), "history");
+        assert!(wal.take_startup_replay().is_err());
+        assert_eq!(wal.load().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_deferred_retries_rotate_retain_payload_and_survive_restart() {
+        let dir = TestDirectory::new("wal-deferred-retries");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        wal.worker.run(|disk| {
+            for id in ["waiting", "ready-first", "ready-second"] {
+                let job = test_abort_job(id);
+                disk.persist_sync(&job)?;
+                let wait = if id == "waiting" { Duration::from_secs(30) } else { Duration::ZERO };
+                disk.defer_retry(SettlementRetryTask::new(job), wait)?;
+            }
+            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 3);
+            assert!(disk.state.lock().unwrap().deferred.values().all(|value| value.fallback_job.is_none()));
+            let first = disk.take_deferred_retries(1)?;
+            assert_eq!(first[0].job.edge_request_id(), "ready-first");
+            let second = disk.take_deferred_retries(1)?;
+            assert_eq!(second[0].job.edge_request_id(), "ready-second");
+            assert!(disk.take_deferred_retries(1)?.is_empty());
+            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+        drop(wal);
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        assert_eq!(replay.load().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_deferred_duplicate_ack_wakes_all_replay_waiters() {
+        let dir = TestDirectory::new("wal-deferred-ack");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let (first_tx, first_rx) = oneshot::channel();
+        let (second_tx, second_rx) = oneshot::channel();
+        wal.worker.run(move |disk| {
+            let job = test_abort_job("same-job");
+            disk.persist_sync(&job)?;
+            for done in [first_tx, second_tx] {
+                let mut task = SettlementRetryTask::new(job.clone());
+                task.replay_done.push(done);
+                disk.defer_retry(task, Duration::ZERO)?;
+            }
+            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
+            disk.append_record(SettlementWalRecord::Ack { key: SettlementWal::key(&job) })?;
+            disk.flush()?;
+            assert!(disk.take_deferred_retries(1)?.is_empty());
+            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 0);
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+        first_rx.await.unwrap();
+        second_rx.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_failed_disk_deferred_callback_keeps_memory_payload() {
+        let dir = TestDirectory::new("wal-deferred-no-disk");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        wal.worker.run(|disk| {
+            disk.mark_unhealthy();
+            disk.defer_retry(SettlementRetryTask::new(test_abort_job("memory-only")), Duration::ZERO)?;
+            let tasks = disk.take_deferred_retries(1)?;
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].job.edge_request_id(), "memory-only");
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_failed_update_does_not_replay_older_payload() {
+        let dir = TestDirectory::new("wal-deferred-latest-payload");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        wal.worker.run(|disk| {
+            let mut job = test_abort_job("updated-job");
+            disk.persist_sync(&job)?;
+            disk.defer_retry(SettlementRetryTask::new(job.clone()), Duration::ZERO)?;
+            disk.mark_unhealthy();
+            if let SettlementRetryJob::Abort(request) = &mut job { request.reason = "latest-update".to_string(); }
+            disk.defer_retry(SettlementRetryTask::new(job), Duration::ZERO)?;
+            let tasks = disk.take_deferred_retries(1)?;
+            match &tasks[0].job {
+                SettlementRetryJob::Abort(request) => assert_eq!(request.reason, "latest-update"),
+                _ => panic!("unexpected callback"),
+            }
+            anyhow::Ok(())
+        }).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn settlement_overflow_recovers_without_losing_wal_jobs() {
+        let dir = TestDirectory::new("wal-overflow-recovery");
+        let wal = Arc::new(SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap());
+        let recovered = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(2);
+        let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
+        let attempt_wal = wal.clone();
+        let defer_wal = wal.clone();
+        let recovery = recovered.clone();
+        let scheduler = tokio::spawn(retry_queue::run(
+            receiver, 2, 2,
+            move |task: SettlementRetryTask| {
+                let wal = attempt_wal.clone();
+                let recovered = recovery.clone();
+                async move {
+                    if task.job.edge_request_id() != "live" && !recovered.load(Ordering::Acquire) {
+                        return Some((Duration::from_millis(10), task));
+                    }
+                    let key = SettlementWal::key(&task.job);
+                    wal.worker.run(move |disk| {
+                        disk.append_record(SettlementWalRecord::Ack { key })?;
+                        disk.flush()
+                    }).await.unwrap().unwrap();
+                    for done in task.replay_done { let _ = done.send(()); }
+                    None
+                }
+            },
+            move |delay, task| {
+                let wal = defer_wal.clone();
+                let deferred = deferred_tx.clone();
+                async move {
+                    wal.worker.run(move |disk| disk.defer_retry(task, delay)).await.unwrap().unwrap();
+                    let _ = deferred.send(());
+                }
+            },
+        ));
+        let refill_wal = wal.clone();
+        let refill_sender = sender.clone();
+        let dispatcher = tokio::spawn(async move {
+            loop {
+                let tasks = refill_wal.worker.run(|disk| disk.take_deferred_retries(2)).await.unwrap().unwrap();
+                for task in tasks { refill_sender.send(task).await.unwrap(); }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        });
+        let mut completions = futures_util::stream::FuturesUnordered::new();
+        for id in ["history-1", "history-2", "history-3", "history-4", "history-5", "history-6"] {
+            let job = test_abort_job(id);
+            let durable_job = job.clone();
+            wal.worker.run(move |disk| disk.persist_sync(&durable_job)).await.unwrap().unwrap();
+            let (done, completed) = oneshot::channel();
+            let mut task = SettlementRetryTask::new(job);
+            task.replay_done.push(done);
+            sender.send(task).await.unwrap();
+            completions.push(completed);
+        }
+        tokio::time::timeout(Duration::from_secs(2), deferred_rx.recv()).await.unwrap().unwrap();
+        let live = test_abort_job("live");
+        let durable_live = live.clone();
+        wal.worker.run(move |disk| disk.persist_sync(&durable_live)).await.unwrap().unwrap();
+        let (live_done, live_completed) = oneshot::channel();
+        let mut task = SettlementRetryTask::new(live);
+        task.replay_done.push(live_done);
+        sender.send(task).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), live_completed).await.unwrap().unwrap();
+        // Fresh work succeeds even though every historical callback is failing.
+        assert_eq!(wal.pending.load(Ordering::Acquire), 6);
+        recovered.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(done) = completions.next().await { done.unwrap(); }
+        }).await.unwrap();
+        dispatcher.abort();
+        let _ = dispatcher.await;
+        drop(sender);
+        tokio::time::timeout(Duration::from_secs(2), scheduler).await.unwrap().unwrap();
+        assert_eq!(wal.pending.load(Ordering::Acquire), 0);
+        assert_eq!(wal.deferred_count.load(Ordering::Acquire), 0);
+        drop(wal);
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap();
+        assert!(replay.load().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn settlement_wal_unhealthy_state_releases_flush_waiters() {
         let dir = TestDirectory::new("wal-unhealthy");
         let job = test_abort_job("edge-waiting");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
         let sequence = wal
             .append_record(SettlementWalRecord::Put {
                 key: SettlementWal::key(&job),
                 job,
             })
-            .unwrap();
+            .await.unwrap();
         wal.mark_unhealthy();
 
         let result = tokio::time::timeout(Duration::from_millis(100), wal.wait_flushed(sequence))
@@ -13467,6 +13814,111 @@ mod tests {
             request_header_bytes(&headers),
             "x-test".len() + "value".len() + 4
         );
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_persist_waits_for_flush_and_survives_restart() {
+        let dir = TestDirectory::new("wal-flush-barrier");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let job = test_abort_job("durable-before-callback");
+        let persist = wal.persist(&job);
+        tokio::pin!(persist);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut persist).await.is_err());
+        wal.flush().await.unwrap();
+        persist.await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        assert_eq!(replay.load().await.unwrap()[0].edge_request_id(), "durable-before-callback");
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_cleanup_is_durable_after_owner_is_dropped() {
+        let dir = TestDirectory::new("wal-cleanup-owner-drop");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX).await.unwrap();
+        let cleanup = wal.worker.reserve_cleanup(0).await.unwrap();
+        let (done, completed) = oneshot::channel();
+        cleanup.send(move |disk| {
+            let result = disk.persist_sync(&test_abort_job("cancelled-request"));
+            let _ = done.send(result);
+        });
+        drop(wal);
+        completed.await.unwrap().unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX).await.unwrap();
+        let jobs = replay.load().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].edge_request_id(), "cancelled-request");
+        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_cancelled_waiter_does_not_cancel_accepted_disk_write() {
+        let dir = TestDirectory::new("wal-cancelled-write");
+        let wal = Arc::new(SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap());
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (entered, started) = oneshot::channel();
+        let disk = wal.clone();
+        let blocker = tokio::spawn(async move {
+            disk.worker.run(move |_| {
+                let _ = entered.send(());
+                let _ = blocked.recv_timeout(Duration::from_secs(2));
+            }).await.unwrap();
+        });
+        started.await.unwrap();
+        let writer = wal.clone();
+        let pending = tokio::spawn(async move {
+            writer.persist(&test_abort_job("cancelled-after-enqueue")).await
+        });
+        while wal.worker.pending.load(Ordering::Acquire) < 2 {
+            tokio::task::yield_now().await;
+        }
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        wal.flush().await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        assert_eq!(replay.load().await.unwrap()[0].edge_request_id(), "cancelled-after-enqueue");
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_disk_failure_unblocks_waiters_and_preserves_previous_log() {
+        let dir = TestDirectory::new("wal-disk-failure");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        wal.worker.run(|disk| disk.persist_sync(&test_abort_job("previous-durable-job"))).await.unwrap().unwrap();
+        wal.worker.run(|disk| { disk.state.lock().unwrap().file.take(); }).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(1), wal.persist(&test_abort_job("failed-write"))).await.unwrap().is_err());
+        assert!(!wal.is_healthy());
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let jobs = replay.load().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].edge_request_id(), "previous-durable-job");
+    }
+
+    #[test]
+    fn settlement_wal_shutdown_flush_includes_cancelled_runtime_tasks() {
+        struct PendingStream(Option<disk_worker::CleanupReservation<SettlementWalDisk>>);
+        impl Drop for PendingStream {
+            fn drop(&mut self) {
+                self.0.take().unwrap().send(|disk| {
+                    disk.persist_sync(&test_abort_job("runtime-shutdown-usage")).unwrap();
+                });
+            }
+        }
+        let dir = TestDirectory::new("wal-runtime-shutdown");
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let wal = runtime.block_on(SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX)).unwrap();
+        let reservation = runtime.block_on(wal.worker.reserve_cleanup(3)).unwrap();
+        let (started, ready) = oneshot::channel();
+        runtime.spawn(async move {
+            let _stream = PendingStream(Some(reservation));
+            started.send(()).unwrap();
+            pending::<()>().await;
+        });
+        runtime.block_on(ready).unwrap();
+        drop(runtime);
+        wal.worker.finish(|disk| disk.flush()).unwrap().unwrap();
+        let jobs = wal.worker.finish(|disk| disk.load()).unwrap().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].edge_request_id(), "runtime-shutdown-usage");
     }
 
     #[test]
