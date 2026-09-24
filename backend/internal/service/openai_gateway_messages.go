@@ -35,6 +35,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body); err != nil {
+		return nil, err
+	} else if changed {
+		body = sanitized
+	}
 	beginUpstreamResponseModelObservation(c)
 	if account.IsOpenCodeGo() {
 		model := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), defaultMappedModel)
@@ -120,6 +125,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
+	anthropicReq.Model = upstreamModel
 	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)

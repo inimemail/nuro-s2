@@ -35,9 +35,12 @@ import (
 const geminiStickySessionTTL = time.Hour
 
 const (
-	geminiMaxRetries     = 5
-	geminiRetryBaseDelay = 1 * time.Second
-	geminiRetryMaxDelay  = 16 * time.Second
+	geminiMaxRetries             = 5
+	geminiRetryBaseDelay         = 1 * time.Second
+	geminiRetryMaxDelay          = 16 * time.Second
+	geminiRetryInfoTypeURL       = "type.googleapis.com/google.rpc.RetryInfo"
+	geminiRetryInfoMaxDelay      = 15 * time.Minute
+	geminiVertexFallbackCooldown = time.Minute
 )
 
 // Gemini tool calling now requires `thoughtSignature` in parts that include `functionCall`.
@@ -930,6 +933,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 		requestIDHeader = idHeader
 
+		upstreamReq, transportSent := trackGeminiTransportAttempt(upstreamReq)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 		if err != nil {
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -943,10 +947,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if attempt < geminiMaxRetries {
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream request failed, retry %d/%d: %v", account.ID, attempt, geminiMaxRetries, err)
-				sleepGeminiBackoff(attempt)
-				continue
+			if geminiTransportCanFailover(ctx, transportSent, err) {
+				if s.nonOpenAIPoolRuntime != nil {
+					s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
+				}
+				return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"Upstream connection failed"}}`)}
 			}
 			if s.nonOpenAIPoolRuntime != nil {
 				s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
@@ -1492,6 +1497,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 		requestIDHeader = idHeader
 
+		upstreamReq, transportSent := trackGeminiTransportAttempt(upstreamReq)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 		if err != nil {
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -1505,10 +1511,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if attempt < geminiMaxRetries {
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream request failed, retry %d/%d: %v", account.ID, attempt, geminiMaxRetries, err)
-				sleepGeminiBackoff(attempt)
-				continue
+			if geminiTransportCanFailover(ctx, transportSent, err) {
+				if s.nonOpenAIPoolRuntime != nil {
+					s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
+				}
+				return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"Upstream connection failed"}}`)}
 			}
 			if s.nonOpenAIPoolRuntime != nil {
 				s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
@@ -3471,6 +3478,8 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 			} else {
 				logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (Google One OAuth, tier=%s, project=%s) rate limited, cooldown=%v", account.ID, tierID, projectID, time.Until(ra).Truncate(time.Second))
 			}
+		} else if account.IsVertexServiceAccount() {
+			ra = time.Now().Add(geminiVertexFallbackCooldown)
 		} else {
 			// API Key / AI Studio OAuth: PST 午夜
 			if ts := nextGeminiDailyResetUnix(); ts != nil {
@@ -3506,6 +3515,16 @@ func ParseGeminiRateLimitResetTime(body []byte) *int64 {
 	// 遍历 error.details 查找 quotaResetDelay
 	var found *int64
 	gjson.GetBytes(body, "error.details").ForEach(func(_, detail gjson.Result) bool {
+		if detail.Get("@type").String() == geminiRetryInfoTypeURL {
+			if delay, err := time.ParseDuration(detail.Get("retryDelay").String()); err == nil && delay > 0 {
+				if delay > geminiRetryInfoMaxDelay {
+					delay = geminiRetryInfoMaxDelay
+				}
+				ts := time.Now().Unix() + int64(math.Ceil(delay.Seconds()))
+				found = &ts
+				return false
+			}
+		}
 		v := detail.Get("metadata.quotaResetDelay").String()
 		if v == "" {
 			return true

@@ -183,6 +183,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import { useSubscriptionStore } from '@/stores'
 import type { UserSubscription } from '@/types'
+import { getExpirationDateRelation } from '@/utils/subscriptionQuota'
 
 const { t } = useI18n()
 
@@ -190,6 +191,16 @@ const subscriptionStore = useSubscriptionStore()
 
 const containerRef = ref<HTMLElement | null>(null)
 const tooltipOpen = ref(false)
+const currentTime = ref(Date.now())
+let dateTimer: ReturnType<typeof setTimeout> | undefined
+function refreshCalendar() {
+  if (dateTimer) clearTimeout(dateTimer)
+  currentTime.value = Date.now()
+  const next = new Date(currentTime.value)
+  next.setHours(24, 0, 0, 0)
+  dateTimer = setTimeout(refreshCalendar, next.getTime() - currentTime.value + 50)
+}
+function handleVisibility() { if (!document.hidden) refreshCalendar() }
 
 // Use store data instead of local state
 const activeSubscriptions = computed(() => subscriptionStore.activeSubscriptions)
@@ -258,18 +269,19 @@ function formatUsage(used: number | undefined, limit: number | null | undefined)
 }
 
 function formatDaysRemaining(expiresAt: string): string {
-  const now = new Date()
+  const now = new Date(currentTime.value)
   const expires = new Date(expiresAt)
   const diff = expires.getTime() - now.getTime()
-  if (diff < 0) return t('subscriptionProgress.expired')
+  const relation = getExpirationDateRelation(expires, now)
+  if (relation === 'expired') return t('subscriptionProgress.expired')
+  if (relation === 'today') return t('subscriptionProgress.expiresToday')
+  if (relation === 'tomorrow') return t('subscriptionProgress.expiresTomorrow')
   const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
-  if (days === 0) return t('subscriptionProgress.expiresToday')
-  if (days === 1) return t('subscriptionProgress.expiresTomorrow')
   return t('subscriptionProgress.daysRemaining', { days })
 }
 
 function getDaysRemainingClass(expiresAt: string): string {
-  const now = new Date()
+  const now = new Date(currentTime.value)
   const expires = new Date(expiresAt)
   const diff = expires.getTime() - now.getTime()
   const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
@@ -294,6 +306,8 @@ function handleClickOutside(event: MouseEvent) {
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
+  document.addEventListener('visibilitychange', handleVisibility)
+  refreshCalendar()
   // Trigger initial fetch if not already loaded
   // The actual data loading is handled by App.vue globally
   subscriptionStore.fetchActiveSubscriptions().catch((error) => {
@@ -303,6 +317,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
+  document.removeEventListener('visibilitychange', handleVisibility)
+  if (dateTimer) clearTimeout(dateTimer)
 })
 </script>
 

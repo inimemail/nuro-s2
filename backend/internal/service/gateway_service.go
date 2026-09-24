@@ -1621,9 +1621,9 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 
 	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 	if systemPromptInjectionEnabled {
-		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks)
+		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks, claudeCLIVersionForContext(ctx))
 	} else {
-		body = rewriteSystemForNonClaudeCode(body, systemRaw)
+		body = rewriteSystemForNonClaudeCode(body, systemRaw, claudeCLIVersionForContext(ctx))
 	}
 	normalizeOpts := claudeOAuthNormalizeOptions{}
 
@@ -5853,7 +5853,8 @@ func injectClaudeCodePrompt(body []byte, system any) []byte {
 // Anthropic 基于 system 参数内容检测第三方应用，仅前置追加 Claude Code 提示词
 // 无法通过检测，因为后续内容仍为非 Claude Code 格式。
 // 策略：将原始 system prompt 提取并注入为 user/assistant 消息对，system 仅保留 Claude Code 标识。
-func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
+func rewriteSystemForNonClaudeCode(body []byte, system any, versions ...string) []byte {
+	cliVersion := claudeCLIVersionArgument(versions)
 	system = normalizeSystemParam(system)
 
 	// 1. 提取原始 system prompt 文本
@@ -5879,7 +5880,7 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 	//
 	//    缺失 billing block 的系统 payload 是 Anthropic 判定第三方的关键信号之一
 	//    （真实 CLI 每个请求都带）。新版 CLI 已取消 cch=... 签名字段。
-	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLIVersion())
+	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, cliVersion)
 	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, true)
 	if billingErr != nil || ccErr != nil {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to build system blocks (billing=%v, cc=%v)", billingErr, ccErr)
@@ -5989,19 +5990,20 @@ func decodeClaudeOAuthSystemPromptCacheControl(raw json.RawMessage) (any, error)
 	return value, nil
 }
 
-func expandClaudeOAuthSystemPromptTextTemplate(body []byte, text string, expansionPrompt string) (string, error) {
+func expandClaudeOAuthSystemPromptTextTemplate(body []byte, text string, expansionPrompt string, versions ...string) (string, error) {
+	cliVersion := claudeCLIVersionArgument(versions)
 	if text == "" {
 		return "", nil
 	}
 	expansionPrompt = defaultClaudeOAuthExpansionPrompt(expansionPrompt)
-	billingText, err := buildBillingAttributionText(body, claude.CLIVersion())
+	billingText, err := buildBillingAttributionText(body, cliVersion)
 	if err != nil {
 		return "", err
 	}
-	fp := computeClaudeCodeFingerprint(body, claude.CLIVersion())
+	fp := computeClaudeCodeFingerprint(body, cliVersion)
 	replacer := strings.NewReplacer(
 		"{billing_header}", billingText,
-		"{cc_version}", claude.CLIVersion(),
+		"{cc_version}", cliVersion,
 		"{fp}", fp,
 		"{claude_code_system_prompt}", claudeCodeSystemPrompt,
 		"{claude_code_expansion_prompt}", expansionPrompt,
@@ -6033,7 +6035,7 @@ func defaultClaudeOAuthSystemPromptBlockConfig() []claudeOAuthSystemPromptBlockC
 	}
 }
 
-func buildClaudeOAuthSystemPromptBlocksJSON(body []byte, expansionPrompt string, blocksConfig string) ([][]byte, error) {
+func buildClaudeOAuthSystemPromptBlocksJSON(body []byte, expansionPrompt string, blocksConfig string, versions ...string) ([][]byte, error) {
 	blocks, err := parseClaudeOAuthSystemPromptBlocksConfig(blocksConfig)
 	if err != nil {
 		return nil, err
@@ -6054,7 +6056,7 @@ func buildClaudeOAuthSystemPromptBlocksJSON(body []byte, expansionPrompt string,
 		if blockType != "text" {
 			return nil, fmt.Errorf("system block %d type %q is not supported", i, block.Type)
 		}
-		text, err := expandClaudeOAuthSystemPromptTextTemplate(body, block.Text, expansionPrompt)
+		text, err := expandClaudeOAuthSystemPromptTextTemplate(body, block.Text, expansionPrompt, versions...)
 		if err != nil {
 			return nil, err
 		}
@@ -6124,15 +6126,15 @@ func extractSystemTextAndCacheControl(system any) (string, any) {
 	}
 }
 
-func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expansionPrompt string, blocksConfig string) []byte {
+func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expansionPrompt string, blocksConfig string, versions ...string) []byte {
 	system = normalizeSystemParam(system)
 	expansionPrompt = defaultClaudeOAuthExpansionPrompt(expansionPrompt)
 	originalSystemText, originalSystemCacheControl := extractSystemTextAndCacheControl(system)
 
-	systemBlocks, blockErr := buildClaudeOAuthSystemPromptBlocksJSON(body, expansionPrompt, blocksConfig)
+	systemBlocks, blockErr := buildClaudeOAuthSystemPromptBlocksJSON(body, expansionPrompt, blocksConfig, versions...)
 	if blockErr != nil {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to build configured Claude OAuth system blocks: %v", blockErr)
-		systemBlocks, blockErr = buildClaudeOAuthSystemPromptBlocksJSON(body, expansionPrompt, "")
+		systemBlocks, blockErr = buildClaudeOAuthSystemPromptBlocksJSON(body, expansionPrompt, "", versions...)
 	}
 	if blockErr != nil {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to build default Claude OAuth system blocks: %v", blockErr)
@@ -6456,6 +6458,7 @@ func shouldApplyClaudeCodeOAuthMimicry(account *Account, isClaudeCode bool) bool
 
 // Forward 转发请求到Claude API
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
+	ctx = captureClaudeCLIIdentity(ctx)
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	if parsed == nil {
@@ -6482,6 +6485,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if externalModel := anthropicKiroExternalModelFor(passthroughModel); externalModel != "" {
 				passthroughOriginalModel = externalModel
 			}
+		}
+		var capabilityErr error
+		passthroughBody, capabilityErr = normalizeOpus55Request(passthroughBody, passthroughModel)
+		if capabilityErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
+			return nil, capabilityErr
 		}
 		return s.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
 			Body:          passthroughBody,
@@ -6550,9 +6559,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// Parrot 的 transform_request 从不检查客户端 system 内容，直接覆盖。
 		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 		if systemPromptInjectionEnabled {
-			body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, parsed.System, systemPrompt, systemPromptBlocks)
+			body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, parsed.System, systemPrompt, systemPromptBlocks, claudeCLIVersionForContext(ctx))
 		} else {
-			body = rewriteSystemForNonClaudeCode(body, parsed.System)
+			body = rewriteSystemForNonClaudeCode(body, parsed.System, claudeCLIVersionForContext(ctx))
 		}
 		// Preserve client cache breakpoints; the outgoing limit guard caps them.
 		normalizeOpts := claudeOAuthNormalizeOptions{}
@@ -6627,6 +6636,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
 
+	var capabilityErr error
+	body, capabilityErr = normalizeOpus55Request(body, reqModel)
+	if capabilityErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
+		return nil, capabilityErr
+	}
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
 		body = injectAnthropicCacheControlTTL1h(body)
 	}
@@ -6670,6 +6685,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		// 发送请求
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+		scheduleOpenCodeGoUsageActivity(s.deferredService, account)
 		if err != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -7201,6 +7217,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		scheduleOpenCodeGoUsageActivity(s.deferredService, account)
 		if err != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -8005,6 +8022,13 @@ func (s *GatewayService) forwardBedrock(
 		logger.LegacyPrintf("service.gateway", "[Bedrock] Model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 	}
 
+	var capabilityErr error
+	body, capabilityErr = normalizeOpus55Request(body, mappedModel)
+	if capabilityErr != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", capabilityErr.Error())
+		return nil, capabilityErr
+	}
+
 	betaHeader := ""
 	if c != nil && c.Request != nil {
 		betaHeader = c.GetHeader("anthropic-beta")
@@ -8747,6 +8771,9 @@ func applyClaudeOAuthHeaderDefaults(req *http.Request) {
 		setHeaderRaw(req.Header, "Accept", "application/json")
 	}
 	for key, value := range claude.DefaultHeaders {
+		if key == "User-Agent" {
+			value = "claude-cli/" + claudeCLIVersionForContext(req.Context()) + " (external, cli)"
+		}
 		if value == "" {
 			continue
 		}
@@ -9191,6 +9218,9 @@ func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
 	// Then force key headers to match Claude Code fingerprint regardless of what the client sent.
 	// 使用 resolveWireCasing 确保 key 与真实 wire format 一致（如 "x-app" 而非 "X-App"）
 	for key, value := range claude.DefaultHeaders {
+		if key == "User-Agent" {
+			value = "claude-cli/" + claudeCLIVersionForContext(req.Context()) + " (external, cli)"
+		}
 		if value == "" {
 			continue
 		}
@@ -11819,6 +11849,7 @@ func (s *GatewayService) isStickyAccountUpstreamRestricted(ctx context.Context, 
 // ForwardCountTokens 转发 count_tokens 请求到上游 API
 // 特点：不记录使用量、仅支持非流式响应
 func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) error {
+	ctx = captureClaudeCLIIdentity(ctx)
 	if parsed == nil {
 		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
@@ -11832,6 +11863,13 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 			}
 		}
+		var capabilityErr error
+		passthroughBody, capabilityErr = normalizeOpus55Request(passthroughBody, gjson.GetBytes(passthroughBody, "model").String())
+		if capabilityErr != nil {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", capabilityErr.Error())
+			return capabilityErr
+		}
+
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody)
 	}
 
@@ -11894,6 +11932,13 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			reqModel = mappedModel
 			logger.LegacyPrintf("service.gateway", "CountTokens model mapping applied: %s -> %s (account: %s, source=%s)", parsed.Model, mappedModel, account.Name, mappingSource)
 		}
+	}
+
+	var capabilityErr error
+	body, capabilityErr = normalizeOpus55Request(body, reqModel)
+	if capabilityErr != nil {
+		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", capabilityErr.Error())
+		return capabilityErr
 	}
 
 	// 获取凭证

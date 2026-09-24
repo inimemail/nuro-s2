@@ -10,7 +10,15 @@ export interface BackupS3Config {
   force_path_style: boolean
 }
 
+export interface BackupMonthlyArchiveConfig {
+  enabled: boolean
+  days: number[]
+  include_month_end: boolean
+  retain_count: number
+}
+
 export interface BackupScheduleConfig {
+  monthly_archive?: BackupMonthlyArchiveConfig
   enabled: boolean
   cron_expr: string
   retain_days: number
@@ -51,6 +59,8 @@ export interface BackupRecord {
   finished_at?: string
   expires_at?: string
   progress?: string
+  monthly_archive?: { dates: string[]; retain_count: number }
+  restore_started_at?: string
   restore_status?: string
   restore_error?: string
   restored_at?: string

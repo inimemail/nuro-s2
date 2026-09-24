@@ -47,12 +47,14 @@ func ProvideAdminHandlers(
 	userService *service.UserService,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
+	openCodeGoUsage *service.OpenCodeGoUsageService,
 	compositeRouteHandler *admin.CompositeRouteHandler,
 	cnProviderQuota *service.CNProviderQuotaService,
 	cnProviderBalance *service.CNProviderBalanceService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
+	accountHandler.SetOpenCodeGoUsageService(openCodeGoUsage)
 	accountHandler.SetCNProviderServices(cnProviderQuota, cnProviderBalance)
 	userHandler.SetStepUpServices(totpService, userService)
 	return &AdminHandlers{

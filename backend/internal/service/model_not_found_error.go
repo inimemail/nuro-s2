@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/tidwall/gjson"
 	"net/http"
 	"strings"
 )
@@ -29,6 +30,20 @@ func isUpstreamModelNotFoundError(statusCode int, body []byte) bool {
 		return false
 	}
 	return containsModelNotFoundKeyword(normalized)
+}
+
+// A 401 carrying a model capability error must not ban an otherwise valid API key.
+func isOpenAICompatibleModelNotFoundBody(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	if code == "model_not_found" || code == "unknown_model" {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	return strings.HasPrefix(message, "model not found") || strings.HasPrefix(message, "unknown model") ||
+		(strings.HasPrefix(message, "the model ") && (strings.Contains(message, "does not exist") || strings.Contains(message, "not found")))
 }
 
 func isModelNotFoundError(statusCode int, body []byte) bool {

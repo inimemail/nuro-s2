@@ -191,3 +191,18 @@ func writeBackupArchiveFixture(t *testing.T) string {
 	require.NoError(t, f.Close())
 	return path
 }
+
+type v028FailedDeleteStore struct{ failingMultipartStore }
+
+func (s *v028FailedDeleteStore) Delete(context.Context, string) error {
+	return fmt.Errorf("object storage unavailable")
+}
+func TestV028MultipartFailureRetainsUnremovedKeys(t *testing.T) {
+	store := &v028FailedDeleteStore{failingMultipartStore{objects: map[string][]byte{}}}
+	svc := &BackupService{partSizeBytes: 5}
+	record := &BackupRecord{S3Key: "backups/test.gz"}
+	require.Error(t, svc.uploadBackupArchive(context.Background(), record, store, writeBackupArchiveFixture(t), nil))
+	require.Len(t, record.Parts, 2, "retain uploaded and ambiguously uploaded keys for retry")
+	require.Equal(t, "backups/test.gz.part-0001", record.Parts[0].S3Key)
+	require.Equal(t, "backups/test.gz.part-0002", record.Parts[1].S3Key)
+}

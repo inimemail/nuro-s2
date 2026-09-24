@@ -167,6 +167,7 @@ const appStore = useAppStore()
 const loading = ref(false)
 const resetting = ref(false)
 const status = ref<TempUnschedulableStatus | null>(null)
+let requestVersion = 0
 
 const state = computed(() => status.value?.state || null)
 
@@ -210,39 +211,50 @@ const remainingText = computed(() => {
 
 const loadStatus = async () => {
   if (!props.account) return
+  const version = ++requestVersion
+  status.value = null
   loading.value = true
   try {
-    status.value = await adminAPI.accounts.getTempUnschedulableStatus(props.account.id)
+    const result = await adminAPI.accounts.getTempUnschedulableStatus(props.account.id)
+    if (version === requestVersion) status.value = result
   } catch (error: any) {
+    if (version !== requestVersion) return
     appStore.showError(error?.message || t('admin.accounts.tempUnschedulable.failedToLoad'))
     status.value = null
   } finally {
-    loading.value = false
+    if (version === requestVersion) loading.value = false
   }
 }
 
 const handleClose = () => {
+  requestVersion++
+  resetting.value = false
   emit('close')
 }
 
 const handleReset = async () => {
-  if (!props.account) return
+  if (!props.account || resetting.value) return
+  const version = ++requestVersion
   resetting.value = true
   try {
     const updated = await adminAPI.accounts.recoverState(props.account.id)
+    if (version !== requestVersion) return
     appStore.showSuccess(t('admin.accounts.recoverStateSuccess'))
     emit('reset', updated)
     handleClose()
   } catch (error: any) {
+    if (version !== requestVersion) return
     appStore.showError(error?.message || t('admin.accounts.recoverStateFailed'))
   } finally {
-    resetting.value = false
+    if (version === requestVersion) resetting.value = false
   }
 }
 
 watch(
   () => [props.show, props.account?.id],
-  ([visible]) => {
+  ([visible], _, onCleanup) => {
+    onCleanup(() => { requestVersion++ })
+    resetting.value = false
     if (visible && props.account) {
       loadStatus()
       return

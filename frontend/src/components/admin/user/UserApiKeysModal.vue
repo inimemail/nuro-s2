@@ -116,6 +116,7 @@ const appStore = useAppStore()
 const apiKeys = ref<ApiKey[]>([])
 const allGroups = ref<AdminGroup[]>([])
 const loading = ref(false)
+let requestVersion = 0
 const updatingKeyIds = ref(new Set<number>())
 const groupSelectorKeyId = ref<number | null>(null)
 const dropdownPosition = ref<{ top: number; left: number } | null>(null)
@@ -136,33 +137,28 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
   }
 }
 
-watch(() => props.show, (v) => {
-  if (v && props.user) {
-    load()
-    loadGroups()
-  } else {
-    closeGroupSelector()
-  }
-})
-
 const load = async () => {
   if (!props.user) return
+  const version = ++requestVersion
+  apiKeys.value = []
   loading.value = true
   groupButtonRefs.value.clear()
   try {
     const res = await adminAPI.users.getUserApiKeys(props.user.id)
-    apiKeys.value = res.items || []
+    if (version === requestVersion) apiKeys.value = res.items || []
   } catch (error) {
+    if (version !== requestVersion) return
     console.error('Failed to load API keys:', error)
   } finally {
-    loading.value = false
+    if (version === requestVersion) loading.value = false
   }
 }
 
 const loadGroups = async () => {
+  const version = requestVersion
   try {
     const groups = await adminAPI.groups.getAll()
-    allGroups.value = groups
+    if (version === requestVersion) allGroups.value = groups
   } catch (error) {
     console.error('Failed to load groups:', error)
   }
@@ -196,11 +192,14 @@ const closeGroupSelector = () => {
 
 const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
   closeGroupSelector()
+  if (updatingKeyIds.value.has(key.id)) return
   if (key.group_id === newGroupId || (!key.group_id && newGroupId === null)) return
 
+  const version = requestVersion
   updatingKeyIds.value.add(key.id)
   try {
     const result = await adminAPI.apiKeys.updateApiKeyGroup(key.id, newGroupId)
+    if (version !== requestVersion) return
     // Update local data
     const idx = apiKeys.value.findIndex((k) => k.id === key.id)
     if (idx !== -1) {
@@ -212,9 +211,10 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
       appStore.showSuccess(t('admin.users.groupChangedSuccess'))
     }
   } catch (error: any) {
+    if (version !== requestVersion) return
     appStore.showError(error?.message || t('admin.users.groupChangeFailed'))
   } finally {
-    updatingKeyIds.value.delete(key.id)
+    if (version === requestVersion) updatingKeyIds.value.delete(key.id)
   }
 }
 
@@ -240,6 +240,20 @@ const handleClose = () => {
   closeGroupSelector()
   emit('close')
 }
+
+watch(() => [props.show, props.user?.id] as const, ([show], _, onCleanup) => {
+  requestVersion++
+  onCleanup(() => { requestVersion++ })
+  closeGroupSelector()
+  updatingKeyIds.value.clear()
+  apiKeys.value = []
+  allGroups.value = []
+  loading.value = false
+  if (show && props.user) {
+    void load()
+    void loadGroups()
+  }
+}, { immediate: true })
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)

@@ -109,4 +109,34 @@ describe('UserAllowedGroupsModal public group restrictions', () => {
       group_rates: { 1: 1.5, 2: 0.8 }
     })
   })
+
+  it('ignores a completed save after switching users', async () => {
+    let finish!: (value: unknown) => void
+    updateUserMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = await mountDialog()
+    await wrapper.findAll('button').at(-1)!.trigger('click')
+    await wrapper.setProps({ user: user({ id: 10, group_rates: { 2: 2.5 } }) })
+    await flushPromises()
+    finish({})
+    await flushPromises()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.emitted('success')).toBeUndefined()
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    await wrapper.findAll('button').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(updateUserMock).toHaveBeenLastCalledWith(10, expect.objectContaining({ group_rates: { 2: 2.5 } }))
+    wrapper.unmount()
+  })
+
+  it('ignores a completed save after unmounting', async () => {
+    let finish!: (value: unknown) => void
+    updateUserMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = await mountDialog()
+    await wrapper.findAll('button').at(-1)!.trigger('click')
+    wrapper.unmount()
+    finish({})
+    await flushPromises()
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
 })

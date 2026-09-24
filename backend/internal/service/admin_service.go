@@ -3781,6 +3781,7 @@ func validateOpenAIAPIKeyFirstTokenTimeoutTarget(account *Account, effectiveType
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	stripOpenCodeGoUsageManagedKeys(input.Extra)
 	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
 	}
@@ -3950,6 +3951,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	stripOpenCodeGoUsageManagedKeys(input.Extra)
 	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
 	}
@@ -4597,6 +4599,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	stripOpenCodeGoUsageManagedKeys(updates)
 	if ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -4719,6 +4722,7 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	stripOpenCodeGoUsageManagedKeys(input.Extra)
 	if err := validateSeedanceCredentialPatch(input.Credentials); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_SEEDANCE_CONFIG", err.Error())
 	}
@@ -4761,6 +4765,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	legacyProbeDisable := false
 	filteredRemoveKeys := make([]string, 0, len(input.ExtraRemoveKeys))
 	for _, key := range input.ExtraRemoveKeys {
+		if IsOpenCodeGoUsageManagedKey(strings.TrimSpace(key)) {
+			continue
+		}
 		switch strings.TrimSpace(key) {
 		case UpstreamBillingProbeEnabledExtraKey:
 			legacyProbeDisable = true

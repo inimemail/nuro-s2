@@ -61,7 +61,7 @@ func TestDeleteAccountGroupsByGroupIDDoesNotDisableGuardsDuringBindingReplacemen
 
 func TestGroupAccountAvailableSQLAppliesGuardToEveryProbePlatform(t *testing.T) {
 	require.Contains(t, groupAccountAvailableSQL, "a.platform = g.platform")
-	require.Contains(t, groupAccountAvailableSQL, "g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax')")
+	require.Contains(t, groupAccountAvailableSQL, "g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go')")
 	require.False(t, strings.Contains(groupAccountAvailableSQL, "a.platform = 'openai'"))
 }
 

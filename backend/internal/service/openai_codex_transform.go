@@ -39,6 +39,8 @@ func normalizeCodexCallID(id string) string {
 }
 
 var codexModelMap = map[string]string{
+	"gpt-6-sol":                  "gpt-6-sol",
+	"gpt-6-luna":                 "gpt-6-luna",
 	"gpt-6-astra":                "gpt-6-astra",
 	"gpt-5.6-sol":                "gpt-5.6-sol",
 	"gpt-5.6-terra":              "gpt-5.6-terra",
@@ -193,7 +195,16 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	}
 
 	// Strip parameters unsupported by ChatGPT internal Codex endpoint.
+	samplingAllowed := false
+	if openai.IsGPT6SolOrLunaModelSpelling(model) {
+		if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
+			samplingAllowed = reasoning["effort"] == "none"
+		}
+	}
 	for _, key := range openAICodexOAuthUnsupportedFields {
+		if samplingAllowed && (key == "temperature" || key == "top_p") {
+			continue
+		}
 		if _, ok := reqBody[key]; ok {
 			delete(reqBody, key)
 			result.Modified = true

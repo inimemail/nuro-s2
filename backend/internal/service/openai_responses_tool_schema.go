@@ -15,9 +15,17 @@ const (
 
 type openAIResponsesToolSchemaNullType struct{ offset, length int }
 
-// sanitizeOpenAIResponsesToolParameterTypes performs one bounded copy of the
-// request body and only replaces explicit tools[].parameters.type = null.
+// Repair invalid schema keywords without reserializing unrelated request data.
 func sanitizeOpenAIResponsesToolParameterTypes(body []byte) ([]byte, bool, error) {
+	typed, changed, err := sanitizeOpenAIResponsesNullParameterTypes(body)
+	if err != nil {
+		return body, false, err
+	}
+	required, requiredChanged := sanitizeToolSchemaRequired(typed)
+	return required, changed || requiredChanged, nil
+}
+
+func sanitizeOpenAIResponsesNullParameterTypes(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -63,7 +71,7 @@ func collectOpenAIResponsesToolSchemaNullTypes(body []byte, tools gjson.Result, 
 		if !tool.IsObject() {
 			return true
 		}
-		for _, suffix := range []string{"parameters", "function.parameters"} {
+		for _, suffix := range []string{"parameters", "function.parameters", "input_schema", "contentSchema"} {
 			params := tool.Get(suffix)
 			if !params.IsObject() {
 				continue

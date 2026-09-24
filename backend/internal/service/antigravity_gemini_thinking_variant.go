@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"github.com/tidwall/gjson"
 	"strings"
 )
 
@@ -173,4 +174,37 @@ func resolveGeminiThinkingVariantModel(account *Account, requestedModel, preferr
 		}
 	}
 	return "", false
+}
+
+// Only Gemini model requests use this context. Native, Messages and Chat
+// compatibility selection and forwarding share the same resolved level.
+func WithGeminiCompatibleThinkingRequest(ctx context.Context, model string, body []byte) context.Context {
+	if !strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini-") {
+		return ctx
+	}
+	level := "high"
+	effort := gjson.GetBytes(body, "reasoning_effort").String()
+	if effort == "" {
+		effort = gjson.GetBytes(body, "output_config.effort").String()
+	}
+	switch effort {
+	case "none", "minimal", "low":
+		level = "low"
+	case "medium":
+		level = "medium"
+	case "high", "xhigh", "max":
+		level = "high"
+	default:
+		thinking := gjson.GetBytes(body, "thinking")
+		if thinking.Get("type").String() == "disabled" {
+			level = "low"
+		} else if budget := thinking.Get("budget_tokens").Int(); budget > 0 {
+			if budget <= geminiThinkingBudgetLowMax {
+				level = "low"
+			} else if budget <= geminiThinkingBudgetMediumMax {
+				level = "medium"
+			}
+		}
+	}
+	return context.WithValue(ctx, geminiThinkingVariantRequestKey{}, level)
 }

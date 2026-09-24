@@ -671,6 +671,19 @@ func (r *accountRepository) updateWithAccountBillingSettingsLocked(
 			}
 		}
 	}
+	for key, value := range currentExtra {
+		if service.IsOpenCodeGoUsageManagedKey(key) {
+			mergedExtra[key] = value
+		}
+	}
+	if !identityUnchanged {
+		for _, key := range []string{service.OpenCodeGoUsageSnapshotKey, service.OpenCodeGoUsageScopeKey, service.OpenCodeGoUsageIdentityKey} {
+			delete(mergedExtra, key)
+		}
+		if _, err := exec.ExecContext(ctx, `UPDATE accounts SET extra=COALESCE(extra,'{}'::jsonb)-ARRAY['opencode_go_usage_snapshot','opencode_go_usage_scope','opencode_go_usage_identity']::text[] WHERE id=$1 AND deleted_at IS NULL`, account.ID); err != nil {
+			return err
+		}
+	}
 	account.Extra = mergedExtra
 	if rateMultiplier == nil {
 		managedRate, managed := service.UpstreamBillingProbeSyncRateForAccount(account)
@@ -753,6 +766,11 @@ func ollamaCloudUsageGroupIdentityUnchanged(
 func updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx context.Context, exec sqlExecutor, accountID int64, extra map[string]any) error {
 	payload := copyJSONMap(normalizeJSONMap(extra))
 	delete(payload, service.UpstreamBillingProbeExtraKey)
+	for key := range payload {
+		if service.IsOpenCodeGoUsageManagedKey(key) {
+			delete(payload, key)
+		}
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -763,8 +781,9 @@ func updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx context.Contex
 			WHEN COALESCE(extra, '{}'::jsonb) ? ($2::text)
 				THEN jsonb_build_object($2::text, extra -> ($2::text))
 			ELSE '{}'::jsonb
-		END
-		WHERE id = $3
+        END || COALESCE((SELECT jsonb_object_agg(key,value) FROM jsonb_each(COALESCE(accounts.extra,'{}'::jsonb))
+         WHERE key IN ('opencode_go_usage_auto_refresh','opencode_go_usage_source','opencode_go_usage_snapshot','opencode_go_usage_scope','opencode_go_usage_identity')), '{}'::jsonb)
+        WHERE id = $3
 			AND deleted_at IS NULL
 	`, string(raw), service.UpstreamBillingProbeExtraKey, accountID)
 	if err != nil {
@@ -1716,7 +1735,7 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
 
 	ids := make([]int64, 0, len(updates))
 	args := make([]any, 0, len(updates)*2+1)
-	caseSQL := "UPDATE accounts SET last_used_at = CASE id"
+	caseSQL := "UPDATE accounts SET last_used_at = GREATEST(last_used_at, CASE id"
 
 	idx := 1
 	for id, ts := range updates {
@@ -1726,7 +1745,8 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
 		idx += 2
 	}
 
-	caseSQL += " END, updated_at = NOW() WHERE id = ANY($" + itoa(idx) + ") AND deleted_at IS NULL"
+	// last_used is activity, not a configuration revision; it has its own outbox.
+	caseSQL += " END) WHERE id = ANY($" + itoa(idx) + ") AND deleted_at IS NULL"
 	args = append(args, pq.Array(ids))
 
 	_, err := r.sql.ExecContext(ctx, caseSQL, args...)

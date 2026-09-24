@@ -3552,6 +3552,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	if h.gatewayService != nil {
 		h.gatewayService.CompleteOpenAIStreamStallAction(c, false)
 	}
+	if failoverErr.Reason == service.OpenAIImagesInsufficientBalanceReason {
+		h.handleStreamingAwareError(c, http.StatusPaymentRequired, "insufficient_balance", "Upstream image account has insufficient balance", streamStarted)
+		return
+	}
 	if failoverErr.IsOpenAIRequestBodyTooLarge() {
 		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")
 		h.handleStreamingAwareError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", service.OpenAIRequestBodyTooLargeClientMessage, streamStarted)

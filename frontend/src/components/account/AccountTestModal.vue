@@ -11,14 +11,14 @@
         v-if="account"
         class="flex items-center justify-between rounded-xl border border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100 p-3 dark:border-dark-500 dark:from-dark-700 dark:to-dark-600"
       >
-        <div class="flex items-center gap-3">
+        <div class="flex min-w-0 items-center gap-3">
           <div
             class="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-primary-500 to-primary-600"
           >
             <Icon name="play" size="md" class="text-white" :stroke-width="2" />
           </div>
           <div>
-            <div class="font-semibold text-gray-900 dark:text-gray-100">{{ account.name }}</div>
+            <div class="break-words font-semibold text-gray-900 dark:text-gray-100">{{ account.name }}</div>
             <div class="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
               <span
                 class="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium uppercase dark:bg-dark-500"
@@ -54,6 +54,12 @@
           label-key="display_name"
           :placeholder="loadingModels ? t('common.loading') + '...' : t('admin.accounts.selectTestModel')"
         />
+      </div>
+
+      <div v-if="modelLoadError" role="alert" class="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+        <Icon name="exclamationTriangle" size="sm" class="mt-0.5 shrink-0" />
+        <p class="min-w-0 flex-1 break-words">{{ modelLoadError }}</p>
+        <button type="button" class="shrink-0 rounded-lg px-2 py-1 font-medium hover:bg-red-100 dark:hover:bg-red-900/40" @click="loadAvailableModels">{{ t('common.retry') }}</button>
       </div>
 
       <div v-if="isOpenAIAccount" class="space-y-1.5">
@@ -265,7 +271,7 @@
 <script setup lang="ts">
 import SeedanceTaskTester from './SeedanceTaskTester.vue'
 import { isSeedanceEnabled } from '@/utils/seedance'
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -274,7 +280,9 @@ import { Icon } from '@/components/icons'
 import { useClipboard } from '@/composables/useClipboard'
 import { adminAPI } from '@/api/admin'
 import { useGrokAccountTest, type AccountTestModel } from '@/composables/useGrokAccountTest'
-import type { Account, ClaudeModel } from '@/types'
+import { extractApiErrorMessage } from '@/utils/apiError'
+import type { Account } from '@/types'
+import { sortAccountTestModels } from '@/utils/accountTestModels'
 
 const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
@@ -307,6 +315,10 @@ const availableModels = ref<AccountTestModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
+const modelLoadError = ref('')
+let modelGeneration = 0
+let streamGeneration = 0
+let disposed = false
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const generatedVideos = ref<string[]>([])
@@ -333,9 +345,6 @@ const openAITestModeOptions = computed(() => [
   { value: 'compact_legacy', label: t('admin.accounts.openai.testModeCompactLegacy') }
 ])
 const previewImageUrl = ref('')
-const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
-// Keep the newest GPT-6 aliases together at the top of the test-model picker.
-const prioritizedOpenAIModels = ['gpt-6-astra', 'gpt-6']
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
@@ -345,50 +354,12 @@ const supportsGeminiImageTest = computed(() => {
 
 const supportsOpenAIImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
+  if (modelID.startsWith('gemini-') && (modelID.endsWith('-image') || modelID.includes('-image-'))) return props.account?.platform === 'openai' && props.account?.type === 'apikey'
   if (!modelID.startsWith('gpt-image-')) return false
   return props.account?.platform === 'openai'
 })
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)
-
-const sortTestModels = (models: ClaudeModel[]) => {
-  const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
-
-  return [...models].sort((a, b) => {
-    const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
-    const bPriority = priorityMap.get(b.id) ?? Number.MAX_SAFE_INTEGER
-    if (aPriority !== bPriority) return aPriority - bPriority
-    return 0
-  })
-}
-
-const sortOpenAITestModels = (models: ClaudeModel[]) => {
-  const priorityMap = new Map(prioritizedOpenAIModels.map((id, index) => [id, index]))
-
-  return [...models].sort((a, b) => {
-    const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
-    const bPriority = priorityMap.get(b.id) ?? Number.MAX_SAFE_INTEGER
-    if (aPriority !== bPriority) return aPriority - bPriority
-    return 0
-  })
-}
-
-// Load available models when modal opens
-watch(
-  () => props.show,
-  async (newVal) => {
-    if (newVal && props.account) {
-      testPrompt.value = ''
-      clearGrokMedia()
-      testMode.value = 'default'
-      grokTestMode.value = 'text'
-      resetState()
-      await loadAvailableModels()
-    } else {
-      abortStream()
-    }
-  }
-)
 
 watch(selectedModelId, () => {
   if (supportsImageTest.value && !testPrompt.value.trim()) {
@@ -399,16 +370,20 @@ watch(selectedModelId, () => {
 const loadAvailableModels = async () => {
   if (!props.account) return
 
+  const account = props.account
+  const generation = ++modelGeneration
+  const current = () => !disposed && props.show && props.account?.id === account.id && generation === modelGeneration
+  const previousSelection = selectedModelId.value
   loadingModels.value = true
-  selectedModelId.value = '' // Reset selection before loading
+  modelLoadError.value = ''
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    availableModels.value =
-      props.account.platform === 'gemini' || props.account.platform === 'antigravity'
-        ? sortTestModels(models)
-        : props.account.platform === 'openai'
-          ? sortOpenAITestModels(models)
-          : models
+    const models = await adminAPI.accounts.getAvailableModels(account.id)
+    if (!current()) return
+    availableModels.value = sortAccountTestModels(models, account.platform)
+    if (availableModels.value.some(m => m.id === previousSelection)) {
+      selectedModelId.value = previousSelection
+      return
+    }
     // Default selection by platform
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'grok') {
@@ -422,12 +397,14 @@ const loadAvailableModels = async () => {
       }
     }
   } catch (error) {
+    if (!current()) return
+    modelLoadError.value = extractApiErrorMessage(error, t('common.error'))
     console.error('Failed to load available models:', error)
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    loadingModels.value = false
+    if (current()) loadingModels.value = false
   }
 }
 
@@ -443,11 +420,13 @@ const resetState = () => {
 }
 
 const handleClose = () => {
+  modelGeneration++
   abortStream()
   emit('close')
 }
 
 const abortStream = () => {
+  streamGeneration++
   if (abortController) {
     abortController.abort()
     abortController = null
@@ -456,6 +435,7 @@ const abortStream = () => {
 
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
+  if (outputLines.value.length > 2000) outputLines.value.splice(0, outputLines.value.length - 2000)
   scrollToBottom()
 }
 
@@ -477,7 +457,11 @@ const startTest = async () => {
 
   abortStream()
 
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
+  const generation = streamGeneration
+  const accountID = props.account.id
+  const current = () => !disposed && props.show && props.account?.id === accountID && generation === streamGeneration
 
   try {
     // Create EventSource for SSE
@@ -496,11 +480,13 @@ const startTest = async () => {
         prompt: props.account?.platform === 'grok' || supportsImageTest.value ? testPrompt.value.trim() : '',
         mode: props.account?.platform === 'grok' ? grokTestMode.value : (isOpenAIAccount.value ? testMode.value : 'default')
       }),
-      signal: abortController.signal
+      signal: controller.signal
     })
 
+    if (!current()) { await response.body?.cancel(); return }
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      const detail = await response.json().catch(() => null)
+      throw new Error(extractApiErrorMessage({ response: { data: detail } }, `HTTP ${response.status}`))
     }
 
     const reader = response.body?.getReader()
@@ -510,22 +496,29 @@ const startTest = async () => {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let receivedBytes = 0
 
-    while (true) {
+    try {
+    readStream: while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (!current()) { await reader.cancel(); return }
+      if (done) { buffer += decoder.decode(); break }
 
+      receivedBytes += value.byteLength
+      if (receivedBytes > 32 * 1024 * 1024) throw new Error(t('admin.accounts.testStreamTooLarge'))
       buffer += decoder.decode(value, { stream: true })
+      if (buffer.length > 32 * 1024 * 1024) throw new Error(t('admin.accounts.testStreamTooLarge'))
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const jsonStr = line.slice(6).trim()
+        if (line.startsWith('data:')) {
+          const jsonStr = line.slice(5).trim()
           if (jsonStr) {
             try {
               const event = JSON.parse(jsonStr)
               handleEvent(event)
+              if (status.value !== 'connecting') break readStream
             } catch (e) {
               console.error('Failed to parse SSE event:', e)
             }
@@ -533,10 +526,18 @@ const startTest = async () => {
         }
       }
     }
-    if (isGrokAccount.value && status.value === 'connecting') {
-      throw new Error(t('admin.accounts.grokTestIncomplete'))
+    if (status.value === 'connecting' && buffer.trim().startsWith('data:')) {
+      try { handleEvent(JSON.parse(buffer.trim().slice(5).trim())) } catch { /* Incomplete final frame is handled below. */ }
+    }
+    if (status.value === 'connecting') {
+      throw new Error(t('admin.accounts.testStreamIncomplete'))
+    }
+    } finally {
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
     }
   } catch (error: unknown) {
+    if (!current()) return
     if (error instanceof DOMException && error.name === 'AbortError') {
       status.value = 'idle'
       return
@@ -545,6 +546,8 @@ const startTest = async () => {
     const msg = error instanceof Error ? error.message : 'Unknown error'
     errorMessage.value = msg
     addLine(`Error: ${msg}`, 'text-red-400')
+  } finally {
+    if (current()) abortController = null
   }
 }
 
@@ -636,6 +639,31 @@ const copyOutput = () => {
   const text = outputLines.value.map((l) => l.text).join('\n')
   copyToClipboard(text, t('admin.accounts.outputCopied'))
 }
+
+watch(
+  () => [props.show, props.account?.id] as const,
+  ([show]) => {
+    modelGeneration++
+    abortStream()
+    availableModels.value = []
+    selectedModelId.value = ''
+    loadingModels.value = false
+    modelLoadError.value = ''
+    testPrompt.value = ''
+    clearGrokMedia()
+    testMode.value = 'default'
+    grokTestMode.value = 'text'
+    resetState()
+    if (show && props.account) void loadAvailableModels()
+  },
+  { immediate: true }
+)
+onBeforeUnmount(() => {
+  disposed = true
+  modelGeneration++
+  abortStream()
+})
+
 </script>
 
 <style>

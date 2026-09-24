@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +43,13 @@ type DashboardAggregationRepository interface {
 
 // DashboardAggregationService 负责定时聚合与回填。
 type DashboardAggregationService struct {
+	settingRepo          SettingRepository
+	lockCache            LeaderLockCache
+	db                   *sql.DB
+	retentionScheduleMu  sync.Mutex
+	retentionScheduled   bool
+	retentionCancel      context.CancelFunc
+	retentionStopped     bool
 	repo                 DashboardAggregationRepository
 	timingWheel          *TimingWheelService
 	cfg                  config.DashboardAggregationConfig
@@ -294,16 +303,29 @@ func (s *DashboardAggregationService) maybeCleanupRetention(ctx context.Context,
 		}
 	}
 
+	usageDays, _, err := s.requestRetention(ctx)
+	if err != nil {
+		slog.Warn("request_retention_settings_failed", "error", err)
+		return
+	} // Fail closed before any destructive cleanup.
+	release, ok := s.acquireCleanupLock(ctx, 3*time.Minute)
+	if !ok {
+		return
+	}
+	defer release()
 	hourlyCutoff := now.AddDate(0, 0, -s.cfg.Retention.HourlyDays)
 	dailyCutoff := now.AddDate(0, 0, -s.cfg.Retention.DailyDays)
-	usageCutoff := now.AddDate(0, 0, -s.cfg.Retention.UsageLogsDays)
+	usageCutoff := now.AddDate(0, 0, -usageDays)
 	dedupCutoff := now.AddDate(0, 0, -s.cfg.Retention.UsageBillingDedupDays)
 
 	aggErr := s.repo.CleanupAggregates(ctx, hourlyCutoff, dailyCutoff)
 	if aggErr != nil {
 		logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] 聚合保留清理失败: %v", aggErr)
 	}
-	usageErr := s.repo.CleanupUsageLogs(ctx, usageCutoff)
+	var usageErr error
+	if usageDays > 0 {
+		usageErr = s.repo.CleanupUsageLogs(ctx, usageCutoff)
+	}
 	if usageErr != nil {
 		logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] usage_logs 保留清理失败: %v", usageErr)
 	}

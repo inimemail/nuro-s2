@@ -58,6 +58,13 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 		body = rewritten
 	}
 
+	var capabilityErr error
+	body, capabilityErr = normalizeOpus55Request(body, upstreamModel)
+	if capabilityErr != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", capabilityErr.Error())
+		return nil, capabilityErr
+	}
+
 	// 记录客户端请求的推理强度：优先 Claude 协议的 output_config.effort；
 	// 缺失且 thinking 已启用时，按国产 passback-required 模型兜底为 high
 	// （对齐 Anthropic 网关 gateway_handler 的记录语义，避免该路径长期落 NULL）。
@@ -188,6 +195,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	}
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 
 	return req, body, nil

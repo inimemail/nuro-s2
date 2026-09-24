@@ -210,23 +210,50 @@ func (r *dashboardAggregationRepository) CleanupAggregates(ctx context.Context, 
 }
 
 func (r *dashboardAggregationRepository) CleanupUsageLogs(ctx context.Context, cutoff time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	if db, ok := r.sql.(*sql.DB); ok {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback() //nolint:errcheck
+		if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '1s'"); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '20s'"); err != nil {
+			return err
+		}
+		worker := dashboardAggregationRepository{sql: tx}
+		if err := worker.cleanupUsageLogsBounded(ctx, cutoff); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	return r.cleanupUsageLogsBounded(ctx, cutoff)
+}
+
+func (r *dashboardAggregationRepository) cleanupUsageLogsBounded(ctx context.Context, cutoff time.Time) error {
 	isPartitioned, err := r.isUsageLogsPartitioned(ctx)
 	if err != nil {
 		return err
 	}
 	if isPartitioned {
-		return r.dropUsageLogsPartitions(ctx, cutoff)
+		if err := r.dropUsageLogsPartitions(ctx, cutoff); err != nil {
+			return err
+		}
 	}
-	for {
+	for batch := 0; batch < 10; batch++ {
 		res, err := r.sql.ExecContext(ctx, `
 			WITH victims AS (
-				SELECT ctid
+				SELECT tableoid, ctid
 				FROM usage_logs
 				WHERE created_at < $1
+				ORDER BY created_at, tableoid, ctid
 				LIMIT $2
 			)
 			DELETE FROM usage_logs
-			WHERE ctid IN (SELECT ctid FROM victims)
+			WHERE (tableoid, ctid) IN (SELECT tableoid, ctid FROM victims)
 		`, cutoff.UTC(), usageLogsCleanupBatchSize)
 		if err != nil {
 			return err
@@ -239,6 +266,7 @@ func (r *dashboardAggregationRepository) CleanupUsageLogs(ctx context.Context, c
 			return nil
 		}
 	}
+	return nil
 }
 
 func (r *dashboardAggregationRepository) CleanupUsageBillingDedup(ctx context.Context, cutoff time.Time) error {
@@ -480,41 +508,72 @@ func (r *dashboardAggregationRepository) isUsageLogsPartitioned(ctx context.Cont
 
 func (r *dashboardAggregationRepository) dropUsageLogsPartitions(ctx context.Context, cutoff time.Time) error {
 	rows, err := r.sql.QueryContext(ctx, `
-		SELECT c.relname
-		FROM pg_inherits
-		JOIN pg_class c ON c.oid = pg_inherits.inhrelid
-		JOIN pg_class p ON p.oid = pg_inherits.inhparent
-		WHERE p.relname = 'usage_logs'
-	`)
+ SELECT c.relname, pg_get_expr(c.relpartbound,c.oid)
+ FROM pg_inherits JOIN pg_class c ON c.oid=pg_inherits.inhrelid
+ JOIN pg_class p ON p.oid=pg_inherits.inhparent
+ WHERE p.oid='usage_logs'::regclass ORDER BY c.relname LIMIT 4096`)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = rows.Close()
-	}()
-
-	cutoffMonth := truncateToMonthUTC(cutoff)
+	defer rows.Close()
+	names := make([]string, 0, 32)
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, bound string
+		if err := rows.Scan(&name, &bound); err != nil {
 			return err
 		}
-		if !strings.HasPrefix(name, "usage_logs_") {
-			continue
-		}
-		suffix := strings.TrimPrefix(name, "usage_logs_")
-		month, err := time.Parse("200601", suffix)
-		if err != nil {
-			continue
-		}
-		month = month.UTC()
-		if month.Before(cutoffMonth) {
-			if _, err := r.sql.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", pq.QuoteIdentifier(name))); err != nil {
-				return err
-			}
+		if len(names) < 32 && usageLogsPartitionFullyExpired(name, bound, cutoff) {
+			names = append(names, name)
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// The same transaction connection cannot execute DDL while rows are open.
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, err := r.sql.ExecContext(ctx, "DROP TABLE IF EXISTS "+pq.QuoteIdentifier(name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func usageLogsPartitionFullyExpired(name, bound string, cutoff time.Time) bool {
+	if !strings.HasPrefix(name, "usage_logs_") {
+		return false
+	}
+	month, err := time.Parse("200601", strings.TrimPrefix(name, "usage_logs_"))
+	if err != nil {
+		return false
+	}
+	if !strings.HasPrefix(bound, "FOR VALUES FROM (") {
+		return false
+	}
+	parts := strings.Split(bound, "'")
+	if len(parts) != 5 || !strings.Contains(parts[2], ") TO (") {
+		return false
+	}
+	parse := func(value string) (time.Time, bool) {
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05-07:00", "2006-01-02 15:04:05-07", "2006-01-02"} {
+			if at, err := time.Parse(layout, value); err == nil {
+				return at, true
+			}
+		}
+		return time.Time{}, false
+	}
+	start, ok := parse(parts[1])
+	if !ok {
+		return false
+	}
+	end, ok := parse(parts[3])
+	if !ok {
+		return false
+	}
+	// A name alone is not proof that a partition only contains expired rows.
+	return start.Equal(month) && end.Equal(month.AddDate(0, 1, 0)) && !end.After(cutoff)
 }
 
 func (r *dashboardAggregationRepository) createUsageLogsPartition(ctx context.Context, month time.Time) error {

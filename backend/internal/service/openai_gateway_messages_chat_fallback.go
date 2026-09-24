@@ -45,14 +45,15 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	applyOpenAICompatModelNormalization(&anthropicReq)
 	clientStream := anthropicReq.Stream
 
+	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	anthropicReq.Model = upstreamModel
 	responsesReq, err := apicompat.AnthropicToResponsesForChatCompletions(&anthropicReq)
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
 	}
 
-	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	responsesReq.Model = upstreamModel
 	if responsesReq.Reasoning != nil {
 		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
@@ -65,6 +66,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
+	}
+	if err := validateNewModelChatReasoningTools(upstreamModel, chatReq.ReasoningEffort, len(chatReq.Tools) > 0); err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
 	}
 	chatReq.Stream = clientStream
 	if clientStream {

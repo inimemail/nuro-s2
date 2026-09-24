@@ -1357,15 +1357,20 @@ func applyCurrentContractAdditions(name string, expected any) {
 			return
 		}
 		for key, value := range map[string]any{
-			"audio_realtime_price_per_min":      nil,
-			"audio_stt_price_per_hour":          nil,
-			"audio_tts_price_per_million_chars": nil,
-			"force_openai_fast":                 false,
-			"long_context_pricing_enabled":      false,
-			"max_reasoning_effort_over_limit":   "",
-			"model_pricing":                     nil,
-			"search_price_per_1k":               nil,
-			"video_model_prices":                nil,
+			"account_scheduling_strategy":              "strict_priority",
+			"adaptive_health_sample_freshness_minutes": float64(15),
+			"adaptive_ttft_switch_enabled":             false,
+			"adaptive_ttft_switch_threshold_seconds":   float64(60),
+			"codex_models_manifest_config":             map[string]any{"enabled": false},
+			"audio_realtime_price_per_min":             nil,
+			"audio_stt_price_per_hour":                 nil,
+			"audio_tts_price_per_million_chars":        nil,
+			"force_openai_fast":                        false,
+			"long_context_pricing_enabled":             false,
+			"max_reasoning_effort_over_limit":          "",
+			"model_pricing":                            nil,
+			"search_price_per_1k":                      nil,
+			"video_model_prices":                       nil,
 		} {
 			group[key] = value
 		}
@@ -1376,7 +1381,7 @@ func applyCurrentContractAdditions(name string, expected any) {
 		}
 		quotas, ok := settings["default_platform_quotas"].(map[string]any)
 		if ok {
-			for _, platform := range []string{"deepseek", "kimi", "zhipu"} {
+			for _, platform := range []string{"deepseek", "kimi", "zhipu", "minimax", "opencode_go"} {
 				quotas[platform] = map[string]any{"daily": nil, "weekly": nil, "monthly": nil}
 			}
 		}
@@ -1438,10 +1443,19 @@ func currentAdminSettingsContractAdditions() map[string]any {
 				"grok":        platform("grok-4.5", "grok-imagine-image"),
 				"kimi":        platform("kimi-k2", ""),
 				"zhipu":       platform("glm-4.7", ""),
+				"minimax":     platform("MiniMax-M2.5", ""),
+				"opencode_go": platform("glm-5.3", ""),
 			},
 		},
 		"openai_codex_client_version":                    "",
 		"openai_codex_client_version_synced":             "",
+		"openai_codex_client_version_effective":          "0.146.0",
+		"openai_codex_client_version_source":             "builtin",
+		"claude_cli_client_version":                      "",
+		"claude_cli_client_version_synced":               "",
+		"claude_cli_client_version_effective":            "2.1.161",
+		"claude_cli_client_version_source":               "builtin",
+		"claude_cli_version_auto_sync_enabled":           false,
 		"openai_codex_routing_hint_enabled":              false,
 		"openai_codex_version_auto_sync_enabled":         true,
 		"openai_health_probe_max_account_switches":       float64(4),

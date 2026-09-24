@@ -1359,7 +1359,8 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	}
 
 	originalModel := claudeReq.Model
-	mappedModel := s.getMappedModel(account, claudeReq.Model)
+	variantModel := geminiThinkingVariantSchedulingModel(ctx, account, claudeReq.Model)
+	mappedModel := s.getMappedModel(account, variantModel)
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeClaudeError(c, http.StatusForbidden, "permission_error", fmt.Sprintf("model %s not in whitelist", claudeReq.Model))
@@ -2190,7 +2191,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		injectedBody = cleanedBody
 		logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Cleaned request schema in forwarded request for account %s", account.Name)
 	} else {
-		logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Failed to clean schema: %v", err)
+		return nil, s.writeGoogleError(c, http.StatusBadRequest, err.Error())
 	}
 
 	// 包装请求
@@ -4478,6 +4479,9 @@ func cleanGeminiRequest(body []byte) ([]byte, error) {
 				}
 
 				if params, ok := funcMap["parameters"].(map[string]any); ok {
+					if err := antigravity.NormalizeCompatibleSchema(params); err != nil {
+						return nil, fmt.Errorf("tool schema: %w", err)
+					}
 					antigravity.DeepCleanUndefined(params)
 					cleaned := antigravity.CleanJSONSchema(params)
 					funcMap["parameters"] = cleaned

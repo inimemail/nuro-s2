@@ -74,6 +74,8 @@ server:
 # - simple: Hides SaaS features and skips billing/balance checks
 # - simple: 隐藏 SaaS 功能，跳过计费和余额校验
 run_mode: "standard"
+simple_mode:
+  auto_create_default_groups: false
 
 # =============================================================================
 # CORS Configuration

@@ -56,7 +56,7 @@
           v-if="modelValue"
           type="button"
           class="btn btn-secondary btn-sm text-red-600 hover:text-red-700 dark:text-red-400"
-          @click="$emit('update:modelValue', '')"
+          @click="removeImage"
         >
           <Icon name="trash" size="sm" class="mr-1.5" :stroke-width="2" />
           {{ removeLabel }}
@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeSvg } from '@/utils/sanitize'
 
@@ -95,6 +95,18 @@ const emit = defineEmits<{
 }>()
 
 const error = ref('')
+let activeReader: FileReader | null = null
+let readVersion = 0
+function cancelRead() {
+  readVersion++
+  activeReader?.abort()
+  activeReader = null
+}
+onBeforeUnmount(cancelRead)
+function removeImage() {
+  cancelRead()
+  emit('update:modelValue', '')
+}
 
 const acceptTypes = computed(() => props.mode === 'svg' ? '.svg' : 'image/*')
 
@@ -112,6 +124,8 @@ function handleUpload(event: Event) {
   error.value = ''
 
   if (!file) return
+  cancelRead()
+  const version = readVersion
 
   if (props.maxSize && file.size > props.maxSize) {
     error.value = `File too large (${(file.size / 1024).toFixed(1)} KB), max ${(props.maxSize / 1024).toFixed(0)} KB`
@@ -120,8 +134,10 @@ function handleUpload(event: Event) {
   }
 
   const reader = new FileReader()
+  activeReader = reader
   if (props.mode === 'svg') {
     reader.onload = (e) => {
+      if (version !== readVersion) return
       const text = e.target?.result as string
       if (text) emit('update:modelValue', text.trim())
     }
@@ -133,12 +149,14 @@ function handleUpload(event: Event) {
       return
     }
     reader.onload = (e) => {
+      if (version !== readVersion) return
       emit('update:modelValue', e.target?.result as string)
     }
     reader.readAsDataURL(file)
   }
 
   reader.onerror = () => {
+    if (version !== readVersion) return
     error.value = 'Failed to read file'
   }
   input.value = ''

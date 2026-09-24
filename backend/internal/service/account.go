@@ -1750,6 +1750,9 @@ func (a *Account) IsAnthropicUpstreamStrongIsolationEnabled() bool {
 }
 
 func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedModel string, requiredImageCapability OpenAIImagesCapability) bool {
+	if a != nil && requiredImageCapability != "" && isGeminiCompatibleImageModel(a.GetMappedModel(requestedModel)) && a.Type != AccountTypeAPIKey {
+		return false
+	}
 	if a == nil || !a.IsPoolMode() {
 		return true
 	}
@@ -2750,6 +2753,8 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 		return false
 	}
 	switch capability {
+	case OpenAIImagesCapabilityAPIKey:
+		return a.Type == AccountTypeAPIKey
 	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
 		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
 	default:

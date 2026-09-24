@@ -63,7 +63,12 @@ const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 
 const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
+type SimpleModeConfig struct {
+	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups"`
+}
+
 type Config struct {
+	SimpleMode              SimpleModeConfig              `mapstructure:"simple_mode"`
 	Server                  ServerConfig                  `mapstructure:"server"`
 	Log                     LogConfig                     `mapstructure:"log"`
 	CORS                    CORSConfig                    `mapstructure:"cors"`
@@ -2233,6 +2238,8 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 
 func setDefaults() {
 	viper.SetDefault("run_mode", RunModeStandard)
+	// Existing installs without this field keep their startup behavior.
+	viper.SetDefault("simple_mode.auto_create_default_groups", true)
 	viper.SetDefault("update.proxy_url", "")
 	viper.SetDefault("update.github_token", "")
 

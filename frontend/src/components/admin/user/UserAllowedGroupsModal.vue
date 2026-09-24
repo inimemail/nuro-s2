@@ -193,8 +193,8 @@
 
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button @click="$emit('close')" class="btn btn-secondary px-5">{{ t('common.cancel') }}</button>
-        <button @click="handleSave" :disabled="submitting" class="btn btn-primary px-6">
+        <button type="button" @click="$emit('close')" class="btn btn-secondary px-5">{{ t('common.cancel') }}</button>
+        <button type="button" @click="handleSave" :disabled="submitting || !loaded" class="btn btn-primary px-6">
           <svg v-if="submitting" class="-ml-1 mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -211,6 +211,7 @@ import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import type { AdminUser, Group, GroupPlatform } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
@@ -234,6 +235,8 @@ const groups = ref<Group[]>([])
 const groupConfigs = ref<GroupRateConfig[]>([])
 const originalGroupRates = ref<Record<number, number>>({}) // 记录原始专属倍率，用于检测删除
 const loading = ref(false)
+const loaded = ref(false)
+let loadVersion = 0
 const submitting = ref(false)
 const restrictPublicGroups = ref(false)
 
@@ -244,26 +247,21 @@ const publicGroups = computed(() => groups.value.filter((g) => !g.is_exclusive))
 const exclusiveGroupConfigs = computed(() => groupConfigs.value.filter((c) => c.isExclusive))
 const publicGroupConfigs = computed(() => groupConfigs.value.filter((c) => !c.isExclusive))
 
-watch(
-  () => props.show,
-  (v) => {
-    if (v && props.user) {
-      load()
-    }
-  }
-)
-
 const load = async () => {
+  const version = ++loadVersion
+  const user = props.user
+  loaded.value = false
   loading.value = true
   try {
     const res = await adminAPI.groups.list(1, 1000)
+    if (version !== loadVersion) return
     // 只显示标准类型且活跃的分组
     groups.value = res.items.filter((g) => g.subscription_type === 'standard' && g.status === 'active')
 
     // 初始化配置
-    const userAllowedGroups = props.user?.allowed_groups || []
-    const userGroupRates = props.user?.group_rates || {}
-    restrictPublicGroups.value = props.user?.restrict_public_groups ?? false
+    const userAllowedGroups = user?.allowed_groups || []
+    const userGroupRates = user?.group_rates || {}
+    restrictPublicGroups.value = user?.restrict_public_groups ?? false
 
     // 保存原始专属倍率，用于检测删除操作
     originalGroupRates.value = { ...userGroupRates }
@@ -277,10 +275,13 @@ const load = async () => {
       customRate: userGroupRates[g.id] ?? null,
       isSelected: g.is_exclusive || restrictPublicGroups.value ? userAllowedGroups.includes(g.id) : true,
     }))
+    loaded.value = true
   } catch (error) {
+    if (version !== loadVersion) return
+    appStore.showError(t('common.error'))
     console.error('Failed to load groups:', error)
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
 
@@ -318,7 +319,8 @@ const updateCustomRate = (groupId: number, value: string) => {
 }
 
 const handleSave = async () => {
-  if (!props.user) return
+  if (!props.user || !loaded.value || submitting.value) return
+  const version = loadVersion
   submitting.value = true
 
   try {
@@ -348,15 +350,34 @@ const handleSave = async () => {
       group_rates: Object.keys(groupRates).length > 0 ? groupRates : undefined,
     })
 
+    if (version !== loadVersion) return
     appStore.showSuccess(t('admin.users.groupConfigUpdated'))
     emit('success')
     emit('close')
   } catch (error) {
+    if (version !== loadVersion) return
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
     console.error('Failed to update user group config:', error)
   } finally {
-    submitting.value = false
+    if (version === loadVersion) submitting.value = false
   }
 }
+
+watch(
+  () => [props.show, props.user?.id] as const,
+  ([show], _, onCleanup) => {
+    loadVersion++
+    onCleanup(() => { loadVersion++ })
+    loaded.value = false
+    loading.value = false
+    submitting.value = false
+    groups.value = []
+    groupConfigs.value = []
+    originalGroupRates.value = {}
+    if (show && props.user) void load()
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>

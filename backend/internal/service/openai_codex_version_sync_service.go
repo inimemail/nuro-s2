@@ -20,16 +20,20 @@ const (
 // OpenAICodexVersionSyncService refreshes only the control-plane identity
 // snapshot. It never participates in a gateway request or first-token path.
 type OpenAICodexVersionSyncService struct {
-	settingRepo    SettingRepository
-	settingService *SettingService
-	githubClient   GitHubReleaseClient
-	interval       time.Duration
-	lifecycleCtx   context.Context
-	cancel         context.CancelFunc
-	stopCh         chan struct{}
-	startOnce      sync.Once
-	stopOnce       sync.Once
-	wg             sync.WaitGroup
+	backup            *BackupService
+	openCodeUsage     *OpenCodeGoUsageService
+	retentionService  *DashboardAggregationService
+	claudeVersionSync *ClaudeCLIVersionSyncService
+	settingRepo       SettingRepository
+	settingService    *SettingService
+	githubClient      GitHubReleaseClient
+	interval          time.Duration
+	lifecycleCtx      context.Context
+	cancel            context.CancelFunc
+	stopCh            chan struct{}
+	startOnce         sync.Once
+	stopOnce          sync.Once
+	wg                sync.WaitGroup
 }
 
 func NewOpenAICodexVersionSyncService(
@@ -74,6 +78,18 @@ func (s *OpenAICodexVersionSyncService) Start() {
 }
 
 func (s *OpenAICodexVersionSyncService) refreshIdentityRuntime() {
+	if s != nil && s.backup != nil {
+		s.backup.RefreshSchedule(s.lifecycleCtx)
+	}
+	if s != nil && s.openCodeUsage != nil {
+		s.openCodeUsage.Tick(s.lifecycleCtx)
+	}
+	if s != nil && s.retentionService != nil {
+		s.retentionService.RefreshRetentionSchedule(s.lifecycleCtx)
+	}
+	if s != nil && s.claudeVersionSync != nil {
+		s.claudeVersionSync.Refresh(s.lifecycleCtx)
+	}
 	if s == nil || s.settingService == nil {
 		return
 	}
@@ -93,9 +109,27 @@ func (s *OpenAICodexVersionSyncService) Stop() {
 		close(s.stopCh)
 	})
 	s.wg.Wait()
+	if s.retentionService != nil {
+		s.retentionService.StopRetentionSchedule()
+	}
+	if s.openCodeUsage != nil {
+		s.openCodeUsage.Stop()
+	}
+	if s.claudeVersionSync != nil {
+		s.claudeVersionSync.Stop()
+	}
 }
 
 func (s *OpenAICodexVersionSyncService) runInitial() {
+	if s.openCodeUsage != nil {
+		s.openCodeUsage.Tick(s.lifecycleCtx)
+	}
+	if s != nil && s.retentionService != nil {
+		s.retentionService.RefreshRetentionSchedule(s.lifecycleCtx)
+	}
+	if s.claudeVersionSync != nil {
+		s.claudeVersionSync.Refresh(s.lifecycleCtx)
+	}
 	ctx, cancel := context.WithTimeout(s.lifecycleCtx, openAICodexVersionSyncTimeout)
 	defer cancel()
 	// Always hydrate the runtime identity from the persisted synced value on

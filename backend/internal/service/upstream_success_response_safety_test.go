@@ -280,8 +280,8 @@ func TestOpenAIStreamingFailureCannotBeOverwrittenByCompleted(t *testing.T) {
 			terminalType, usage, err := tc.run(&OpenAIGatewayService{}, c, resp)
 			require.Error(t, err)
 			require.Equal(t, "response.failed", terminalType)
-			require.Equal(t, 7, usage.InputTokens)
-			require.Equal(t, 3, usage.OutputTokens)
+			require.Equal(t, 4, usage.InputTokens)
+			require.Equal(t, 1, usage.OutputTokens)
 			require.NotContains(t, recorder.Body.String(), "private-provider")
 		})
 	}
@@ -334,8 +334,8 @@ func TestOpenAIStreamingNeutralTerminalCannotBeOverwrittenByCompleted(t *testing
 			terminalType, usage, err := tc.run(&OpenAIGatewayService{}, c, resp)
 			require.NoError(t, err)
 			require.Equal(t, "response.incomplete", terminalType)
-			require.Equal(t, 7, usage.InputTokens)
-			require.Equal(t, 3, usage.OutputTokens)
+			require.Equal(t, 4, usage.InputTokens)
+			require.Equal(t, 1, usage.OutputTokens)
 		})
 	}
 }

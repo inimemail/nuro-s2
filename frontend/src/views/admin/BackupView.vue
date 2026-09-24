@@ -110,6 +110,7 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.backup.schedule.retainCountHint') }}</p>
           </div>
         </div>
+        <BackupArchiveSettings v-model="scheduleForm.monthly_archive" />
         <div class="mt-4">
           <button type="button" class="btn btn-primary btn-sm" :disabled="savingSchedule" @click="saveSchedule">
             {{ savingSchedule ? t('common.loading') : t('common.save') }}
@@ -169,13 +170,17 @@
                       : t(`admin.backup.status.${record.status}`) }}
                   </span>
                 </td>
-                <td class="py-3 pr-4 text-xs">{{ record.file_name }}</td>
+                <td class="py-3 pr-4 text-xs">
+                  {{ record.file_name }}
+                  <span v-if="record.restore_status === 'running'" class="mt-1 block text-primary-600 dark:text-primary-400">{{ t('backupArchive.restoring') }} · {{ formatDate(record.restore_started_at || record.started_at) }}</span>
+                </td>
                 <td class="py-3 pr-4 text-xs">{{ formatSize(record.size_bytes) }}</td>
                 <td class="py-3 pr-4 text-xs">
                   {{ record.expires_at ? formatDate(record.expires_at) : t('admin.backup.neverExpire') }}
                 </td>
                 <td class="py-3 pr-4 text-xs">
                   {{ record.triggered_by === 'scheduled' ? t('admin.backup.trigger.scheduled') : t('admin.backup.trigger.manual') }}
+                  <span v-if="record.monthly_archive" class="mt-1 block w-fit rounded-md bg-primary-50 px-2 py-1 text-[11px] font-medium text-primary-700 dark:bg-primary-500/15 dark:text-primary-300" :title="record.monthly_archive.dates.join(', ')">{{ t('backupArchive.badge') }} · {{ record.monthly_archive.retain_count === 0 ? t('admin.backup.neverExpire') : record.monthly_archive.retain_count }}</span>
                 </td>
                 <td class="py-3 pr-4 text-xs">{{ formatDate(record.started_at) }}</td>
                 <td class="py-3 text-xs">
@@ -309,6 +314,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
 import { useAppStore } from '@/stores'
+import BackupArchiveSettings from '@/components/admin/BackupArchiveSettings.vue'
 import type { BackupS3Config, BackupScheduleConfig, BackupRecord, ImageStorageConfig } from '@/api/admin/backup'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
@@ -348,6 +354,7 @@ const scheduleForm = ref<BackupScheduleConfig>({
   cron_expr: '0 2 * * *',
   retain_days: 14,
   retain_count: 10,
+  monthly_archive: { enabled: false, days: [1], include_month_end: false, retain_count: 0 },
 })
 const savingSchedule = ref(false)
 
@@ -552,8 +559,9 @@ async function loadSchedule() {
     scheduleForm.value = {
       enabled: cfg.enabled,
       cron_expr: cfg.cron_expr || '0 2 * * *',
-      retain_days: cfg.retain_days || 14,
-      retain_count: cfg.retain_count || 10,
+      retain_days: cfg.retain_days ?? 14,
+      retain_count: cfg.retain_count ?? 10,
+      monthly_archive: cfg.monthly_archive ?? { enabled: false, days: [1], include_month_end: false, retain_count: 0 },
     }
   } catch (error) {
     appStore.showError((error as { message?: string })?.message || t('errors.networkError'))

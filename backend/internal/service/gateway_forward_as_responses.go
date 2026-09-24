@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ func (s *GatewayService) ForwardAsResponses(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	ctx = captureClaudeCLIIdentity(ctx)
 	startTime := time.Now()
 
 	// Normalize Codex additional_tools and namespace tools only when the request
@@ -53,16 +56,6 @@ func (s *GatewayService) ForwardAsResponses(
 	originalModel := responsesReq.Model
 	clientStream := responsesReq.Stream
 
-	// 2. Convert Responses → Anthropic
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
-	if err != nil {
-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
-	}
-
-	// 3. Force upstream streaming (Anthropic works best with streaming)
-	anthropicReq.Stream = true
-	reqStream := true
-
 	// 4. Model mapping
 	mappedModel := originalModel
 	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body)
@@ -80,6 +73,20 @@ func (s *GatewayService) ForwardAsResponses(
 			mappedModel = normalized
 		}
 	}
+	responsesReq.Model = mappedModel
+	thinkingScope := anthropicThinkingAccountScope(account, mappedModel)
+	responsesReq.ThinkingScope = thinkingScope
+
+	// 2. Convert Responses → Anthropic
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	if err != nil {
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
+
+	// 3. Force upstream streaming (Anthropic works best with streaming)
+	anthropicReq.Stream = true
+	reqStream := true
+
 	anthropicReq.Model = mappedModel
 
 	logger.L().Debug("gateway forward_as_responses: model mapping applied",
@@ -209,9 +216,9 @@ func (s *GatewayService) ForwardAsResponses(
 	var result *ForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, thinkingScope)
 	} else {
-		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, thinkingScope)
 	}
 
 	return result, handleErr
@@ -350,6 +357,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	mappedModel string,
 	reasoningEffort *string,
 	startTime time.Time,
+	thinkingScopes ...string,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -428,12 +436,14 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
 			idx := *event.Index
-			if idx < len(finalResp.Content) {
+			if idx >= 0 && idx < len(finalResp.Content) {
 				switch event.Delta.Type {
 				case "text_delta":
 					finalResp.Content[idx].Text += event.Delta.Text
 				case "thinking_delta":
 					finalResp.Content[idx].Thinking += event.Delta.Thinking
+				case "signature_delta":
+					finalResp.Content[idx].Signature += event.Delta.Signature
 				case "input_json_delta":
 					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
 				}
@@ -466,7 +476,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	// Convert to Responses format
-	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp, thinkingScopes...)
 	responsesResp.Model = originalModel // Use original model name
 
 	if s.responseHeaderFilter != nil {
@@ -504,6 +514,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	mappedModel string,
 	reasoningEffort *string,
 	startTime time.Time,
+	thinkingScopes ...string,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -518,6 +529,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
+	state.PreserveThinkingSignatures = claude.IsOpus55(mappedModel)
+	if len(thinkingScopes) > 0 {
+		state.ThinkingScope = thinkingScopes[0]
+	}
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
@@ -697,4 +712,17 @@ func mapUpstreamStatusCode(code int) int {
 		return http.StatusBadGateway
 	}
 	return code
+}
+
+// Credential-bound MAC material stays server-side; credential replacement
+// invalidates old envelopes without a session store or request-time query.
+func anthropicThinkingAccountScope(account *Account, model string) string {
+	if account == nil || !claude.IsOpus55(model) {
+		return ""
+	}
+	credentials, _ := json.Marshal(account.Credentials)
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%d\x00%s\x00", account.ID, model)
+	_, _ = hash.Write(credentials)
+	return hex.EncodeToString(hash.Sum(nil))
 }

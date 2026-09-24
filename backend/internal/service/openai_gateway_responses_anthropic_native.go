@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -59,6 +60,13 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := responsesReq.Stream
+	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	thinkingScope := anthropicThinkingAccountScope(account, upstreamModel)
+	if claude.IsOpus55(upstreamModel) {
+		responsesReq.Model = upstreamModel
+		responsesReq.ThinkingScope = thinkingScope
+	}
 
 	// 3. Convert Responses → Anthropic
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
@@ -68,8 +76,6 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	// 4. Model mapping（OpenAI 网关统一入口的映射语义）
-	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	anthropicReq.Model = upstreamModel
 
 	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body)
@@ -135,9 +141,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	if clientStream {
-		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, thinkingScope)
 	}
-	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, thinkingScope)
 }
 
 // handleResponsesBufferedFromNativeAnthropic reads Anthropic SSE events, assembles
@@ -151,6 +157,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	thinkingScopes ...string,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -160,7 +167,10 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		return nil, err
 	}
 
-	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	if claude.IsOpus55(upstreamModel) {
+		finalResp.Model = upstreamModel
+	}
+	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp, thinkingScopes...)
 	responsesResp.Model = originalModel
 
 	if s.responseHeaderFilter != nil {
@@ -203,6 +213,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	thinkingScopes ...string,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -217,6 +228,10 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
+	state.PreserveThinkingSignatures = claude.IsOpus55(upstreamModel)
+	if len(thinkingScopes) > 0 {
+		state.ThinkingScope = thinkingScopes[0]
+	}
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
 
 	var usage ClaudeUsage

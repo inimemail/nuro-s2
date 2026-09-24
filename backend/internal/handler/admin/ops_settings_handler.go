@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -270,4 +271,19 @@ func (h *OpsHandler) UpdateMetricThresholds(c *gin.Context) {
 		return
 	}
 	response.Success(c, updated)
+}
+
+// PreviewRequestRetention performs no deletion; estimates use PostgreSQL statistics.
+func (h *OpsHandler) PreviewRequestRetention(c *gin.Context) {
+	days, err := strconv.Atoi(c.Query("days"))
+	if err != nil || days < 0 || days > 3650 {
+		response.BadRequest(c, "days must be between 0 and 3650")
+		return
+	}
+	preview, err := h.opsService.PreviewRequestRetention(c.Request.Context(), days)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, preview)
 }

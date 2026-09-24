@@ -878,7 +878,11 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		return allow, nil
 	}
 	content := ExtractContentModerationInput(input.Protocol, input.Body)
-	if content.IsEmpty() {
+	keywordText := ""
+	if cfg.Mode == ContentModerationModePreBlock && cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
+		keywordText = extractContentModerationKeywordText(input.Protocol, input.Body)
+	}
+	if content.IsEmpty() && keywordText == "" {
 		slog.Info("content_moderation.skip_empty_input",
 			"user_id", input.UserID,
 			"api_key_id", input.APIKeyID,
@@ -900,7 +904,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	hashText := content.Hash()
 	if cfg.Mode == ContentModerationModePreBlock {
 		if cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
-			if keyword, hit := matchBlockedKeyword(content.Text, cfg.BlockedKeywords); hit {
+			if keyword, hit := matchBlockedKeyword(keywordText, cfg.BlockedKeywords); hit {
 				s.recordPreBlockSyncMetric(0, ContentModerationActionKeywordBlock)
 				slog.Info("content_moderation.keyword_block",
 					"user_id", input.UserID,
@@ -911,9 +915,10 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 					"keyword_blocking_mode", cfg.KeywordBlockingMode,
 					"keyword", keyword)
 				scores := map[string]float64{contentModerationKeywordCategory: 1.0}
-				log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, content.ExcerptText(), nil, nil, "")
+				keywordContent := ContentModerationInput{Text: keywordText}
+				log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, keywordContent.ExcerptText(), nil, nil, "")
 				log.MatchedKeyword = keyword
-				s.enqueueRecord(input, cfg, log, hashText, false, true)
+				s.enqueueRecord(input, cfg, log, keywordContent.Hash(), false, true)
 				return &ContentModerationDecision{
 					Allowed:         false,
 					Blocked:         true,
@@ -937,6 +942,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				"protocol", input.Protocol)
 			return allow, nil
 		}
+	}
+	if content.IsEmpty() {
+		return allow, nil
 	}
 	if cfg.PreHashCheckEnabled && s.hashCache != nil {
 		matched, err := s.hashCache.HasFlaggedInputHash(ctx, hashText)

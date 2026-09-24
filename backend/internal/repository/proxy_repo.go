@@ -363,7 +363,7 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 			continue
 		}
 		targetProxyID, hasFallback := service.ResolveProxyFallbackTarget(*p, proxiesByID, now)
-		accountIDs, err := r.sweepOneExpiredProxyOnExec(ctx, exec, p.ID, targetProxyID, hasFallback)
+		accountIDs, err := r.sweepOneExpiredProxyOnExec(ctx, exec, p.ID, targetProxyID, hasFallback, p.UpdatedAt, now)
 		if err != nil {
 			return 0, err
 		}
@@ -407,16 +407,41 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(
 	proxyID int64,
 	targetProxyID *int64,
 	hasFallback bool,
+	snapshotTimes ...time.Time,
 ) ([]int64, error) {
-	_, err := exec.ExecContext(ctx, `
-		UPDATE proxies
-		SET status = $2,
-			updated_at = NOW()
-		WHERE id = $1
-			AND status <> $2
-	`, proxyID, service.StatusExpired)
+	query := `UPDATE proxies SET status = $2, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL AND status <> $2`
+	args := []any{proxyID, service.StatusExpired}
+	if len(snapshotTimes) == 2 {
+		query += ` AND updated_at = $3 AND expires_at IS NOT NULL AND expires_at <= $4`
+		args = append(args, snapshotTimes[0], snapshotTimes[1])
+	}
+	result, err := exec.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, nil
+	}
+	// Hold a share lock through reassignment, preventing target disable/expiry
+	// updates from racing the account move inside this transaction.
+	if targetProxyID != nil {
+		rows, lockErr := exec.QueryContext(ctx, `SELECT id FROM proxies WHERE id = $1 AND deleted_at IS NULL AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW()) FOR SHARE`, *targetProxyID)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		available := rows.Next()
+		readErr := rows.Err()
+		_ = rows.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !available {
+			hasFallback = false
+		}
 	}
 
 	if !hasFallback {

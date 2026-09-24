@@ -155,7 +155,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		return nil, err
 	}
 
-	return map[string]any{
+	payload := map[string]any{
 		"model": modelID,
 		"messages": []map[string]any{
 			{
@@ -186,7 +186,12 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		"max_tokens":  1024,
 		"temperature": 1,
 		"stream":      true,
-	}, nil
+	}
+	if claude.IsOpus55(modelID) {
+		delete(payload, "temperature")
+		payload["thinking"] = map[string]any{"type": "adaptive"}
+	}
+	return payload, nil
 }
 
 // TestAccountConnection tests an account's connection by sending a test request
@@ -381,6 +386,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken)
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 
 	// Get proxy URL
@@ -608,7 +614,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 
 	// Route to image generation test if an image model is selected
-	if isOpenAIImageModel(testModelID) {
+	if isOpenAIImageModel(testModelID) || isGeminiCompatibleImageModel(testModelID) {
+		if isGeminiCompatibleImageModel(testModelID) && account.Type != AccountTypeAPIKey {
+			return fmt.Errorf("compatible image models require an API key account")
+		}
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
 			imagePrompt = defaultOpenAIImageTestPrompt
@@ -711,6 +720,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		enforceCodexIdentityHeaders(req.Header)
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 
@@ -916,6 +926,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		enforceCodexIdentityHeaders(req.Header)
 	}
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 	if native {
 		ensureOpenAIRemoteCompactionV2BetaFeature(req.Header)
@@ -1709,6 +1720,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 
 	proxyURL := ""
@@ -1821,6 +1833,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	enforceCodexIdentityHeaders(req.Header)
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 
 	proxyURL := ""

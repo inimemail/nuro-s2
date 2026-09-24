@@ -72,7 +72,7 @@ func flattenRefs(schema map[string]any, defs map[string]any) {
 	}
 
 	// 遍历子节点
-	for _, v := range schema {
+	for _, v := range compatibleSchemaChildren(schema) {
 		if subMap, ok := v.(map[string]any); ok {
 			flattenRefs(subMap, defs)
 		} else if subArr, ok := v.([]any); ok {
@@ -229,6 +229,8 @@ func cleanJSONSchemaRecursive(value any) any {
 			"properties":  true,
 			"required":    true,
 			"items":       true,
+			"minItems":    true,
+			"maxItems":    true,
 			"enum":        true,
 			"title":       true,
 		}

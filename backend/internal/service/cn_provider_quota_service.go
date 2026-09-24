@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +70,8 @@ type CNProviderQuotaService struct {
 	httpUpstream HTTPUpstream
 	cfg          *config.Config
 	flight       singleflight.Group
+	usageLock    LeaderLockCache
+	usageDB      *sql.DB
 }
 
 // NewCNProviderQuotaService 构造 Coding Plan 额度探测服务。
@@ -132,6 +135,22 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 
 func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, account *Account) (*CNProviderQuotaProbeResult, error) {
 	provider := account.GetCodingPlanProvider()
+	if provider == PlatformOpenCodeGo {
+		target := openCodeGoConfiguredUsageURL(account)
+		snapshot, err := s.fetchOpenCodeGoUsage(ctx, account, target)
+		if err != nil {
+			return nil, err
+		}
+		result := &CNProviderQuotaProbeResult{Provider: provider, Source: "coding_plan", Success: snapshot.Error == "", CredentialValid: snapshot.HTTPStatus != 401 && snapshot.HTTPStatus != 403, Tiers: snapshot.Tiers, PlanLevel: "OpenCode Go", StatusCode: snapshot.HTTPStatus, FetchedAt: snapshot.LastAttemptAt, Error: snapshot.Error}
+		if result.Success {
+			if err := s.accountRepo.UpdateExtra(ctx, account.ID, cnQuotaExtraUpdates(provider, result.Tiers, time.Unix(result.FetchedAt, 0))); err == nil {
+				result.Persisted = true
+			} else {
+				slog.Warn("cn_quota_persist_failed", "account_id", account.ID, "error", err)
+			}
+		}
+		return result, nil
+	}
 	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax && provider != PlatformOpenCodeGo {
 		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a supported coding plan account")
 	}
@@ -149,7 +168,7 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	)
 	switch provider {
 	case PlatformOpenCodeGo:
-		targetURL = strings.TrimRight(account.GetCNProtocolBaseURL(APIProtocolChatCompletions), "/") + "/usage"
+		targetURL = openCodeGoQuotaURL(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
 		authHeader = "Bearer " + apiKey
 	case PlatformKimi:
 		targetURL = kimiQuotaURL(baseURL)

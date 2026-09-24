@@ -5150,6 +5150,33 @@
                 </p>
               </div>
 
+              <OpenCodeUsageSettings />
+
+              <div class="rounded-2xl border border-gray-200 bg-gray-50/50 p-4 dark:border-dark-600 dark:bg-dark-800/40 sm:p-5">
+                <div class="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('claudeVersion.title') }}</h3>
+                    <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('claudeVersion.description') }}</p>
+                  </div>
+                  <Toggle v-model="form.claude_cli_version_auto_sync_enabled" :aria-label="t('claudeVersion.autoSync')" />
+                </div>
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('claudeVersion.manual') }}
+                    <input v-model="form.claude_cli_client_version" type="text" class="input mt-2 w-full font-mono" placeholder="2.1.161" />
+                  </label>
+                  <div>
+                    <span class="text-xs font-medium text-gray-700 dark:text-gray-300">{{ t('claudeVersion.effective') }}</span>
+                    <div class="mt-2 flex h-10 items-center justify-between gap-2 rounded-xl border border-primary-200 bg-primary-50 px-3 dark:border-primary-900 dark:bg-primary-950/30">
+                      <span class="font-mono text-sm text-primary-800 dark:text-primary-200">{{ form.claude_cli_client_version_effective || '—' }}</span>
+                      <span class="text-xs text-primary-600 dark:text-primary-400">{{ form.claude_cli_client_version_source || 'builtin' }}</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('claudeVersion.precedence') }}</p>
+                <p v-if="form.claude_cli_client_version_synced" class="mt-1 text-xs text-gray-400">{{ t('claudeVersion.lastSynced') }} <span class="font-mono">{{ form.claude_cli_client_version_synced }}</span></p>
+              </div>
+
               <div class="border-t border-gray-100 pt-5 dark:border-dark-700">
                 <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div class="min-w-0">
@@ -8288,6 +8315,7 @@ import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vu
 import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
+import OpenCodeUsageSettings from "@/components/admin/OpenCodeUsageSettings.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import OpenAIFirstTokenDefaultsEditor from "@/components/admin/OpenAIFirstTokenDefaultsEditor.vue";
@@ -9231,6 +9259,11 @@ const form = reactive<SettingsForm>({
   low_latency_stream_headers: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
+  claude_cli_client_version: "",
+  claude_cli_client_version_synced: "",
+  claude_cli_client_version_effective: "",
+  claude_cli_client_version_source: "",
+  claude_cli_version_auto_sync_enabled: false,
   openai_codex_client_version: "",
   openai_codex_client_version_synced: "",
   openai_codex_client_version_effective: "",
@@ -10757,6 +10790,8 @@ async function saveSettings() {
         form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
+      claude_cli_client_version: form.claude_cli_client_version?.trim() || "",
+      claude_cli_version_auto_sync_enabled: form.claude_cli_version_auto_sync_enabled,
       openai_codex_client_version:
         form.openai_codex_client_version?.trim() || "",
       openai_codex_version_auto_sync_enabled:

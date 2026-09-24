@@ -172,6 +172,13 @@ func (s *UsageCleanupService) runOnce() {
 	ctx, cancel := context.WithTimeout(parent, svc.taskTimeout())
 	defer cancel()
 
+	if svc.dashboard != nil {
+		release, ok := svc.dashboard.acquireCleanupLock(ctx, svc.taskTimeout()+time.Minute)
+		if !ok {
+			return
+		}
+		defer release()
+	}
 	task, err := svc.repo.ClaimNextPendingTask(ctx, int64(svc.taskTimeout().Seconds()))
 	if err != nil {
 		logger.LegacyPrintf("service.usage_cleanup", "[UsageCleanup] claim pending task failed: %v", err)

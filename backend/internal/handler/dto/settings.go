@@ -239,10 +239,15 @@ type SystemSettings struct {
 	AntigravityUserAgentVersion            string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   string `json:"openai_codex_user_agent"`
 	OpenAICodexClientVersion               string `json:"openai_codex_client_version"`
+	ClaudeCLIClientVersion                 string `json:"claude_cli_client_version"`
 	OpenAICodexClientVersionSynced         string `json:"openai_codex_client_version_synced"`
+	ClaudeCLIClientVersionSynced           string `json:"claude_cli_client_version_synced"`
 	OpenAICodexClientVersionEffective      string `json:"openai_codex_client_version_effective"`
+	ClaudeCLIClientVersionEffective        string `json:"claude_cli_client_version_effective"`
 	OpenAICodexClientVersionSource         string `json:"openai_codex_client_version_source"`
+	ClaudeCLIClientVersionSource           string `json:"claude_cli_client_version_source"`
 	OpenAICodexVersionAutoSyncEnabled      bool   `json:"openai_codex_version_auto_sync_enabled"`
+	ClaudeCLIVersionAutoSyncEnabled        bool   `json:"claude_cli_version_auto_sync_enabled"`
 	OpenAICodexRoutingHintEnabled          bool   `json:"openai_codex_routing_hint_enabled"`
 	OpenAIAllowClaudeCodeCodexPlugin       bool   `json:"openai_allow_claude_code_codex_plugin"`
 	MinCodexVersion                        string `json:"min_codex_version"`

@@ -814,6 +814,8 @@ export interface OpsAggregationSettings {
 }
 
 export interface OpsRuntimeLogConfig {
+  request_retention_override_enabled?: boolean
+  request_retention_days?: number
   level: 'debug' | 'info' | 'warn' | 'error'
   enable_sampling: boolean
   sampling_initial: number
@@ -1345,3 +1347,8 @@ export const opsAPI = {
 }
 
 export default opsAPI
+
+export async function previewRequestRetention(days: number): Promise<{ cutoff?: string; estimated_rows: number | null; permanent: boolean }> {
+ const { data } = await apiClient.get('/admin/ops/runtime/logging/retention-preview', { params: { days } })
+ return data
+}

@@ -58,8 +58,9 @@
 
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button @click="$emit('close')" class="btn btn-secondary px-5">{{ t('common.cancel') }}</button>
+        <button type="button" @click="$emit('close')" class="btn btn-secondary px-5">{{ t('common.cancel') }}</button>
         <button
+          type="button"
           @click="handleReplace"
           :disabled="!selectedGroupId || submitting"
           class="btn btn-primary px-6"
@@ -80,6 +81,7 @@ import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import type { AdminUser, AdminGroup } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -107,25 +109,32 @@ const availableGroups = computed(() => {
   )
 })
 
-watch(() => props.show, (v) => {
-  if (v) {
-    selectedGroupId.value = null
-  }
-})
+let requestVersion = 0
+watch(() => [props.show, props.user?.id, props.oldGroup?.id], (_, __, onCleanup) => {
+  requestVersion++
+  onCleanup(() => { requestVersion++ })
+  selectedGroupId.value = null
+  submitting.value = false
+}, { immediate: true })
 
 const handleReplace = async () => {
   if (!props.user || !props.oldGroup || !selectedGroupId.value) return
+  if (submitting.value) return
+  const version = requestVersion
   submitting.value = true
 
   try {
     const result = await adminAPI.users.replaceGroup(props.user.id, props.oldGroup.id, selectedGroupId.value)
+    if (version !== requestVersion) return
     appStore.showSuccess(t('admin.users.replaceGroupSuccess', { count: result.migrated_keys }))
     emit('success')
     emit('close')
   } catch (error) {
+    if (version !== requestVersion) return
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
     console.error('Failed to replace group:', error)
   } finally {
-    submitting.value = false
+    if (version === requestVersion) submitting.value = false
   }
 }
 </script>

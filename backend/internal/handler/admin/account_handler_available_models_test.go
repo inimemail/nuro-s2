@@ -205,7 +205,7 @@ func TestAccountHandlerGetAvailableModels_GrokBothTypesHonorMapping(t *testing.T
 					require.Equal(t, "grok-imagine-image-2.0", result.Data[1].UpstreamModel)
 				} else {
 					require.Len(t, result.Data, len(xai.DefaultModels()))
-					require.Equal(t, "grok-4.6", result.Data[0].ID)
+					require.Equal(t, "grok-4.7", result.Data[0].ID)
 					for _, model := range result.Data {
 						require.NotContains(t, model.ID, "/")
 					}

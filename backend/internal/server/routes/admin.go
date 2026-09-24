@@ -208,6 +208,7 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			runtime.GET("/alert", h.Admin.Ops.GetAlertRuntimeSettings)
 			runtime.PUT("/alert", h.Admin.Ops.UpdateAlertRuntimeSettings)
 			runtime.GET("/logging", h.Admin.Ops.GetRuntimeLogConfig)
+			runtime.GET("/logging/retention-preview", h.Admin.Ops.PreviewRequestRetention)
 			runtime.PUT("/logging", h.Admin.Ops.UpdateRuntimeLogConfig)
 			runtime.POST("/logging/reset", h.Admin.Ops.ResetRuntimeLogConfig)
 		}
@@ -339,6 +340,11 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp m
 	accounts := admin.Group("/accounts")
 	{
 		accounts.GET("", h.Admin.Account.List)
+		accounts.GET("/opencode-go-usage/settings", h.Admin.Account.GetOpenCodeGoUsageSettings)
+		accounts.PUT("/opencode-go-usage/settings", h.Admin.Account.UpdateOpenCodeGoUsageSettings)
+		accounts.GET("/:id/opencode-go-usage", h.Admin.Account.OpenCodeGoUsage)
+		accounts.PATCH("/:id/opencode-go-usage", h.Admin.Account.OpenCodeGoUsage)
+		accounts.POST("/:id/opencode-go-usage/refresh", h.Admin.Account.OpenCodeGoUsage)
 		accounts.GET("/ollama-cloud-usage/settings", h.Admin.Account.GetOllamaCloudUsageSettings)
 		accounts.PUT("/ollama-cloud-usage/settings", h.Admin.Account.UpdateOllamaCloudUsageSettings)
 		accounts.GET("/:id", h.Admin.Account.GetByID)

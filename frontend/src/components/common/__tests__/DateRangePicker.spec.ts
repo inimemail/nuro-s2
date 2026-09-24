@@ -94,3 +94,26 @@ describe('DateRangePicker', () => {
     ])
   })
 })
+
+it('discards unapplied dates and updates relative labels after midnight', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date(2026, 8, 24, 23, 59, 59))
+  const wrapper = mount(DateRangePicker, {
+    props: { startDate: '2026-09-24', endDate: '2026-09-24' },
+    global: { stubs: { Icon: true } }
+  })
+  try {
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('input')[0]!.setValue('2026-09-20')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    expect(wrapper.findAll('input')[0]!.element.value).toBe('2026-09-24')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.get('.date-picker-trigger').text()).toContain('Yesterday')
+    expect(wrapper.findAll('input')[1]!.attributes('max')).toBe('2026-09-26')
+  } finally {
+    wrapper.unmount()
+    vi.useRealTimers()
+  }
+})

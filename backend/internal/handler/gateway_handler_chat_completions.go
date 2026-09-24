@@ -86,6 +86,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
+	c.Request = c.Request.WithContext(service.WithGeminiCompatibleThinkingRequest(c.Request.Context(), reqModel, body))
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 

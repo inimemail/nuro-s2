@@ -63,6 +63,7 @@ type AccountHandler struct {
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
+	openCodeGoUsage         *service.OpenCodeGoUsageService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
 	cnProviderQuota         *service.CNProviderQuotaService
 	cnProviderBalance       *service.CNProviderBalanceService
@@ -1190,6 +1191,8 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		return
 	}
 
+	// OAuth reauthorization replaces auth fields while retaining account configuration.
+	req.Credentials = service.MergeCredentials(existing.Credentials, req.Credentials)
 	updatedAccount, err := h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
 		Type:        req.Type,
 		Credentials: req.Credentials,
@@ -2497,7 +2500,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		response.Success(c, mappedOpenAITestModels(models, mapping))
 		return
 	}
 
@@ -2535,7 +2538,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		response.Success(c, mappedGeminiTestModels(models, mapping))
 		return
 	}
 
@@ -2553,7 +2556,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			for _, modelID := range service.DefaultCNModelIDs(account.Platform) {
 				models = append(models, openai.Model{ID: modelID, Object: "model", Type: "model", DisplayName: modelID})
 			}
-			response.Success(c, models)
+			response.Success(c, mappedOpenAITestModels(models, mapping))
 			return
 		}
 		models := make([]openai.Model, 0, len(mapping))
@@ -2561,7 +2564,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			models = append(models, openai.Model{ID: requestedModel, Object: "model", Type: "model", DisplayName: requestedModel})
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-		response.Success(c, models)
+		response.Success(c, mappedOpenAITestModels(models, mapping))
 		return
 	}
 
@@ -2610,7 +2613,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	response.Success(c, models)
+	response.Success(c, mappedClaudeTestModels(models, mapping))
 }
 
 // SyncUpstreamModels handles syncing live supported models from an account's upstream.
@@ -2942,4 +2945,8 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 		v = 10000
 	}
 	extra["base_rpm"] = v
+}
+
+func (h *AccountHandler) SetOpenCodeGoUsageService(s *service.OpenCodeGoUsageService) {
+	h.openCodeGoUsage = s
 }

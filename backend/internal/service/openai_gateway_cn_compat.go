@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -18,6 +19,10 @@ import (
 // doOpenAIUpstream deliberately stays on the existing local transport. CN
 // support must not pull the upstream plugin system into this fork.
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	if request != nil && request.URL != nil {
+		applyOpenCodeUpstreamUserAgent(account, request.URL.String(), request.Header)
+	}
+	defer scheduleOpenCodeGoUsageActivity(s.deferredService, account)
 	return s.httpUpstream.DoWithTLS(request, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 }
 
@@ -217,8 +222,13 @@ func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
 }
 
 func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte {
-	if account == nil || !account.IsDeepSeek() ||
-		(account.GetAPIProtocol() != APIProtocolResponses && !account.IsAdaptiveAPIProtocol()) {
+	if account == nil {
+		return body
+	}
+	native := account.IsDeepSeek() && (account.GetAPIProtocol() == APIProtocolResponses || account.IsAdaptiveAPIProtocol())
+	target, _ := url.Parse(account.GetBaseURL())
+	images := native || (account.IsOpenAICompatible() && target != nil && strings.EqualFold(target.Hostname(), "api.deepseek.com"))
+	if !native && !images {
 		return body
 	}
 	var request map[string]any
@@ -227,14 +237,62 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 	if err := decoder.Decode(&request); err != nil {
 		return body
 	}
-	request["store"] = false
-	delete(request, "previous_response_id")
+	if native {
+		request["store"] = false
+		delete(request, "previous_response_id")
+	}
 	if input, changed := apicompat.LiftResponsesToolOutputMedia(request["input"]); changed {
 		request["input"] = input
+	}
+	if images {
+		aliasDeepSeekResponsesImages(request["input"])
 	}
 	rebuilt, err := json.Marshal(request)
 	if err != nil {
 		return body
 	}
 	return rebuilt
+}
+
+// Only known content containers are visited; tool arguments are never rewritten.
+func aliasDeepSeekResponsesImages(input any) {
+	switch value := input.(type) {
+	case []any:
+		for _, item := range value {
+			aliasDeepSeekResponsesImages(item)
+		}
+	case map[string]any:
+		if value["type"] == "input_image" || value["type"] == "image_url" || value["type"] == "image" {
+			imageURL, _ := value["url"].(string)
+			if imageURL == "" {
+				imageURL, _ = value["image_url"].(string)
+			}
+			if imageURL == "" {
+				if image, ok := value["image_url"].(map[string]any); ok {
+					imageURL, _ = image["url"].(string)
+				}
+			}
+			if imageURL == "" {
+				if source, ok := value["source"].(map[string]any); ok {
+					if source["type"] == "url" {
+						imageURL, _ = source["url"].(string)
+					}
+					if source["type"] == "base64" {
+						media, _ := source["media_type"].(string)
+						data, _ := source["data"].(string)
+						if strings.HasPrefix(media, "image/") && data != "" {
+							imageURL = "data:" + media + ";base64," + data
+						}
+					}
+				}
+			}
+			if imageURL != "" {
+				value["type"] = "input_image"
+				value["url"] = imageURL
+				value["image_url"] = imageURL
+			}
+		}
+		aliasDeepSeekResponsesImages(value["content"])
+		aliasDeepSeekResponsesImages(value["output"])
+	}
 }

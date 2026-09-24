@@ -2,7 +2,7 @@ export type OpenCodeMode = 'go' | 'zen'
 // Fallback catalog from the selected upstream v0.2.5 revision. Account mappings
 // and live model discovery remain authoritative.
 export const openCodeModels = [
-  'grok-4.6', 'gpt-5.6-luna', 'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',
+  'grok-4.7', 'grok-4.6', 'gpt-5.6-luna', 'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',
   'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'longcat-2.0',
   'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
   'mimo-v2.5', 'mimo-v2.5-pro', 'minimax-m3', 'minimax-m2.7', 'minimax-m2.5',

@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"strings"
+)
 
 func lastOpenAIModelSegment(model string) string {
 	model = strings.TrimSpace(model)
@@ -53,6 +56,9 @@ func canonicalizeOpenAIModelAliasSpelling(model string) string {
 }
 
 func normalizeKnownOpenAICodexModel(model string) string {
+	if canonical := openai.CanonicalGPT6SolLunaModel(model); canonical != "" {
+		return canonical
+	}
 	normalized := canonicalizeOpenAIModelAliasSpelling(model)
 	if normalized == "" {
 		return ""
@@ -68,6 +74,8 @@ func normalizeKnownOpenAICodexModel(model string) string {
 	}
 
 	switch {
+	case normalized == "gpt-6-sol" || normalized == "gpt-6-luna":
+		return normalized
 	case isOpenAIGPT6AstraModel(normalized):
 		return "gpt-6-astra"
 	case strings.Contains(normalized, "gpt-5.6-sol"):

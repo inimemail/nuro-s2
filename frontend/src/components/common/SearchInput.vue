@@ -4,17 +4,17 @@
       <Icon name="search" size="md" class="text-gray-400" />
     </div>
     <input
-      :value="modelValue"
+      v-model="searchValue"
+      @compositionstart="cancelPendingSearch"
       type="text"
       class="input pl-10"
       :placeholder="placeholder"
-      @input="handleInput"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { useDebounceFn } from '@vueuse/core'
+import { computed, onBeforeUnmount } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
 
 const props = withDefaults(defineProps<{
@@ -31,13 +31,17 @@ const emit = defineEmits<{
   (e: 'search', value: string): void
 }>()
 
-const debouncedEmitSearch = useDebounceFn((value: string) => {
-  emit('search', value)
-}, props.debounceMs)
+let timer: ReturnType<typeof setTimeout> | undefined
+const cancelPendingSearch = () => clearTimeout(timer)
+onBeforeUnmount(cancelPendingSearch)
 
-const handleInput = (event: Event) => {
-  const value = (event.target as HTMLInputElement).value
-  emit('update:modelValue', value)
-  debouncedEmitSearch(value)
-}
+// Vue's text v-model commits once at compositionend.
+const searchValue = computed({
+  get: () => props.modelValue,
+  set: (value: string) => {
+    emit('update:modelValue', value)
+    clearTimeout(timer)
+    timer = setTimeout(() => emit('search', value), props.debounceMs)
+  }
+})
 </script>

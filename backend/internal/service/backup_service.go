@@ -30,7 +30,7 @@ const (
 	settingKeyBackupSchedule = "backup_schedule"
 	settingKeyBackupRecords  = "backup_records"
 
-	maxBackupRecords                   = 100
+	maxBackupRecords                   = 10000
 	backupObjectCleanupTimeout         = 2 * time.Minute
 	backupScheduledLeaderLockKey       = "backup:scheduled:leader"
 	backupScheduledLeaderLockTTL       = 35 * time.Minute
@@ -97,30 +97,34 @@ func (c *BackupS3Config) IsConfigured() bool {
 
 // BackupScheduleConfig 定时备份配置
 type BackupScheduleConfig struct {
-	Enabled     bool   `json:"enabled"`
-	CronExpr    string `json:"cron_expr"`    // cron 表达式，如 "0 2 * * *" 每天凌晨2点
-	RetainDays  int    `json:"retain_days"`  // 备份文件过期天数，默认14，0=不自动清理
-	RetainCount int    `json:"retain_count"` // 最多保留份数，0=不限制
+	MonthlyArchive *BackupMonthlyArchiveConfig `json:"monthly_archive,omitempty"`
+	Enabled        bool                        `json:"enabled"`
+	CronExpr       string                      `json:"cron_expr"`    // cron 表达式，如 "0 2 * * *" 每天凌晨2点
+	RetainDays     int                         `json:"retain_days"`  // 备份文件过期天数，默认14，0=不自动清理
+	RetainCount    int                         `json:"retain_count"` // 最多保留份数，0=不限制
 }
 
 // BackupRecord 备份记录
 type BackupRecord struct {
-	ID            string       `json:"id"`
-	Status        string       `json:"status"`      // pending, running, completed, failed
-	BackupType    string       `json:"backup_type"` // postgres
-	FileName      string       `json:"file_name"`
-	S3Key         string       `json:"s3_key"`
-	Parts         []BackupPart `json:"parts,omitempty"`
-	SizeBytes     int64        `json:"size_bytes"`
-	TriggeredBy   string       `json:"triggered_by"` // manual, scheduled
-	ErrorMsg      string       `json:"error_message,omitempty"`
-	StartedAt     string       `json:"started_at"`
-	FinishedAt    string       `json:"finished_at,omitempty"`
-	ExpiresAt     string       `json:"expires_at,omitempty"`     // 过期时间
-	Progress      string       `json:"progress,omitempty"`       // "dumping", "uploading", ""
-	RestoreStatus string       `json:"restore_status,omitempty"` // "", "running", "completed", "failed"
-	RestoreError  string       `json:"restore_error,omitempty"`
-	RestoredAt    string       `json:"restored_at,omitempty"`
+	MonthlyArchive     *BackupMonthlyArchive `json:"monthly_archive,omitempty"`
+	RestoreOperationID string                `json:"restore_operation_id,omitempty"`
+	RestoreStartedAt   string                `json:"restore_started_at,omitempty"`
+	ID                 string                `json:"id"`
+	Status             string                `json:"status"`      // pending, running, completed, failed
+	BackupType         string                `json:"backup_type"` // postgres
+	FileName           string                `json:"file_name"`
+	S3Key              string                `json:"s3_key"`
+	Parts              []BackupPart          `json:"parts,omitempty"`
+	SizeBytes          int64                 `json:"size_bytes"`
+	TriggeredBy        string                `json:"triggered_by"` // manual, scheduled
+	ErrorMsg           string                `json:"error_message,omitempty"`
+	StartedAt          string                `json:"started_at"`
+	FinishedAt         string                `json:"finished_at,omitempty"`
+	ExpiresAt          string                `json:"expires_at,omitempty"`     // 过期时间
+	Progress           string                `json:"progress,omitempty"`       // "dumping", "uploading", ""
+	RestoreStatus      string                `json:"restore_status,omitempty"` // "", "running", "completed", "failed"
+	RestoreError       string                `json:"restore_error,omitempty"`
+	RestoredAt         string                `json:"restored_at,omitempty"`
 }
 
 type BackupPart struct {
@@ -159,14 +163,18 @@ type BackupService struct {
 	s3Cfg               *BackupS3Config
 	s3ConfigInvalidator func()
 
-	recordsMu sync.Mutex // 保护 records 的 load/save 操作
+	operationMu       sync.Mutex
+	operationDeadline atomic.Int64
+	recordsMu         sync.Mutex // 保护 records 的 load/save 操作
 
-	cronMu      sync.Mutex
-	cronSched   *cron.Cron
-	cronEntryID cron.EntryID
-	lockCache   LeaderLockCache
-	db          *sql.DB
-	instanceID  string
+	scheduleUpdateMu sync.Mutex // serialize config reads, persistence and local publication
+	cronMu           sync.Mutex
+	cronSched        *cron.Cron
+	cronEntryID      cron.EntryID
+	cronExpr         string
+	lockCache        LeaderLockCache
+	db               *sql.DB
+	instanceID       string
 
 	wg            sync.WaitGroup     // 追踪活跃的备份/恢复 goroutine
 	shuttingDown  atomic.Bool        // 阻止新备份启动
@@ -255,7 +263,16 @@ func (s *BackupService) Start() {
 
 // recoverStaleRecords 启动时将孤立的 running 记录标记为 failed
 func (s *BackupService) recoverStaleRecords() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.recoverStaleRecordsWithContext(context.Background())
+}
+
+func (s *BackupService) recoverStaleRecordsWithContext(parent context.Context) {
+	operationCtx, release, ok := s.acquireBackupOperation(parent)
+	if !ok {
+		return
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(operationCtx, 10*time.Second)
 	defer cancel()
 
 	records, err := s.loadRecords(ctx)
@@ -263,15 +280,21 @@ func (s *BackupService) recoverStaleRecords() {
 		return
 	}
 	for i := range records {
-		if records[i].Status == "running" {
+		if ctx.Err() != nil {
+			return
+		}
+		if records[i].Status == "running" && backupOperationStale(records[i].StartedAt) {
 			stale := records[i]
 			records[i].Status = "failed"
-			records[i].ErrorMsg = "interrupted by server restart"
+			records[i].ErrorMsg = "operation exceeded maximum runtime"
 			records[i].Progress = ""
 			records[i].FinishedAt = time.Now().Format(time.RFC3339)
-			_ = s.saveRecord(ctx, &records[i])
+			if err := s.saveRecord(ctx, &records[i]); err != nil {
+				logger.LegacyPrintf("service.backup", "[Backup] stale reservation failed: %v", err)
+				continue
+			}
 			if len(backupObjectKeys(&stale)) > 0 {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
+				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, backupObjectCleanupTimeout)
 				if cleanupErr := s.deleteBackupObjects(cleanupCtx, &stale); cleanupErr != nil {
 					records[i].ErrorMsg += "; cleanup failed: " + cleanupErr.Error()
 					_ = s.saveRecord(context.Background(), &records[i])
@@ -280,9 +303,9 @@ func (s *BackupService) recoverStaleRecords() {
 			}
 			logger.LegacyPrintf("service.backup", "[Backup] recovered stale running record: %s", records[i].ID)
 		}
-		if records[i].RestoreStatus == "running" {
+		if records[i].RestoreStatus == "running" && backupOperationStale(records[i].RestoreStartedAt) {
 			records[i].RestoreStatus = "failed"
-			records[i].RestoreError = "interrupted by server restart"
+			records[i].RestoreError = "operation exceeded maximum runtime"
 			_ = s.saveRecord(ctx, &records[i])
 			logger.LegacyPrintf("service.backup", "[Backup] recovered stale restoring record: %s", records[i].ID)
 		}
@@ -424,17 +447,35 @@ func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config
 
 func (s *BackupService) GetSchedule(ctx context.Context) (*BackupScheduleConfig, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupSchedule)
-	if err != nil || raw == "" {
+	if errors.Is(err, ErrSettingNotFound) || (err == nil && raw == "") {
 		return &BackupScheduleConfig{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	var cfg BackupScheduleConfig
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		return &BackupScheduleConfig{}, nil
+		return nil, fmt.Errorf("decode backup schedule: %w", err)
 	}
 	return &cfg, nil
 }
 
 func (s *BackupService) UpdateSchedule(ctx context.Context, cfg BackupScheduleConfig) (*BackupScheduleConfig, error) {
+	s.scheduleUpdateMu.Lock()
+	defer s.scheduleUpdateMu.Unlock()
+	if cfg.RetainDays < 0 || cfg.RetainCount < 0 {
+		return nil, infraerrors.BadRequest("INVALID_RETENTION", "retention must be non-negative")
+	}
+	if cfg.MonthlyArchive == nil {
+		previous, err := s.GetSchedule(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.MonthlyArchive = previous.MonthlyArchive
+	}
+	if err := normalizeBackupMonthlyArchive(cfg.MonthlyArchive); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_MONTHLY_ARCHIVE", err.Error())
+	}
 	if cfg.Enabled && cfg.CronExpr == "" {
 		return nil, infraerrors.BadRequest("INVALID_CRON", "cron expression is required when schedule is enabled")
 	}
@@ -474,6 +515,9 @@ func (s *BackupService) applyCronSchedule(cfg *BackupScheduleConfig) error {
 		return fmt.Errorf("cron scheduler not initialized")
 	}
 
+	if s.cronEntryID != 0 && s.cronExpr == cfg.CronExpr {
+		return nil
+	}
 	// 移除旧任务
 	if s.cronEntryID != 0 {
 		s.cronSched.Remove(s.cronEntryID)
@@ -481,12 +525,13 @@ func (s *BackupService) applyCronSchedule(cfg *BackupScheduleConfig) error {
 	}
 
 	entryID, err := s.cronSched.AddFunc(cfg.CronExpr, func() {
-		s.runScheduledBackup()
+		s.runScheduledBackupForCron(cfg.CronExpr)
 	})
 	if err != nil {
 		return infraerrors.BadRequest("INVALID_CRON", fmt.Sprintf("failed to schedule: %v", err))
 	}
 	s.cronEntryID = entryID
+	s.cronExpr = cfg.CronExpr
 	logger.LegacyPrintf("service.backup", "[Backup] 定时备份已启用: %s", cfg.CronExpr)
 	return nil
 }
@@ -501,13 +546,15 @@ func (s *BackupService) removeCronSchedule() {
 	}
 }
 
-func (s *BackupService) runScheduledBackup() {
+func (s *BackupService) runScheduledBackup() { s.runScheduledBackupForCron("") }
+
+func (s *BackupService) runScheduledBackupForCron(expected string) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 
 	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
 	defer cancel()
-	release, ok := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, backupScheduledLeaderLockKey, s.instanceID, backupScheduledLeaderLockTTL)
+	release, ok := tryAcquireFixedLeaderLock(ctx, s.lockCache, s.db, backupScheduledLeaderLockKey, s.instanceID, backupScheduledLeaderLockTTL)
 	if !ok {
 		logger.LegacyPrintf("service.backup", "[Backup] 定时备份跳过: 本实例非 leader")
 		return
@@ -515,7 +562,10 @@ func (s *BackupService) runScheduledBackup() {
 	defer release()
 
 	// 读取定时备份配置中的过期天数
-	schedule, _ := s.GetSchedule(ctx)
+	schedule, scheduleErr := s.GetSchedule(ctx)
+	if scheduleErr != nil || schedule == nil || !schedule.Enabled || (expected != "" && schedule.CronExpr != expected) {
+		return
+	}
 	expireDays := 14 // 默认14天过期
 	if schedule != nil && schedule.RetainDays > 0 {
 		expireDays = schedule.RetainDays
@@ -533,8 +583,9 @@ func (s *BackupService) runScheduledBackup() {
 	}
 	logger.LegacyPrintf("service.backup", "[Backup] 定时备份完成: id=%s size=%d", record.ID, record.SizeBytes)
 
-	// 清理过期备份（复用已加载的 schedule）
-	if schedule == nil {
+	// Re-read after the long backup so a concurrent retention edit wins.
+	schedule, scheduleErr = s.GetSchedule(ctx)
+	if scheduleErr != nil || schedule == nil || !schedule.Enabled {
 		return
 	}
 	if err := s.cleanupOldBackups(ctx, schedule); err != nil {
@@ -547,6 +598,11 @@ func (s *BackupService) runScheduledBackup() {
 // CreateBackup 创建全量数据库备份并上传到 S3（流式处理）
 // expireDays: 备份过期天数，0=永不过期，默认14天
 func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, expireDays int) (*BackupRecord, error) {
+	ctx, release, ok := s.acquireBackupOperation(ctx)
+	if !ok {
+		return nil, ErrBackupInProgress
+	}
+	defer release()
 	if s.shuttingDown.Load() {
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
@@ -578,8 +634,8 @@ func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, ex
 	}
 
 	now := time.Now()
-	backupID := uuid.New().String()[:8]
-	fileName := fmt.Sprintf("%s_%s.sql.gz", s.dbCfg.DBName, now.Format("20060102_150405"))
+	backupID := uuid.NewString()
+	fileName := fmt.Sprintf("%s_%s_%s.sql.gz", s.dbCfg.DBName, now.Format("20060102_150405"), backupID)
 	s3Key := s.buildS3Key(s3Cfg, fileName)
 
 	var expiresAt string
@@ -623,14 +679,10 @@ func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, ex
 	record.Status = "completed"
 	record.FinishedAt = time.Now().Format(time.RFC3339)
 	if err := s.saveRecord(ctx, record); err != nil {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
-		cleanupErr := deleteBackupObjectsFromStore(cleanupCtx, objectStore, record)
-		cleanupCancel()
+		// A failed commit acknowledgement may already have persisted completion.
+		// Keep uploaded objects and their index until metadata can be reconciled.
 		record.Status = "failed"
 		record.ErrorMsg = "persist completed backup record: " + err.Error()
-		if cleanupErr != nil {
-			record.ErrorMsg += "; cleanup failed: " + cleanupErr.Error()
-		}
 		_ = s.saveRecord(context.Background(), record)
 		return record, fmt.Errorf("persist completed backup record: %w", err)
 	}
@@ -809,31 +861,34 @@ func (s *BackupService) uploadBackupArchive(
 		return fmt.Errorf("object store does not support file upload for multipart backup")
 	}
 	initialPartCount := len(record.Parts)
-	cleanupUploaded := func(extraKey string) {
+	cleanupUploaded := func(extra *BackupPart) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
 		defer cleanupCancel()
-		keys := backupObjectKeys(&BackupRecord{Parts: record.Parts[initialPartCount:]})
-		if extraKey != "" {
-			keys = append(keys, extraKey)
-		}
-		for _, uploaded := range keys {
-			_ = store.Delete(cleanupCtx, uploaded)
+		candidates := append([]BackupPart(nil), record.Parts[initialPartCount:]...)
+		if extra != nil {
+			candidates = append(candidates, *extra)
 		}
 		record.Parts = record.Parts[:initialPartCount]
+		for _, part := range candidates {
+			if err := store.Delete(cleanupCtx, part.S3Key); err != nil {
+				record.Parts = append(record.Parts, part)
+			}
+		}
 	}
+
 	for _, part := range parts {
 		key := fmt.Sprintf("%s.part-%04d", record.S3Key, part.Index)
 		if _, err := uploader.UploadFile(ctx, key, part.Path, "application/gzip"); err != nil {
 			// Remove every part uploaded in this batch, including the current key
 			// when a store reports an ambiguous post-upload failure. Cleanup uses
 			// the already-created store so it cannot be blocked by a settings read.
-			cleanupUploaded(key)
+			cleanupUploaded(&BackupPart{Index: part.Index, S3Key: key, SizeBytes: part.SizeBytes, SHA256: part.SHA256})
 			return fmt.Errorf("upload backup part %d: %w", part.Index, err)
 		}
 		record.Parts = append(record.Parts, BackupPart{Index: part.Index, S3Key: key, SizeBytes: part.SizeBytes, SHA256: part.SHA256})
 		if persist != nil {
 			if err := persist(); err != nil {
-				cleanupUploaded("")
+				cleanupUploaded(nil)
 				return fmt.Errorf("persist backup part %d: %w", part.Index, err)
 			}
 		}
@@ -842,6 +897,8 @@ func (s *BackupService) uploadBackupArchive(
 }
 
 func (s *BackupService) deleteBackupObjects(ctx context.Context, record *BackupRecord) error {
+	ctx, cancel := s.boundBackupFinalization(ctx)
+	defer cancel()
 	cfg, err := s.loadS3Config(ctx)
 	if err != nil {
 		return err
@@ -868,6 +925,16 @@ func deleteBackupObjectsFromStore(ctx context.Context, store BackupObjectStore, 
 
 // StartBackup 异步创建备份，立即返回 running 状态的记录
 func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, expireDays int) (*BackupRecord, error) {
+	operationCtx, release, ok := s.acquireBackupOperation(s.bgCtx)
+	if !ok {
+		return nil, ErrBackupInProgress
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			release()
+		}
+	}()
 	if s.shuttingDown.Load() {
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
@@ -905,8 +972,8 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 	}
 
 	now := time.Now()
-	backupID := uuid.New().String()[:8]
-	fileName := fmt.Sprintf("%s_%s.sql.gz", s.dbCfg.DBName, now.Format("20060102_150405"))
+	backupID := uuid.NewString()
+	fileName := fmt.Sprintf("%s_%s_%s.sql.gz", s.dbCfg.DBName, now.Format("20060102_150405"), backupID)
 	s3Key := s.buildS3Key(s3Cfg, fileName)
 
 	var expiresAt string
@@ -931,12 +998,14 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 	}
 
 	launched = true
+	transferred = true
 	// 在启动 goroutine 前完成拷贝，避免数据竞争
 	result := *record
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer release()
 		defer func() {
 			s.opMu.Lock()
 			s.backingUp = false
@@ -952,16 +1021,14 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 				_ = s.saveRecord(context.Background(), record)
 			}
 		}()
-		s.executeBackup(record, objectStore)
+		s.executeBackup(operationCtx, record, objectStore)
 	}()
 
 	return &result, nil
 }
 
 // executeBackup 后台执行备份（独立于 HTTP context）
-func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupObjectStore) {
-	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
-	defer cancel()
+func (s *BackupService) executeBackup(ctx context.Context, record *BackupRecord, objectStore BackupObjectStore) {
 
 	// 阶段1: pg_dump
 	record.Progress = "dumping"
@@ -997,14 +1064,9 @@ func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupOb
 	record.Progress = ""
 	record.FinishedAt = time.Now().Format(time.RFC3339)
 	if err := s.saveRecord(context.Background(), record); err != nil {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
-		cleanupErr := deleteBackupObjectsFromStore(cleanupCtx, objectStore, record)
-		cleanupCancel()
+		// Never delete an archive after an uncertain completion commit.
 		record.Status = "failed"
 		record.ErrorMsg = "persist completed backup record: " + err.Error()
-		if cleanupErr != nil {
-			record.ErrorMsg += "; cleanup failed: " + cleanupErr.Error()
-		}
 		_ = s.saveRecord(context.Background(), record)
 		logger.LegacyPrintf("service.backup", "[Backup] 保存备份记录失败: %v", err)
 	}
@@ -1012,60 +1074,48 @@ func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupOb
 
 // RestoreBackup 从 S3 下载备份并流式恢复到数据库
 func (s *BackupService) RestoreBackup(ctx context.Context, backupID string) error {
-	s.opMu.Lock()
-	if s.restoring {
-		s.opMu.Unlock()
+	if s.shuttingDown.Load() {
+		return infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
+	}
+	ctx, release, ok := s.acquireBackupOperation(ctx)
+	if !ok {
 		return ErrRestoreInProgress
 	}
-	s.restoring = true
+	defer release()
+	s.opMu.Lock()
+	alreadyRestoring := s.restoring
 	s.opMu.Unlock()
-	defer func() {
-		s.opMu.Lock()
-		s.restoring = false
-		s.opMu.Unlock()
-	}()
-
-	record, err := s.GetBackupRecord(ctx, backupID)
+	if alreadyRestoring {
+		return ErrRestoreInProgress
+	}
+	cfg, err := s.loadS3Config(ctx)
 	if err != nil {
 		return err
 	}
-	if record.Status != "completed" {
-		return infraerrors.BadRequest("BACKUP_NOT_COMPLETED", "can only restore from a completed backup")
-	}
-
-	s3Cfg, err := s.loadS3Config(ctx)
+	store, err := s.getOrCreateStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
+	reservation, err := s.reserveRestore(ctx, backupID)
 	if err != nil {
-		return fmt.Errorf("init object store: %w", err)
+		return err
 	}
-
-	body, cleanup, err := s.openVerifiedBackupArchive(ctx, record, objectStore)
-	if err != nil {
-		return fmt.Errorf("S3 download failed: %w", err)
-	}
-	defer cleanup()
-	defer func() { _ = body.Close() }()
-
-	// 流式解压 gzip -> psql（不将全部数据加载到内存）
-	gzReader, err := gzip.NewReader(body)
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer func() { _ = gzReader.Close() }()
-
-	// 流式恢复
-	if err := s.dumper.Restore(ctx, gzReader); err != nil {
-		return fmt.Errorf("pg restore: %w", err)
-	}
-
-	return nil
+	restoreErr := s.restoreArchive(ctx, reservation.record, store)
+	return errors.Join(restoreErr, s.finishRestore(reservation, restoreErr))
 }
 
 // StartRestore 异步恢复备份，立即返回
 func (s *BackupService) StartRestore(ctx context.Context, backupID string) (*BackupRecord, error) {
+	operationCtx, release, ok := s.acquireBackupOperation(s.bgCtx)
+	if !ok {
+		return nil, ErrBackupInProgress
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			release()
+		}
+	}()
 	if s.shuttingDown.Load() {
 		return nil, infraerrors.ServiceUnavailable("SERVER_SHUTTING_DOWN", "server is shutting down")
 	}
@@ -1105,15 +1155,20 @@ func (s *BackupService) StartRestore(ctx context.Context, backupID string) (*Bac
 		return nil, fmt.Errorf("init object store: %w", err)
 	}
 
-	record.RestoreStatus = "running"
-	_ = s.saveRecord(ctx, record)
+	reservation, err := s.reserveRestore(ctx, backupID)
+	if err != nil {
+		return nil, err
+	}
+	record = reservation.record
 
 	launched = true
+	transferred = true
 	result := *record
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer release()
 		defer func() {
 			s.opMu.Lock()
 			s.restoring = false
@@ -1124,51 +1179,34 @@ func (s *BackupService) StartRestore(ctx context.Context, backupID string) (*Bac
 				logger.LegacyPrintf("service.backup", "[Backup] restore panic recovered: %v", r)
 				record.RestoreStatus = "failed"
 				record.RestoreError = fmt.Sprintf("internal panic: %v", r)
-				_ = s.saveRecord(context.Background(), record)
+				_ = s.finishRestore(reservation, fmt.Errorf("internal panic: %v", r))
 			}
 		}()
-		s.executeRestore(record, objectStore)
+		restoreErr := s.restoreArchive(operationCtx, record, objectStore)
+		if err := s.finishRestore(reservation, restoreErr); err != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] restore metadata completion failed: %v", err)
+		}
 	}()
 
 	return &result, nil
 }
 
-// executeRestore 后台执行恢复
-func (s *BackupService) executeRestore(record *BackupRecord, objectStore BackupObjectStore) {
-	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
-	defer cancel()
-
-	body, cleanup, err := s.openVerifiedBackupArchive(ctx, record, objectStore)
+func (s *BackupService) restoreArchive(ctx context.Context, record *BackupRecord, store BackupObjectStore) error {
+	body, cleanup, err := s.openVerifiedBackupArchive(ctx, record, store)
 	if err != nil {
-		record.RestoreStatus = "failed"
-		record.RestoreError = fmt.Sprintf("S3 download failed: %v", err)
-		_ = s.saveRecord(context.Background(), record)
-		return
+		return fmt.Errorf("S3 download failed: %w", err)
 	}
 	defer cleanup()
-	defer func() { _ = body.Close() }()
-
-	gzReader, err := gzip.NewReader(body)
+	defer body.Close()
+	gz, err := gzip.NewReader(body)
 	if err != nil {
-		record.RestoreStatus = "failed"
-		record.RestoreError = fmt.Sprintf("gzip reader: %v", err)
-		_ = s.saveRecord(context.Background(), record)
-		return
+		return fmt.Errorf("gzip reader: %w", err)
 	}
-	defer func() { _ = gzReader.Close() }()
-
-	if err := s.dumper.Restore(ctx, gzReader); err != nil {
-		record.RestoreStatus = "failed"
-		record.RestoreError = fmt.Sprintf("pg restore: %v", err)
-		_ = s.saveRecord(context.Background(), record)
-		return
+	defer gz.Close()
+	if err := s.dumper.Restore(ctx, gz); err != nil {
+		return fmt.Errorf("pg restore: %w", err)
 	}
-
-	record.RestoreStatus = "completed"
-	record.RestoredAt = time.Now().Format(time.RFC3339)
-	if err := s.saveRecord(context.Background(), record); err != nil {
-		logger.LegacyPrintf("service.backup", "[Backup] 保存恢复记录失败: %v", err)
-	}
+	return nil
 }
 
 func (s *BackupService) openVerifiedBackupArchive(ctx context.Context, record *BackupRecord, store BackupObjectStore) (io.ReadCloser, func(), error) {
@@ -1235,8 +1273,15 @@ func (s *BackupService) GetBackupRecord(ctx context.Context, backupID string) (*
 }
 
 func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) error {
-	s.recordsMu.Lock()
-	defer s.recordsMu.Unlock()
+	ctx, release, ok := s.acquireBackupOperation(ctx)
+	if !ok {
+		return ErrBackupInProgress
+	}
+	defer release()
+	return s.withBackupRecordLock(ctx, func(txCtx context.Context) error { return s.DeleteBackupLocked(txCtx, backupID) })
+}
+
+func (s *BackupService) DeleteBackupLocked(ctx context.Context, backupID string) error {
 
 	records, err := s.loadRecordsLocked(ctx)
 	if err != nil {
@@ -1256,17 +1301,11 @@ func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) error
 		return ErrBackupNotFound
 	}
 
-	// 从 S3 删除
-	if len(backupObjectKeys(found)) > 0 && (found.Status == "completed" || found.Status == "failed" || found.Status == "running") {
-		s3Cfg, err := s.loadS3Config(ctx)
-		if err == nil && s3Cfg != nil && s3Cfg.IsConfigured() {
-			objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
-			if err == nil {
-				for _, key := range backupObjectKeys(found) {
-					_ = objectStore.Delete(ctx, key)
-				}
-			}
-		}
+	if found.RestoreStatus == "running" || found.Status == "running" {
+		return ErrBackupInProgress
+	}
+	if err := s.deleteBackupObjects(ctx, found); err != nil {
+		return err
 	}
 
 	return s.saveRecordsLocked(ctx, remaining)
@@ -1356,20 +1395,20 @@ func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Confi
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 
-	if s.store != nil && s.s3Cfg != nil {
-		return s.store, nil
-	}
-
 	if cfg == nil {
 		return nil, ErrBackupS3NotConfigured
 	}
+	if s.store != nil && s.s3Cfg != nil && *s.s3Cfg == *cfg {
+		return s.store, nil
+	}
 
-	store, err := s.storeFactory(ctx, cfg)
+	snapshot := *cfg
+	store, err := s.storeFactory(ctx, &snapshot)
 	if err != nil {
 		return nil, err
 	}
 	s.store = store
-	s.s3Cfg = cfg
+	s.s3Cfg = &snapshot
 	return store, nil
 }
 
@@ -1391,8 +1430,11 @@ func (s *BackupService) loadRecords(ctx context.Context) ([]BackupRecord, error)
 // loadRecordsLocked 在已持有 recordsMu 锁的情况下加载记录
 func (s *BackupService) loadRecordsLocked(ctx context.Context) ([]BackupRecord, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupRecords)
-	if err != nil || raw == "" {
-		return nil, nil //nolint:nilnil // no records is a valid state
+	if errors.Is(err, ErrSettingNotFound) || (err == nil && raw == "") {
+		return nil, nil
+	} //nolint:nilnil
+	if err != nil {
+		return nil, err
 	}
 	var records []BackupRecord
 	if err := json.Unmarshal([]byte(raw), &records); err != nil {
@@ -1407,13 +1449,29 @@ func (s *BackupService) saveRecordsLocked(ctx context.Context, records []BackupR
 	if err != nil {
 		return err
 	}
+	if len(data) > maxBackupRecordsJSONBytes && ctx.Value(backupRecoveryWriteKey{}) != true {
+		previous, err := s.settingRepo.GetValue(ctx, settingKeyBackupRecords)
+		if err != nil {
+			return err
+		}
+		if len(data) > len(previous) {
+			return infraerrors.Conflict("BACKUP_RECORD_CAPACITY", "backup metadata capacity reached")
+		}
+	}
 	return s.settingRepo.Set(ctx, settingKeyBackupRecords, string(data))
 }
 
 // saveRecord 保存单条记录（带互斥锁保护）
 func (s *BackupService) saveRecord(ctx context.Context, record *BackupRecord) error {
-	s.recordsMu.Lock()
-	defer s.recordsMu.Unlock()
+	working := *record
+	err := s.withBackupRecordLock(ctx, func(txCtx context.Context) error { return s.saveRecordLocked(txCtx, &working) })
+	if err == nil {
+		*record = working
+	}
+	return err
+}
+
+func (s *BackupService) saveRecordLocked(ctx context.Context, record *BackupRecord) error {
 
 	records, err := s.loadRecordsLocked(ctx)
 	if err != nil {
@@ -1424,34 +1482,81 @@ func (s *BackupService) saveRecord(ctx context.Context, record *BackupRecord) er
 	found := false
 	for i := range records {
 		if records[i].ID == record.ID {
+			existing := records[i]
+			if existing.MonthlyArchive != nil {
+				record.MonthlyArchive = existing.MonthlyArchive
+				record.ExpiresAt = ""
+			}
+			if existing.RestoreOperationID == record.RestoreOperationID && existing.RestoreStatus != "running" && record.RestoreStatus == "running" {
+				return ErrRestoreInProgress
+			}
+			if existing.RestoreOperationID != record.RestoreOperationID {
+				if record.RestoreStatus != "running" || existing.RestoreStatus == "running" {
+					return ErrRestoreInProgress
+				}
+			}
+			if record.RestoreStatus == "running" && existing.RestoreOperationID != record.RestoreOperationID {
+				for _, other := range records {
+					if other.RestoreStatus == "running" && !backupOperationStale(other.RestoreStartedAt) {
+						return ErrRestoreInProgress
+					}
+				}
+			}
+			if existing.Status != "running" && record.Status != existing.Status {
+				return fmt.Errorf("stale backup progress")
+			}
+			if err := s.assignMonthlyArchive(ctx, record); err != nil {
+				return err
+			}
 			records[i] = *record
 			found = true
 			break
 		}
 	}
 	if !found {
+		if record.Status != "running" || record.RestoreOperationID != "" {
+			return ErrBackupNotFound
+		}
+		if len(records) >= maxBackupRecords {
+			return infraerrors.Conflict("BACKUP_RECORD_CAPACITY", "backup record capacity reached; remove obsolete backups before creating more")
+		}
+		// Reserve room for progress, failure diagnostics and restore bookkeeping.
+		encoded, err := json.Marshal(records)
+		if err != nil {
+			return err
+		}
+		if len(encoded) > maxBackupRecordsJSONBytes-(1<<20) {
+			return infraerrors.Conflict("BACKUP_RECORD_CAPACITY", "backup metadata capacity reached; remove obsolete backups")
+		}
 		records = append(records, *record)
-	}
-
-	// 限制记录数量
-	if len(records) > maxBackupRecords {
-		records = records[len(records)-maxBackupRecords:]
 	}
 
 	return s.saveRecordsLocked(ctx, records)
 }
 
 func (s *BackupService) cleanupOldBackups(ctx context.Context, schedule *BackupScheduleConfig) error {
-	if schedule == nil {
-		return nil
+	ctx, release, ok := s.acquireBackupOperation(ctx)
+	if !ok {
+		return ErrBackupInProgress
 	}
+	defer release()
+	var cleanupErr error
+	err := s.withBackupRecordLock(ctx, func(txCtx context.Context) error {
+		var saveErr error
+		cleanupErr, saveErr = s.cleanupOldBackupsLocked(txCtx, schedule)
+		return saveErr
+	})
+	return errors.Join(err, cleanupErr)
+}
 
-	s.recordsMu.Lock()
-	defer s.recordsMu.Unlock()
+func (s *BackupService) cleanupOldBackupsLocked(ctx context.Context, schedule *BackupScheduleConfig) (error, error) {
+	if schedule == nil {
+		return nil, nil
+	}
 
 	records, err := s.loadRecordsLocked(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 按时间倒序
@@ -1462,7 +1567,23 @@ func (s *BackupService) cleanupOldBackups(ctx context.Context, schedule *BackupS
 	var toDelete []BackupRecord
 	var toKeep []BackupRecord
 
-	for i, r := range records {
+	normalCount, archiveCount := 0, 0
+	for _, r := range records {
+		if r.Status != "completed" || r.RestoreStatus == "running" {
+			toKeep = append(toKeep, r)
+			continue
+		}
+		if r.MonthlyArchive != nil {
+			archiveCount++
+			if r.MonthlyArchive.RetainCount > 0 && archiveCount > r.MonthlyArchive.RetainCount {
+				toDelete = append(toDelete, r)
+			} else {
+				toKeep = append(toKeep, r)
+			}
+			continue
+		}
+		i := normalCount
+		normalCount++
 		shouldDelete := false
 
 		// 按保留份数清理
@@ -1485,28 +1606,62 @@ func (s *BackupService) cleanupOldBackups(ctx context.Context, schedule *BackupS
 		}
 	}
 
-	// 删除 S3 上的文件
+	var deletionErr error
 	for _, r := range toDelete {
-		for _, key := range backupObjectKeys(&r) {
-			_ = s.deleteS3Object(ctx, key)
+		if err := s.deleteBackupObjects(ctx, &r); err != nil {
+			r.ErrorMsg = "cleanup failed: " + err.Error()
+			toKeep = append(toKeep, r)
+			deletionErr = errors.Join(deletionErr, err)
 		}
 	}
 
 	if len(toDelete) > 0 {
-		logger.LegacyPrintf("service.backup", "[Backup] 自动清理了 %d 个过期备份", len(toDelete))
-		return s.saveRecordsLocked(ctx, toKeep)
+		logger.LegacyPrintf("service.backup", "[Backup] 自动清理了 %d 个过期备份", len(records)-len(toKeep))
+		// Object-store failures must not roll back successful deletions' index updates.
+		return deletionErr, s.saveRecordsLocked(ctx, toKeep)
 	}
-	return nil
+	return nil, nil
 }
 
 func (s *BackupService) deleteS3Object(ctx context.Context, key string) error {
 	s3Cfg, err := s.loadS3Config(ctx)
-	if err != nil || s3Cfg == nil {
-		return nil
+	if err != nil {
+		return err
+	}
+	if s3Cfg == nil {
+		return ErrBackupS3NotConfigured
 	}
 	objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
 	if err != nil {
 		return err
 	}
 	return objectStore.Delete(ctx, key)
+}
+
+func backupOperationStale(startedAt string) bool {
+	started, err := time.Parse(time.RFC3339, startedAt)
+	return err == nil && time.Since(started) > 35*time.Minute
+}
+
+// Reuse the existing minute-level control-plane tick for replica propagation.
+func (s *BackupService) RefreshSchedule(ctx context.Context) {
+	if s == nil || s.shuttingDown.Load() {
+		return
+	}
+	s.scheduleUpdateMu.Lock()
+	defer s.scheduleUpdateMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cfg, err := s.GetSchedule(ctx)
+	if err != nil {
+		return
+	}
+	if cfg.Enabled {
+		_ = s.applyCronSchedule(cfg)
+	} else {
+		s.removeCronSchedule()
+	}
+	// A restart may observe another owner's reservation before its lease expires.
+	// Revisit it after expiry even when scheduled backups are disabled.
+	s.recoverStaleRecordsWithContext(ctx)
 }

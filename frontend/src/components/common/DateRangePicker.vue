@@ -25,6 +25,7 @@
         <!-- Quick presets -->
         <div class="date-picker-presets">
           <button
+            type="button"
             v-for="preset in presets"
             :key="preset.value"
             @click="selectPreset(preset)"
@@ -43,7 +44,7 @@
             <input
               type="date"
               v-model="localStartDate"
-              :max="localEndDate || tomorrow"
+              :max="localEndDate || tomorrow()"
               class="date-picker-input"
               @change="onDateChange"
             />
@@ -57,7 +58,7 @@
               type="date"
               v-model="localEndDate"
               :min="localStartDate"
-              :max="tomorrow"
+              :max="tomorrow()"
               class="date-picker-input"
               @change="onDateChange"
             />
@@ -66,7 +67,7 @@
 
         <!-- Apply button -->
         <div class="date-picker-actions">
-          <button @click="apply" class="date-picker-apply">
+          <button type="button" @click="apply" class="date-picker-apply">
             {{ t('dates.apply') }}
           </button>
         </div>
@@ -108,22 +109,16 @@ const localStartDate = ref(props.startDate)
 const localEndDate = ref(props.endDate)
 const activePreset = ref<string | null>('last24Hours')
 
-const today = computed(() => {
-  // Use local timezone to avoid UTC timezone issues
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-})
+const calendarNow = ref(new Date())
+const today = () => formatDateToString(calendarNow.value)
 
 // Tomorrow's date - used for max date to handle timezone differences
 // When user is in a timezone behind the server, "today" on server might be "tomorrow" locally
-const tomorrow = computed(() => {
-  const d = new Date()
+const tomorrow = () => {
+  const d = new Date(calendarNow.value)
   d.setDate(d.getDate() + 1)
   return formatDateToString(d)
-})
+}
 
 // Helper function to format date to YYYY-MM-DD using local timezone
 const formatDateToString = (date: Date): string => {
@@ -138,7 +133,7 @@ const presets: DatePreset[] = [
     labelKey: 'dates.today',
     value: 'today',
     getRange: () => {
-      const t = today.value
+      const t = today()
       return { start: t, end: t }
     }
   },
@@ -168,7 +163,7 @@ const presets: DatePreset[] = [
     labelKey: 'dates.last7Days',
     value: '7days',
     getRange: () => {
-      const end = today.value
+      const end = today()
       const d = new Date()
       d.setDate(d.getDate() - 6)
       const start = formatDateToString(d)
@@ -179,7 +174,7 @@ const presets: DatePreset[] = [
     labelKey: 'dates.last14Days',
     value: '14days',
     getRange: () => {
-      const end = today.value
+      const end = today()
       const d = new Date()
       d.setDate(d.getDate() - 13)
       const start = formatDateToString(d)
@@ -190,7 +185,7 @@ const presets: DatePreset[] = [
     labelKey: 'dates.last30Days',
     value: '30days',
     getRange: () => {
-      const end = today.value
+      const end = today()
       const d = new Date()
       d.setDate(d.getDate() - 29)
       const start = formatDateToString(d)
@@ -203,7 +198,7 @@ const presets: DatePreset[] = [
     getRange: () => {
       const now = new Date()
       const start = formatDateToString(new Date(now.getFullYear(), now.getMonth(), 1))
-      return { start, end: today.value }
+      return { start, end: today() }
     }
   },
   {
@@ -264,6 +259,7 @@ const onDateChange = () => {
 }
 
 const toggle = () => {
+  refreshCalendar()
   isOpen.value = !isOpen.value
 }
 
@@ -290,6 +286,14 @@ const handleEscape = (event: KeyboardEvent) => {
   }
 }
 
+// Restore the applied range after dismissal, including parent updates from Apply.
+watch(isOpen, (open) => {
+  if (open) return
+  localStartDate.value = props.startDate
+  localEndDate.value = props.endDate
+  onDateChange()
+}, { flush: 'post' })
+
 // Sync local state with props
 watch(
   () => props.startDate,
@@ -307,7 +311,20 @@ watch(
   }
 )
 
+let midnightTimer: ReturnType<typeof setTimeout> | undefined
+const refreshCalendar = () => {
+  clearTimeout(midnightTimer)
+  calendarNow.value = new Date()
+  onDateChange()
+  if (document.visibilityState === 'hidden') return
+  const next = new Date(calendarNow.value)
+  next.setHours(24, 0, 0, 50)
+  midnightTimer = setTimeout(refreshCalendar, next.getTime() - calendarNow.value.getTime())
+}
+
 onMounted(() => {
+  document.addEventListener('visibilitychange', refreshCalendar)
+  refreshCalendar()
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleEscape)
   // Initialize active preset detection
@@ -315,6 +332,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  clearTimeout(midnightTimer)
+  document.removeEventListener('visibilitychange', refreshCalendar)
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleEscape)
 })

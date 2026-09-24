@@ -85,6 +85,16 @@ func TransformClaudeToGemini(claudeReq *ClaudeRequest, projectID, mappedModel st
 
 // TransformClaudeToGeminiWithOptions 将 Claude 请求转换为 v1internal Gemini 格式（可配置身份补丁等行为）
 func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, mappedModel string, opts TransformOptions) ([]byte, error) {
+	for _, tool := range claudeReq.Tools {
+		schema := tool.InputSchema
+		if tool.Type == "custom" && tool.Custom != nil {
+			schema = tool.Custom.InputSchema
+		}
+		if err := NormalizeCompatibleSchema(schema); err != nil {
+			return nil, fmt.Errorf("tool %q: %w", tool.Name, err)
+		}
+	}
+
 	// 用于存储 tool_use id -> name 映射
 	toolIDToName := make(map[string]string)
 

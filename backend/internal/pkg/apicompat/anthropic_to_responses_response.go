@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 )
 
 // ---------------------------------------------------------------------------
@@ -15,7 +17,11 @@ import (
 // AnthropicToResponsesResponse converts an Anthropic Messages response into a
 // Responses API response. This is the reverse of ResponsesToAnthropic and
 // enables Anthropic upstream responses to be returned in OpenAI Responses format.
-func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
+func AnthropicToResponsesResponse(resp *AnthropicResponse, scopes ...string) *ResponsesResponse {
+	scope := ""
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	id := resp.ID
 	if id == "" {
 		id = generateResponsesID()
@@ -33,7 +39,16 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 
 	for _, block := range resp.Content {
 		switch block.Type {
-		case "thinking":
+		case "thinking", "redacted_thinking":
+			if claude.IsOpus55(resp.Model) && (block.Signature != "" || block.Data != "") {
+				item := ResponsesOutput{Type: "reasoning", ID: generateItemID()}
+				item.EncryptedContent = encodeAnthropicThinking(block, scope, item.ID)
+				if block.Thinking != "" {
+					item.Summary = []ResponsesSummary{{Type: "summary_text", Text: block.Thinking}}
+				}
+				outputs = append(outputs, item)
+				continue
+			}
 			if block.Thinking != "" {
 				outputs = append(outputs, ResponsesOutput{
 					Type: "reasoning",
@@ -45,6 +60,10 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 				})
 			}
 		case "text":
+			if claude.IsOpus55(resp.Model) && block.Text != "" {
+				outputs = append(outputs, ResponsesOutput{Type: "message", ID: generateItemID(), Role: "assistant", Status: "completed", Content: []ResponsesContentPart{{Type: "output_text", Text: block.Text}}})
+				continue
+			}
 			if block.Text != "" {
 				msgParts = append(msgParts, ResponsesContentPart{
 					Type: "output_text",
@@ -136,10 +155,14 @@ func anthropicStopReasonToResponsesStatus(stopReason string, blocks []AnthropicC
 // AnthropicEventToResponsesState tracks state for converting a sequence of
 // Anthropic SSE events into Responses SSE events.
 type AnthropicEventToResponsesState struct {
-	ResponseID     string
-	Model          string
-	Created        int64
-	SequenceNumber int
+	PreserveThinkingSignatures bool
+	ThinkingScope              string
+	CurrentThinking            AnthropicContentBlock
+	ThinkingEnvelopeOverflow   bool
+	ResponseID                 string
+	Model                      string
+	Created                    int64
+	SequenceNumber             int
 
 	// CreatedSent tracks whether response.created has been emitted.
 	CreatedSent bool
@@ -242,6 +265,7 @@ func ResponsesEventToSSE(evt ResponsesStreamEvent) (string, error) {
 
 func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	if evt.Message != nil {
+		state.PreserveThinkingSignatures = state.PreserveThinkingSignatures || claude.IsOpus55(evt.Message.Model)
 		state.ResponseID = evt.Message.ID
 		if state.Model == "" {
 			state.Model = evt.Message.Model
@@ -274,8 +298,11 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 	var events []ResponsesStreamEvent
 
 	switch evt.ContentBlock.Type {
-	case "thinking":
+	case "thinking", "redacted_thinking":
 		events = append(events, closeCurrentResponsesItem(state)...)
+		state.ThinkingEnvelopeOverflow = false
+		state.CurrentThinking = *evt.ContentBlock
+		state.CurrentThinking.Thinking = ""
 		state.CurrentItemID = generateItemID()
 		state.CurrentItemType = "reasoning"
 		state.ContentIndex = 0
@@ -372,6 +399,11 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 			return nil
 		}
 		state.CurrentSummary += evt.Delta.Thinking
+		if state.PreserveThinkingSignatures && len(state.CurrentThinking.Thinking)+len(evt.Delta.Thinking) <= maxAnthropicThinkingEnvelope {
+			state.CurrentThinking.Thinking += evt.Delta.Thinking
+		} else if state.PreserveThinkingSignatures {
+			state.ThinkingEnvelopeOverflow = true
+		}
 		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.reasoning_summary_text.delta", &ResponsesStreamEvent{
 			OutputIndex:  state.OutputIndex,
 			SummaryIndex: 0,
@@ -398,7 +430,11 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		})}
 
 	case "signature_delta":
-		// Anthropic signature deltas have no Responses equivalent; skip
+		if state.PreserveThinkingSignatures && len(state.CurrentThinking.Signature)+len(evt.Delta.Signature) <= maxAnthropicThinkingEnvelope {
+			state.CurrentThinking.Signature += evt.Delta.Signature
+		} else if state.PreserveThinkingSignatures {
+			state.ThinkingEnvelopeOverflow = true
+		}
 		return nil
 	}
 
@@ -548,6 +584,9 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 			item.Arguments = "{}"
 		}
 	case "reasoning":
+		if state.PreserveThinkingSignatures && !state.ThinkingEnvelopeOverflow && (state.CurrentThinking.Signature != "" || state.CurrentThinking.Data != "") {
+			item.EncryptedContent = encodeAnthropicThinking(state.CurrentThinking, state.ThinkingScope, item.ID)
+		}
 		if state.CurrentSummary != "" {
 			item.Summary = []ResponsesSummary{{Type: "summary_text", Text: state.CurrentSummary}}
 		}
@@ -563,6 +602,7 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 	state.CurrentArgs = ""
 	state.InitialArgsPending = false
 	state.CurrentSummary = ""
+	state.CurrentThinking = AnthropicContentBlock{}
 	state.TextAccum = ""
 	state.OutputIndex++
 	state.ContentIndex = 0

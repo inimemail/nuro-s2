@@ -64,6 +64,7 @@ type AnthropicContentBlock struct {
 	// type=thinking
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 
 	// type=image
 	Source *AnthropicImageSource `json:"source,omitempty"`
@@ -206,6 +207,7 @@ type AnthropicDelta struct {
 
 // ResponsesRequest is the request body for POST /v1/responses.
 type ResponsesRequest struct {
+	ThinkingScope      string              `json:"-"`
 	Model              string              `json:"model"`
 	Instructions       string              `json:"instructions,omitempty"`
 	Input              json.RawMessage     `json:"input"` // string or []ResponsesInputItem
@@ -227,6 +229,7 @@ type ResponsesRequest struct {
 
 // ResponsesReasoning configures reasoning effort in the Responses API.
 type ResponsesReasoning struct {
+	Mode    string `json:"mode,omitempty"`
 	Effort  string `json:"effort"`            // "low" | "medium" | "high" | "xhigh"
 	Summary string `json:"summary,omitempty"` // "auto" | "concise" | "detailed"
 }

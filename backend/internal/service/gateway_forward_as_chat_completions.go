@@ -33,6 +33,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	ctx = captureClaudeCLIIdentity(ctx)
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request
@@ -43,21 +44,6 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	originalModel := ccReq.Model
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
-
-	// 2. Convert CC → Responses → Anthropic (chained conversion)
-	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
-	if err != nil {
-		return nil, fmt.Errorf("convert chat completions to responses: %w", err)
-	}
-
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
-	if err != nil {
-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
-	}
-
-	// 3. Force upstream streaming
-	anthropicReq.Stream = true
-	reqStream := true
 
 	// 4. Model mapping
 	mappedModel := originalModel
@@ -75,6 +61,27 @@ func (s *GatewayService) ForwardAsChatCompletions(
 			mappedModel = normalized
 		}
 	}
+	ccReq.Model = mappedModel
+	if err := validateNewModelChatReasoningTools(mappedModel, ccReq.ReasoningEffort, len(ccReq.Tools) > 0); err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+
+	// 2. Convert CC → Responses → Anthropic (chained conversion)
+	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
+	if err != nil {
+		return nil, fmt.Errorf("convert chat completions to responses: %w", err)
+	}
+
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+	if err != nil {
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
+
+	// 3. Force upstream streaming
+	anthropicReq.Stream = true
+	reqStream := true
+
 	anthropicReq.Model = mappedModel
 
 	logger.L().Debug("gateway forward_as_chat_completions: model mapping applied",
@@ -439,7 +446,15 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	}
 
 	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) bool {
-		if firstChunk {
+		if event.Type == "ping" {
+			if _, err := fmt.Fprint(c.Writer, ": ping\n\n"); err != nil {
+				clientDisconnected = true
+				return true
+			}
+			c.Writer.Flush()
+			return false
+		}
+		if firstChunk && (event.Type == "content_block_delta" || (event.Type == "content_block_start" && event.ContentBlock != nil && (event.ContentBlock.Text != "" || event.ContentBlock.Thinking != "" || event.ContentBlock.Type == "tool_use"))) {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms

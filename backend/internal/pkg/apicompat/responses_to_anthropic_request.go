@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 )
 
 // ResponsesToAnthropicRequest converts a Responses API request into an
@@ -12,7 +14,7 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, thinkingReplayOptions{claude.IsOpus55(req.Model), req.ThinkingScope})
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +77,33 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		}
 	}
 
+	if claude.IsOpus55(req.Model) {
+		var choice struct {
+			Type string `json:"type"`
+		}
+		if len(out.ToolChoice) > 0 {
+			if err := json.Unmarshal(out.ToolChoice, &choice); err != nil {
+				return nil, fmt.Errorf("invalid tool_choice: %w", err)
+			}
+		}
+		if choice.Type == "any" || choice.Type == "tool" {
+			return nil, fmt.Errorf("claude-opus-5-5 requires tool_choice auto or none")
+		}
+		effort := "medium"
+		if req.Reasoning != nil && req.Reasoning.Effort != "" {
+			effort = req.Reasoning.Effort
+		}
+		switch effort {
+		case "low", "medium", "high", "xhigh", "max":
+		default:
+			return nil, fmt.Errorf("unsupported claude-opus-5-5 reasoning effort %q", effort)
+		}
+		out.Temperature, out.TopP = nil, nil
+		out.Thinking = &AnthropicThinking{Type: "adaptive"}
+		out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
+		return out, nil
+	}
+
 	// reasoning.effort → output_config.effort + thinking
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		effort := mapResponsesEffortToAnthropic(req.Reasoning.Effort)
@@ -133,7 +162,17 @@ func mapResponsesEffortToAnthropic(effort string) string {
 // convertResponsesInputToAnthropic extracts system prompt and messages from
 // Responses API instructions + input. Returns the system as raw JSON (for
 // Anthropic's polymorphic system field) and a list of Anthropic messages.
-func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
+type thinkingReplayOptions struct {
+	Enabled bool
+	Scope   string
+}
+
+func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage, thinkingOptions ...thinkingReplayOptions) (json.RawMessage, []AnthropicMessage, error) {
+	preserveThinking := len(thinkingOptions) > 0 && thinkingOptions[0].Enabled
+	scope := ""
+	if len(thinkingOptions) > 0 {
+		scope = thinkingOptions[0].Scope
+	}
 	var systemParts []string
 	if strings.TrimSpace(instructions) != "" {
 		systemParts = append(systemParts, strings.TrimSpace(instructions))
@@ -165,6 +204,20 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 			if text != "" {
 				systemParts = append(systemParts, text)
 			}
+
+		case item.Type == "reasoning":
+			if !preserveThinking || item.EncryptedContent == "" {
+				continue
+			}
+			if item.Role != "" && item.Role != "assistant" {
+				return nil, nil, fmt.Errorf("thinking item must be assistant content")
+			}
+			block, err := decodeAnthropicThinking(item.EncryptedContent, scope, item.ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			raw, _ := json.Marshal([]AnthropicContentBlock{block})
+			messages = append(messages, AnthropicMessage{Role: "assistant", Content: raw})
 
 		case item.Type == "function_call":
 			// function_call → assistant message with tool_use block
@@ -296,11 +349,15 @@ func sanitizeAnthropicMessages(messages []AnthropicMessage) []AnthropicMessage {
 					}
 					kept = append(kept, block)
 				}
+			case "redacted_thinking":
+				if block.Data != "" {
+					kept = append(kept, block)
+				}
 			case "thinking":
 				// Responses reasoning items are not valid historical Anthropic
 				// thinking blocks unless a provider signature is present. Drop
 				// unsigned blocks to avoid upstream validation failures.
-				if strings.TrimSpace(block.Signature) != "" && strings.TrimSpace(block.Thinking) != "" {
+				if strings.TrimSpace(block.Signature) != "" {
 					kept = append(kept, block)
 				}
 			}

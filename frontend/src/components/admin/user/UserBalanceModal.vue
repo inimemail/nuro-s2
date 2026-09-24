@@ -17,7 +17,7 @@
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button @click="$emit('close')" class="btn btn-secondary">{{ t('common.cancel') }}</button>
+        <button type="button" @click="$emit('close')" class="btn btn-secondary">{{ t('common.cancel') }}</button>
         <button type="submit" form="balance-form" :disabled="submitting || !form.amount" class="btn" :class="operation === 'add' ? 'bg-emerald-600 text-white' : 'btn-danger'">{{ submitting ? t('common.saving') : t('common.confirm') }}</button>
       </div>
     </template>
@@ -29,6 +29,7 @@ import { reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import type { AdminUser } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 
@@ -36,7 +37,14 @@ const props = defineProps<{ show: boolean, user: AdminUser | null, operation: 'a
 const emit = defineEmits(['close', 'success']); const { t } = useI18n(); const appStore = useAppStore()
 
 const submitting = ref(false); const form = reactive({ amount: 0, notes: '' })
-watch(() => props.show, (v) => { if(v) { form.amount = 0; form.notes = '' } })
+let requestVersion = 0
+watch(() => [props.show, props.user?.id, props.operation], (_, __, onCleanup) => {
+  requestVersion++
+  onCleanup(() => { requestVersion++ })
+  submitting.value = false
+  form.amount = 0
+  form.notes = ''
+}, { immediate: true })
 
 // 格式化余额：显示完整精度，去除尾部多余的0
 const formatBalance = (value: number) => {
@@ -65,7 +73,7 @@ const calculateNewBalance = () => {
 }
 const handleBalanceSubmit = async () => {
   if (!props.user) return
-  if (!form.amount || form.amount <= 0) {
+  if (!Number.isFinite(form.amount) || form.amount <= 0) {
     appStore.showError(t('admin.users.amountRequired'))
     return
   }
@@ -74,13 +82,17 @@ const handleBalanceSubmit = async () => {
     appStore.showError(t('admin.users.insufficientBalance'))
     return
   }
+  if (submitting.value) return
+  const version = requestVersion
   submitting.value = true
   try {
     await adminAPI.users.updateBalance(props.user.id, form.amount, props.operation, form.notes)
+    if (version !== requestVersion) return
     appStore.showSuccess(t('common.success')); emit('success'); emit('close')
   } catch (e: any) {
+    if (version !== requestVersion) return
     console.error('Failed to update balance:', e)
-    appStore.showError(e.response?.data?.detail || t('common.error'))
-  } finally { submitting.value = false }
+    appStore.showError(extractApiErrorMessage(e, t('common.error')))
+  } finally { if (version === requestVersion) submitting.value = false }
 }
 </script>

@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { previewRequestRetention } from '@/api/admin/ops'
 import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogSinkHealth } from '@/api/admin/ops'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
 
 const appStore = useAppStore()
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   platformFilter?: string
@@ -39,6 +42,8 @@ const runtimeConfig = reactive<OpsRuntimeLogConfig>({
   sampling_thereafter: 100,
   caller: true,
   stacktrace_level: 'error',
+  request_retention_override_enabled: false,
+  request_retention_days: 30,
   retention_days: 30
 })
 
@@ -228,6 +233,8 @@ const loadRuntimeConfig = async () => {
     runtimeConfig.caller = cfg.caller
     runtimeConfig.stacktrace_level = cfg.stacktrace_level
     runtimeConfig.retention_days = cfg.retention_days
+    runtimeConfig.request_retention_override_enabled = cfg.request_retention_override_enabled ?? false
+    runtimeConfig.request_retention_days = cfg.request_retention_days ?? 30
   } catch (err: any) {
     console.error('[OpsSystemLogTable] Failed to load runtime log config', err)
   } finally {
@@ -236,9 +243,20 @@ const loadRuntimeConfig = async () => {
 }
 
 const saveRuntimeConfig = async () => {
+  if (runtimeSaving.value) return
+  const payload = { ...runtimeConfig }
+  const days = payload.request_retention_days
+  if (payload.request_retention_override_enabled && (typeof days !== 'number' || !Number.isInteger(days) || days < 0 || days > 3650)) {
+    appStore.showError(t('requestRetention.invalid'))
+    return
+  }
   runtimeSaving.value = true
   try {
-    const saved = await opsAPI.updateRuntimeLogConfig({ ...runtimeConfig })
+    if (payload.request_retention_override_enabled && (payload.request_retention_days ?? 0) > 0) {
+      const preview = await previewRequestRetention(payload.request_retention_days!)
+      if (!window.confirm(t('requestRetention.confirm', { cutoff: preview.cutoff, rows: preview.estimated_rows ?? t('requestRetention.unknown') }))) return
+    }
+    const saved = await opsAPI.updateRuntimeLogConfig(payload)
     runtimeConfig.level = saved.level
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
@@ -246,6 +264,8 @@ const saveRuntimeConfig = async () => {
     runtimeConfig.caller = saved.caller
     runtimeConfig.stacktrace_level = saved.stacktrace_level
     runtimeConfig.retention_days = saved.retention_days
+    runtimeConfig.request_retention_override_enabled = saved.request_retention_override_enabled ?? false
+    runtimeConfig.request_retention_days = saved.request_retention_days ?? 30
     appStore.showSuccess('日志运行时配置已生效')
   } catch (err: any) {
     console.error('[OpsSystemLogTable] Failed to save runtime log config', err)
@@ -269,6 +289,8 @@ const resetRuntimeConfig = async () => {
     runtimeConfig.caller = saved.caller
     runtimeConfig.stacktrace_level = saved.stacktrace_level
     runtimeConfig.retention_days = saved.retention_days
+    runtimeConfig.request_retention_override_enabled = saved.request_retention_override_enabled ?? false
+    runtimeConfig.request_retention_days = saved.request_retention_days ?? 30
     appStore.showSuccess('已回滚到启动日志配置')
     await fetchHealth()
   } catch (err: any) {
@@ -402,9 +424,14 @@ onMounted(async () => {
           <input v-model.number="runtimeConfig.sampling_thereafter" type="number" min="1" class="input mt-1" />
         </label>
         <label class="text-xs text-gray-600 dark:text-gray-300">
-          保留天数
+          {{ t('requestRetention.systemDays') }}
           <input v-model.number="runtimeConfig.retention_days" type="number" min="1" max="3650" class="input mt-1" />
         </label>
+        <div class="rounded-xl border border-gray-200 bg-gray-50/60 p-4 dark:border-dark-600 dark:bg-dark-800/40 md:col-span-2 xl:col-span-6">
+          <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"><input v-model="runtimeConfig.request_retention_override_enabled" type="checkbox" />{{ t('requestRetention.title') }}</label>
+          <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('requestRetention.description') }}</p>
+          <label v-if="runtimeConfig.request_retention_override_enabled" class="mt-3 block max-w-xs text-xs text-gray-600 dark:text-gray-300">{{ t('requestRetention.days') }}<input v-model.number="runtimeConfig.request_retention_days" type="number" min="0" max="3650" step="1" class="input mt-1 w-full" /></label>
+        </div>
         <div class="md:col-span-2 xl:col-span-6">
           <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-2">

@@ -2161,3 +2161,15 @@ func TestValidateRejectsInvalidGatewayStreamLowLatencyMode(t *testing.T) {
 
 	require.ErrorContains(t, err, "gateway.stream_low_latency_mode")
 }
+
+func TestV028SimpleModeDefaultGroupCompatibility(t *testing.T) {
+	for _, value := range []string{"", "false", "true"} {
+		t.Run(value, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS", value)
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, value != "false", cfg.SimpleMode.AutoCreateDefaultGroups)
+		})
+	}
+}

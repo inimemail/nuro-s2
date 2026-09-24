@@ -105,6 +105,9 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 
 	// 缓存不存在或解析失败，创建新指纹
 	fp := s.createFingerprintFromHeaders(headers)
+	if headers.Get("User-Agent") == "" {
+		fp.UserAgent = "claude-cli/" + claudeCLIVersionForContext(ctx) + " (external, cli)"
+	}
 
 	// 生成随机ClientID
 	fp.ClientID = generateClientID()

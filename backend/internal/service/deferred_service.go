@@ -39,7 +39,20 @@ func (s *DeferredService) Stop() {
 }
 
 func (s *DeferredService) ScheduleLastUsedUpdate(accountID int64) {
-	s.lastUsedUpdates.Store(accountID, time.Now())
+	s.mergeLastUsed(accountID, time.Now())
+}
+
+// Merge retries without allowing an older flush to overwrite newer activity.
+func (s *DeferredService) mergeLastUsed(accountID int64, at time.Time) {
+	for {
+		previous, loaded := s.lastUsedUpdates.LoadOrStore(accountID, at)
+		if !loaded || !at.After(previous.(time.Time)) {
+			return
+		}
+		if s.lastUsedUpdates.CompareAndSwap(accountID, previous, at) {
+			return
+		}
+	}
 }
 
 func (s *DeferredService) flushLastUsed() {
@@ -53,8 +66,9 @@ func (s *DeferredService) flushLastUsed() {
 		if !ok {
 			return true
 		}
-		updates[id] = ts
-		s.lastUsedUpdates.Delete(key)
+		if s.lastUsedUpdates.CompareAndDelete(key, value) {
+			updates[id] = ts
+		}
 		return true
 	})
 
@@ -68,7 +82,7 @@ func (s *DeferredService) flushLastUsed() {
 	if err := s.accountRepo.BatchUpdateLastUsed(ctx, updates); err != nil {
 		log.Printf("[DeferredService] BatchUpdateLastUsed failed (%d accounts): %v", len(updates), err)
 		for id, ts := range updates {
-			s.lastUsedUpdates.Store(id, ts)
+			s.mergeLastUsed(id, ts)
 		}
 	} else {
 		log.Printf("[DeferredService] BatchUpdateLastUsed flushed %d accounts", len(updates))

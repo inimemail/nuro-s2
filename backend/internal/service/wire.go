@@ -184,6 +184,14 @@ func ProvideGrokQuotaService(
 	return service
 }
 
+func ProvideOpenCodeGoUsageService(accounts AccountRepository, settings SettingRepository, quota *CNProviderQuotaService, lock LeaderLockCache, db *sql.DB) *OpenCodeGoUsageService {
+	if quota != nil {
+		quota.usageLock = lock
+		quota.usageDB = db
+	}
+	return &OpenCodeGoUsageService{accounts: accounts, settings: settings, quota: quota, lock: lock, db: db, config: defaultOpenCodeGoUsageSettings()}
+}
+
 func ProvideCNProviderQuotaService(accountRepo AccountRepository, proxyRepo ProxyRepository, httpUpstream HTTPUpstream, cfg *config.Config) *CNProviderQuotaService {
 	return NewCNProviderQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
 }
@@ -275,8 +283,9 @@ func ProvideOpenAIGatewayService(
 }
 
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
-func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, cfg *config.Config) *DashboardAggregationService {
+func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, cfg *config.Config, settings SettingRepository, lock LeaderLockCache, db *sql.DB) *DashboardAggregationService {
 	svc := NewDashboardAggregationService(repo, timingWheel, cfg)
+	svc.settingRepo, svc.lockCache, svc.db = settings, lock, db
 	svc.Start()
 	return svc
 }
@@ -301,8 +310,19 @@ func ProvideOpenAICodexVersionSyncService(
 	settingRepo SettingRepository,
 	settingService *SettingService,
 	githubClient GitHubReleaseClient,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	dashboard *DashboardAggregationService,
+	openCodeUsage *OpenCodeGoUsageService,
+	backup *BackupService,
 ) *OpenAICodexVersionSyncService {
 	svc := NewOpenAICodexVersionSyncService(settingRepo, settingService, githubClient, openAICodexVersionSyncInterval)
+	claudeSync := &ClaudeCLIVersionSyncService{repo: settingRepo, github: githubClient, lock: lockCache, db: db}
+	settingService.claudeVersionSync = claudeSync
+	svc.claudeVersionSync = claudeSync
+	svc.retentionService = dashboard
+	svc.openCodeUsage = openCodeUsage
+	svc.backup = backup
 	svc.Start()
 	return svc
 }
@@ -734,6 +754,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideGrokQuotaService,
 	ProvideCNProviderQuotaService,
+	ProvideOpenCodeGoUsageService,
 	ProvideCNProviderBalanceService,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,

@@ -228,6 +228,11 @@ func enforceCodexIdentityHeaders(h http.Header) {
 	originator, pairedUA, ok := openai.PairCodexClientIdentity(h.Get("user-agent"))
 	if !ok {
 		originator, pairedUA = "codex_cli_rs", safeCanonicalCodexUserAgent(snapshot)
+		if parsed := openai.CodexUserAgentVersion(h.Get("user-agent")); parsed != "" && strings.Contains(strings.ToLower(h.Get("user-agent")), "codex") && CompareVersions(parsed, codexUpstreamMinVersion) >= 0 {
+			if rebuilt := openai.SetCodexUserAgentVersion(pairedUA, parsed); rebuilt != "" {
+				pairedUA = rebuilt
+			}
+		}
 	}
 	h.Set("user-agent", pairedUA)
 	h.Set("originator", originator)

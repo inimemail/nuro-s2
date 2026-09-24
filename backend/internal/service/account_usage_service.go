@@ -499,11 +499,8 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	accountID := account.ID
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
-		usage, err := s.getOpenAIUsage(ctx, account, forceProbe)
-		if err == nil {
-			s.tryClearRecoverableAccountError(ctx, account)
-		}
-		return usage, err
+		// A cached usage snapshot or valid access token does not prove refresh-token recovery.
+		return s.getOpenAIUsage(ctx, account, forceProbe)
 	}
 
 	if account.Platform == PlatformGemini {

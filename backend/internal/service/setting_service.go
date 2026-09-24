@@ -197,6 +197,7 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 
 // SettingService 系统设置服务
 type SettingService struct {
+	claudeVersionSync           *ClaudeCLIVersionSyncService
 	settingRepo                 SettingRepository
 	defaultSubGroupReader       DefaultSubscriptionGroupReader
 	proxyRepo                   ProxyRepository // for resolving websearch provider proxy URLs
@@ -2376,6 +2377,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyLowLatencyStreamHeaders] = strconv.FormatBool(settings.LowLatencyStreamHeaders)
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
+	updates[SettingKeyClaudeCLIClientVersion] = normalizeClaudeCLIVersion(settings.ClaudeCLIClientVersion)
+	updates[SettingKeyClaudeCLIVersionAutoSyncEnabled] = strconv.FormatBool(settings.ClaudeCLIVersionAutoSyncEnabled)
 	updates[SettingKeyOpenAICodexClientVersion] = NormalizeCodexClientVersion(settings.OpenAICodexClientVersion)
 	updates[SettingKeyOpenAICodexVersionAutoSyncEnabled] = strconv.FormatBool(settings.OpenAICodexVersionAutoSyncEnabled)
 	updates[SettingKeyOpenAICodexRoutingHintEnabled] = strconv.FormatBool(settings.OpenAICodexRoutingHintEnabled)
@@ -2537,6 +2540,9 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		version:   antigravityUserAgentVersion,
 		expiresAt: time.Now().Add(antigravityUserAgentVersionCacheTTL).UnixNano(),
 	})
+	if s.claudeVersionSync != nil {
+		s.claudeVersionSync.Apply(settings.ClaudeCLIClientVersion, settings.ClaudeCLIClientVersionSynced, settings.ClaudeCLIVersionAutoSyncEnabled)
+	}
 	publishCodexIdentityRuntime(
 		settings.OpenAICodexClientVersion,
 		settings.OpenAICodexClientVersionSynced,
@@ -4351,6 +4357,11 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.LowLatencyStreamHeaders = result.StreamLowLatencyMode != config.StreamLowLatencyModeOff
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
+	result.ClaudeCLIClientVersion = normalizeClaudeCLIVersion(settings[SettingKeyClaudeCLIClientVersion])
+	result.ClaudeCLIClientVersionSynced = normalizeClaudeCLIVersion(settings[SettingKeyClaudeCLIClientVersionSynced])
+	result.ClaudeCLIVersionAutoSyncEnabled = settings[SettingKeyClaudeCLIVersionAutoSyncEnabled] == "true"
+	claudeIdentity := resolveClaudeCLIIdentity(result.ClaudeCLIClientVersion, result.ClaudeCLIClientVersionSynced, result.ClaudeCLIVersionAutoSyncEnabled)
+	result.ClaudeCLIClientVersionEffective, result.ClaudeCLIClientVersionSource = claudeIdentity.version, claudeIdentity.source
 	result.OpenAICodexClientVersion = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersion])
 	result.OpenAICodexClientVersionSynced = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersionSynced])
 	result.OpenAICodexClientVersionEffective = resolveCodexClientVersion(result.OpenAICodexClientVersion, result.OpenAICodexClientVersionSynced)

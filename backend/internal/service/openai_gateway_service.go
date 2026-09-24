@@ -6311,6 +6311,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	var samplingErr error
+	body, samplingErr = normalizeGPT6ResponsesSampling(body)
+	if samplingErr != nil {
+		return nil, samplingErr
+	}
 	if account != nil {
 		var headers http.Header
 		if c != nil && c.Request != nil {
@@ -6471,6 +6476,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		setOpenAICodexRoutingHintFromBody(req.Header, account, body, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
@@ -6485,6 +6491,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		req.Header.Set("content-type", "application/json")
 	}
 
+	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 
@@ -6692,7 +6701,7 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 		return false
 	}
 	switch strings.TrimSpace(eventType) {
-	case "response.created", "response.in_progress":
+	case "response.created", "response.in_progress", "ping", "keepalive":
 		return false
 	case "response.failed":
 		return false
@@ -6757,6 +6766,17 @@ func safeOpenAICapacityShedErrorPayload() []byte {
 }
 
 func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
+	for _, path := range []string{"response.error.status", "error.status", "response.error.status_code", "error.status_code"} {
+		value := gjson.GetBytes(payload, path)
+		if value.Type != gjson.Number && value.Type != gjson.String {
+			continue
+		}
+		status, err := strconv.Atoi(strings.TrimSpace(value.String()))
+		if err == nil && status >= 400 && status <= 599 {
+			return status
+		}
+	}
+
 	if isOpenAIContextWindowError(message, payload) {
 		return http.StatusBadRequest
 	}
@@ -7804,7 +7824,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 				observer.ObserveOpenAI(dataBytes, strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String()))
 			}
-			if needModelReplace && strings.Contains(data, mappedModel) {
+			if needModelReplace && strings.Contains(data, `"model"`) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 				if replacedData, replaced := extractOpenAISSEDataLine(line); replaced {
 					dataBytes = []byte(replacedData)
@@ -7812,6 +7832,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			eventType := upstreamSSEState.dataEventType([]byte(trimmedData))
+			if eventType == "ping" || eventType == "keepalive" {
+				return false, nil
+			}
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				s.parseSSEUsageBytes(dataBytes, usage)
@@ -7971,6 +7994,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		return false, nil
 	}
 
+	var passthroughScanErr error
 	if (passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier > 0 && passthroughLowLatencyPolicy.AllowBootstrapComment) || firstTokenTimeoutPlaceholder > 0 || progressDeadline > 0 {
 		type passthroughScanEvent struct {
 			line string
@@ -7978,7 +8002,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 		events := make(chan passthroughScanEvent, 16)
 		done := make(chan struct{})
+		readerDone := make(chan struct{})
 		go func() {
+			defer close(readerDone)
 			defer close(events)
 			for passthroughDocumentScanner.Scan() {
 				select {
@@ -7994,7 +8020,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 		}()
-		defer close(done)
+		defer func() {
+			close(done)
+			_ = resp.Body.Close()
+			<-readerDone // Return the pooled scanner buffer only after its owner exits.
+		}()
 
 		bootstrapPending := false
 		var bootstrapCh <-chan time.Time
@@ -8021,10 +8051,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					goto passthroughScanDone
 				}
 				if ev.err != nil {
+					passthroughScanErr = ev.err
 					goto passthroughScanDone
 				}
 				if _, err := processPassthroughLine(ev.line); err != nil {
 					return resultWithUsage(), err
+				}
+				if ev.line == "" && terminalEventType != "" {
+					goto passthroughScanDone
 				}
 				if bootstrapPending {
 					writePassthroughBootstrapComment()
@@ -8062,9 +8096,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		if _, err := processPassthroughLine(passthroughDocumentScanner.Text()); err != nil {
 			return resultWithUsage(), err
 		}
+		if passthroughDocumentScanner.Text() == "" && terminalEventType != "" {
+			break
+		}
 	}
+	passthroughScanErr = passthroughDocumentScanner.Err()
 passthroughScanDone:
-	if err := passthroughDocumentScanner.Err(); err != nil {
+	if err := passthroughScanErr; err != nil {
 		if terminalEventType != "" && !sawFailedEvent {
 			if neutralTerminalEventType == "" && !clientDisconnected {
 				s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
@@ -8492,6 +8530,11 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	var samplingErr error
+	body, samplingErr = normalizeGPT6ResponsesSampling(body)
+	if samplingErr != nil {
+		return nil, samplingErr
+	}
 	if account != nil {
 		var headers http.Header
 		if c != nil && c.Request != nil {
@@ -8651,6 +8694,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		setOpenAICodexRoutingHintFromBody(req.Header, account, body, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
+	applyOpenCodeUpstreamUserAgent(account, req.URL.String(), req.Header)
 	account.ApplyHeaderOverrides(req.Header)
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	applyOpenCodeSessionHeader(c, account, req.URL.String(), req.Header)
@@ -8666,6 +8710,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("content-type", "application/json")
 	}
 
+	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 
@@ -9524,7 +9571,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
-			if needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel) {
+			if needModelReplace && mappedModel != "" && strings.Contains(data, `"model"`) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 				if replacedData, replaced := extractOpenAISSEDataLine(line); replaced {
 					data = replacedData
@@ -9533,6 +9580,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 			dataBytes := []byte(data)
 			eventType := upstreamSSEState.dataEventType(dataBytes)
+			if eventType == "ping" || eventType == "keepalive" {
+				return
+			}
 			progressObservation := classifyOpenAIStreamProgress(dataBytes, eventType)
 			progressTracker.observe(time.Now(), progressObservation)
 			if progressObservation.visible && semanticStallTimer != nil {
@@ -9743,6 +9793,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			defer putSSEScannerBuf64K(scanBuf)
 			for documentScanner.Scan() {
 				processSSELine(documentScanner.Text(), true)
+				if documentScanner.Text() == "" && terminalEventType != "" {
+					return finalizeStream()
+				}
 				if streamFailoverErr != nil {
 					return resultWithUsage(), streamFailoverErr
 				}
@@ -9815,7 +9868,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}(scanBuf)
-	defer close(done)
+	defer func() { close(done); _ = resp.Body.Close() }()
 
 	bootstrapPending := false
 	for {
@@ -9828,6 +9881,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				return result, err
 			}
 			processSSELine(ev.line, len(events) == 0)
+			if ev.line == "" && terminalEventType != "" {
+				return finalizeStream()
+			}
 			if streamFailoverErr != nil {
 				return resultWithUsage(), streamFailoverErr
 			}
@@ -10024,6 +10080,10 @@ func (s *openAIUpstreamSSEState) sanitizeControlLine(line string) (string, bool)
 	}
 	if eventType, ok := extractOpenAISSEEventLine(line); ok {
 		eventType = strings.TrimSpace(eventType)
+		if eventType == "ping" || eventType == "keepalive" {
+			s.eventType = eventType
+			return ":", true
+		}
 		if eventType != "error" && !strings.HasPrefix(eventType, "response.") {
 			s.eventType = ""
 			return "", false
@@ -10106,7 +10166,7 @@ func (s *OpenAIGatewayService) replaceModelInSSELine(line, fromModel, toModel st
 	}
 
 	// 使用 gjson 精确检查 model 字段，避免全量 JSON 反序列化
-	if m := gjson.Get(data, "model"); m.Exists() && m.Str == fromModel {
+	if m := gjson.Get(data, "model"); m.Type == gjson.String && m.Str != "" && fromModel != toModel && (m.Str == fromModel || gjson.Get(data, "object").String() == "response" || gjson.Get(data, "object").String() == "chat.completion.chunk") {
 		newData, err := sjson.Set(data, "model", toModel)
 		if err != nil {
 			return line
@@ -10115,7 +10175,7 @@ func (s *OpenAIGatewayService) replaceModelInSSELine(line, fromModel, toModel st
 	}
 
 	// 检查嵌套的 response.model 字段
-	if m := gjson.Get(data, "response.model"); m.Exists() && m.Str == fromModel {
+	if m := gjson.Get(data, "response.model"); m.Type == gjson.String && m.Str != "" && fromModel != toModel && (m.Str == fromModel || strings.HasPrefix(gjson.Get(data, "type").String(), "response.")) {
 		newData, err := sjson.Set(data, "response.model", toModel)
 		if err != nil {
 			return line
@@ -11482,7 +11542,7 @@ func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
 	// 使用 gjson/sjson 精确替换 model 字段，避免全量 JSON 反序列化
-	if m := gjson.GetBytes(body, "model"); m.Exists() && m.Str == fromModel {
+	if m := gjson.GetBytes(body, "model"); m.Type == gjson.String && m.Str != "" && fromModel != toModel && (m.Str == fromModel || gjson.GetBytes(body, "object").String() == "response" || gjson.GetBytes(body, "object").String() == "chat.completion") {
 		newBody, err := sjson.SetBytes(body, "model", toModel)
 		if err != nil {
 			return body
@@ -13323,6 +13383,12 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
+	if openai.IsGPT6SolOrLunaModelSpelling(model) {
+		switch value := strings.ToLower(strings.TrimSpace(raw)); value {
+		case "none", "max":
+			return value
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(raw), "max") && (isOpenAIGPT6AstraModel(model) || isOpenAIGPT56Model(model)) {
 		return "max"
 	}

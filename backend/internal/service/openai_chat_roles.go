@@ -8,7 +8,10 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // strictChatCompatibility is scoped to the selected destination, not model names.
@@ -103,6 +106,12 @@ func normalizeStrictChatRequest(account *Account, targetURL string, body []byte)
 // the dispatcher has selected Chat Completions, including explicit fallbacks.
 func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context.Context, c *gin.Context, account *Account, body []byte, defaultMappedModel string) (*OpenAIForwardResult, error) {
 	if account != nil {
+		original := gjson.GetBytes(body, "model").String()
+		model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, original, defaultMappedModel))
+		if err := validateNewModelChatReasoningTools(model, gjson.GetBytes(body, "reasoning_effort").String(), len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0); err != nil {
+			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		base := account.GetOpenAIBaseURL()
 		if base == "" {
 			base = "https://api.openai.com"
@@ -116,4 +125,11 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 		}
 	}
 	return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+}
+
+func validateNewModelChatReasoningTools(model, effort string, hasTools bool) error {
+	if (openai.IsGPT6SolOrLunaModelSpelling(model) || claude.IsOpus55(model)) && hasTools && effort != "none" {
+		return fmt.Errorf("model %s requires the Responses or native Messages endpoint for tools with reasoning", model)
+	}
+	return nil
 }

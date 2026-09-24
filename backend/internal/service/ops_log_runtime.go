@@ -81,6 +81,12 @@ func validateOpsRuntimeLogConfig(cfg *OpsRuntimeLogConfig) error {
 	if cfg.SamplingNext <= 0 {
 		return errors.New("sampling_thereafter must be positive")
 	}
+	if cfg.RequestRetentionOverrideEnabled != nil && *cfg.RequestRetentionOverrideEnabled && cfg.RequestRetentionDays == nil {
+		return errors.New("request_retention_days is required when override is enabled")
+	}
+	if cfg.RequestRetentionDays != nil && (*cfg.RequestRetentionDays < 0 || *cfg.RequestRetentionDays > 3650) {
+		return errors.New("request_retention_days must be between 0 and 3650")
+	}
 	if cfg.RetentionDays < 1 || cfg.RetentionDays > 3650 {
 		return errors.New("retention_days must be between 1 and 3650")
 	}
@@ -138,6 +144,12 @@ func (s *OpsService) UpdateRuntimeLogConfig(ctx context.Context, req *OpsRuntime
 		return nil, err
 	}
 	next := *req
+	if next.RequestRetentionOverrideEnabled == nil {
+		next.RequestRetentionOverrideEnabled = oldCfg.RequestRetentionOverrideEnabled
+	}
+	if next.RequestRetentionDays == nil {
+		next.RequestRetentionDays = oldCfg.RequestRetentionDays
+	}
 	normalizeOpsRuntimeLogConfig(&next, defaultOpsRuntimeLogConfig(s.cfg))
 	if err := validateOpsRuntimeLogConfig(&next); err != nil {
 		s.auditRuntimeLogConfigFailure(operatorID, oldCfg, &next, "validation_failed: "+err.Error())

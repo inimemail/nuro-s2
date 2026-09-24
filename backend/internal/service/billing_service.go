@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
@@ -106,6 +107,7 @@ type ModelPricing struct {
 	CacheCreation5mPrice               float64  // 5分钟缓存创建每token价格 (USD)
 	CacheCreation1hPrice               float64  // 1小时缓存创建每token价格 (USD)
 	SupportsCacheBreakdown             bool     // 是否支持详细的缓存分类
+	ScaleCacheBreakdownWithTier        bool     // Opt-in for model catalogs with a uniform priority cache multiplier.
 	LongContextInputThreshold          int      // 超过阈值后按整次会话提升输入价格
 	LongContextThresholdInclusive      bool     // 达到阈值即应用；默认保持严格大于以兼容既有模型
 	LongContextInputMultiplier         float64  // 长上下文整次会话输入倍率
@@ -370,6 +372,8 @@ func (s *BillingService) initFallbackPricing() {
 	s.fallbackPrices["claude-opus-4.8"] = s.fallbackPrices["claude-opus-4.7"]
 	s.fallbackPrices["claude-opus-5"] = s.fallbackPrices["claude-opus-4.8"]
 
+	s.fallbackPrices["claude-opus-5-5"] = &ModelPricing{InputPricePerToken: 4e-6, OutputPricePerToken: 20e-6, CacheReadPricePerToken: 0.2e-6, CacheCreationPricePerToken: 5e-6, CacheCreation5mPrice: 5e-6, CacheCreation1hPrice: 8e-6, SupportsCacheBreakdown: true, InputPricePerTokenPriority: 8e-6, OutputPricePerTokenPriority: 40e-6, CacheReadPricePerTokenPriority: 0.4e-6, CacheCreationPricePerTokenPriority: 10e-6}
+
 	// Gemini 3.1 Pro
 	s.fallbackPrices["gemini-3.1-pro"] = &ModelPricing{
 		InputPricePerToken:         2e-6,   // $2 per MTok
@@ -428,6 +432,32 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier: openAIGPT54LongContextOutputMultiplier,
 	}
 
+	s.fallbackPrices["gpt-6-sol"] = &ModelPricing{
+		InputPricePerToken:                 2e-06,
+		InputPricePerTokenPriority:         4e-06,
+		OutputPricePerToken:                1e-05,
+		OutputPricePerTokenPriority:        2e-05,
+		CacheCreationPricePerToken:         2.5e-06,
+		CacheCreationPricePerTokenPriority: 5e-06,
+		CacheReadPricePerToken:             2e-07,
+		CacheReadPricePerTokenPriority:     4e-07,
+		LongContextInputThreshold:          272000,
+		LongContextInputMultiplier:         2.0,
+		LongContextOutputMultiplier:        1.5,
+	}
+	s.fallbackPrices["gpt-6-luna"] = &ModelPricing{
+		InputPricePerToken:                 1e-07,
+		InputPricePerTokenPriority:         2e-07,
+		OutputPricePerToken:                5e-07,
+		OutputPricePerTokenPriority:        1e-06,
+		CacheCreationPricePerToken:         1.25e-07,
+		CacheCreationPricePerTokenPriority: 2.5e-07,
+		CacheReadPricePerToken:             1e-08,
+		CacheReadPricePerTokenPriority:     2e-08,
+		LongContextInputThreshold:          272000,
+		LongContextInputMultiplier:         2.0,
+		LongContextOutputMultiplier:        1.5,
+	}
 	// OpenAI GPT-6 Astra official pricing (USD/token).
 	s.fallbackPrices["gpt-6-astra"] = &ModelPricing{
 		InputPricePerToken:                 10e-6,
@@ -725,6 +755,12 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier: 2, LongContextOutputMultiplier: 2,
 		SupportsCacheBreakdown: false,
 	}
+	s.fallbackPrices["grok-4.7"] = &ModelPricing{
+		InputPricePerToken: 2e-6, OutputPricePerToken: 6e-6, CacheReadPricePerToken: 0.5e-6,
+		LongContextInputThreshold: 200000, LongContextThresholdInclusive: true,
+		LongContextInputMultiplier: 2, LongContextOutputMultiplier: 2,
+		SupportsCacheBreakdown: false,
+	}
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
 		InputPricePerToken: 1.25e-6, OutputPricePerToken: 2.5e-6, CacheReadPricePerToken: 0.2e-6,
 		LongContextInputThreshold: 200000, LongContextThresholdInclusive: true,
@@ -753,6 +789,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
+		if strings.Contains(modelLower, "opus-5-5") || strings.Contains(modelLower, "opus-5.5") {
+			return s.fallbackPrices["claude-opus-5-5"]
+		}
 		if strings.Contains(modelLower, "opus-5") || strings.Contains(modelLower, "opus5") {
 			return s.fallbackPrices["claude-opus-5"]
 		}
@@ -908,6 +947,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
+		case "gpt-6-sol", "gpt-6-luna":
+			return s.fallbackPrices[normalized]
 		case "gpt-6-astra":
 			return s.fallbackPrices["gpt-6-astra"]
 		case "gpt-5.6-sol":
@@ -936,6 +977,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	switch modelLower {
 	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest":
 		return s.fallbackPrices["grok-4.5"]
+	case "grok-4.7", "grok-4.7-latest":
+		return s.fallbackPrices["grok-4.7"]
 	case "grok-4.6", "grok-4.6-latest":
 		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.3",
@@ -1243,6 +1286,9 @@ func (s *BillingService) computeTokenBreakdown(
 		}
 		if pricing.CacheCreationPricePerTokenPriority > 0 {
 			cacheCreationPrice = pricing.CacheCreationPricePerTokenPriority
+			if pricing.ScaleCacheBreakdownWithTier && pricing.CacheCreationPricePerToken > 0 {
+				cacheCreationMultiplier = cacheCreationPrice / pricing.CacheCreationPricePerToken
+			}
 		}
 	} else {
 		tierMultiplier = serviceTierCostMultiplier(serviceTier)
@@ -1261,7 +1307,7 @@ func (s *BillingService) computeTokenBreakdown(
 		// 缓存创建（cache_write）也是输入侧操作，三档价格（标准 / 5m / 1h）
 		// 都通过 computeCacheCreationCost 直接读取 pricing.*，不会经过这里
 		// 的倍率修改，因此显式向下传一个倍率，避免长上下文场景下被漏乘。
-		cacheCreationMultiplier = pricing.LongContextInputMultiplier
+		cacheCreationMultiplier *= pricing.LongContextInputMultiplier
 	}
 
 	bd := &CostBreakdown{}
@@ -1482,6 +1528,20 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceDeepSeekRates bool) *ModelPricing {
 	if pricing == nil {
 		return nil
+	}
+	if claude.IsOpus55(model) {
+		cloned := *pricing
+		cloned.ScaleCacheBreakdownWithTier = true
+		return &cloned
+	}
+	nativeModel := strings.ToLower(strings.TrimSpace(xai.StripGrokProviderPrefix(model)))
+	if (nativeModel == "grok-4.7" || nativeModel == "grok-4.7-latest") && forceDeepSeekRates && !pricing.PricingOverride {
+		cloned := *pricing
+		cloned.LongContextInputThreshold = 200000
+		cloned.LongContextThresholdInclusive = true
+		cloned.LongContextInputMultiplier = 2
+		cloned.LongContextOutputMultiplier = 2
+		return &cloned
 	}
 	if forceDeepSeekRates && isDeepSeekModel(model) {
 		return applyDeepSeekOfficialPeakPricing(model, pricing, time.Unix(0, 0))

@@ -347,10 +347,15 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AntigravityUserAgentVersion:                           settings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                                  settings.OpenAICodexUserAgent,
 		OpenAICodexClientVersion:                              settings.OpenAICodexClientVersion,
+		ClaudeCLIClientVersion:                                settings.ClaudeCLIClientVersion,
 		OpenAICodexClientVersionSynced:                        settings.OpenAICodexClientVersionSynced,
+		ClaudeCLIClientVersionSynced:                          settings.ClaudeCLIClientVersionSynced,
 		OpenAICodexClientVersionEffective:                     settings.OpenAICodexClientVersionEffective,
+		ClaudeCLIClientVersionEffective:                       settings.ClaudeCLIClientVersionEffective,
 		OpenAICodexClientVersionSource:                        settings.OpenAICodexClientVersionSource,
+		ClaudeCLIClientVersionSource:                          settings.ClaudeCLIClientVersionSource,
 		OpenAICodexVersionAutoSyncEnabled:                     settings.OpenAICodexVersionAutoSyncEnabled,
+		ClaudeCLIVersionAutoSyncEnabled:                       settings.ClaudeCLIVersionAutoSyncEnabled,
 		OpenAICodexRoutingHintEnabled:                         settings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                      settings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                       settings.MinCodexVersion,
@@ -743,7 +748,9 @@ type UpdateSettingsRequest struct {
 	AntigravityUserAgentVersion            *string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
 	OpenAICodexClientVersion               *string `json:"openai_codex_client_version"`
+	ClaudeCLIClientVersion                 *string `json:"claude_cli_client_version"`
 	OpenAICodexVersionAutoSyncEnabled      *bool   `json:"openai_codex_version_auto_sync_enabled"`
+	ClaudeCLIVersionAutoSyncEnabled        *bool   `json:"claude_cli_version_auto_sync_enabled"`
 	OpenAICodexRoutingHintEnabled          *bool   `json:"openai_codex_routing_hint_enabled"`
 	OpenAIAllowClaudeCodeCodexPlugin       *bool   `json:"openai_allow_claude_code_codex_plugin"`
 	MinCodexVersion                        *string `json:"min_codex_version"`
@@ -1782,6 +1789,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	if req.ClaudeCLIClientVersion != nil {
+		value := strings.TrimSpace(*req.ClaudeCLIClientVersion)
+		if value != "" && !service.IsValidClaudeCLIVersion(value) {
+			response.BadRequest(c, "Invalid Claude CLI version")
+			return
+		}
+		req.ClaudeCLIClientVersion = &value
+	}
 	if req.OpenAICodexClientVersion != nil {
 		normalized := service.NormalizeCodexClientVersion(*req.OpenAICodexClientVersion)
 		if strings.TrimSpace(*req.OpenAICodexClientVersion) != "" && normalized == "" {
@@ -2220,6 +2235,19 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAICodexUserAgent
 			}
 			return previousSettings.OpenAICodexUserAgent
+		}(),
+		ClaudeCLIClientVersion: func() string {
+			if req.ClaudeCLIClientVersion != nil {
+				return *req.ClaudeCLIClientVersion
+			}
+			return previousSettings.ClaudeCLIClientVersion
+		}(),
+		ClaudeCLIClientVersionSynced: previousSettings.ClaudeCLIClientVersionSynced,
+		ClaudeCLIVersionAutoSyncEnabled: func() bool {
+			if req.ClaudeCLIVersionAutoSyncEnabled != nil {
+				return *req.ClaudeCLIVersionAutoSyncEnabled
+			}
+			return previousSettings.ClaudeCLIVersionAutoSyncEnabled
 		}(),
 		OpenAICodexClientVersion: func() string {
 			if req.OpenAICodexClientVersion != nil {
@@ -2744,10 +2772,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AntigravityUserAgentVersion:                           updatedSettings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                                  updatedSettings.OpenAICodexUserAgent,
 		OpenAICodexClientVersion:                              updatedSettings.OpenAICodexClientVersion,
+		ClaudeCLIClientVersion:                                updatedSettings.ClaudeCLIClientVersion,
 		OpenAICodexClientVersionSynced:                        updatedSettings.OpenAICodexClientVersionSynced,
+		ClaudeCLIClientVersionSynced:                          updatedSettings.ClaudeCLIClientVersionSynced,
 		OpenAICodexClientVersionEffective:                     updatedSettings.OpenAICodexClientVersionEffective,
+		ClaudeCLIClientVersionEffective:                       updatedSettings.ClaudeCLIClientVersionEffective,
 		OpenAICodexClientVersionSource:                        updatedSettings.OpenAICodexClientVersionSource,
+		ClaudeCLIClientVersionSource:                          updatedSettings.ClaudeCLIClientVersionSource,
 		OpenAICodexVersionAutoSyncEnabled:                     updatedSettings.OpenAICodexVersionAutoSyncEnabled,
+		ClaudeCLIVersionAutoSyncEnabled:                       updatedSettings.ClaudeCLIVersionAutoSyncEnabled,
 		OpenAICodexRoutingHintEnabled:                         updatedSettings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                      updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                       updatedSettings.MinCodexVersion,
@@ -3373,6 +3406,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAICodexVersionAutoSyncEnabled != after.OpenAICodexVersionAutoSyncEnabled {
 		changed = append(changed, "openai_codex_version_auto_sync_enabled")
+	}
+	if before.ClaudeCLIClientVersion != after.ClaudeCLIClientVersion {
+		changed = append(changed, "claude_cli_client_version")
+	}
+	if before.ClaudeCLIVersionAutoSyncEnabled != after.ClaudeCLIVersionAutoSyncEnabled {
+		changed = append(changed, "claude_cli_version_auto_sync_enabled")
 	}
 	if before.OpenAICodexRoutingHintEnabled != after.OpenAICodexRoutingHintEnabled {
 		changed = append(changed, "openai_codex_routing_hint_enabled")

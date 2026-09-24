@@ -830,6 +830,9 @@ func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody 
 // Antigravity 平台区分 validation/violation/generic 三种类型，均 SetError 永久禁用；
 // 其他平台保持原有 SetError 行为。
 func (s *RateLimitService) handle403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	if isOfficialProviderCloudflare1010(account, responseBody) {
+		return false
+	}
 	if isCNProviderQuotaExhausted403(account, responseBody, upstreamMsg) {
 		s.handleCNQuota403(ctx, account)
 		return true
@@ -2145,7 +2148,8 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	planGated := account.Platform == PlatformOpenAI &&
 		account.Type == AccountTypeOAuth &&
 		isOpenAICodexPlanGatedModelError(statusCode, responseBody)
-	if !isUpstreamModelNotFoundError(statusCode, responseBody) && !planGated {
+	model401 := statusCode == http.StatusUnauthorized && account.Type == AccountTypeAPIKey && account.IsOpenAICompatible() && isOpenAICompatibleModelNotFoundBody(responseBody)
+	if !isUpstreamModelNotFoundError(statusCode, responseBody) && !planGated && !model401 {
 		return false
 	}
 	if account.IsPoolMode() {
@@ -2162,6 +2166,9 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 		return true
 	}
 	cooldown, reason := upstreamModelNotFoundCooldown, upstreamModelNotFoundReason
+	if model401 {
+		reason = "upstream_401_model_not_found"
+	}
 	if planGated {
 		cooldown, reason = upstreamCodexPlanGatedModelCooldown, upstreamCodexPlanGatedModelReason
 	}

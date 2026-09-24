@@ -1,7 +1,8 @@
 <template>
   <div ref="rootRef" v-if="showUsageWindows">
     <OllamaCloudUsageCell :account="account" />
-    <CNProviderUsageCell :account="account" />
+    <OpenCodeGoUsageCell v-if="isOpenCodeUsageAccount(account)" :account="account" />
+    <CNProviderUsageCell v-else :account="account" />
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-if="
@@ -783,6 +784,8 @@ import { formatCompactNumber } from '@/utils/format'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
+import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
+import { isOpenCodeUsageAccount } from '@/api/admin/opencodeUsage'
 import CNProviderUsageCell from './CNProviderUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
@@ -838,6 +841,7 @@ let visibilityObserver: IntersectionObserver | null = null
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
+  if (isOpenCodeUsageAccount(props.account)) return true
   // Domestic API-key accounts expose their provider balance/quota in the
   // dedicated CNProviderUsageCell below. Keep that cell inside the same
   // viewport-gated wrapper used by the other usage panels.

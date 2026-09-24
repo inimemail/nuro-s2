@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -234,6 +235,45 @@ func newTestBackupServiceEphemeralKey(repo *mockSettingRepo) *BackupService {
 	return NewBackupService(repo, cfg, &plainEncryptor{}, factory, &mockDumper{})
 }
 
+func TestBackupService_StoreCacheFollowsConfigSnapshot(t *testing.T) {
+	calls := 0
+	svc := &BackupService{storeFactory: func(_ context.Context, cfg *BackupS3Config) (BackupObjectStore, error) {
+		calls++
+		if cfg.SecretAccessKey == "invalid" {
+			return nil, errors.New("invalid configuration")
+		}
+		return newMockObjectStore(), nil
+	}}
+	ctx := context.Background()
+	cfg := &BackupS3Config{Bucket: "first", AccessKeyID: "key", SecretAccessKey: "secret"}
+	first, err := svc.getOrCreateStore(ctx, cfg)
+	require.NoError(t, err)
+	cached, err := svc.getOrCreateStore(ctx, cfg)
+	require.NoError(t, err)
+	require.Same(t, first, cached)
+	require.Equal(t, 1, calls)
+
+	// Changes may come from another replica, without a local invalidation.
+	cfg.Bucket = "second"
+	second, err := svc.getOrCreateStore(ctx, cfg)
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Equal(t, 2, calls)
+	cfg.SecretAccessKey = "rotated"
+	rotated, err := svc.getOrCreateStore(ctx, cfg)
+	require.NoError(t, err)
+	require.NotSame(t, second, rotated)
+	require.Equal(t, 3, calls)
+
+	cfg.SecretAccessKey = "invalid"
+	store, err := svc.getOrCreateStore(ctx, cfg)
+	require.Error(t, err)
+	require.Nil(t, store, "failed reconfiguration must not reuse stale credentials")
+	store, err = svc.getOrCreateStore(ctx, nil)
+	require.ErrorIs(t, err, ErrBackupS3NotConfigured)
+	require.Nil(t, store)
+}
+
 func seedS3Config(t *testing.T, repo *mockSettingRepo) {
 	t.Helper()
 	cfg := BackupS3Config{
@@ -393,10 +433,12 @@ func TestBackupService_SaveRecordConcurrency(t *testing.T) {
 			defer wg.Done()
 			record := &BackupRecord{
 				ID:        fmt.Sprintf("rec-%d", idx),
-				Status:    "completed",
+				Status:    "running",
 				StartedAt: time.Now().Format(time.RFC3339),
 			}
-			_ = svc.saveRecord(context.Background(), record)
+			require.NoError(t, svc.saveRecord(context.Background(), record))
+			record.Status = "completed"
+			require.NoError(t, svc.saveRecord(context.Background(), record))
 		}(i)
 	}
 	wg.Wait()
@@ -575,7 +617,7 @@ func TestBackupService_ListBackups_Sorted(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < 3; i++ {
-		_ = svc.saveRecord(context.Background(), &BackupRecord{
+		seedBackupRecords(t, svc, BackupRecord{
 			ID:        fmt.Sprintf("rec-%d", i),
 			Status:    "completed",
 			StartedAt: now.Add(time.Duration(i) * time.Hour).Format(time.RFC3339),
@@ -707,28 +749,30 @@ func TestRecoverStaleRecords(t *testing.T) {
 	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
 
 	// 模拟一条孤立的 running 记录
-	_ = svc.saveRecord(context.Background(), &BackupRecord{
+	seedBackupRecords(t, svc, BackupRecord{
 		ID:        "stale-1",
 		Status:    "running",
 		StartedAt: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 	})
 	// 模拟一条孤立的恢复中记录
-	_ = svc.saveRecord(context.Background(), &BackupRecord{
-		ID:            "stale-2",
-		Status:        "completed",
-		RestoreStatus: "running",
-		StartedAt:     time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+	seedBackupRecords(t, svc, BackupRecord{
+		ID:                 "stale-2",
+		Status:             "completed",
+		RestoreStatus:      "running",
+		RestoreOperationID: "stale-op",
+		RestoreStartedAt:   time.Now().Add(-time.Hour).Format(time.RFC3339),
+		StartedAt:          time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 	})
 
 	svc.recoverStaleRecords()
 
 	r1, _ := svc.GetBackupRecord(context.Background(), "stale-1")
 	require.Equal(t, "failed", r1.Status)
-	require.Contains(t, r1.ErrorMsg, "server restart")
+	require.Contains(t, r1.ErrorMsg, "maximum runtime")
 
 	r2, _ := svc.GetBackupRecord(context.Background(), "stale-2")
 	require.Equal(t, "failed", r2.RestoreStatus)
-	require.Contains(t, r2.RestoreError, "server restart")
+	require.Contains(t, r2.RestoreError, "maximum runtime")
 }
 
 func TestGracefulShutdown(t *testing.T) {
@@ -814,4 +858,16 @@ func TestStartRestore_Async(t *testing.T) {
 	final, err := svc.GetBackupRecord(context.Background(), record.ID)
 	require.NoError(t, err)
 	require.Equal(t, "completed", final.RestoreStatus)
+}
+
+// Seed persisted fixtures directly; production callbacks cannot resurrect absent records.
+func seedBackupRecords(t *testing.T, s *BackupService, records ...BackupRecord) {
+	t.Helper()
+	require.NoError(t, s.withBackupRecordLock(context.Background(), func(ctx context.Context) error {
+		old, err := s.loadRecordsLocked(ctx)
+		if err != nil {
+			return err
+		}
+		return s.saveRecordsLocked(ctx, append(old, records...))
+	}))
 }
