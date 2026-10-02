@@ -24,13 +24,21 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('codex-auto-review')
 		expect(models).toContain('gpt-6')
 		expect(models).toContain('gpt-6-astra')
-  })
+		expect(models).toContain('gpt-6.1-sol')
+	})
 
 	it('openai 预设映射包含 GPT-6 Astra 别名', () => {
 		expect(getPresetMappingsByPlatform('openai')).toEqual(expect.arrayContaining([
+			expect.objectContaining({ label: 'GPT-6.1 Sol', from: 'gpt-6.1-sol', to: 'gpt-6.1-sol' }),
 			expect.objectContaining({ label: 'GPT-6', from: 'gpt-6', to: 'gpt-6' }),
 			expect.objectContaining({ label: 'GPT-6 Astra', from: 'gpt-6-astra', to: 'gpt-6-astra' })
 		]))
+	})
+
+	it('Claude 5.5 预设映射使用新的 Sonnet 模型', () => {
+		expect(getPresetMappingsByPlatform('claude')).toContainEqual(
+			expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'claude-sonnet-5-5' })
+		)
 	})
 
   it('openai 模型列表不再暴露已下线的 ChatGPT 登录 Codex 模型', () => {

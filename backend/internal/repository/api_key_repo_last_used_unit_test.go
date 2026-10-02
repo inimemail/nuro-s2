@@ -70,6 +70,28 @@ func TestAPIKeyRepository_CreateWithLastUsedAt(t *testing.T) {
 	require.WithinDuration(t, lastUsed, *got.LastUsedAt, time.Second)
 }
 
+func TestAPIKeyRepository_CreateWithActiveLimitSQLite(t *testing.T) {
+	repo, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	user := mustCreateAPIKeyRepoUser(t, ctx, client, "create-active-limit@test.com")
+
+	first := &service.APIKey{UserID: user.ID, Key: "sk-active-limit-1", Name: "first", Status: service.StatusActive}
+	require.NoError(t, repo.CreateWithActiveLimit(ctx, first, 1))
+
+	second := &service.APIKey{UserID: user.ID, Key: "sk-active-limit-2", Name: "second", Status: service.StatusActive}
+	err := repo.CreateWithActiveLimit(ctx, second, 1)
+	require.ErrorIs(t, err, service.ErrAPIKeyCountExceeded)
+	require.Zero(t, second.ID)
+	require.Equal(t, int64(1), mustAPIKeyCount(t, repo, ctx, user.ID))
+}
+
+func mustAPIKeyCount(t *testing.T, repo *apiKeyRepository, ctx context.Context, userID int64) int64 {
+	t.Helper()
+	count, err := repo.CountByUserID(ctx, userID)
+	require.NoError(t, err)
+	return count
+}
+
 func TestAPIKeyRepository_UpdateLastUsed(t *testing.T) {
 	repo, client := newAPIKeyRepoSQLite(t)
 	ctx := context.Background()

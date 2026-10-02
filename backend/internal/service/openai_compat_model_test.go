@@ -86,6 +86,7 @@ func TestNormalizeOpenAICompatRequestedModel(t *testing.T) {
 		{name: "gpt reasoning alias strips xhigh", input: "gpt-5.4-xhigh", want: "gpt-5.4"},
 		{name: "gpt reasoning alias strips none", input: "gpt-5.4-none", want: "gpt-5.4"},
 		{name: "codex max model stays intact", input: "gpt-5.1-codex-max", want: "gpt-5.1-codex-max"},
+		{name: "gpt 6.1 reasoning alias canonicalizes", input: "openai/gpt-6.1-sol-high", want: "gpt-6.1-sol"},
 		{name: "non openai model unchanged", input: "claude-opus-4-6", want: "claude-opus-4-6"},
 	}
 
@@ -130,6 +131,29 @@ func TestApplyOpenAICompatModelNormalization(t *testing.T) {
 		require.Equal(t, "claude-opus-4-6", req.Model)
 		require.Nil(t, req.OutputConfig)
 	})
+}
+
+func TestValidateGPT61SolRequestBodyUsesEffectiveProtocolEffort(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "anthropic output config none", body: `{"model":"legacy","output_config":{"effort":"none"}}`},
+		{name: "anthropic disabled thinking", body: `{"model":"legacy","thinking":{"type":"disabled"}}`},
+		{name: "openai nested reasoning none", body: `{"model":"legacy","reasoning":{"effort":"none"}}`},
+		{name: "chat reasoning none", body: `{"model":"legacy","reasoning_effort":"none"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Error(t, validateGPT61SolRequestBody([]byte(tc.body), "gpt-6.1-sol"))
+		})
+	}
+
+	require.NoError(t, validateGPT61SolRequestBody(
+		[]byte(`{"model":"legacy","output_config":{"effort":"high"}}`),
+		"gpt-6.1-sol",
+	))
 }
 
 func TestOpenAICompatAnthropicReasoningEffortPreservesMaxOnlyForGPT56(t *testing.T) {

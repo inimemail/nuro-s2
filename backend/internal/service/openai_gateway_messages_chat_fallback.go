@@ -47,6 +47,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 
 	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolRequestBody(body, originalModel, billingModel, upstreamModel); err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	anthropicReq.Model = upstreamModel
 	responsesReq, err := apicompat.AnthropicToResponsesForChatCompletions(&anthropicReq)
 	if err != nil {

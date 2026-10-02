@@ -62,8 +62,12 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	clientStream := responsesReq.Stream
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolRequestBody(adaptedBody, originalModel, billingModel, upstreamModel); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	thinkingScope := anthropicThinkingAccountScope(account, upstreamModel)
-	if claude.IsOpus55(upstreamModel) {
+	if claude.IsAdaptiveThinkingModel(upstreamModel) {
 		responsesReq.Model = upstreamModel
 		responsesReq.ThinkingScope = thinkingScope
 	}
@@ -167,7 +171,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		return nil, err
 	}
 
-	if claude.IsOpus55(upstreamModel) {
+	if claude.IsAdaptiveThinkingModel(upstreamModel) {
 		finalResp.Model = upstreamModel
 	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp, thinkingScopes...)
@@ -228,7 +232,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
-	state.PreserveThinkingSignatures = claude.IsOpus55(upstreamModel)
+	state.PreserveThinkingSignatures = claude.IsAdaptiveThinkingModel(upstreamModel)
 	if len(thinkingScopes) > 0 {
 		state.ThinkingScope = thinkingScopes[0]
 	}

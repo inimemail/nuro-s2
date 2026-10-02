@@ -108,6 +108,10 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 	if account != nil {
 		original := gjson.GetBytes(body, "model").String()
 		model := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, original, defaultMappedModel))
+		if err := validateGPT61SolRequestBody(body, original, model); err != nil {
+			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		if err := validateNewModelChatReasoningTools(model, gjson.GetBytes(body, "reasoning_effort").String(), len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0); err != nil {
 			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return nil, err
@@ -128,7 +132,10 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 }
 
 func validateNewModelChatReasoningTools(model, effort string, hasTools bool) error {
-	if (openai.IsGPT6SolOrLunaModelSpelling(model) || claude.IsOpus55(model)) && hasTools && effort != "none" {
+	if err := openai.ValidateGPT61SolReasoningEffort(model, effort); err != nil {
+		return err
+	}
+	if (openai.IsGPT6SolOrLunaModelSpelling(model) || claude.IsAdaptiveThinkingModel(model)) && hasTools && effort != "none" {
 		return fmt.Errorf("model %s requires the Responses or native Messages endpoint for tools with reasoning", model)
 	}
 	return nil

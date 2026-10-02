@@ -51,6 +51,20 @@ func TestCalculateCost_BasicComputation(t *testing.T) {
 	require.InDelta(t, expectedInput+expectedOutput, cost.ActualCost, 1e-10)
 }
 
+func TestCalculateCost_GPT61SolFallback(t *testing.T) {
+	svc := newTestBillingService()
+	cost, err := svc.CalculateCost("gpt-6.1-sol", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1)
+	require.NoError(t, err)
+	require.InDelta(t, 100*2e-6+50*1e-5, cost.TotalCost, 1e-12)
+}
+
+func TestCalculateCost_ClaudeSonnet55Fallback(t *testing.T) {
+	svc := newTestBillingService()
+	cost, err := svc.CalculateCost("claude-sonnet-5-5", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1)
+	require.NoError(t, err)
+	require.InDelta(t, 100*2e-6+50*1e-5, cost.TotalCost, 1e-12)
+}
+
 func TestCalculateCost_GPT56IncludesCacheCreation(t *testing.T) {
 	svc := newTestBillingService()
 

@@ -3,6 +3,7 @@ package openai
 
 import (
 	_ "embed"
+	"fmt"
 	"strings"
 )
 
@@ -24,6 +25,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
+	{ID: "gpt-6.1-sol", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-6", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 (Astra)"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
@@ -102,4 +104,65 @@ func CodexBaseInstructionsForModel(model string) string {
 		}
 	}
 	return latestCodexInstructions()
+}
+
+func IsGPT61SolModelSpelling(model string) bool {
+	id := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), "_", "-")
+	id = strings.TrimPrefix(id, "openai/")
+	id = strings.TrimPrefix(id, "models/")
+	if id == "gpt-6.1-sol" {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(id, "gpt-6.1-sol-")
+	if !ok {
+		return false
+	}
+	switch suffix {
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max", "openai-compact":
+		return true
+	}
+	return false
+}
+
+// GPT61SolModelAliasReasoningEffort returns the reasoning effort encoded by a
+// GPT-6.1 Sol model alias. The canonical model (without a suffix) returns an
+// empty string. Unknown suffixes are deliberately ignored so callers can keep
+// treating those model IDs as ordinary upstream names.
+func GPT61SolModelAliasReasoningEffort(model string) string {
+	id := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), "_", "-")
+	id = strings.TrimPrefix(id, "openai/")
+	id = strings.TrimPrefix(id, "models/")
+	suffix, ok := strings.CutPrefix(id, "gpt-6.1-sol-")
+	if !ok {
+		return ""
+	}
+	switch suffix {
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return suffix
+	default:
+		return ""
+	}
+}
+
+// ValidateGPT61SolModelRequest validates both an explicit reasoning effort and
+// the effort encoded in a GPT-6.1 Sol model alias. Alias validation is kept
+// separate from ValidateGPT61SolReasoningEffort because an omitted explicit
+// effort is valid for the canonical model but must still reject aliases that
+// request unsupported `none` or `minimal` modes.
+func ValidateGPT61SolModelRequest(model, effort string) error {
+	switch aliasEffort := GPT61SolModelAliasReasoningEffort(model); aliasEffort {
+	case "none", "minimal":
+		return fmt.Errorf("gpt-6.1-sol does not support reasoning effort %q", aliasEffort)
+	}
+	return ValidateGPT61SolReasoningEffort(model, effort)
+}
+
+func ValidateGPT61SolReasoningEffort(model, effort string) error {
+	if IsGPT61SolModelSpelling(model) {
+		switch strings.ToLower(strings.TrimSpace(effort)) {
+		case "none", "minimal":
+			return fmt.Errorf("gpt-6.1-sol does not support reasoning effort %q", effort)
+		}
+	}
+	return nil
 }

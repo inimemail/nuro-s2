@@ -15,6 +15,8 @@ import (
 const (
 	apiKeyRateLimitKeyPrefix   = "apikey:ratelimit:"
 	apiKeyRateLimitDuration    = 24 * time.Hour
+	apiKeyCreateCountDuration  = time.Hour
+	apiKeyCreateCountKeyPrefix = "apikey:create_count:"
 	apiKeyAuthCachePrefix      = "apikey:auth:"
 	authCacheInvalidateChannel = "auth:cache:invalidate"
 )
@@ -22,6 +24,10 @@ const (
 // apiKeyRateLimitKey generates the Redis key for API key creation rate limiting.
 func apiKeyRateLimitKey(userID int64) string {
 	return fmt.Sprintf("%s%d", apiKeyRateLimitKeyPrefix, userID)
+}
+
+func apiKeyCreateCountKey(userID int64) string {
+	return fmt.Sprintf("%s%d", apiKeyCreateCountKeyPrefix, userID)
 }
 
 func apiKeyAuthCacheKey(key string) string {
@@ -52,6 +58,44 @@ func (c *apiKeyCache) IncrementCreateAttemptCount(ctx context.Context, userID in
 	pipe.Expire(ctx, key, apiKeyRateLimitDuration)
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+// IncrementCreateCount increments the successful-create window without
+// extending its expiry on every request. The Lua script keeps the increment
+// and TTL repair atomic and works with Redis versions that predate EXPIRENX.
+func (c *apiKeyCache) IncrementCreateCount(ctx context.Context, userID int64, window time.Duration) (int64, error) {
+	key := apiKeyCreateCountKey(userID)
+	seconds := int64(window / time.Second)
+	if seconds <= 0 {
+		seconds = 1
+	}
+	const incrementScript = `
+local n = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) <= 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`
+	value, err := c.rdb.Eval(ctx, incrementScript, []string{key}, seconds).Int64()
+	return value, err
+}
+
+func (c *apiKeyCache) DecrementCreateCount(ctx context.Context, userID int64) error {
+	key := apiKeyCreateCountKey(userID)
+	// Keep DECR and the conditional cleanup atomic. A separate DEL can race
+	// with a new reservation and erase that request's counter.
+	const rollbackScript = `
+local n = redis.call('DECR', KEYS[1])
+if n <= 0 then
+  redis.call('DEL', KEYS[1])
+  return 0
+end
+if redis.call('TTL', KEYS[1]) <= 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`
+	return c.rdb.Eval(ctx, rollbackScript, []string{key}, int64(apiKeyCreateCountDuration/time.Second)).Err()
 }
 
 func (c *apiKeyCache) DeleteCreateAttemptCount(ctx context.Context, userID int64) error {

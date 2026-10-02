@@ -156,6 +156,12 @@ var DefaultModels = []Model{
 		CreatedAt:   "2026-09-22T00:00:00Z",
 	},
 	{
+		ID:          "claude-sonnet-5-5",
+		Type:        "model",
+		DisplayName: "Claude Sonnet 5.5",
+		CreatedAt:   "2026-09-28T00:00:00Z",
+	},
+	{
 		ID:          "claude-opus-5",
 		Type:        "model",
 		DisplayName: "Claude Opus 5",

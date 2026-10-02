@@ -8476,7 +8476,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	//   3) NewRequest（body 至此最终敲定）
 	//   4) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
 	policyFilterSet := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
-	effectiveDropSet := mergeDropSets(policyFilterSet)
+	effectiveDropSet := mergeDropSets(policyFilterSet, sonnet55ToolsetBetaDrops(modelID, body)...)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, effectiveDropSet,
 	)
@@ -8615,7 +8615,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 	if policy.blockErr != nil {
 		return nil, policy.blockErr
 	}
-	finalBeta := filterVertexBetaTokens(clientBeta, mergeDropSets(policy.filterSet))
+	finalBeta := filterVertexBetaTokens(clientBeta, mergeDropSets(policy.filterSet, sonnet55ToolsetBetaDrops(modelID, body)...))
 
 	// 能力维度 sanitize：Vertex 只接受过滤后的 beta 白名单，因此 body 字段也必须
 	// 基于最终 outgoing beta 判断是否保留。
@@ -9033,6 +9033,33 @@ func mergeDropSets(policySet map[string]struct{}, extra ...string) map[string]st
 		m[t] = struct{}{}
 	}
 	return m
+}
+
+// sonnet55ToolsetBetaDrops captures the capability split introduced by the
+// Sonnet 5.5 toolset API. The new browser/computer toolset types reject the
+// legacy fine-grained streaming beta, while ordinary tools and older models
+// continue to use the existing header unchanged.
+func sonnet55ToolsetBetaDrops(model string, body []byte) []string {
+	if !claude.IsSonnet55(model) {
+		return nil
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return nil
+	}
+	for _, tool := range tools.Array() {
+		typ := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		// Anthropic's tool-use API uses versioned names such as
+		// computer_20250124; retain support for the toolset aliases used by
+		// newer clients as well.
+		if strings.HasPrefix(typ, "computer_20") ||
+			strings.HasPrefix(typ, "computer_toolset_") ||
+			strings.HasPrefix(typ, "browser_20") ||
+			strings.HasPrefix(typ, "browser_toolset_") {
+			return []string{claude.BetaFineGrainedToolStreaming}
+		}
+	}
+	return nil
 }
 
 // betaPolicyFilterSetKey is the gin.Context key for caching the policy filter set within a request.
@@ -12335,7 +12362,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize）===
 	// 顺序约束同 buildUpstreamRequest。
-	ctEffectiveDropSet := mergeDropSets(s.getBetaPolicyFilterSet(ctx, c, account, modelID))
+	ctEffectiveDropSet := mergeDropSets(s.getBetaPolicyFilterSet(ctx, c, account, modelID), sonnet55ToolsetBetaDrops(modelID, body)...)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalCountTokensAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, ctEffectiveDropSet,
 	)

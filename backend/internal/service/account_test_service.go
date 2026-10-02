@@ -187,7 +187,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		"temperature": 1,
 		"stream":      true,
 	}
-	if claude.IsOpus55(modelID) {
+	if claude.IsAdaptiveThinkingModel(modelID) {
 		delete(payload, "temperature")
 		payload["thinking"] = map[string]any{"type": "adaptive"}
 	}

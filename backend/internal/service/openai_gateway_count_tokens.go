@@ -212,6 +212,9 @@ func prepareOpenAIInputTokensCountRequest(
 	}
 
 	originalModel := anthropicReq.Model
+	if err := validateGPT61SolRequestBody(body, originalModel); err != nil {
+		return nil, err
+	}
 	applyOpenAICompatModelNormalization(&anthropicReq)
 	normalizedModel := anthropicReq.Model
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, strings.TrimSpace(defaultMappedModel))

@@ -2,9 +2,10 @@ package apicompat
 
 import (
 	"encoding/json"
-	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestV028GPT6SamplingAndIndependentReasoning(t *testing.T) {
@@ -17,6 +18,15 @@ func TestV028GPT6SamplingAndIndependentReasoning(t *testing.T) {
 			require.Equal(t, effort == "none", out.Temperature != nil)
 		}
 	}
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		out, err := ChatCompletionsToResponses(&ChatCompletionsRequest{Model: "gpt-6.1-sol", Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}}, ReasoningEffort: effort, Temperature: &temp})
+		require.NoError(t, err)
+		require.Equal(t, effort, out.Reasoning.Effort)
+	}
+	_, err := ChatCompletionsToResponses(&ChatCompletionsRequest{Model: "gpt-6.1-sol", Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}}, ReasoningEffort: "none"})
+	require.Error(t, err)
+	_, err = ChatCompletionsToResponses(&ChatCompletionsRequest{Model: "gpt-6.1-sol-none", Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}}})
+	require.Error(t, err)
 	var req ResponsesRequest
 	require.NoError(t, json.Unmarshal([]byte(`{"model":"gpt-6-sol","reasoning":{"mode":"pro","effort":"none"}}`), &req))
 	require.Equal(t, "pro", req.Reasoning.Mode)
@@ -56,6 +66,20 @@ func TestV028OpusAdaptiveAndSignedRoundTrip(t *testing.T) {
 	require.Error(t, err)
 	_, err = decodeAnthropicThinking(anthropicThinkingEnvelopePrefix+strings.Repeat("a", 3<<20), "", "")
 	require.Error(t, err)
+}
+
+func TestV028Sonnet55UsesAdaptiveThinkingRules(t *testing.T) {
+	temp := 0.5
+	resp := AnthropicToResponsesResponse(&AnthropicResponse{Model: "claude-sonnet-5-5", Content: []AnthropicContentBlock{{Type: "thinking", Thinking: "analysis", Signature: "sig"}}}, "scope")
+	require.Len(t, resp.Output, 1)
+	input, err := json.Marshal(resp.Output)
+	require.NoError(t, err)
+	req := &ResponsesRequest{Model: "claude-sonnet-5-5", Input: input, Temperature: &temp, Reasoning: &ResponsesReasoning{Effort: "high"}, ThinkingScope: "scope"}
+	out, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, "adaptive", out.Thinking.Type)
+	require.Equal(t, "high", out.OutputConfig.Effort)
+	require.Nil(t, out.Temperature)
 }
 
 func TestV028OpusStreamingSignatureIsNotVisibleText(t *testing.T) {

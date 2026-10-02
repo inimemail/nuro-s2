@@ -4541,6 +4541,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
+	if err := validateGPT61SolRequestBody(body, reqModel); err != nil {
+		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "message": err.Error(), "param": "reasoning.effort",
+		}})
+		return nil, err
+	}
 	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok && upstreamModel != reqModel {
 		body = ReplaceModelInBody(body, upstreamModel)
 		reqModel = upstreamModel
@@ -4893,9 +4900,33 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 	}
+	if err := validateGPT61SolRequestBody(body, reqModel, billingModel, upstreamModel); err != nil {
+		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "message": err.Error(), "param": "reasoning.effort",
+		}})
+		return nil, err
+	}
 
 	// 规范化 reasoning.effort 参数（minimal -> none），与上游允许值对齐。
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
+		if effort, ok := reasoning["effort"].(string); ok {
+			// GPT-6.1 Sol deliberately does not support either `minimal` or
+			// `none`. Validate before the legacy minimal->none rewrite so OAuth
+			// Codex transformation cannot accidentally re-enable an unsupported
+			// sampling mode.
+			if err := openai.ValidateGPT61SolReasoningEffort(upstreamModel, effort); err != nil {
+				setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": gin.H{
+						"type":    "invalid_request_error",
+						"message": err.Error(),
+						"param":   "reasoning.effort",
+					},
+				})
+				return nil, err
+			}
+		}
 		if effort, ok := reasoning["effort"].(string); ok && effort == "minimal" {
 			reasoning["effort"] = "none"
 			bodyModified = true
@@ -13383,9 +13414,9 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if openai.IsGPT6SolOrLunaModelSpelling(model) {
+	if openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model) {
 		switch value := strings.ToLower(strings.TrimSpace(raw)); value {
-		case "none", "max":
+		case "max":
 			return value
 		}
 	}

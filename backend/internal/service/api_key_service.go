@@ -26,6 +26,8 @@ var (
 	ErrAPIKeyNotFound       = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
 	ErrGroupNotAllowed      = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
 	ErrAPIKeyExists         = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
+	ErrAPIKeyCreateLimited  = infraerrors.TooManyRequests("API_KEY_CREATE_RATE_LIMITED", "too many api keys created recently, please try again later")
+	ErrAPIKeyCountExceeded  = infraerrors.Forbidden("API_KEY_COUNT_EXCEEDED", "api key count limit reached, please delete unused keys first")
 	ErrAPIKeyTooShort       = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
 	ErrAPIKeyInvalidChars   = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
 	ErrAPIKeyRateLimited    = infraerrors.TooManyRequests("API_KEY_RATE_LIMITED", "too many failed attempts, please try again later")
@@ -50,7 +52,9 @@ const (
 	apiKeyLastUsedMinTouch       = 30 * time.Second
 	apiKeySortCurrentConcurrency = "current_concurrency"
 	// DB 写失败后的短退避，避免请求路径持续同步重试造成写风暴与高延迟。
-	apiKeyLastUsedFailBackoff = 5 * time.Second
+	apiKeyLastUsedFailBackoff   = 5 * time.Second
+	apiKeyCreateCountWindow     = time.Hour
+	apiKeyCreateRollbackTimeout = 2 * time.Second
 )
 
 type APIKeyUpdateFields struct {
@@ -93,6 +97,13 @@ type APIKeyRepository interface {
 	IncrementRateLimitUsage(ctx context.Context, id int64, cost float64) error
 	ResetRateLimitWindows(ctx context.Context, id int64) error
 	GetRateLimitData(ctx context.Context, id int64) (*APIKeyRateLimitData, error)
+}
+
+// APIKeyActiveLimitCreator atomically checks the active-key limit and creates
+// the key. Production repositories implement this with a transaction so
+// concurrent requests cannot both pass a count-then-insert check.
+type APIKeyActiveLimitCreator interface {
+	CreateWithActiveLimit(ctx context.Context, key *APIKey, maxActive int64) error
 }
 
 type apiKeyAllByUserIDLister interface {
@@ -158,6 +169,18 @@ type APIKeyCache interface {
 	// Pub/Sub for L1 cache invalidation across instances
 	PublishAuthCacheInvalidation(ctx context.Context, cacheKey string) error
 	SubscribeAuthCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error
+}
+
+// APIKeyCreateCounter is optional so existing APIKeyCache implementations and
+// test doubles remain source compatible while deployments gain the new limit.
+type APIKeyCreateCounter interface {
+	IncrementCreateCount(ctx context.Context, userID int64, window time.Duration) (int64, error)
+}
+
+// APIKeyCreateCounterRollback is implemented by the Redis-backed counter so a
+// failed database insert does not consume a successful-create slot.
+type APIKeyCreateCounterRollback interface {
+	DecrementCreateCount(ctx context.Context, userID int64) error
 }
 
 type authCacheSubscriptionReadyKey struct{}
@@ -390,6 +413,51 @@ func (s *APIKeyService) incrementAPIKeyErrorCount(ctx context.Context, userID in
 	_ = s.cache.IncrementCreateAttemptCount(ctx, userID)
 }
 
+// checkAPIKeyCreateLimits applies the active-key and successful-create limits.
+// Active count is fail-closed because it is a database-backed safety limit;
+// Redis failures remain fail-open to preserve availability of key creation.
+func (s *APIKeyService) checkAPIKeyCreateLimits(ctx context.Context, userID int64) (func(), error) {
+	rollback := func() {}
+	if s == nil || s.cfg == nil {
+		return rollback, nil
+	}
+	if maxActive := s.cfg.APIKeyCreate.MaxActivePerUser; maxActive > 0 {
+		// The production repository performs this check atomically with the
+		// insert. Keep the count path for older repositories and test doubles.
+		if _, atomic := s.apiKeyRepo.(APIKeyActiveLimitCreator); !atomic {
+			count, err := s.apiKeyRepo.CountByUserID(ctx, userID)
+			if err != nil {
+				return rollback, fmt.Errorf("count api keys: %w", err)
+			}
+			if count >= int64(maxActive) {
+				return rollback, ErrAPIKeyCountExceeded
+			}
+		}
+	}
+	if maxPerHour := s.cfg.APIKeyCreate.MaxPerUserPerHour; maxPerHour > 0 && s.cache != nil {
+		counter, ok := s.cache.(APIKeyCreateCounter)
+		if !ok {
+			return rollback, nil
+		}
+		count, err := counter.IncrementCreateCount(ctx, userID, apiKeyCreateCountWindow)
+		if err != nil {
+			return rollback, nil
+		}
+		rollback = func() {
+			if reverser, ok := s.cache.(APIKeyCreateCounterRollback); ok {
+				rollbackCtx, cancel := context.WithTimeout(context.Background(), apiKeyCreateRollbackTimeout)
+				defer cancel()
+				_ = reverser.DecrementCreateCount(rollbackCtx, userID)
+			}
+		}
+		if count > int64(maxPerHour) {
+			rollback()
+			return func() {}, ErrAPIKeyCreateLimited
+		}
+	}
+	return rollback, nil
+}
+
 // canUserBindGroup 检查用户是否可以绑定指定分组
 // 对于订阅类型分组：检查用户是否有有效订阅
 // 对于标准类型分组：使用原有的 AllowedGroups 和 IsExclusive 逻辑
@@ -473,6 +541,11 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
+	rollbackCreateCount, err := s.checkAPIKeyCreateLimits(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
 	// 创建API Key记录
 	apiKey := &APIKey{
 		UserID:      userID,
@@ -495,8 +568,23 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		apiKey.ExpiresAt = &expiresAt
 	}
 
-	if err := s.apiKeyRepo.Create(ctx, apiKey); err != nil {
-		return nil, fmt.Errorf("create api key: %w", err)
+	var createErr error
+	maxActive := 0
+	if s.cfg != nil {
+		maxActive = s.cfg.APIKeyCreate.MaxActivePerUser
+	}
+	if maxActive > 0 {
+		if creator, ok := s.apiKeyRepo.(APIKeyActiveLimitCreator); ok {
+			createErr = creator.CreateWithActiveLimit(ctx, apiKey, int64(maxActive))
+		} else {
+			createErr = s.apiKeyRepo.Create(ctx, apiKey)
+		}
+	} else {
+		createErr = s.apiKeyRepo.Create(ctx, apiKey)
+	}
+	if createErr != nil {
+		rollbackCreateCount()
+		return nil, fmt.Errorf("create api key: %w", createErr)
 	}
 
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)

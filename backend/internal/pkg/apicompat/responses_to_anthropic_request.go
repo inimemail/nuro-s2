@@ -14,7 +14,7 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, thinkingReplayOptions{claude.IsOpus55(req.Model), req.ThinkingScope})
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, thinkingReplayOptions{claude.IsAdaptiveThinkingModel(req.Model), req.ThinkingScope})
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		}
 	}
 
-	if claude.IsOpus55(req.Model) {
+	if claude.IsAdaptiveThinkingModel(req.Model) {
 		var choice struct {
 			Type string `json:"type"`
 		}
@@ -87,7 +87,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 			}
 		}
 		if choice.Type == "any" || choice.Type == "tool" {
-			return nil, fmt.Errorf("claude-opus-5-5 requires tool_choice auto or none")
+			return nil, fmt.Errorf("%s requires tool_choice auto or none", req.Model)
 		}
 		effort := "medium"
 		if req.Reasoning != nil && req.Reasoning.Effort != "" {
@@ -96,7 +96,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		switch effort {
 		case "low", "medium", "high", "xhigh", "max":
 		default:
-			return nil, fmt.Errorf("unsupported claude-opus-5-5 reasoning effort %q", effort)
+			return nil, fmt.Errorf("unsupported %s reasoning effort %q", req.Model, effort)
 		}
 		out.Temperature, out.TopP = nil, nil
 		out.Thinking = &AnthropicThinking{Type: "adaptive"}

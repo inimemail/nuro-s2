@@ -1,8 +1,9 @@
 package service
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 func lastOpenAIModelSegment(model string) string {
@@ -66,6 +67,9 @@ func normalizeKnownOpenAICodexModel(model string) string {
 
 	if mapped := getNormalizedCodexModel(normalized); mapped != "" {
 		return mapped
+	}
+	if openai.IsGPT61SolModelSpelling(normalized) {
+		return "gpt-6.1-sol"
 	}
 	if strings.HasSuffix(normalized, "-openai-compact") {
 		if mapped := getNormalizedCodexModel(strings.TrimSuffix(normalized, "-openai-compact")); mapped != "" {

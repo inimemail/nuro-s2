@@ -78,6 +78,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolRequestBody(body, originalModel, billingModel, upstreamModel); err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		grokCacheIdentity = resolveGrokCacheIdentity(c, body, "", upstreamModel)

@@ -326,6 +326,17 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken:     0.3e-6,  // $0.30 per MTok
 		SupportsCacheBreakdown:     false,
 	}
+	// Claude Sonnet 5.5. Keep the fallback aligned with the bundled pricing
+	// catalog so a temporary catalog failure cannot silently undercharge it.
+	s.fallbackPrices["claude-sonnet-5-5"] = &ModelPricing{
+		InputPricePerToken:         2e-6,
+		OutputPricePerToken:        1e-5,
+		CacheCreationPricePerToken: 2.5e-6,
+		CacheCreation5mPrice:       2.5e-6,
+		CacheCreation1hPrice:       4e-6,
+		CacheReadPricePerToken:     0.2e-6,
+		SupportsCacheBreakdown:     true,
+	}
 
 	// Claude 3.5 Sonnet
 	s.fallbackPrices["claude-3-5-sonnet"] = &ModelPricing{
@@ -443,6 +454,22 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerTokenPriority:     4e-07,
 		LongContextInputThreshold:          272000,
 		LongContextInputMultiplier:         2.0,
+		LongContextOutputMultiplier:        1.5,
+	}
+	// OpenAI GPT-6.1 Sol official pricing (USD/token). Keep this separate from
+	// GPT-6 Sol because model aliases are normalized to this exact key before
+	// fallback lookup.
+	s.fallbackPrices["gpt-6.1-sol"] = &ModelPricing{
+		InputPricePerToken:                 2e-6,
+		InputPricePerTokenPriority:         4e-6,
+		OutputPricePerToken:                1e-5,
+		OutputPricePerTokenPriority:        2e-5,
+		CacheCreationPricePerToken:         2.5e-6,
+		CacheCreationPricePerTokenPriority: 5e-6,
+		CacheReadPricePerToken:             1e-7,
+		CacheReadPricePerTokenPriority:     2e-7,
+		LongContextInputThreshold:          272000,
+		LongContextInputMultiplier:         2,
 		LongContextOutputMultiplier:        1.5,
 	}
 	s.fallbackPrices["gpt-6-luna"] = &ModelPricing{
@@ -810,6 +837,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["claude-3-opus"]
 	}
 	if strings.Contains(modelLower, "sonnet") {
+		if strings.Contains(modelLower, "5.5") || strings.Contains(modelLower, "5-5") {
+			return s.fallbackPrices["claude-sonnet-5-5"]
+		}
 		if strings.Contains(modelLower, "4") && !strings.Contains(modelLower, "3") {
 			return s.fallbackPrices["claude-sonnet-4"]
 		}
@@ -947,7 +977,7 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
-		case "gpt-6-sol", "gpt-6-luna":
+		case "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna":
 			return s.fallbackPrices[normalized]
 		case "gpt-6-astra":
 			return s.fallbackPrices["gpt-6-astra"]
@@ -1529,7 +1559,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	if pricing == nil {
 		return nil
 	}
-	if claude.IsOpus55(model) {
+	if claude.IsAdaptiveThinkingModel(model) {
 		cloned := *pricing
 		cloned.ScaleCacheBreakdownWithTier = true
 		return &cloned

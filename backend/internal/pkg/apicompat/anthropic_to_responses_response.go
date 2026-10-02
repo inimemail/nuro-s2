@@ -40,7 +40,7 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse, scopes ...string) *Re
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "thinking", "redacted_thinking":
-			if claude.IsOpus55(resp.Model) && (block.Signature != "" || block.Data != "") {
+			if claude.IsAdaptiveThinkingModel(resp.Model) && (block.Signature != "" || block.Data != "") {
 				item := ResponsesOutput{Type: "reasoning", ID: generateItemID()}
 				item.EncryptedContent = encodeAnthropicThinking(block, scope, item.ID)
 				if block.Thinking != "" {
@@ -60,7 +60,7 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse, scopes ...string) *Re
 				})
 			}
 		case "text":
-			if claude.IsOpus55(resp.Model) && block.Text != "" {
+			if claude.IsAdaptiveThinkingModel(resp.Model) && block.Text != "" {
 				outputs = append(outputs, ResponsesOutput{Type: "message", ID: generateItemID(), Role: "assistant", Status: "completed", Content: []ResponsesContentPart{{Type: "output_text", Text: block.Text}}})
 				continue
 			}
@@ -265,7 +265,7 @@ func ResponsesEventToSSE(evt ResponsesStreamEvent) (string, error) {
 
 func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	if evt.Message != nil {
-		state.PreserveThinkingSignatures = state.PreserveThinkingSignatures || claude.IsOpus55(evt.Message.Model)
+		state.PreserveThinkingSignatures = state.PreserveThinkingSignatures || claude.IsAdaptiveThinkingModel(evt.Message.Model)
 		state.ResponseID = evt.Message.ID
 		if state.Model == "" {
 			state.Model = evt.Message.Model

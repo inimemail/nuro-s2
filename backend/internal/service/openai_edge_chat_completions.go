@@ -57,6 +57,9 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	serviceTier := extractOpenAIServiceTierFromBody(body)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolRequestBody(body, originalModel, billingModel, upstreamModel); err != nil {
+		return nil, err
+	}
 
 	upstreamBody := body
 	if upstreamModel != originalModel {

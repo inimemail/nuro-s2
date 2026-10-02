@@ -44,3 +44,39 @@ func TestDefaultModelsContainsGPT56Catalog(t *testing.T) {
 		require.Equal(t, "openai", model.OwnedBy)
 	}
 }
+
+func TestGPT61SolModelSpelling(t *testing.T) {
+	for _, model := range []string{
+		"gpt-6.1-sol",
+		"gpt_6.1_sol-high",
+		"openai/gpt-6.1-sol-high",
+		"models/gpt-6.1-sol-openai-compact",
+		"gpt-6.1-sol-none",
+	} {
+		require.True(t, IsGPT61SolModelSpelling(model), model)
+	}
+	for _, model := range []string{"gpt-6.1-solar", "gpt-6.1-sol-foo"} {
+		require.False(t, IsGPT61SolModelSpelling(model), model)
+	}
+}
+
+func TestGPT61SolReasoningEffortValidation(t *testing.T) {
+	for _, effort := range []string{"none", "minimal", " NONE "} {
+		require.Error(t, ValidateGPT61SolReasoningEffort("openai/gpt-6.1-sol", effort), effort)
+	}
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max", ""} {
+		require.NoError(t, ValidateGPT61SolReasoningEffort("gpt-6.1-sol", effort), effort)
+	}
+	require.NoError(t, ValidateGPT61SolReasoningEffort("gpt-6-sol", "none"))
+}
+
+func TestGPT61SolModelRequestValidationRejectsUnsupportedAliases(t *testing.T) {
+	for _, model := range []string{"gpt-6.1-sol-none", "gpt_6.1_sol-minimal", "openai/gpt-6.1-sol-none"} {
+		require.Error(t, ValidateGPT61SolModelRequest(model, ""), model)
+	}
+	for _, model := range []string{"gpt-6.1-sol", "gpt-6.1-sol-high", "gpt-6.1-sol-max"} {
+		require.NoError(t, ValidateGPT61SolModelRequest(model, ""), model)
+	}
+	require.Equal(t, "high", GPT61SolModelAliasReasoningEffort("models/gpt-6.1-sol-high"))
+	require.Empty(t, GPT61SolModelAliasReasoningEffort("gpt-6.1-sol-openai-compact"))
+}

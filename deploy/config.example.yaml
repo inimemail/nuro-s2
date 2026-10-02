@@ -868,6 +868,18 @@ api_key_auth_cache:
   singleflight: true
 
 # =============================================================================
+# API Key Creation Limits
+# API Key 创建限制
+# =============================================================================
+api_key_create:
+  # Maximum number of active (not soft-deleted) API keys per user. 0 disables.
+  # 每个用户最多保留的活跃 API Key 数量，0 表示关闭限制。
+  max_active_per_user: 200
+  # Maximum successful API Key creations per user in a rolling one-hour window. 0 disables.
+  # 每个用户一小时内最多成功创建的 API Key 数量，0 表示关闭限制。
+  max_per_user_per_hour: 60
+
+# =============================================================================
 # Dashboard Cache Configuration
 # 仪表盘缓存配置
 # =============================================================================

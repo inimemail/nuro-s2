@@ -4,9 +4,44 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
 
+// validateGPT61SolRequestBody applies the GPT-6.1 Sol restriction to both
+// explicit request fields and model aliases. Every model candidate is checked
+// because routing may retain the client model, apply an account mapping, and
+// then normalize an OAuth model before the request is sent upstream.
+func validateGPT61SolRequestBody(body []byte, modelCandidates ...string) error {
+	effort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
+	if effort == "" {
+		effort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+	}
+	if effort == "" {
+		effort = strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String())
+	}
+	// Anthropic's converter treats disabled thinking as reasoning effort none,
+	// even when output_config.effort is absent (or contains another value).
+	// Resolve that effective value here so a protocol conversion cannot bypass
+	// GPT-6.1 Sol's unsupported none/minimal restriction.
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()), "disabled") {
+		effort = "none"
+	}
+	for _, model := range modelCandidates {
+		if strings.TrimSpace(model) == "" {
+			continue
+		}
+		if err := openai.ValidateGPT61SolModelRequest(model, effort); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func NormalizeOpenAICompatRequestedModel(model string) string {
+	if openai.IsGPT61SolModelSpelling(model) {
+		return "gpt-6.1-sol"
+	}
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return ""

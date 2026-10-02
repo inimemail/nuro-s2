@@ -43,7 +43,11 @@ func (r *apiKeyRepository) activeQuery() *dbent.APIKeyQuery {
 }
 
 func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) error {
-	builder := r.client.APIKey.Create().
+	return r.createWithClient(ctx, r.client, key)
+}
+
+func (r *apiKeyRepository) createWithClient(ctx context.Context, client *dbent.Client, key *service.APIKey) error {
+	builder := client.APIKey.Create().
 		SetUserID(key.UserID).
 		SetKey(key.Key).
 		SetName(key.Name).
@@ -72,6 +76,66 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 		key.UpdatedAt = created.UpdatedAt
 	}
 	return translatePersistenceError(err, nil, service.ErrAPIKeyExists)
+}
+
+// CreateWithActiveLimit serializes creation for a user by locking the user
+// row, then checks the live (not soft-deleted) key count and inserts in the
+// same transaction. This closes the race in a separate CountByUserID/Create
+// sequence when multiple requests create keys concurrently.
+func (r *apiKeyRepository) CreateWithActiveLimit(ctx context.Context, key *service.APIKey, maxActive int64) error {
+	if maxActive <= 0 {
+		return r.Create(ctx, key)
+	}
+
+	var tx *dbent.Tx
+	exec := r.client
+	txCtx := ctx
+	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		exec = existingTx.Client()
+	} else {
+		startedTx, err := r.client.Tx(ctx)
+		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+			return err
+		}
+		if err == nil {
+			tx = startedTx
+			defer func() { _ = tx.Rollback() }()
+			exec = tx.Client()
+			txCtx = dbent.NewTxContext(ctx, tx)
+		}
+	}
+
+	// Locking the parent row gives all key creations for this user a stable
+	// serialization point without changing the API key schema or delete flow.
+	// SQLite does not implement SELECT ... FOR UPDATE; its write transaction
+	// already serializes the count-and-insert sequence, so omit only that
+	// dialect-specific clause there.
+	userQuery := exec.User.Query().Where(user.IDEQ(key.UserID))
+	if exec.Driver().Dialect() != dialect.SQLite {
+		userQuery.ForUpdate()
+	}
+	if _, err := userQuery.OnlyID(txCtx); err != nil {
+		return err
+	}
+	count, err := exec.APIKey.Query().
+		Where(apikey.UserIDEQ(key.UserID), apikey.DeletedAtIsNil()).
+		Count(txCtx)
+	if err != nil {
+		return err
+	}
+	if int64(count) >= maxActive {
+		return service.ErrAPIKeyCountExceeded
+	}
+
+	if err := r.createWithClient(txCtx, exec, key); err != nil {
+		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIKey, error) {
@@ -966,77 +1030,77 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		}
 	}
 	return &service.Group{
-		ID:                                 g.ID,
-		Name:                               g.Name,
-		Description:                        derefString(g.Description),
-		Platform:                           g.Platform,
-		RateMultiplier:                     g.RateMultiplier,
-		UpstreamBillingGuardMaxMultiplier:  g.UpstreamBillingGuardMaxMultiplier,
-		UpstreamBillingGuardMinMultiplier:  g.UpstreamBillingGuardMinMultiplier,
-		PeakRateEnabled:                    g.PeakRateEnabled,
-		PeakStart:                          g.PeakStart,
-		PeakEnd:                            g.PeakEnd,
-		PeakRateMultiplier:                 g.PeakRateMultiplier,
-		IsExclusive:                        g.IsExclusive,
-		Status:                             g.Status,
-		Hydrated:                           true,
-		DuplicateOperationID:               derefString(g.DuplicateOperationID),
-		SubscriptionType:                   g.SubscriptionType,
-		DailyLimitUSD:                      g.DailyLimitUsd,
-		WeeklyLimitUSD:                     g.WeeklyLimitUsd,
-		MonthlyLimitUSD:                    g.MonthlyLimitUsd,
-		AllowImageGeneration:               g.AllowImageGeneration,
-		AllowBatchImageGeneration:          g.AllowBatchImageGeneration,
-		ImageRateIndependent:               g.ImageRateIndependent,
-		ImageRateMultiplier:                g.ImageRateMultiplier,
-		ImagePrice1K:                       g.ImagePrice1k,
-		ImagePrice2K:                       g.ImagePrice2k,
-		ImagePrice4K:                       g.ImagePrice4k,
-		BatchImageDiscountMultiplier:       g.BatchImageDiscountMultiplier,
-		BatchImageHoldMultiplier:           g.BatchImageHoldMultiplier,
-		VideoRateIndependent:               g.VideoRateIndependent,
-		VideoRateMultiplier:                g.VideoRateMultiplier,
-		VideoPrice480P:                     g.VideoPrice480p,
-		VideoPrice720P:                     g.VideoPrice720p,
-		VideoPrice1080P:                    g.VideoPrice1080p,
-		VideoModelPrices:                   g.VideoModelPrices,
-		WebSearchPricePerCall:              g.WebSearchPricePerCall,
-		SearchPricePer1K:                   g.SearchPricePer1k,
-		AudioRealtimePricePerMin:           g.AudioRealtimePricePerMin,
-		AudioTTSPricePerMillionChars:       g.AudioTtsPricePerMillionChars,
-		AudioSTTPricePerHour:               g.AudioSttPricePerHour,
-		LongContextPricingEnabled:          g.LongContextPricingEnabled,
-		ModelPricing:                       modelPricing,
-		DefaultValidityDays:                g.DefaultValidityDays,
-		ClaudeCodeOnly:                     g.ClaudeCodeOnly,
-		FallbackGroupID:                    g.FallbackGroupID,
-		FallbackGroupIDOnInvalidRequest:    g.FallbackGroupIDOnInvalidRequest,
-		ModelRouting:                       g.ModelRouting,
-		ModelRoutingEnabled:                g.ModelRoutingEnabled,
-		MCPXMLInject:                       g.McpXMLInject,
-		SupportedModelScopes:               g.SupportedModelScopes,
-		SortOrder:                          g.SortOrder,
-		AllowMessagesDispatch:              g.AllowMessagesDispatch,
-		AllowLive:                          g.AllowLive,
-		EdgeProtectionEnabled:              g.EdgeProtectionEnabled,
-		RequireOAuthOnly:                   g.RequireOauthOnly,
-		RequirePrivacySet:                  g.RequirePrivacySet,
-		DefaultMappedModel:                 g.DefaultMappedModel,
-		MessagesDispatchModelConfig:        g.MessagesDispatchModelConfig,
-		ModelsListConfig:                   g.ModelsListConfig,
-		CodexModelsManifestConfig:          g.CodexModelsManifestConfig,
-		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
-		AccountSchedulingStrategy:          service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
-		AdaptiveTTFTSwitchEnabled:          g.AdaptiveTtftSwitchEnabled,
-		AdaptiveTTFTSwitchThresholdSeconds: service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(g.AdaptiveTtftSwitchThresholdSeconds),
+		ID:                                   g.ID,
+		Name:                                 g.Name,
+		Description:                          derefString(g.Description),
+		Platform:                             g.Platform,
+		RateMultiplier:                       g.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:    g.UpstreamBillingGuardMaxMultiplier,
+		UpstreamBillingGuardMinMultiplier:    g.UpstreamBillingGuardMinMultiplier,
+		PeakRateEnabled:                      g.PeakRateEnabled,
+		PeakStart:                            g.PeakStart,
+		PeakEnd:                              g.PeakEnd,
+		PeakRateMultiplier:                   g.PeakRateMultiplier,
+		IsExclusive:                          g.IsExclusive,
+		Status:                               g.Status,
+		Hydrated:                             true,
+		DuplicateOperationID:                 derefString(g.DuplicateOperationID),
+		SubscriptionType:                     g.SubscriptionType,
+		DailyLimitUSD:                        g.DailyLimitUsd,
+		WeeklyLimitUSD:                       g.WeeklyLimitUsd,
+		MonthlyLimitUSD:                      g.MonthlyLimitUsd,
+		AllowImageGeneration:                 g.AllowImageGeneration,
+		AllowBatchImageGeneration:            g.AllowBatchImageGeneration,
+		ImageRateIndependent:                 g.ImageRateIndependent,
+		ImageRateMultiplier:                  g.ImageRateMultiplier,
+		ImagePrice1K:                         g.ImagePrice1k,
+		ImagePrice2K:                         g.ImagePrice2k,
+		ImagePrice4K:                         g.ImagePrice4k,
+		BatchImageDiscountMultiplier:         g.BatchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:             g.BatchImageHoldMultiplier,
+		VideoRateIndependent:                 g.VideoRateIndependent,
+		VideoRateMultiplier:                  g.VideoRateMultiplier,
+		VideoPrice480P:                       g.VideoPrice480p,
+		VideoPrice720P:                       g.VideoPrice720p,
+		VideoPrice1080P:                      g.VideoPrice1080p,
+		VideoModelPrices:                     g.VideoModelPrices,
+		WebSearchPricePerCall:                g.WebSearchPricePerCall,
+		SearchPricePer1K:                     g.SearchPricePer1k,
+		AudioRealtimePricePerMin:             g.AudioRealtimePricePerMin,
+		AudioTTSPricePerMillionChars:         g.AudioTtsPricePerMillionChars,
+		AudioSTTPricePerHour:                 g.AudioSttPricePerHour,
+		LongContextPricingEnabled:            g.LongContextPricingEnabled,
+		ModelPricing:                         modelPricing,
+		DefaultValidityDays:                  g.DefaultValidityDays,
+		ClaudeCodeOnly:                       g.ClaudeCodeOnly,
+		FallbackGroupID:                      g.FallbackGroupID,
+		FallbackGroupIDOnInvalidRequest:      g.FallbackGroupIDOnInvalidRequest,
+		ModelRouting:                         g.ModelRouting,
+		ModelRoutingEnabled:                  g.ModelRoutingEnabled,
+		MCPXMLInject:                         g.McpXMLInject,
+		SupportedModelScopes:                 g.SupportedModelScopes,
+		SortOrder:                            g.SortOrder,
+		AllowMessagesDispatch:                g.AllowMessagesDispatch,
+		AllowLive:                            g.AllowLive,
+		EdgeProtectionEnabled:                g.EdgeProtectionEnabled,
+		RequireOAuthOnly:                     g.RequireOauthOnly,
+		RequirePrivacySet:                    g.RequirePrivacySet,
+		DefaultMappedModel:                   g.DefaultMappedModel,
+		MessagesDispatchModelConfig:          g.MessagesDispatchModelConfig,
+		ModelsListConfig:                     g.ModelsListConfig,
+		CodexModelsManifestConfig:            g.CodexModelsManifestConfig,
+		StrictModelPriorityOnModelMismatch:   g.StrictModelPriorityOnModelMismatch,
+		AccountSchedulingStrategy:            service.NormalizeAccountSchedulingStrategy(g.AccountSchedulingStrategy),
+		AdaptiveTTFTSwitchEnabled:            g.AdaptiveTtftSwitchEnabled,
+		AdaptiveTTFTSwitchThresholdSeconds:   service.NormalizeAdaptiveTTFTSwitchThresholdSeconds(g.AdaptiveTtftSwitchThresholdSeconds),
 		AdaptiveHealthSampleFreshnessMinutes: service.NormalizeAdaptiveHealthSampleFreshnessMinutes(g.AdaptiveHealthSampleFreshnessMinutes),
-		RPMLimit:                           g.RpmLimit,
-		ForceOpenAIFast:                    g.ForceOpenaiFast,
-		MaxReasoningEffort:                 g.MaxReasoningEffort,
-		MaxReasoningEffortOverLimit:        g.MaxReasoningEffortOverLimit,
-		ReasoningEffortMappings:            g.ReasoningEffortMappings,
-		CreatedAt:                          g.CreatedAt,
-		UpdatedAt:                          g.UpdatedAt,
+		RPMLimit:                             g.RpmLimit,
+		ForceOpenAIFast:                      g.ForceOpenaiFast,
+		MaxReasoningEffort:                   g.MaxReasoningEffort,
+		MaxReasoningEffortOverLimit:          g.MaxReasoningEffortOverLimit,
+		ReasoningEffortMappings:              g.ReasoningEffortMappings,
+		CreatedAt:                            g.CreatedAt,
+		UpdatedAt:                            g.UpdatedAt,
 	}
 }
 

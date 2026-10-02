@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/tidwall/gjson"
@@ -11,7 +12,23 @@ import (
 // normalizeGPT6ResponsesSampling operates only on the final Sol/Luna request.
 // mode and effort are independent; effort=none permits sampling.
 func normalizeGPT6ResponsesSampling(body []byte) ([]byte, error) {
-	if !openai.IsGPT6SolOrLunaModelSpelling(gjson.GetBytes(body, "model").String()) || gjson.GetBytes(body, "reasoning.effort").String() == "none" {
+	model := gjson.GetBytes(body, "model").String()
+	effort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
+	if effort == "" {
+		effort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+	}
+	if effort == "" {
+		effort = strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String())
+	}
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()), "disabled") {
+		effort = "none"
+	}
+	if openai.IsGPT61SolModelSpelling(model) {
+		if err := openai.ValidateGPT61SolModelRequest(model, effort); err != nil {
+			return nil, err
+		}
+	}
+	if !openai.IsGPT6SolOrLunaModelSpelling(model) && !openai.IsGPT61SolModelSpelling(model) || (openai.IsGPT6SolOrLunaModelSpelling(model) && strings.EqualFold(effort, "none")) {
 		return body, nil
 	}
 	out := body

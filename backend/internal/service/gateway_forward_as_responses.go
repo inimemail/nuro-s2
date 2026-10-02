@@ -529,7 +529,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
-	state.PreserveThinkingSignatures = claude.IsOpus55(mappedModel)
+	state.PreserveThinkingSignatures = claude.IsAdaptiveThinkingModel(mappedModel)
 	if len(thinkingScopes) > 0 {
 		state.ThinkingScope = thinkingScopes[0]
 	}
@@ -717,7 +717,7 @@ func mapUpstreamStatusCode(code int) int {
 // Credential-bound MAC material stays server-side; credential replacement
 // invalidates old envelopes without a session store or request-time query.
 func anthropicThinkingAccountScope(account *Account, model string) string {
-	if account == nil || !claude.IsOpus55(model) {
+	if account == nil || !claude.IsAdaptiveThinkingModel(model) {
 		return ""
 	}
 	credentials, _ := json.Marshal(account.Credentials)

@@ -28,6 +28,25 @@ func TestDefaultBetaPolicySettings_Context1MSonnet5Whitelist(t *testing.T) {
 	require.Contains(t, rule.ModelWhitelist, "global.anthropic.claude-sonnet-5*")
 }
 
+func TestSonnet55ToolsetBetaDropsVersionedComputerAndBrowserTools(t *testing.T) {
+	for _, toolType := range []string{
+		"computer_20250124",
+		"computer_20251124",
+		"browser_20251124",
+		"computer_toolset_preview",
+		"browser_toolset_preview",
+	} {
+		drops := sonnet55ToolsetBetaDrops("claude-sonnet-5-5", []byte(`{"tools":[{"type":"`+toolType+`"}]}`))
+		require.Equal(t, []string{claude.BetaFineGrainedToolStreaming}, drops, toolType)
+	}
+}
+
+func TestSonnet55ToolsetBetaDropsLeavesOrdinaryToolsAndModelsUnchanged(t *testing.T) {
+	toolBody := []byte(`{"tools":[{"type":"web_search_20250305"}]}`)
+	require.Empty(t, sonnet55ToolsetBetaDrops("claude-sonnet-5-5", toolBody))
+	require.Empty(t, sonnet55ToolsetBetaDrops("claude-opus-5-5", []byte(`{"tools":[{"type":"computer_20251124"}]}`)))
+}
+
 func TestResolveRuleAction_Context1MSonnet5Whitelist(t *testing.T) {
 	rule := BetaPolicyRule{
 		BetaToken:      claude.BetaContext1M,

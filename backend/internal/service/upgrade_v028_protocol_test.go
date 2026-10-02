@@ -36,6 +36,22 @@ func TestV028GPT6FinalBodySampling(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, old, out)
 }
+
+func TestV028GPT61SamplingValidationUsesAllProtocolEffortFields(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"gpt-6.1-sol","reasoning_effort":"none","temperature":0.7}`,
+		`{"model":"gpt-6.1-sol","output_config":{"effort":"minimal"},"temperature":0.7}`,
+		`{"model":"gpt-6.1-sol","thinking":{"type":"disabled"},"temperature":0.7}`,
+		`{"model":"gpt-6.1-sol-none","temperature":0.7}`,
+	} {
+		_, err := normalizeGPT6ResponsesSampling([]byte(body))
+		require.Error(t, err, body)
+	}
+
+	out, err := normalizeGPT6ResponsesSampling([]byte(`{"model":"gpt-6.1-sol","output_config":{"effort":"high"},"temperature":0.7}`))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(out, "temperature").Exists())
+}
 func TestV028LiteMappingDoesNotReplayOrTrimHistory(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","client_metadata":{"` + responsesLiteWSMetadataKey + `":"true"},"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
 	req, _ := http.NewRequest(http.MethodPost, "https://chatgpt.com", strings.NewReader(string(body)))
@@ -123,6 +139,7 @@ func TestV028ScopedImageErrorsAndNewModelToolGuard(t *testing.T) {
 	}
 	require.Error(t, validateNewModelChatReasoningTools("gpt-6-sol", "high", true))
 	require.NoError(t, validateNewModelChatReasoningTools("gpt-6-sol", "none", true))
+	require.NoError(t, validateNewModelChatReasoningTools("gpt-6.1-sol", "high", true))
 	require.NoError(t, validateNewModelChatReasoningTools("gpt-5.6", "high", true))
 	require.Error(t, validateNewModelChatReasoningTools("claude-opus-5-5", "", true))
 }

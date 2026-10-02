@@ -151,6 +151,7 @@ describe('AccountTestModal', () => {
       { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
       { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
       { id: 'gpt-6-astra', display_name: 'GPT-6 Astra' },
+      { id: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol' },
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }
     ])
 
@@ -184,11 +185,40 @@ describe('AccountTestModal', () => {
 
     const vm = wrapper.vm as any
     expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'gpt-6.1-sol',
       'gpt-6-astra',
       'gpt-6',
       'gpt-5.6',
       'gpt-5.4'
     ])
-    expect(vm.selectedModelId).toBe('gpt-6-astra')
+    expect(vm.selectedModelId).toBe('gpt-6.1-sol')
+  })
+
+  it('Anthropic 测试模型将 Claude Sonnet 5.5 置顶', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5' },
+      { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' },
+      { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' }
+    ])
+
+    const wrapper = mountModal()
+    await wrapper.setProps({
+      show: true,
+      account: {
+        id: 42,
+        name: 'Anthropic Test',
+        platform: 'anthropic',
+        type: 'apikey',
+        status: 'active'
+      }
+    } as any)
+    await flushPromises()
+
+    const vm = wrapper.vm as any
+    expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'claude-sonnet-4-5'
+    ])
   })
 })

@@ -28,6 +28,7 @@ type apiKeyRepoStub struct {
 	getByIDErr     error   // GetKeyAndOwnerID 的错误返回值
 	deleteErr      error   // Delete 的错误返回值
 	deletedIDs     []int64 // 记录已删除的 API Key ID 列表
+	countByUserID  func(ctx context.Context, userID int64) (int64, error)
 	updateLastUsed func(ctx context.Context, id int64, usedAt time.Time) error
 	touchedIDs     []int64
 	touchedUsedAts []time.Time
@@ -94,6 +95,9 @@ func (s *apiKeyRepoStub) VerifyOwnership(ctx context.Context, userID int64, apiK
 }
 
 func (s *apiKeyRepoStub) CountByUserID(ctx context.Context, userID int64) (int64, error) {
+	if s.countByUserID != nil {
+		return s.countByUserID(ctx, userID)
+	}
 	panic("unexpected CountByUserID call")
 }
 

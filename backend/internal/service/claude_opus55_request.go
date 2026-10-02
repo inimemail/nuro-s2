@@ -8,22 +8,22 @@ import (
 )
 
 func normalizeOpus55Request(body []byte, model string) ([]byte, error) {
-	if !claude.IsOpus55(model) {
+	if !claude.IsAdaptiveThinkingModel(model) {
 		return body, nil
 	}
 	if thinking := gjson.GetBytes(body, "thinking.type").String(); thinking != "" && thinking != "adaptive" {
-		return nil, fmt.Errorf("claude-opus-5-5 requires adaptive thinking")
+		return nil, fmt.Errorf("%s requires adaptive thinking", model)
 	}
 	if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
-		return nil, fmt.Errorf("claude-opus-5-5 does not support thinking.budget_tokens")
+		return nil, fmt.Errorf("%s does not support thinking.budget_tokens", model)
 	}
 	if choice := gjson.GetBytes(body, "tool_choice.type").String(); choice == "any" || choice == "tool" {
-		return nil, fmt.Errorf("claude-opus-5-5 requires tool_choice auto or none")
+		return nil, fmt.Errorf("%s requires tool_choice auto or none", model)
 	}
 	switch effort := gjson.GetBytes(body, "output_config.effort").String(); effort {
 	case "", "low", "medium", "high", "xhigh", "max":
 	default:
-		return nil, fmt.Errorf("unsupported claude-opus-5-5 effort %q", effort)
+		return nil, fmt.Errorf("unsupported %s effort %q", model, effort)
 	}
 	out := body
 	var err error

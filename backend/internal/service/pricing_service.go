@@ -53,6 +53,23 @@ var (
 		Mode:                                "chat",
 		SupportsPromptCaching:               true,
 	}
+	openAIGPT61SolFallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:                   2e-6,
+		InputCostPerTokenPriority:           4e-6,
+		OutputCostPerToken:                  1e-5,
+		OutputCostPerTokenPriority:          2e-5,
+		CacheCreationInputTokenCost:         2.5e-6,
+		CacheCreationInputTokenCostPriority: 5e-6,
+		CacheReadInputTokenCost:             1e-7,
+		CacheReadInputTokenCostPriority:     2e-7,
+		LongContextInputTokenThreshold:      272000,
+		LongContextInputCostMultiplier:      2,
+		LongContextOutputCostMultiplier:     1.5,
+		SupportsServiceTier:                 true,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "chat",
+		SupportsPromptCaching:               true,
+	}
 	openAIGPT55FallbackPricing = &LiteLLMModelPricing{
 		InputCostPerToken:               5e-06,
 		InputCostPerTokenPriority:       1e-05,
@@ -1110,6 +1127,7 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 		{name: "opus-4.6", match: []string{"claude-opus-4-6", "claude-opus-4.6"}},
 		{name: "opus-4.5", match: []string{"claude-opus-4-5", "claude-opus-4.5"}},
 		{name: "opus-4", match: []string{"claude-opus-4", "claude-3-opus"}},
+		{name: "sonnet-5.5", match: []string{"claude-sonnet-5-5", "claude-sonnet-5.5"}},
 		{name: "sonnet-4.5", match: []string{"claude-sonnet-4-5", "claude-sonnet-4.5"}},
 		{name: "sonnet-4", match: []string{"claude-sonnet-4", "claude-3-5-sonnet"}},
 		{name: "sonnet-3.5", match: []string{"claude-3-5-sonnet", "claude-3.5-sonnet"}},
@@ -1153,6 +1171,8 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 			}
 		case strings.Contains(model, "sonnet"):
 			switch {
+			case strings.Contains(model, "5.5") || strings.Contains(model, "5-5"):
+				fallbackName = "sonnet-5.5"
 			case strings.Contains(model, "4.5") || strings.Contains(model, "4-5"):
 				fallbackName = "sonnet-4.5"
 			case strings.Contains(model, "3-5") || strings.Contains(model, "3.5"):
@@ -1233,6 +1253,11 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 		logger.With(zap.String("component", "service.pricing")).
 			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-6-astra(static)"))
 		return openAIGPT6AstraFallbackPricing
+	}
+	if openai.IsGPT61SolModelSpelling(model) {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s(static)", model, "gpt-6.1-sol"))
+		return openAIGPT61SolFallbackPricing
 	}
 
 	if strings.HasPrefix(model, "gpt-5.3-codex") {
