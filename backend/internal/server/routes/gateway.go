@@ -262,6 +262,14 @@ func RegisterGatewayRoutes(
 	gateway.Use(compositeTarget, requireGroupAnthropic)
 	{
 		// /v1/messages: auto-route based on group platform
+		gateway.POST("/systemone", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformTypeSafe {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "System One API is not supported for this platform"}})
+				return
+			}
+			h.Gateway.SystemOne(c)
+		})
 		gateway.POST("/messages", func(c *gin.Context) {
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Messages(c)

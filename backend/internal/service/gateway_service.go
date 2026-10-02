@@ -10739,6 +10739,38 @@ func (s *GatewayService) ResolveUserGroupRateMultiplier(ctx context.Context, use
 	return s.getUserGroupRateMultiplier(ctx, userID, groupID, groupDefaultMultiplier)
 }
 
+// ValidateModelPricing checks that a model has a usable price before a native
+// gateway request is sent upstream. This is intentionally opt-in at the
+// handler call site: existing protocols preserve their established billing
+// fallback behavior, while newly added native protocols cannot accidentally
+// run successfully and settle at zero when their model is absent from the
+// remote/fallback catalog.
+func (s *GatewayService) ValidateModelPricing(ctx context.Context, apiKey *APIKey, model string) error {
+	if apiKey == nil || apiKey.Group == nil {
+		return nil
+	}
+	if s == nil || s.resolver == nil || s.billingService == nil {
+		return ErrModelPricingUnavailable
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ErrModelPricingUnavailable
+	}
+	if _, err := s.billingService.GetModelPricing(model); err == nil {
+		return nil
+	}
+	if configured := matchGroupModelPricing(apiKey.Group, model); pricingEntryHasConfiguredPrice(configured) {
+		return nil
+	}
+	if apiKey.GroupID != nil {
+		resolved := s.resolver.Resolve(ctx, PricingInput{Model: model, GroupID: apiKey.GroupID, Group: apiKey.Group})
+		if resolved != nil && pricingEntryHasConfiguredPrice(resolved.channelPricing) {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %s has no configured pricing: %w", model, ErrModelPricingUnavailable)
+}
+
 // RecordUsageInput 记录使用量的输入参数
 type RecordUsageInput struct {
 	Result              *ForwardResult

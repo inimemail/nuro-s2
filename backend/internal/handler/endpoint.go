@@ -7,6 +7,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func rejectSystemOneOnlyPlatform(c *gin.Context, apiKey *service.APIKey, writer func(*gin.Context, int, string, string)) bool {
+	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformTypeSafe {
+		writer(c, 404, "not_found_error", "TypeSafe System One accounts only support /v1/systemone")
+		return true
+	}
+	return false
+}
+
 // ──────────────────────────────────────────────────────────
 // Canonical inbound / upstream endpoint paths.
 // All normalization and derivation reference this single set
@@ -30,6 +38,7 @@ const (
 	EndpointVideoStatus                = EndpointVideos
 	EndpointGeminiModels               = "/v1beta/models"
 	EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
+	EndpointSystemOne                  = "/v1/systemone"
 )
 
 // gin.Context keys used by the middleware and helpers below.
@@ -59,6 +68,8 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointChatCompletions
 	case strings.Contains(path, EndpointMessages):
 		return EndpointMessages
+	case strings.Contains(path, EndpointSystemOne):
+		return EndpointSystemOne
 	case strings.Contains(path, EndpointImagesGenerations) || strings.Contains(path, "/images/generations"):
 		return EndpointImagesGenerations
 	case strings.Contains(path, EndpointImagesEdits) || strings.Contains(path, "/images/edits"):
@@ -137,6 +148,9 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	case service.PlatformAnthropic:
 		return EndpointMessages
+
+	case service.PlatformTypeSafe:
+		return EndpointSystemOne
 
 	case service.PlatformGemini:
 		return EndpointGeminiModels

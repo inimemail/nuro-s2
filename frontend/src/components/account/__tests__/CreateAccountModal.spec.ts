@@ -230,6 +230,30 @@ describe('CreateAccountModal', () => {
     expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('pool_mode')
   })
 
+  it('uses the TypeSafe base URL and API key defaults', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'TypeSafe')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('input[placeholder="https://api.typesafe.ai"]')).toBeTruthy()
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('TypeSafe account')
+    await wrapper.get('input[placeholder="ts-..."]').setValue('ts-test')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'TypeSafe account',
+      platform: 'typesafe',
+      type: 'apikey',
+      credentials: expect.objectContaining({
+        base_url: 'https://api.typesafe.ai',
+        api_key: 'ts-test'
+      }),
+      upstream_billing_probe_enabled: false
+    }))
+  })
+
   it('does not write cache creation optimization credentials while the switch stays off', async () => {
     const wrapper = mountModal()
 

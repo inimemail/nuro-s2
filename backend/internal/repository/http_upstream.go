@@ -438,7 +438,7 @@ func newGrokOfficialAPIFallbackRequest(req *http.Request, resp *http.Response) (
 	// Only carry protocol headers that are meaningful to the official API.
 	// Account-specific relay headers must not cross from the CLI proxy to x.ai.
 	fallbackReq.Header = make(http.Header)
-	for _, header := range []string{"Authorization", "Accept", "Content-Type", "Content-Encoding", "Idempotency-Key"} {
+	for _, header := range []string{"Authorization", "Accept", "Content-Type", "Content-Encoding", "Idempotency-Key", "X-Grok-Client-Mode", "X-Authenticateresponse"} {
 		for _, value := range req.Header.Values(header) {
 			fallbackReq.Header.Add(header, value)
 		}
@@ -483,6 +483,7 @@ func applyGrokCLIProxyHeaders(req *http.Request) {
 	}
 	req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 	req.Header.Set("x-grok-client-version", version)
+	req.Header.Set("X-Grok-Client-Mode", "interactive")
 	req.Header.Set("User-Agent", "xai-grok-workspace/"+version)
 }
 

@@ -2456,7 +2456,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			Detail:             upstreamDetail,
 		})
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] upstream error status=%d body=%s", resp.StatusCode, truncateForLog(unwrappedForOps, 500))
-		return nil, s.writeGoogleError(c, resp.StatusCode, safeUpstreamErrorMessage)
+		return nil, s.writeGoogleError(c, resp.StatusCode, sanitizeAntigravityErrorText(safeUpstreamErrorMessage))
 	}
 
 handleSuccess:

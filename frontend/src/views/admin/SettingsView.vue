@@ -8805,6 +8805,7 @@ const platformQuotaLabels: Record<PlatformType, string> = {
   zhipu: "Zhipu",
   deepseek: "DeepSeek",
   minimax: "MiniMax",
+  typesafe: "TypeSafe",
 };
 
 function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {

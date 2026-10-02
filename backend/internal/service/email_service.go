@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -637,33 +638,15 @@ func (s *EmailService) GeneratePasswordResetToken() (string, error) {
 
 // SendPasswordResetEmail sends a password reset email with a reset link
 func (s *EmailService) SendPasswordResetEmail(ctx context.Context, email, siteName, resetURL string, locale ...string) error {
-	var token string
-	var needSaveToken bool
-
-	// Check if token already exists
-	existing, err := s.cache.GetPasswordResetToken(ctx, email)
-	if err == nil && existing != nil {
-		// Token exists, reuse it (allows resending email without generating new token)
-		token = existing.Token
-		needSaveToken = false
-	} else {
-		// Generate new token
-		token, err = s.GeneratePasswordResetToken()
-		if err != nil {
-			return fmt.Errorf("generate token: %w", err)
-		}
-		needSaveToken = true
+	// Stored reset tokens are hashes, so issue a fresh raw token whenever mail is
+	// sent. The cooldown bounds resend frequency and avoids exposing credentials.
+	token, err := s.GeneratePasswordResetToken()
+	if err != nil {
+		return fmt.Errorf("generate token: %w", err)
 	}
-
-	// Save token to Redis (only if new token generated)
-	if needSaveToken {
-		data := &PasswordResetTokenData{
-			Token:     token,
-			CreatedAt: time.Now(),
-		}
-		if err := s.cache.SetPasswordResetToken(ctx, email, data, passwordResetTokenTTL); err != nil {
-			return fmt.Errorf("save reset token: %w", err)
-		}
+	sum := sha256.Sum256([]byte(token))
+	if err := s.cache.SetPasswordResetToken(ctx, email, &PasswordResetTokenData{Token: hex.EncodeToString(sum[:]), CreatedAt: time.Now()}, passwordResetTokenTTL); err != nil {
+		return fmt.Errorf("save reset token: %w", err)
 	}
 
 	// Build full reset URL with URL-encoded token and email
@@ -730,8 +713,13 @@ func (s *EmailService) VerifyPasswordResetToken(ctx context.Context, email, toke
 		return ErrInvalidResetToken
 	}
 
-	// Use constant-time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(data.Token), []byte(token)) != 1 {
+	if token == "" {
+		return ErrInvalidResetToken
+	}
+	sum := sha256.Sum256([]byte(token))
+	hashed := hex.EncodeToString(sum[:])
+	// Accept legacy plaintext values only during the rolling migration window.
+	if subtle.ConstantTimeCompare([]byte(data.Token), []byte(hashed)) != 1 && subtle.ConstantTimeCompare([]byte(data.Token), []byte(token)) != 1 {
 		return ErrInvalidResetToken
 	}
 
@@ -740,12 +728,25 @@ func (s *EmailService) VerifyPasswordResetToken(ctx context.Context, email, toke
 
 // ConsumePasswordResetToken verifies and deletes the token (one-time use)
 func (s *EmailService) ConsumePasswordResetToken(ctx context.Context, email, token string) error {
-	// Verify first
 	if err := s.VerifyPasswordResetToken(ctx, email, token); err != nil {
 		return err
 	}
-
-	// Delete after verification (one-time use)
+	sum := sha256.Sum256([]byte(token))
+	hashed := hex.EncodeToString(sum[:])
+	if atomic, ok := s.cache.(interface {
+		ConsumePasswordResetToken(context.Context, string, string) (bool, error)
+	}); ok {
+		consumed, err := atomic.ConsumePasswordResetToken(ctx, email, hashed)
+		if !consumed && err == nil {
+			consumed, err = atomic.ConsumePasswordResetToken(ctx, email, token)
+		}
+		if err != nil || !consumed {
+			return ErrInvalidResetToken
+		}
+		return nil
+	}
+	// Legacy cache implementations lack the atomic primitive; retain the
+	// compatibility fallback while production Redis uses compare-and-delete.
 	if err := s.cache.DeletePasswordResetToken(ctx, email); err != nil {
 		slog.Error("failed to delete password reset token after consumption", "email", email, "error", err)
 	}

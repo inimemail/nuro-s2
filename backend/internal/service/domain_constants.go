@@ -48,6 +48,7 @@ const (
 	PlatformDeepSeek    = domain.PlatformDeepSeek
 	PlatformMiniMax     = domain.PlatformMiniMax
 	PlatformOpenCodeGo  = domain.PlatformOpenCodeGo
+	PlatformTypeSafe    = domain.PlatformTypeSafe
 	// PlatformDeepseek is an internal compatibility spelling used by selected
 	// upstream adapters. Public/local code keeps PlatformDeepSeek canonical.
 	PlatformDeepseek  = PlatformDeepSeek
@@ -114,6 +115,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformDeepSeek,
 	PlatformMiniMax,
 	PlatformOpenCodeGo,
+	PlatformTypeSafe,
 }
 
 // DefaultCNModelIDs returns a small stable catalog for domestic providers when

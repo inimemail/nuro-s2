@@ -136,6 +136,9 @@ const labelClass = computed(() => {
   if (props.platform === 'deepseek') {
     return `${base} bg-teal-200/60 text-teal-800 dark:bg-teal-800/40 dark:text-teal-300`
   }
+  if (props.platform === 'typesafe') {
+    return `${base} bg-teal-200/60 text-teal-800 dark:bg-teal-800/40 dark:text-teal-300`
+  }
   return `${base} bg-violet-200/60 text-violet-800 dark:bg-violet-800/40 dark:text-violet-300`
 })
 
@@ -173,6 +176,11 @@ const badgeClass = computed(() => {
       : 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300'
   }
   if (props.platform === 'deepseek') {
+    return isSubscription.value
+      ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'
+      : 'bg-teal-50 text-teal-700 dark:bg-teal-900/20 dark:text-teal-300'
+  }
+  if (props.platform === 'typesafe') {
     return isSubscription.value
       ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'
       : 'bg-teal-50 text-teal-700 dark:bg-teal-900/20 dark:text-teal-300'

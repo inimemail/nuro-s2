@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -208,6 +209,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	// Route to platform-specific test method
+	if account.IsTypeSafe() {
+		return s.testTypeSafeAccountConnection(c, account, modelID, prompt)
+	}
 	if account.IsCNProvider() {
 		protocol := account.GetAPIProtocol()
 		if account.IsOpenCodeGo() {
@@ -245,6 +249,76 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, account *Account, modelID, prompt string) error {
+	if account.Type != AccountTypeAPIKey {
+		return s.sendErrorAndEnd(c, "TypeSafe accounts require an API key")
+	}
+	if strings.TrimSpace(modelID) == "" {
+		modelID = typesafe.JevLatestModel
+	}
+	if modelID != typesafe.JevLatestModel {
+		return s.sendErrorAndEnd(c, "TypeSafe only supports jev-latest")
+	}
+	key := account.GetTypeSafeAPIKey()
+	if key == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+	state := strings.TrimSpace(prompt)
+	if state == "" {
+		state = "hi"
+	}
+	payload := map[string]any{
+		"model":     typesafe.JevLatestModel,
+		"state":     state,
+		"questions": map[string]any{"test": map[string]any{"type": "noul", "instructions": "Respond to the test request."}},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create TypeSafe request")
+	}
+	validated, err := typesafe.ValidateSystemOneRequest(body)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: validated})
+	req, err := typesafe.NewSystemOneRequest(c.Request.Context(), account.GetTypeSafeBaseURL(), key, body)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create TypeSafe request")
+	}
+	account.ApplyHeaderOverrides(req.Header)
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	var resp *http.Response
+	if s.tlsFPProfileService != nil {
+		resp, err = s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	} else {
+		resp, err = s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	}
+	if err != nil {
+		return s.sendErrorAndEnd(c, "TypeSafe request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// TypeSafe request errors are returned to the tester but never mutate
+		// account state or trigger failover.
+		return s.sendErrorAndEnd(c, fmt.Sprintf("TypeSafe API returned %d", resp.StatusCode))
+	}
+	decoded, err := typesafe.DecodeSystemOneResponse(resp.Body)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("TypeSafe response received (input=%d, output=%d tokens)", decoded.Usage.InputTokens, decoded.Usage.OutputTokens)})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Context, account *Account, modelID string, prompt string) error {

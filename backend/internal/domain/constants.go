@@ -28,6 +28,7 @@ const (
 	PlatformDeepSeek    = "deepseek"
 	PlatformMiniMax     = "minimax"
 	PlatformOpenCodeGo  = "opencode_go"
+	PlatformTypeSafe    = "typesafe"
 	PlatformComposite   = "composite"
 )
 

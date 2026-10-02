@@ -662,6 +662,7 @@ func applyGrokCLIHeaders(headers http.Header) {
 	}
 	headers.Set("X-XAI-Token-Auth", xai.CLITokenAuthValue)
 	headers.Set("X-Grok-Client-Version", grokCLIVersion)
+	headers.Set("X-Grok-Client-Mode", "interactive")
 	headers.Set("X-Grok-Client-Identifier", "grok-shell")
 	headers.Set("User-Agent", xai.CLIWorkspaceUserAgent(grokCLIVersion))
 }

@@ -57,6 +57,43 @@ func TestResolve_UnknownModel(t *testing.T) {
 	require.Equal(t, "fallback", resolved.Source)
 }
 
+func TestPricingEntryHasConfiguredPrice(t *testing.T) {
+	zero := 0.0
+	require.False(t, pricingEntryHasConfiguredPrice(&ChannelModelPricing{Models: []string{"jev-latest"}}))
+	require.True(t, pricingEntryHasConfiguredPrice(&ChannelModelPricing{Models: []string{"jev-latest"}, InputPrice: &zero}))
+	require.True(t, pricingEntryHasConfiguredPrice(&ChannelModelPricing{
+		Models:    []string{"jev-latest"},
+		Intervals: []PricingInterval{{PerRequestPrice: &zero}},
+	}))
+}
+
+func TestValidateModelPricingRejectsEmptyNativeModelPrice(t *testing.T) {
+	bs := newTestBillingServiceForResolver()
+	svc := &GatewayService{
+		billingService: bs,
+		resolver:       NewModelPricingResolver(nil, bs),
+	}
+	groupID := int64(7)
+	apiKey := &APIKey{
+		GroupID: &groupID,
+		Group: &Group{ID: groupID, ModelPricing: []ChannelModelPricing{{
+			Models: []string{"jev-latest"}, BillingMode: BillingModeToken,
+		}}},
+	}
+	require.ErrorIs(t, svc.ValidateModelPricing(context.Background(), apiKey, "jev-latest"), ErrModelPricingUnavailable)
+	zero := 0.0
+	apiKey.Group.ModelPricing[0].InputPrice = &zero
+	require.NoError(t, svc.ValidateModelPricing(context.Background(), apiKey, "jev-latest"))
+}
+
+func TestValidateModelPricingFailsClosedWhenPricingServicesAreUnavailable(t *testing.T) {
+	groupID := int64(7)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	var svc *GatewayService
+	require.ErrorIs(t, svc.ValidateModelPricing(context.Background(), apiKey, "jev-latest"), ErrModelPricingUnavailable)
+	require.ErrorIs(t, (&GatewayService{}).ValidateModelPricing(context.Background(), apiKey, "jev-latest"), ErrModelPricingUnavailable)
+}
+
 func TestGetIntervalPricing_NoIntervals(t *testing.T) {
 	bs := newTestBillingServiceForResolver()
 	r := NewModelPricingResolver(&ChannelService{}, bs)

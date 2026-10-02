@@ -60,6 +60,9 @@
           <div v-if="row.amount !== row.pay_amount" class="text-xs text-gray-500">
             {{ t('payment.orders.creditedAmount') }}: {{ creditedAmountSymbol }}{{ row.amount.toFixed(2) }}
           </div>
+          <div v-if="(row.bonus_amount ?? 0) > 0" class="text-xs text-emerald-600 dark:text-emerald-400">
+            {{ t('payment.orders.bonusAmount') }}: +${{ row.bonus_amount!.toFixed(2) }}
+          </div>
         </div>
       </template>
 

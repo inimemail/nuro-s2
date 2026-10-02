@@ -161,6 +161,14 @@
             Grok
           </button>
           <button
+            type="button"
+            @click="form.platform = 'typesafe'"
+            :class="['flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all', form.platform === 'typesafe' ? 'bg-white text-teal-600 shadow-sm dark:bg-dark-600 dark:text-teal-400' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200']"
+          >
+            <Icon name="shield" size="sm" />
+            TypeSafe
+          </button>
+          <button
             v-for="provider in [{ value: 'kimi', label: 'Kimi' }, { value: 'zhipu', label: 'Zhipu' }, { value: 'deepseek', label: 'DeepSeek' }, { value: 'minimax', label: 'MiniMax' }, { value: 'opencode_go', label: 'OpenCode Go' }]"
             :key="provider.value"
             type="button"
@@ -1256,6 +1264,8 @@
                         ? 'https://opencode.ai/zen/go/v1'
                       : form.platform === 'minimax'
                         ? 'https://api.minimaxi.com/v1'
+                      : form.platform === 'typesafe'
+                        ? 'https://api.typesafe.ai'
                   : 'https://api.anthropic.com'
             "
           />
@@ -1320,6 +1330,8 @@
                           ? 'sk-...'
                         : form.platform === 'opencode_go'
                           ? 'sk-...'
+                        : form.platform === 'typesafe'
+                          ? 'ts-...'
                         : form.platform === 'minimax'
                           ? 'sk-...'
                   : 'sk-ant-...'
@@ -1328,7 +1340,7 @@
           <p class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
-        <div class="flex flex-col gap-3 border-t border-gray-200 pt-4 dark:border-dark-600 sm:flex-row sm:items-center sm:justify-between">
+        <div v-if="form.platform !== 'typesafe'" class="flex flex-col gap-3 border-t border-gray-200 pt-4 dark:border-dark-600 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -5759,6 +5771,7 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    upstreamBillingAutoProbeEnabled.value = newPlatform !== 'typesafe'
     if (newPlatform !== 'anthropic') {
       addMethod.value = 'oauth'
     }
@@ -5778,6 +5791,8 @@ watch(
             ? 'https://api.deepseek.com/v1'
           : newPlatform === 'minimax'
             ? 'https://api.minimaxi.com/v1'
+          : newPlatform === 'typesafe'
+            ? 'https://api.typesafe.ai'
           : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
@@ -5794,7 +5809,9 @@ watch(
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
     } else {
-      if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek' || newPlatform === 'minimax' || newPlatform === 'opencode_go') {
+      if (newPlatform === 'typesafe') {
+        accountCategory.value = 'apikey'
+      } else if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek' || newPlatform === 'minimax' || newPlatform === 'opencode_go') {
         if (newPlatform === 'opencode_go') {
           openCodeMode.value = 'go'
           openCodeRules.value = null
@@ -7178,6 +7195,8 @@ const handleSubmit = async () => {
           ? 'https://open.bigmodel.cn/api/paas/v4'
         : form.platform === 'deepseek'
           ? 'https://api.deepseek.com/v1'
+        : form.platform === 'typesafe'
+          ? 'https://api.typesafe.ai'
         : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
@@ -7308,7 +7327,7 @@ const handleSubmit = async () => {
     ...form,
     group_ids: form.group_ids,
     extra,
-    upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
+    upstream_billing_probe_enabled: form.platform === 'typesafe' ? false : upstreamBillingAutoProbeEnabled.value,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

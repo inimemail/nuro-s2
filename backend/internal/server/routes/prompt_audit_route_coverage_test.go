@@ -56,6 +56,7 @@ func TestGatewayPostRoutesHavePromptAuditCoverageOrExplicitNoPromptReason(t *tes
 		"/custom-voices":             "voice management payload; no prompt audit input",
 		"/web_search":                "native search query is not a model prompt audit event",
 		"/x_search":                  "native X search query is not a model prompt audit event",
+		"/systemone":                 "native TypeSafe evaluation payload is not a prompt audit event",
 	}
 	var unclassified []string
 	for route := range actual {

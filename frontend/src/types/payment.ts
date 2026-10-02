@@ -83,6 +83,7 @@ export interface PaymentOrder {
   id: number
   user_id: number
   amount: number
+  bonus_amount?: number
   pay_amount: number
   currency?: string
   fee_rate: number
@@ -193,6 +194,7 @@ export interface WechatJSAPIPayload {
 export interface CreateOrderResult {
   order_id: number
   amount: number
+  bonus_amount?: number
   pay_url?: string
   qr_code?: string
   client_secret?: string

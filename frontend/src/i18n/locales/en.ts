@@ -1118,7 +1118,8 @@ export default {
       kimi: 'Kimi',
       zhipu: 'Zhipu',
       deepseek: 'DeepSeek',
-      opencode_go: 'OpenCode Go'
+      opencode_go: 'OpenCode Go',
+      typesafe: 'TypeSafe'
     },
     checkMode: {
       probe: 'Availability',
@@ -2471,6 +2472,7 @@ export default {
         kimi: 'Kimi',
         zhipu: 'Zhipu',
         deepseek: 'DeepSeek',
+        typesafe: 'TypeSafe',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -3497,6 +3499,7 @@ export default {
         kimi: 'Kimi',
         zhipu: 'Zhipu',
         deepseek: 'DeepSeek',
+        typesafe: 'TypeSafe',
       },
       types: {
         oauth: 'OAuth',
@@ -8114,6 +8117,7 @@ export default {
       amount: 'Amount',
       payAmount: 'Paid',
       creditedAmount: 'Credited Amount',
+      bonusAmount: 'Bonus Amount',
       fee: 'Fee',
       baseAmount: 'Base Amount',
       includedInPayAmount: 'included in paid amount',

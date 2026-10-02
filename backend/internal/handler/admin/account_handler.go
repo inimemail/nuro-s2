@@ -2504,6 +2504,11 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	if account.IsTypeSafe() {
+		response.Success(c, []openai.Model{{ID: "jev-latest", Object: "model", Type: "model", DisplayName: "jev-latest"}})
+		return
+	}
+
 	// Handle Gemini accounts
 	if account.IsGemini() {
 		// For OAuth accounts: return default Gemini models

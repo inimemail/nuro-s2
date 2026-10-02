@@ -173,6 +173,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
+	if rejectSystemOneOnlyPlatform(c, apiKey, h.errorResponse) {
+		return
+	}
 
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
@@ -1452,6 +1455,8 @@ func customModelsListAllowsModel(availablePatterns []string, model string) bool 
 
 func defaultModelIDsForPlatform(platform string) []string {
 	switch platform {
+	case service.PlatformTypeSafe:
+		return []string{"jev-latest"}
 	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformMiniMax, service.PlatformOpenCodeGo:
 		return service.DefaultCNModelIDs(platform)
 	case service.PlatformOpenAI:
@@ -2052,6 +2057,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		return
+	}
+	if rejectSystemOneOnlyPlatform(c, apiKey, h.errorResponse) {
 		return
 	}
 

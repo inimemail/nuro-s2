@@ -542,7 +542,10 @@ func affiliateRebateBaseAmount(o *dbent.PaymentOrder) float64 {
 	}
 	switch o.OrderType {
 	case payment.OrderTypeBalance, payment.OrderTypeSubscription:
-		return o.Amount
+		// Bonus credit is a promotional amount and must not expand the
+		// affiliate rebate base. Keep the stored credited amount unchanged for
+		// balance/refund semantics.
+		return math.Max(0, o.Amount-o.BonusAmount)
 	default:
 		return 0
 	}

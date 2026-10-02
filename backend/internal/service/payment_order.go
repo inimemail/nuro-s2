@@ -170,6 +170,10 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 		return nil, err
 	}
 	providerSnapshot := buildPaymentOrderProviderSnapshot(sel, req)
+	bonusAmount := 0.0
+	if req.OrderType == payment.OrderTypeBalance {
+		bonusAmount = calculateBalanceBonusAmount(req.Amount, orderAmount, cfg.BalanceRechargeMultiplier)
+	}
 	selectedInstanceID := ""
 	selectedProviderKey := ""
 	if sel != nil {
@@ -182,6 +186,7 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 		SetUserName(user.Username).
 		SetNillableUserNotes(psNilIfEmpty(user.Notes)).
 		SetAmount(orderAmount).
+		SetBonusAmount(bonusAmount).
 		SetPayAmount(payAmount).
 		SetFeeRate(feeRate).
 		SetRechargeCode("").
@@ -722,6 +727,7 @@ func buildCreateOrderResponse(order *dbent.PaymentOrder, req CreateOrderRequest,
 	return &CreateOrderResponse{
 		OrderID:      order.ID,
 		Amount:       order.Amount,
+		BonusAmount:  order.BonusAmount,
 		PayAmount:    payAmount,
 		FeeRate:      order.FeeRate,
 		Status:       OrderStatusPending,

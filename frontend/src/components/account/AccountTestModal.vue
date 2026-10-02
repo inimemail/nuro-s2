@@ -42,7 +42,7 @@
       </div>
 
       <SeedanceTaskTester v-if="show && account?.platform === 'openai' && account.type === 'apikey' && isSeedanceEnabled(account.credentials)" :model="selectedModelId" />
-      <div v-if="grokNeedsModel" class="space-y-1.5">
+      <div v-if="grokNeedsModel || isTypeSafeAccount" class="space-y-1.5">
         <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.accounts.selectTestModel') }}
         </label>
@@ -325,6 +325,7 @@ const generatedVideos = ref<string[]>([])
 const generatedAudio = ref<string[]>([])
 const testMode = ref<'default' | 'compact' | 'compact_legacy'>('default')
 const isGrokAccount = computed(() => props.account?.platform === 'grok')
+const isTypeSafeAccount = computed(() => props.account?.platform === 'typesafe')
 const {
   mode: grokTestMode, options: testModelOptions, needsModel: grokNeedsModel,
   supportsPrompt: grokSupportsPrompt, canStart: grokCanStart, mediaName: grokMediaName,
@@ -386,7 +387,9 @@ const loadAvailableModels = async () => {
     }
     // Default selection by platform
     if (availableModels.value.length > 0) {
-      if (props.account.platform === 'grok') {
+      if (props.account.platform === 'typesafe') {
+        selectedModelId.value = 'jev-latest'
+      } else if (props.account.platform === 'grok') {
         selectedModelId.value = testModelOptions.value[0]?.id || ''
       } else if (props.account.platform === 'gemini') {
         selectedModelId.value = availableModels.value[0].id

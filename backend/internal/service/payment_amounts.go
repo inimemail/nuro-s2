@@ -30,6 +30,20 @@ func calculateCreditedBalance(paymentAmount, multiplier float64) float64 {
 		InexactFloat64()
 }
 
+// calculateBalanceBonusAmount returns only the promotional portion of a
+// balance recharge. Subscription orders and discounts never create a bonus;
+// keeping this derived from the rounded credited amount makes the stored order
+// value reconcile exactly with the amount later redeemed.
+func calculateBalanceBonusAmount(paymentAmount, creditedAmount, multiplier float64) float64 {
+	if multiplier <= 1 || paymentAmount <= 0 || creditedAmount <= paymentAmount {
+		return 0
+	}
+	return decimal.NewFromFloat(creditedAmount).
+		Sub(decimal.NewFromFloat(paymentAmount)).
+		Round(2).
+		InexactFloat64()
+}
+
 func calculateGatewayPaymentAmount(orderAmount, multiplier float64, currency string) float64 {
 	fractionDigits := int32(payment.CurrencyMaxFractionDigits(currency))
 	return decimal.NewFromFloat(orderAmount).

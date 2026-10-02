@@ -21,6 +21,7 @@ const allNullQuotas: DefaultPlatformQuotasMap = {
   deepseek:  { daily: null, weekly: null, monthly: null },
   minimax:   { daily: null, weekly: null, monthly: null },
   opencode_go: { daily: null, weekly: null, monthly: null },
+  typesafe:  { daily: null, weekly: null, monthly: null },
 }
 
 describe("admin settings auth source defaults helpers", () => {

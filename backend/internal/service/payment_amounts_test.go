@@ -12,6 +12,13 @@ func TestCalculateGatewayPaymentAmountAppliesRechargeMultiplier(t *testing.T) {
 	require.InDelta(t, 100.00, calculateGatewayPaymentAmount(100, 0, payment.DefaultPaymentCurrency), 0.0001)
 }
 
+func TestCalculateBalanceBonusAmountUsesRoundedCreditedBalance(t *testing.T) {
+	require.InDelta(t, 10.00, calculateBalanceBonusAmount(100, calculateCreditedBalance(100, 1.1), 1.1), 0.0001)
+	require.Zero(t, calculateBalanceBonusAmount(100, 100, 1))
+	require.Zero(t, calculateBalanceBonusAmount(100, 90, 0.9))
+	require.Zero(t, calculateBalanceBonusAmount(100, 110, 0))
+}
+
 func TestCalculateCreateOrderPayAmountForOrderBalanceUsesGatewayAmount(t *testing.T) {
 	_, payAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeBalance, 100, 0, 2, 7.2, payment.DefaultPaymentCurrency)
 	require.NoError(t, err)

@@ -46,6 +46,20 @@ type emailCache struct {
 	rdb *redis.Client
 }
 
+var consumeResetTokenScript = redis.NewScript(`
+local value = redis.call('GET', KEYS[1])
+if value == false then return 0 end
+local ok, data = pcall(cjson.decode, value)
+if not ok or data['Token'] ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])
+`)
+
+// ConsumePasswordResetToken atomically compares the stored hash and deletes it.
+func (c *emailCache) ConsumePasswordResetToken(ctx context.Context, email, tokenHash string) (bool, error) {
+	n, err := consumeResetTokenScript.Run(ctx, c.rdb, []string{passwordResetKey(email)}, tokenHash).Int()
+	return n == 1, err
+}
+
 func NewEmailCache(rdb *redis.Client) service.EmailCache {
 	return &emailCache{rdb: rdb}
 }

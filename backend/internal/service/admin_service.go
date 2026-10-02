@@ -2084,6 +2084,8 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
+	case PlatformTypeSafe:
+		return []string{"jev-latest"}
 	case PlatformOpenAI:
 		return openai.DefaultModelIDs()
 	case PlatformGemini:
@@ -3797,6 +3799,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		Credentials: input.Credentials,
 		Extra:       input.Extra,
 	}
+	if input.Platform == PlatformTypeSafe {
+		if input.Type != AccountTypeAPIKey {
+			return nil, infraerrors.BadRequest("INVALID_TYPESAFE_ACCOUNT", "TypeSafe accounts require type apikey")
+		}
+		if strings.TrimSpace((&Account{Credentials: input.Credentials}).GetTypeSafeAPIKey()) == "" {
+			return nil, infraerrors.BadRequest("INVALID_TYPESAFE_ACCOUNT", "TypeSafe accounts require an API key")
+		}
+	}
 	if err := validateOpenAIAPIKeyFirstTokenTimeoutTarget(createCandidate, input.Type); err != nil {
 		return nil, err
 	}
@@ -3962,6 +3972,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	effectiveAccountType := account.Type
 	if input.Type != "" {
 		effectiveAccountType = input.Type
+	}
+	if account.Platform == PlatformTypeSafe && effectiveAccountType != AccountTypeAPIKey {
+		return nil, infraerrors.BadRequest("INVALID_TYPESAFE_ACCOUNT", "TypeSafe accounts require type apikey")
 	}
 	requestedProbeEnabledUpdate := input.ProbeEnabled
 	requestedRateSyncEnabledUpdate := input.RateSyncEnabled

@@ -310,6 +310,28 @@ func filterValidIntervals(intervals []PricingInterval) []PricingInterval {
 	return valid
 }
 
+// pricingEntryHasConfiguredPrice reports whether an entry contains an actual
+// price (including an explicit zero, which is a valid free configuration).
+// An entry that only names models but leaves every price unset must not turn a
+// model with no catalog price into a silently free request.
+func pricingEntryHasConfiguredPrice(entry *ChannelModelPricing) bool {
+	if entry == nil {
+		return false
+	}
+	if len(filterValidIntervals(entry.Intervals)) > 0 {
+		return true
+	}
+	switch entry.BillingMode {
+	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
+		return entry.PerRequestPrice != nil
+	default:
+		return entry.InputPrice != nil || entry.OutputPrice != nil ||
+			entry.CacheWritePrice != nil || entry.CacheWrite1hPrice != nil ||
+			entry.CacheReadPrice != nil || entry.ImageInputPrice != nil ||
+			entry.ImageOutputPrice != nil
+	}
+}
+
 // GetIntervalPricing 根据 context token 数获取区间定价。
 // 如果有区间列表，找到匹配区间并构造 ModelPricing；否则直接返回 BasePricing。
 func (r *ModelPricingResolver) GetIntervalPricing(resolved *ResolvedPricing, totalContextTokens int) *ModelPricing {

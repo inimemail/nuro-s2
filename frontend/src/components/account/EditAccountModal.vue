@@ -52,6 +52,8 @@
                             ? cnApiMode === 'responses' ? 'https://api.deepseek.com' : 'https://api.deepseek.com/v1'
                             : account.platform === 'minimax'
                               ? 'https://api.minimaxi.com/v1'
+                            : account.platform === 'typesafe'
+                              ? 'https://api.typesafe.ai'
                             : 'https://api.anthropic.com'
             "
           />
@@ -4334,7 +4336,8 @@ const showHeaderOverrideConfig = computed(() =>
 )
 const showUpstreamBillingProbeConfig = computed(() =>
   !isSparkShadowAccount.value &&
-  props.account?.type === 'apikey'
+  props.account?.type === 'apikey' &&
+  props.account?.platform !== 'typesafe'
 )
 const upstreamBillingProbeStatus = computed(() => props.account?.extra?.upstream_billing_probe?.status)
 const showGrokMediaEligibilityConfig = computed(() =>
@@ -4886,6 +4889,7 @@ const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'zhipu') return 'https://open.bigmodel.cn/api/paas/v4'
   if (props.account?.platform === 'deepseek') return 'https://api.deepseek.com/v1'
   if (props.account?.platform === 'minimax') return 'https://api.minimaxi.com/v1'
+  if (props.account?.platform === 'typesafe') return 'https://api.typesafe.ai'
   return 'https://api.anthropic.com'
 })
 
@@ -5830,6 +5834,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
                   ? 'https://api.deepseek.com/v1'
                 : newAccount.platform === 'minimax'
                   ? 'https://api.minimaxi.com/v1'
+                : newAccount.platform === 'typesafe'
+                  ? 'https://api.typesafe.ai'
             : 'https://api.anthropic.com'
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
 
@@ -5975,6 +5981,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
                 ? 'https://open.bigmodel.cn/api/paas/v4'
                 : newAccount.platform === 'deepseek'
                   ? 'https://api.deepseek.com/v1'
+                : newAccount.platform === 'typesafe'
+                  ? 'https://api.typesafe.ai'
             : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 

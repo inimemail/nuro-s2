@@ -1333,6 +1333,33 @@ func (a *Account) GetBaseURL() string {
 	return baseURL
 }
 
+// IsTypeSafe identifies native TypeSafe System One accounts.
+func (a *Account) IsTypeSafe() bool {
+	return a != nil && a.Platform == PlatformTypeSafe
+}
+
+func (a *Account) GetTypeSafeAPIKey() string {
+	if a == nil || a.Credentials == nil {
+		return ""
+	}
+	for _, key := range []string{"api_key", "key", "token"} {
+		if value := strings.TrimSpace(a.GetCredential(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (a *Account) GetTypeSafeBaseURL() string {
+	if a == nil {
+		return "https://api.typesafe.ai"
+	}
+	if value := strings.TrimSpace(a.GetCredential("base_url")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return "https://api.typesafe.ai"
+}
+
 // GetGeminiBaseURL 返回 Gemini 兼容端点的 base URL。
 // Antigravity 平台的 APIKey 账号自动拼接 /antigravity。
 func (a *Account) GetGeminiBaseURL(defaultBaseURL string) string {
