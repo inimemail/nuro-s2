@@ -383,8 +383,8 @@ func TestParseUpstreamBillingProbeResponseSanitizesAndValidates(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestUpstreamBillingProbeIdentitySupportsEightAPIKeyPlatforms(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+func TestUpstreamBillingProbeIdentitySupportsAPIKeyPlatforms(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity, PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe} {
 		require.True(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey), platform)
 		require.False(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeOAuth), platform)
 	}
@@ -451,10 +451,54 @@ func TestUpstreamBillingProbeOfficialDomainSuppression(t *testing.T) {
 		"https://api.minimaxi.com/v1",
 		"https://api.minimax.io/v1",
 		"https://ollama.com/api",
+		"https://open.bigmodel.cn/api/paas/v4",
+		"https://api.deepseek.com/anthropic",
+		"https://opencode.ai/zen/go/v1",
+		"https://api.typesafe.ai/v1",
+		"https://eu.api.typesafe.ai:443/v1",
 	} {
 		require.True(t, upstreamBillingProbeTargetIsOfficialAPI(target), target)
 	}
 	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://relay.example.com"))
+	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://typesafe.ai.attacker.example"))
+	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://notbigmodel.cn"))
+	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://deepseek.example.com"))
+	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://opencode.ai.evil.example"))
+}
+
+func TestUpstreamBillingProbeOfficialDomainsAreUnsupportedWithoutRequest(t *testing.T) {
+	cases := []struct {
+		platform string
+		baseURL  string
+	}{
+		{PlatformZhipu, "https://open.bigmodel.cn/api/paas/v4"},
+		{PlatformDeepSeek, "https://api.deepseek.com"},
+		{PlatformOpenCodeGo, "https://opencode.ai/zen/go/v1"},
+		{PlatformTypeSafe, "https://api.typesafe.ai/v1"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.platform, func(t *testing.T) {
+			account := &Account{
+				ID:          int64(i + 1),
+				Platform:    tc.platform,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Credentials: map[string]any{"api_key": "test-key", "base_url": tc.baseURL},
+			}
+			repo := &upstreamBillingProbeAccountRepoStub{account: account}
+			upstream := &httpUpstreamRecorder{}
+			svc := NewUpstreamBillingProbeService(repo, &AccountTestService{
+				httpUpstream: upstream,
+				cfg:          &config.Config{},
+			}, nil)
+
+			snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+			require.NoError(t, err)
+			require.Equal(t, UpstreamBillingProbeStatusUnsupported, snapshot.Status)
+			require.Nil(t, upstream.lastReq)
+			require.Equal(t, UpstreamBillingProbeStatusUnsupported, repo.lastSnapshot.Status)
+		})
+	}
 }
 
 func TestSafeProbeErrorDoesNotExposeInternalDetails(t *testing.T) {

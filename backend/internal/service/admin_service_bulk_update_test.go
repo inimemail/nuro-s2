@@ -129,6 +129,26 @@ func TestAdminServiceCreateAccount_AcceptsLegacyProbeFlagInExtra(t *testing.T) {
 	require.Equal(t, true, created.Extra[UpstreamBillingProbeEnabledExtraKey])
 }
 
+func TestAdminServiceCreateAccount_AllowsTypeSafeAPIKeyProbe(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	enabled := true
+
+	created, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:                 "typesafe-probe",
+		Platform:             PlatformTypeSafe,
+		Type:                 AccountTypeAPIKey,
+		Credentials:          map[string]any{"api_key": "test-key"},
+		ProbeEnabled:         &enabled,
+		SkipDefaultGroupBind: true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, repo.createdAccount)
+	require.Equal(t, PlatformTypeSafe, created.Platform)
+	require.Equal(t, true, created.Extra[UpstreamBillingProbeEnabledExtraKey])
+}
+
 func TestAdminServiceCreateAccount_RejectsConflictingProbeFlags(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{}
 	svc := &adminServiceImpl{accountRepo: repo}
