@@ -17,6 +17,70 @@ vi.mock('@/composables/useClipboard', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  const mountOpenAI = (baseUrl = 'https://example.com/v1', apiKey = 'sk-test') => mount(UseKeyModal, {
+    props: { show: true, apiKey, baseUrl, platform: 'openai', groupId: 1 },
+    global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
+  })
+
+  it('keeps the ordinary default config unchanged and escapes auth JSON', () => {
+    const wrapper = mountOpenAI()
+    expect(wrapper.findAll('pre code')[0].text()).toBe(`model_provider = "OpenAI"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+network_access = "enabled"
+windows_wsl_setup_acknowledged = true
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+goals = true`)
+    expect(wrapper.findAll('pre code')[1].text()).toBe('{\n  "OPENAI_API_KEY": "sk-test"\n}')
+    const hostile = 'sk-"\\\nsecret'
+    const escaped = mountOpenAI('https://example.com/"\\\npath', hostile)
+    expect(JSON.parse(escaped.findAll('pre code')[1].text())).toEqual({ OPENAI_API_KEY: hostile })
+    expect(escaped.findAll('pre code')[0].text()).toContain('base_url = "https://example.com/\\"\\\\\\npath/v1"')
+  })
+
+  it.each([
+    ['https://example.com', 'https://example.com/backend-api/codex/models'],
+    ['https://example.com/v1/', 'https://example.com/backend-api/codex/models'],
+    ['https://example.com/prefix/v1?key=secret#hash', 'https://example.com/prefix/backend-api/codex/models'],
+    ['https://example.com/prefix/backend-api/codex/', 'https://example.com/prefix/backend-api/codex/models']
+  ])('builds a gateway catalog URL from %s without client secrets', async (base, expected) => {
+    const wrapper = mountOpenAI(base)
+    await wrapper.get('[data-catalog-source="remote"]').trigger('click')
+    expect(wrapper.findAll('pre code')[0].text()).toContain(`model_catalog_url = "${expected}"`)
+    expect(wrapper.findAll('pre code')[0].text()).toContain('api_key_model_discovery = true')
+    expect(wrapper.findAll('pre code')[0].text()).toContain('requires_openai_auth = true')
+    const ws = wrapper.findAll('button').find(button => button.text().includes('cliTabs.codexCliWs'))!
+    await ws.trigger('click')
+    expect(wrapper.findAll('pre code')[0].text()).toContain('supports_websockets = true')
+    expect(wrapper.findAll('pre code')[0].text()).toContain(`model_catalog_url = "${expected}"`)
+  })
+
+  it('resets catalog mode for key, group and dialog sessions', async () => {
+    const wrapper = mountOpenAI()
+    for (const props of [{ apiKey: 'sk-new' }, { groupId: 2 }, { show: false }, { show: true }, { baseUrl: 'https://other.example/v1' }]) {
+      await wrapper.get('[data-catalog-source="remote"]').trigger('click')
+      await wrapper.setProps(props)
+      expect(wrapper.get('[data-catalog-source="default"]').attributes('aria-pressed')).toBe('true')
+      expect(wrapper.findAll('pre code')[0].text()).not.toContain('model_catalog_url')
+    }
+    await wrapper.setProps({ platform: 'grok' })
+    expect(wrapper.find('[data-catalog-source]').exists()).toBe(false)
+  })
+
+  it.each(['invalid', 'javascript:alert(1)', 'https://user:pass@example.com'])('disables remote catalog for invalid public base %s', base => {
+    const wrapper = mountOpenAI(base)
+    expect(wrapper.get('[data-catalog-source="remote"]').attributes('disabled')).toBeDefined()
+  })
+
   it('renders Grok CLI and OpenCode Responses setup for Grok groups', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {

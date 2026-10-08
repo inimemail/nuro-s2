@@ -188,10 +188,10 @@ set_env_value() {
     local value="$3"
     local tmp_file
 
-    touch "$file"
-    tmp_file="$(mktemp)" || return 1
-    awk -v key="$key" -v value="$value" '
-        BEGIN { found = 0 }
+    touch "$file" || return 1
+    tmp_file="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    NURO_ENV_VALUE="$value" awk -v key="$key" '
+        BEGIN { found = 0; value = ENVIRON["NURO_ENV_VALUE"] }
         $0 ~ "^" key "=" {
             print key "=" value
             found = 1
@@ -203,7 +203,9 @@ set_env_value() {
                 print key "=" value
             }
         }
-    ' "$file" > "$tmp_file" && mv "$tmp_file" "$file"
+    ' "$file" > "$tmp_file" && mv "$tmp_file" "$file" && return 0
+    rm -f -- "$tmp_file"
+    return 1
 }
 
 persist_script() {
@@ -347,7 +349,10 @@ sync_project_source() {
 }
 
 generate_secret() {
-    openssl rand -hex 32
+    local secret
+    secret="$(openssl rand -hex 32)" || return 1
+    [[ "$secret" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$secret"
 }
 
 ensure_env_value() {
@@ -463,7 +468,7 @@ ensure_edge_env_values() {
             secret="$(read_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET)"
         fi
         if [[ -z "$secret" ]]; then
-            secret="$(generate_secret)"
+            secret="$(generate_secret)" || { err "Edge 内部密钥生成失败"; return 1; }
         fi
         set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ENABLED false
         set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED false
@@ -480,7 +485,7 @@ ensure_edge_env_values() {
         secret="$(read_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET)"
     fi
     if [[ -z "$secret" ]]; then
-        secret="$(generate_secret)"
+        secret="$(generate_secret)" || { err "Edge 内部密钥生成失败"; return 1; }
     fi
 
     set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED false
@@ -618,66 +623,74 @@ ensure_scheduler_env_values() {
     local legacy_redis_maxclients
     local legacy_autoscale_upstream_error_ratio
 
-    touch "$env_file"
-	ensure_env_value "$env_file" SERVER_TRUSTED_PROXIES ""
-	upgrade_env_default_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 1800 5
-	ensure_env_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 5
-    ensure_env_value "$env_file" SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL false
-    ensure_env_value "$env_file" SECURITY_FORWARDED_CLIENT_IP_HEADERS ""
-    ensure_env_value "$env_file" REDIS_POOL_SIZE 1024
-    ensure_env_value "$env_file" REDIS_MIN_IDLE_CONNS 128
-    ensure_env_value "$env_file" REDIS_DIAL_TIMEOUT_SECONDS 1
-    ensure_env_value "$env_file" REDIS_READ_TIMEOUT_SECONDS 1
-    ensure_env_value "$env_file" REDIS_WRITE_TIMEOUT_SECONDS 1
+    touch "$env_file" || return 1
+	ensure_env_value "$env_file" SERVER_TRUSTED_PROXIES "" || return 1
+	upgrade_env_default_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 1800 5 || return 1
+	ensure_env_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 5 || return 1
+    ensure_env_value "$env_file" SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL false || return 1
+    ensure_env_value "$env_file" SECURITY_FORWARDED_CLIENT_IP_HEADERS "" || return 1
+    ensure_env_value "$env_file" REDIS_POOL_SIZE 1024 || return 1
+    ensure_env_value "$env_file" REDIS_MIN_IDLE_CONNS 128 || return 1
+    ensure_env_value "$env_file" REDIS_DIAL_TIMEOUT_SECONDS 1 || return 1
+    ensure_env_value "$env_file" REDIS_READ_TIMEOUT_SECONDS 1 || return 1
+    ensure_env_value "$env_file" REDIS_WRITE_TIMEOUT_SECONDS 1 || return 1
     legacy_redis_maxclients="$(read_env_value "$env_file" REDIS_MAXCLIENTS)"
     if [[ -n "$legacy_redis_maxclients" && -z "$(read_env_value "$env_file" REDIS_MAX_CLIENTS)" ]]; then
-        set_env_value "$env_file" REDIS_MAX_CLIENTS "$legacy_redis_maxclients"
+        set_env_value "$env_file" REDIS_MAX_CLIENTS "$legacy_redis_maxclients" || return 1
     fi
-    ensure_env_value "$env_file" REDIS_MAX_CLIENTS 100000
-    ensure_env_value "$env_file" REDIS_NOFILE_LIMIT 200000
+    ensure_env_value "$env_file" REDIS_MAX_CLIENTS 100000 || return 1
+    ensure_env_value "$env_file" REDIS_NOFILE_LIMIT 200000 || return 1
 
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS 200
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_PREFER_SOONEST_RESET false
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ID cell-1
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_IDS cell-1
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES 16
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS 500
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS 4096
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_BACKEND redis_stream
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL 10s
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED true || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS 200 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_PREFER_SOONEST_RESET false || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ENABLED true || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ID cell-1 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_IDS cell-1 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED true || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES 16 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED true || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS 500 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS 4096 || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_ENABLED true || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_BACKEND redis_stream || return 1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL 10s || return 1
 
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_ENABLED true
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_ID ""
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_OPENAI_CELLS "openai-001=redis://admission-openai-001:6379/0"
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_ANTHROPIC_CELLS "anthropic-001=redis://admission-anthropic-001:6379/0"
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED false
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_GRANT_SIZE 16
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_TTL_SECONDS 30
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS 900
-	ensure_env_value "$env_file" ADMISSION_CELL_AUTOSCALE_ENABLED true
-	ensure_env_value "$env_file" ADMISSION_CELL_MAX_PER_PLATFORM 8
-	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_OPS 50000
-	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_MEMORY_MB 8192
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ENABLED true || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_ID "" || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_OPENAI_CELLS "openai-001=redis://admission-openai-001:6379/0" || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ANTHROPIC_CELLS "anthropic-001=redis://admission-anthropic-001:6379/0" || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED false || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_GRANT_SIZE 16 || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_TTL_SECONDS 30 || return 1
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS 900 || return 1
+	ensure_env_value "$env_file" ADMISSION_CELL_AUTOSCALE_ENABLED true || return 1
+	ensure_env_value "$env_file" ADMISSION_CELL_MAX_PER_PLATFORM 8 || return 1
+	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_OPS 50000 || return 1
+	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_MEMORY_MB 8192 || return 1
 	legacy_autoscale_upstream_error_ratio="$(read_env_value "$env_file" AUTOSCALE_UPSTREAM_ERROR_RATIO)"
-	ensure_env_value "$env_file" AUTOSCALE_UPSTREAM_ERROR_RATIO 0.20
-	ensure_env_value "$env_file" AUTOSCALE_GO_5XX_RATIO_LIMIT "${legacy_autoscale_upstream_error_ratio:-0.20}"
-	ensure_env_value "$env_file" AUTOSCALE_EDGE_CONNECT_ERROR_RATIO_LIMIT 0.10
-	ensure_env_value "$env_file" AUTOSCALE_EDGE_5XX_RATIO_LIMIT 0.20
-	ensure_env_value "$env_file" AUTOSCALE_EDGE_429_RATIO_LIMIT 0
-	ensure_env_value "$env_file" AUTOSCALE_EDGE_RETRIES_PER_REQUEST_LIMIT 0
-	ensure_env_value "$env_file" AUTOSCALE_ERROR_MIN_SAMPLES 20
-    ensure_env_value "$env_file" AUTOSCALE_FORCE_STOP_SECONDS 30
-	ensure_env_value "$env_file" SUB2API_STARTUP_JITTER_MAX_MS 30000
-	ensure_env_value "$env_file" SUB2API_EDGE_STARTUP_JITTER_MAX_MS 30000
+	ensure_env_value "$env_file" AUTOSCALE_UPSTREAM_ERROR_RATIO 0.20 || return 1
+	ensure_env_value "$env_file" AUTOSCALE_GO_5XX_RATIO_LIMIT "${legacy_autoscale_upstream_error_ratio:-0.20}" || return 1
+	ensure_env_value "$env_file" AUTOSCALE_EDGE_CONNECT_ERROR_RATIO_LIMIT 0.10 || return 1
+	ensure_env_value "$env_file" AUTOSCALE_EDGE_5XX_RATIO_LIMIT 0.20 || return 1
+	ensure_env_value "$env_file" AUTOSCALE_EDGE_429_RATIO_LIMIT 0 || return 1
+	ensure_env_value "$env_file" AUTOSCALE_EDGE_RETRIES_PER_REQUEST_LIMIT 0 || return 1
+	ensure_env_value "$env_file" AUTOSCALE_ERROR_MIN_SAMPLES 20 || return 1
+    ensure_env_value "$env_file" AUTOSCALE_FORCE_STOP_SECONDS 30 || return 1
+	ensure_env_value "$env_file" SUB2API_STARTUP_JITTER_MAX_MS 30000 || return 1
+	ensure_env_value "$env_file" SUB2API_EDGE_STARTUP_JITTER_MAX_MS 30000 || return 1
 }
 
 generate_admin_password() {
-    ADMIN_PASS="$(openssl rand -hex 12)"
+    ADMIN_PASS="$(openssl rand -hex 12)" || return 1
+    [[ "$ADMIN_PASS" =~ ^[a-f0-9]{24}$ ]] || return 1
+}
+
+generate_admin_email() {
+    local suffix
+    suffix="$(openssl rand -hex 6)" || return 1
+    [[ "$suffix" =~ ^[a-f0-9]{12}$ ]] || return 1
+    ADMIN_EMAIL="admin-${suffix}@nuro-sub2api.local"
 }
 
 read_env_value() {
@@ -706,12 +719,24 @@ pg_ident() {
 create_env_file() {
     local workdir="$1"
     local host_port="$2"
+    local env_file="${workdir}/.env"
+    local tmp_env
 
-    [[ -f "${workdir}/.env" ]] && return 0
+    [[ -f "$env_file" ]] && return 0
 
-    generate_admin_password
+    generate_admin_password || { err "管理员密码生成失败"; return 1; }
+    generate_admin_email || { err "管理员邮箱生成失败"; return 1; }
+    local postgres_password jwt_secret totp_key edge_secret
+    postgres_password="$(generate_secret)" || return 1
+    jwt_secret="$(generate_secret)" || return 1
+    totp_key="$(generate_secret)" || return 1
+    edge_secret="$(generate_secret)" || return 1
 
-    cat > "${workdir}/.env" <<EOF
+    # Build and validate the complete file away from the destination. A later
+    # migration or permission failure must never leave an existing-looking,
+    # unusable .env that blocks a retry.
+    tmp_env="$(mktemp "${workdir}/.env.tmp.XXXXXX")" || return 1
+    if ! (umask 077; cat > "$tmp_env" <<EOF
 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
 BIND_HOST=0.0.0.0
 SERVER_PORT=${host_port}
@@ -726,7 +751,7 @@ TZ=Asia/Shanghai
 
 POSTGRES_USER=nuro_sub2api
 POSTGRES_DB=nuro_sub2api
-POSTGRES_PASSWORD=$(generate_secret)
+POSTGRES_PASSWORD=${postgres_password}
 POSTGRES_MAX_CONNECTIONS=2000
 POSTGRES_SHARED_BUFFERS=1GB
 POSTGRES_EFFECTIVE_CACHE_SIZE=4GB
@@ -744,11 +769,11 @@ REDIS_READ_TIMEOUT_SECONDS=1
 REDIS_WRITE_TIMEOUT_SECONDS=1
 REDIS_IO_THREADS=8
 
-ADMIN_EMAIL=admin@nuro-sub2api.local
+ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASS}
 
-JWT_SECRET=$(generate_secret)
-TOTP_ENCRYPTION_KEY=$(generate_secret)
+JWT_SECRET=${jwt_secret}
+TOTP_ENCRYPTION_KEY=${totp_key}
 
 GEMINI_OAUTH_CLIENT_ID=
 GEMINI_OAUTH_CLIENT_SECRET=
@@ -788,7 +813,7 @@ AUTOSCALE_SCALE_DOWN_SECONDS=600
 AUTOSCALE_DRAIN_SECONDS=30
 GATEWAY_OPENAI_EDGE_RS_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=true
-GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=$(generate_secret)
+GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=${edge_secret}
 GATEWAY_OPENAI_EDGE_RS_MODE=relay
 GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=127.0.0.1:18080
@@ -907,12 +932,17 @@ AUTOSCALE_FORCE_STOP_SECONDS=30
 SUB2API_STARTUP_JITTER_MAX_MS=30000
 SUB2API_EDGE_STARTUP_JITTER_MAX_MS=30000
 EOF
+    ); then
+        rm -f -- "$tmp_env"
+        return 1
+    fi
 
-    local edge_secret
-    edge_secret="$(read_env_value "${workdir}/.env" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
-    set_env_value "${workdir}/.env" SUB2API_EDGE_INTERNAL_SECRET "$edge_secret"
-    ensure_scheduler_env_values "${workdir}/.env"
-    chmod 600 "${workdir}/.env"
+    if ! set_env_value "$tmp_env" SUB2API_EDGE_INTERNAL_SECRET "$edge_secret" ||
+       ! ensure_scheduler_env_values "$tmp_env" || ! chmod 600 "$tmp_env" ||
+       ! mv -f -- "$tmp_env" "$env_file"; then
+        rm -f -- "$tmp_env"
+        return 1
+    fi
 }
 
 create_haproxy_config() {
@@ -1033,7 +1063,7 @@ services:
       - REDIS_READ_TIMEOUT_SECONDS=\${REDIS_READ_TIMEOUT_SECONDS:-1}
       - REDIS_WRITE_TIMEOUT_SECONDS=\${REDIS_WRITE_TIMEOUT_SECONDS:-1}
       - REDIS_ENABLE_TLS=\${REDIS_ENABLE_TLS:-false}
-      - ADMIN_EMAIL=\${ADMIN_EMAIL:-admin@nuro-sub2api.local}
+      - ADMIN_EMAIL=\${ADMIN_EMAIL:-}
       - ADMIN_PASSWORD=\${ADMIN_PASSWORD:-}
       - JWT_SECRET=\${JWT_SECRET:-}
       - JWT_EXPIRE_HOUR=\${JWT_EXPIRE_HOUR:-24}

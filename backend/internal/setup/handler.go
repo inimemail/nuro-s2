@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // installMutex prevents concurrent installation attempts (TOCTOU protection)
@@ -86,16 +87,21 @@ func validateUsername(name string) bool {
 // validateEmail checks if email format is valid
 func validateEmail(email string) bool {
 	_, err := mail.ParseAddress(email)
-	return err == nil && len(email) <= 254
+	if err != nil || len(email) > 254 {
+		return false
+	}
+	return binding.Validator.ValidateStruct(struct {
+		Email string `binding:"required,email"`
+	}{Email: email}) == nil
 }
 
 // validatePassword checks password strength
 func validatePassword(password string) error {
 	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+		return fmt.Errorf("password must be at least 8 bytes")
 	}
-	if len(password) > 128 {
-		return fmt.Errorf("password must be at most 128 characters")
+	if len(password) > 72 {
+		return fmt.Errorf("password must be at most 72 bytes")
 	}
 	return nil
 }

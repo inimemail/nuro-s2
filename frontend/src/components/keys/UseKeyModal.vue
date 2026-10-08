@@ -29,8 +29,8 @@
         </p>
 
         <!-- Client Tabs -->
-        <div v-if="clientTabs.length" class="border-b border-gray-200 dark:border-dark-700">
-          <nav class="-mb-px flex space-x-6" aria-label="Client">
+        <div v-if="clientTabs.length" class="overflow-x-auto border-b border-gray-200 dark:border-dark-700">
+          <nav class="-mb-px flex min-w-max gap-4 sm:gap-6" aria-label="Client">
             <button
               v-for="tab in clientTabs"
               :key="tab.id"
@@ -72,6 +72,26 @@
           </nav>
         </div>
 
+        <div v-if="showCatalogSource" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <span id="catalog-source-label" class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('keys.useKeyModal.openai.catalogSource') }}</span>
+          <div role="group" aria-labelledby="catalog-source-label" class="grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-dark-800">
+            <button
+              v-for="mode in catalogModes"
+              :key="mode.id"
+              type="button"
+              :data-catalog-source="mode.id"
+              :aria-pressed="catalogSource === mode.id"
+              :disabled="mode.id === 'remote' && !catalogUrl"
+              @click="catalogSource = mode.id"
+              class="flex min-h-9 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              :class="catalogSource === mode.id ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'"
+            >
+              <Icon :name="mode.id === 'remote' ? 'globe' : 'document'" size="sm" class="shrink-0" />
+              {{ mode.label }}
+            </button>
+          </div>
+        </div>
+
         <!-- Code Blocks (Stacked for multi-file platforms) -->
         <div class="space-y-4">
           <div
@@ -84,10 +104,10 @@
               <Icon name="exclamationCircle" size="sm" class="flex-shrink-0" />
               {{ file.hint }}
             </p>
-            <div class="bg-gray-900 dark:bg-dark-900 rounded-xl overflow-hidden">
+            <div class="bg-gray-900 dark:bg-dark-900 rounded-lg overflow-hidden">
               <!-- Code Header -->
               <div class="flex items-center justify-between px-4 py-2 bg-gray-800 dark:bg-dark-800 border-b border-gray-700 dark:border-dark-700">
-                <span class="text-xs text-gray-400 font-mono">{{ file.path }}</span>
+                <span class="min-w-0 break-all pr-2 text-xs text-gray-400 font-mono">{{ file.path }}</span>
                 <button
                   @click="copyContent(file.content, index)"
                   class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition-colors"
@@ -147,6 +167,7 @@ interface Props {
   baseUrl: string
   platform: GroupPlatform | null
   allowMessagesDispatch?: boolean
+  groupId?: number | null
 }
 
 interface Emits {
@@ -175,6 +196,34 @@ const { copyToClipboard: clipboardCopy } = useClipboard()
 const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
+const catalogSource = ref<'default' | 'remote'>('default')
+const showCatalogSource = computed(() => props.platform === 'openai' && ['codex', 'codex-ws'].includes(activeClientTab.value))
+const catalogModes = computed(() => [
+  { id: 'default' as const, label: t('keys.useKeyModal.openai.currentConfig') },
+  { id: 'remote' as const, label: t('keys.useKeyModal.openai.remoteCatalog') }
+])
+const catalogUrl = computed(() => {
+  try {
+    const url = new URL(props.baseUrl || window.location.origin)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return ''
+    url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/(?:v1|backend-api\/codex)$/, '') + '/backend-api/codex/models'
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return ''
+  }
+})
+watch(() => [props.show, props.apiKey, props.baseUrl, props.platform, props.groupId], () => {
+  catalogSource.value = 'default'
+  copiedIndex.value = null
+})
+
+// TOML basic strings use JSON-compatible escapes, including control bytes.
+const tomlString = (value: string) => JSON.stringify(value).replace(/\u007f/g, '\\u007f')
+const remoteCatalogConfig = computed(() => catalogSource.value === 'remote' && catalogUrl.value
+  ? `\nmodel_catalog_url = ${tomlString(catalogUrl.value)}` : '')
+const remoteCatalogFeature = computed(() => remoteCatalogConfig.value ? '\napi_key_model_discovery = true' : '')
 
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
@@ -553,21 +602,19 @@ review_model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
-windows_wsl_setup_acknowledged = true
+windows_wsl_setup_acknowledged = true${remoteCatalogConfig.value}
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${baseUrl}"
+base_url = ${tomlString(baseUrl)}
 wire_api = "responses"
 requires_openai_auth = true
 
 [features]
-goals = true`
+goals = true${remoteCatalogFeature.value}`
 
   // auth.json content
-  const authContent = `{
-  "OPENAI_API_KEY": "${apiKey}"
-}`
+  const authContent = JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)
 
   return [
     {
@@ -621,23 +668,21 @@ review_model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
-windows_wsl_setup_acknowledged = true
+windows_wsl_setup_acknowledged = true${remoteCatalogConfig.value}
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${baseUrl}"
+base_url = ${tomlString(baseUrl)}
 wire_api = "responses"
 supports_websockets = true
 requires_openai_auth = true
 
 [features]
 responses_websockets_v2 = true
-goals = true`
+goals = true${remoteCatalogFeature.value}`
 
   // auth.json content
-  const authContent = `{
-  "OPENAI_API_KEY": "${apiKey}"
-}`
+  const authContent = JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)
 
   return [
     {

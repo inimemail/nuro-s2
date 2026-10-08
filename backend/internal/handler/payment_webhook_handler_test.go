@@ -3,12 +3,16 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -142,9 +146,55 @@ func TestWebhookConstants(t *testing.T) {
 		assert.Equal(t, int64(1<<20), int64(maxWebhookBodySize))
 	})
 
-	t.Run("webhookLogTruncateLen is 200", func(t *testing.T) {
-		assert.Equal(t, 200, webhookLogTruncateLen)
-	})
+}
+
+func TestWebhookVerificationFailureDoesNotLeakPayload(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		secret := "sign=SECRET_SIGNATURE&resume_token=SECRET_TOKEN&unknown=SECRET_BODY"
+		c.Request = httptest.NewRequest(method, "/notify?"+secret, strings.NewReader(secret))
+		rejectWebhookVerification(c, payment.TypeEasyPay, len(secret))
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		require.Equal(t, "verify failed", w.Body.String())
+	}
+	require.Contains(t, logs.String(), "notification_rejected")
+	require.Contains(t, logs.String(), "bodyLen=")
+	require.NotContains(t, logs.String(), "SECRET")
+	require.NotContains(t, logs.String(), "resume_token")
+}
+
+func TestWebhookBodyLimitsDoNotTruncateBeforeVerification(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, size := range []int{maxWebhookBodySize, maxWebhookBodySize + 1} {
+			t.Run(fmt.Sprintf("%s/%d", method, size), func(t *testing.T) {
+				payload := strings.Repeat("x", size)
+				request := httptest.NewRequest(method, "/notify", strings.NewReader(payload))
+				if method == http.MethodGet {
+					request.URL.RawQuery = payload
+				}
+				body, err := readWebhookBody(request)
+				if size == maxWebhookBodySize {
+					require.NoError(t, err)
+					require.Equal(t, payload, body)
+				} else {
+					require.Error(t, err)
+					require.Empty(t, body)
+					w := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(w)
+					c.Request = request
+					// An oversized body must be rejected before touching the service.
+					c.Request.Body = io.NopCloser(strings.NewReader(payload))
+					(&PaymentWebhookHandler{}).handleNotify(c, payment.TypeEasyPay)
+					require.Equal(t, http.StatusBadRequest, w.Code)
+				}
+			})
+		}
+	}
 }
 
 func TestExtractOutTradeNo(t *testing.T) {
@@ -231,6 +281,53 @@ type webhookHandlerProviderStub struct {
 	key          string
 	notification *payment.PaymentNotification
 	verifyErr    error
+}
+
+type webhookHandlerServiceStub struct {
+	lookupErr error
+	handleErr error
+	handled   bool
+}
+
+func (s *webhookHandlerServiceStub) GetWebhookProviders(context.Context, string, string) ([]payment.Provider, error) {
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
+	return []payment.Provider{webhookHandlerProviderStub{
+		key:          payment.TypeEasyPay,
+		notification: &payment.PaymentNotification{OrderID: "sub2_42", Status: payment.NotificationStatusSuccess},
+	}}, nil
+}
+
+func (s *webhookHandlerServiceStub) HandlePaymentNotification(context.Context, *payment.PaymentNotification, string) error {
+	s.handled = true
+	return s.handleErr
+}
+
+func TestWebhookFailuresRemainRetryable(t *testing.T) {
+	for _, tt := range []struct {
+		name                 string
+		lookupErr, handleErr error
+		wantStatus           int
+		wantHandled          bool
+	}{
+		{"lookup outage", errors.New("database unavailable"), nil, http.StatusServiceUnavailable, false},
+		{"provider missing", payment.ErrProviderNotFound, nil, http.StatusServiceUnavailable, false},
+		{"fulfillment outage", nil, errors.New("database unavailable"), http.StatusInternalServerError, true},
+		{"verified unknown order", nil, fmt.Errorf("wrapped: %w", service.ErrOrderNotFound), http.StatusOK, true},
+		{"valid payment", nil, nil, http.StatusOK, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &webhookHandlerServiceStub{lookupErr: tt.lookupErr, handleErr: tt.handleErr}
+			h := &PaymentWebhookHandler{paymentService: stub}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader("out_trade_no=sub2_42"))
+			h.handleNotify(c, payment.TypeEasyPay)
+			require.Equal(t, tt.wantStatus, w.Code)
+			require.Equal(t, tt.wantHandled, stub.handled)
+		})
+	}
 }
 
 func (p webhookHandlerProviderStub) Name() string        { return p.key }

@@ -42,7 +42,10 @@ print_error() {
 
 # Generate random secret
 generate_secret() {
-    openssl rand -hex 32
+    local secret
+    secret="$(openssl rand -hex 32)" || return 1
+    [[ "$secret" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$secret"
 }
 
 # Check if command exists
@@ -51,7 +54,7 @@ command_exists() {
 }
 
 # Main installation function
-main() {
+main() (
     echo ""
     echo "=========================================="
     echo "  Sub2API Deployment Preparation"
@@ -65,35 +68,47 @@ main() {
     fi
 
     # Check if deployment already exists
-    if [ -f "docker-compose.yml" ] && [ -f ".env" ]; then
-        print_warning "Deployment files already exist in current directory."
-        read -p "Overwrite existing files? (y/N): " -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Cancelled."
-            exit 0
-        fi
+    if [ -f ".env" ]; then
+        print_info "Existing .env preserved. Use the existing deployment configuration to start services."
+        return 0
     fi
 
-    # Download docker-compose.local.yml and save as docker-compose.yml
+    local download_dir
+    download_dir="$(mktemp -d)" || { print_error "无法创建下载临时目录"; exit 1; }
+    local tmp_env=""
+    trap 'rm -rf -- "$download_dir"; if [ -n "$tmp_env" ]; then rm -f -- "$tmp_env"; fi' EXIT
+
+    # Download both inputs away from their final paths. Validate the env
+    # contract before generating credentials so a broken/HTML template cannot
+    # produce a successful-looking deployment.
     print_info "Downloading docker-compose.yml..."
     if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
+        curl -fsSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o "$download_dir/docker-compose.yml"
     elif command_exists wget; then
-        wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O docker-compose.yml
+        wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O "$download_dir/docker-compose.yml"
     else
         print_error "Neither curl nor wget is installed. Please install one of them."
         exit 1
     fi
+    grep -Eq '^[[:space:]]*services:' "$download_dir/docker-compose.yml" || {
+        print_error "下载的 docker-compose.yml 缺少 services 配置"; exit 1;
+    }
     print_success "Downloaded docker-compose.yml"
 
     # Download .env.example
     print_info "Downloading .env.example..."
     if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/.env.example" -o .env.example
+        curl -fsSL "${GITHUB_RAW_URL}/.env.example" -o "$download_dir/.env.example"
     else
-        wget -q "${GITHUB_RAW_URL}/.env.example" -O .env.example
+        wget -q "${GITHUB_RAW_URL}/.env.example" -O "$download_dir/.env.example"
     fi
+    for required_key in JWT_SECRET TOTP_ENCRYPTION_KEY POSTGRES_PASSWORD ADMIN_EMAIL; do
+        grep -Eq "^${required_key}=" "$download_dir/.env.example" || {
+            print_error "下载的 .env.example 缺少 ${required_key} 配置"; exit 1;
+        }
+    done
+    mv -f -- "$download_dir/docker-compose.yml" docker-compose.yml
+    mv -f -- "$download_dir/.env.example" .env.example
     print_success "Downloaded .env.example"
 
     # Generate .env file with auto-generated secrets
@@ -101,24 +116,31 @@ main() {
     echo ""
 
     # Generate secrets
-    JWT_SECRET=$(generate_secret)
-    TOTP_ENCRYPTION_KEY=$(generate_secret)
-    POSTGRES_PASSWORD=$(generate_secret)
+    JWT_SECRET=$(generate_secret) || { print_error "Failed to generate JWT secret"; return 1; }
+    TOTP_ENCRYPTION_KEY=$(generate_secret) || { print_error "Failed to generate TOTP key"; return 1; }
+    POSTGRES_PASSWORD=$(generate_secret) || { print_error "Failed to generate database password"; return 1; }
+    local admin_suffix
+    admin_suffix="$(openssl rand -hex 6)" || { print_error "Failed to generate admin email"; return 1; }
+    [[ "$admin_suffix" =~ ^[a-f0-9]{12}$ ]] || { print_error "Invalid random admin email"; return 1; }
+    ADMIN_EMAIL="admin-${admin_suffix}@sub2api.local"
 
-    # Create .env from .env.example
-    cp .env.example .env
+    # Commit .env only after every replacement and filesystem operation succeeds.
+    tmp_env="$(mktemp ./.env.tmp.XXXXXX)"
+    (umask 077; cat .env.example > "$tmp_env")
 
     # Update .env with generated secrets (cross-platform compatible)
     if sed --version >/dev/null 2>&1; then
         # GNU sed (Linux)
-        sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" .env
-        sed -i "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" .env
-        sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" .env
+        sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" "$tmp_env"
+        sed -i "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" "$tmp_env"
+        sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" "$tmp_env"
+        sed -i "s/^ADMIN_EMAIL=.*/ADMIN_EMAIL=${ADMIN_EMAIL}/" "$tmp_env"
     else
         # BSD sed (macOS)
-        sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" .env
-        sed -i '' "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" .env
-        sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" .env
+        sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" "$tmp_env"
+        sed -i '' "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" "$tmp_env"
+        sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" "$tmp_env"
+        sed -i '' "s/^ADMIN_EMAIL=.*/ADMIN_EMAIL=${ADMIN_EMAIL}/" "$tmp_env"
     fi
 
     # Create data directories
@@ -127,7 +149,9 @@ main() {
     print_success "Created data directories"
 
     # Set secure permissions for .env file (readable/writable only by owner)
-    chmod 600 .env
+    chmod 600 "$tmp_env"
+    mv -f -- "$tmp_env" .env
+    tmp_env=""
     echo ""
 
     # Display completion message
@@ -136,6 +160,7 @@ main() {
     echo "=========================================="
     echo ""
     echo "Generated secure credentials:"
+    echo "  ADMIN_EMAIL:           ${ADMIN_EMAIL}"
     echo "  POSTGRES_PASSWORD:     ${POSTGRES_PASSWORD}"
     echo "  JWT_SECRET:            ${JWT_SECRET}"
     echo "  TOTP_ENCRYPTION_KEY:   ${TOTP_ENCRYPTION_KEY}"
@@ -165,7 +190,7 @@ main() {
     print_info "If admin password is not set in .env, it will be auto-generated."
     print_info "Check logs for the generated admin password on first startup."
     echo ""
-}
+)
 
 # Run main function
 main "$@"

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -222,11 +223,17 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("easypay parse query: %w", err)
 	}
+	if resp.Code != easypayCodeSuccess {
+		return nil, fmt.Errorf("easypay query rejected")
+	}
 	status := payment.ProviderStatusPending
 	if resp.Status == easypayStatusPaid {
 		status = payment.ProviderStatusPaid
 	}
-	amount, _ := strconv.ParseFloat(resp.Money, 64)
+	amount, amountErr := strconv.ParseFloat(resp.Money, 64)
+	if status == payment.ProviderStatusPaid && (amountErr != nil || amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0)) {
+		return nil, fmt.Errorf("easypay query returned invalid paid amount")
+	}
 	return &payment.QueryOrderResponse{
 		TradeNo:  tradeNo,
 		Status:   status,
@@ -238,11 +245,17 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[string]string) (*payment.PaymentNotification, error) {
 	values, err := url.ParseQuery(rawBody)
 	if err != nil {
-		return nil, fmt.Errorf("parse notify: %w", err)
+		return nil, fmt.Errorf("invalid notify encoding")
 	}
 	// url.ParseQuery already decodes values — no additional decode needed.
 	params := make(map[string]string)
 	for k := range values {
+		if !easyPayNotifyAllowedParams[k] {
+			return nil, fmt.Errorf("unexpected notify parameter")
+		}
+		if len(values[k]) != 1 {
+			return nil, fmt.Errorf("duplicate notify parameter")
+		}
 		params[k] = values.Get(k)
 	}
 	sign := params["sign"]
@@ -269,6 +282,14 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 		TradeNo: params["trade_no"], OrderID: params["out_trade_no"],
 		Amount: amount, Status: status, RawData: rawBody, Metadata: metadata,
 	}, nil
+}
+
+// Order-creation fields must not be accepted as notifications: their signed
+// values can otherwise be smuggled into the unescaped EasyPay signature base.
+var easyPayNotifyAllowedParams = map[string]bool{
+	"pid": true, "trade_no": true, "out_trade_no": true, "type": true,
+	"name": true, "money": true, "trade_status": true, "param": true,
+	"sign": true, "sign_type": true,
 }
 
 func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
@@ -411,7 +432,10 @@ func (e *EasyPay) resolveCID(paymentType string) string {
 }
 
 func (e *EasyPay) post(ctx context.Context, endpoint string, params map[string]string) ([]byte, error) {
-	body, _, err := e.postRaw(ctx, endpoint, params)
+	body, status, err := e.postRaw(ctx, endpoint, params)
+	if err == nil && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		return nil, fmt.Errorf("easypay HTTP status %d", status)
+	}
 	return body, err
 }
 
@@ -434,9 +458,12 @@ func (e *EasyPay) postRaw(ctx context.Context, endpoint string, params map[strin
 		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEasypayResponseSize))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEasypayResponseSize+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if len(body) > maxEasypayResponseSize {
+		return nil, resp.StatusCode, fmt.Errorf("easypay response too large")
 	}
 	return body, resp.StatusCode, nil
 }

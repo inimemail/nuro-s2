@@ -118,7 +118,10 @@ func (s *ConcurrencyCacheSuite) TestAccountSlot_MaxZero() {
 
 	ok, err := s.cache.AcquireAccountSlot(s.ctx, accountID, 0, reqID)
 	require.NoError(s.T(), err)
-	require.False(s.T(), ok, "expected acquire to fail with max=0")
+	require.True(s.T(), ok, "max=0 disables account concurrency limiting")
+	count, err := s.cache.GetAccountConcurrency(s.ctx, accountID)
+	require.NoError(s.T(), err)
+	require.Zero(s.T(), count, "unlimited accounts must not allocate an account slot")
 }
 
 func (s *ConcurrencyCacheSuite) TestUserSlot_AcquireAndRelease() {

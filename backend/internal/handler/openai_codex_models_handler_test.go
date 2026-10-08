@@ -166,3 +166,33 @@ func TestCodexModelsCanceledRequestDoesNotWriteResponse(t *testing.T) {
 		t.Fatalf("canceled request wrote status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestCodexModelsRequiresOpenAIKeyGroupOnBothRoutes(t *testing.T) {
+	for _, path := range []string{"/v1/models?client_version=0.144.0", "/backend-api/codex/models"} {
+		for _, tc := range []struct {
+			name   string
+			key    *service.APIKey
+			status int
+		}{
+			{"missing key", nil, http.StatusUnauthorized},
+			{"missing group", &service.APIKey{}, http.StatusUnauthorized},
+			{"grok", &service.APIKey{Group: &service.Group{Platform: service.PlatformGrok}}, http.StatusNotFound},
+			{"anthropic", &service.APIKey{Group: &service.Group{Platform: service.PlatformAnthropic}}, http.StatusNotFound},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				upstream := &codexModelsFailoverHTTPUpstream{}
+				handler, _ := newCodexModelsFailoverHandler(t, upstream, 1)
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+				if tc.key != nil {
+					c.Set(string(middleware2.ContextKeyAPIKey), tc.key)
+				}
+				handler.CodexModels(c)
+				if w.Code != tc.status || len(upstream.calls()) != 0 {
+					t.Fatalf("status=%d upstream=%v", w.Code, upstream.calls())
+				}
+			})
+		}
+	}
+}

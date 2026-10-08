@@ -392,13 +392,26 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 	// 使用超时上下文避免安装流程因数据库异常而长时间阻塞。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	return bootstrapAdminUser(ctx, db, cfg)
+}
+
+// READ COMMITTED rechecks committed users after waiting for another replica.
+func bootstrapAdminUser(ctx context.Context, db *sql.DB, cfg *SetupConfig) (bool, string, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return false, "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", int64(0x4e55524f41444d)); err != nil {
+		return false, "", err
+	}
 
 	var totalUsers int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM users").Scan(&totalUsers); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(1) FROM users").Scan(&totalUsers); err != nil {
 		return false, "", err
 	}
 	var adminUsers int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM users WHERE role = $1", service.RoleAdmin).Scan(&adminUsers); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(1) FROM users WHERE role = $1", service.RoleAdmin).Scan(&adminUsers); err != nil {
 		return false, "", err
 	}
 	decision := decideAdminBootstrap(totalUsers, adminUsers)
@@ -406,18 +419,15 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		return false, decision.reason, nil
 	}
 
-	if strings.TrimSpace(cfg.Admin.Password) == "" {
-		password, genErr := generateSecret(16)
-		if genErr != nil {
-			return false, "", fmt.Errorf("failed to generate admin password: %w", genErr)
-		}
-		cfg.Admin.Password = password
-		fmt.Printf("Generated admin password (one-time): %s\n", cfg.Admin.Password)
-		fmt.Println("IMPORTANT: Save this password! It will not be shown again.")
+	generatedEmail := strings.TrimSpace(cfg.Admin.Email) == ""
+	generatedPassword := strings.TrimSpace(cfg.Admin.Password) == ""
+	credentials, err := prepareAdminCredentials(cfg.Admin)
+	if err != nil {
+		return false, "", err
 	}
 
 	admin := &service.User{
-		Email:       cfg.Admin.Email,
+		Email:       credentials.Email,
 		Role:        service.RoleAdmin,
 		Status:      service.StatusActive,
 		Balance:     0,
@@ -426,11 +436,11 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		UpdatedAt:   time.Now(),
 	}
 
-	if err := admin.SetPassword(cfg.Admin.Password); err != nil {
+	if err := admin.SetPassword(credentials.Password); err != nil {
 		return false, "", err
 	}
 
-	_, err = db.ExecContext(
+	_, err = tx.ExecContext(
 		ctx,
 		`INSERT INTO users (email, password_hash, role, balance, concurrency, status, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -446,7 +456,49 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 	if err != nil {
 		return false, "", err
 	}
+	if err := tx.Commit(); err != nil {
+		return false, "", err
+	}
+	cfg.Admin = credentials
+	if generatedEmail {
+		fmt.Printf("Generated admin email (one-time): %s\n", credentials.Email)
+	}
+	if generatedPassword {
+		fmt.Printf("Generated admin password (one-time): %s\n", credentials.Password)
+	}
+	if generatedEmail || generatedPassword {
+		fmt.Println("IMPORTANT: Save these credentials! They will not be shown again.")
+	}
 	return true, decision.reason, nil
+}
+
+func generateAdminEmail() (string, error) {
+	secret, err := generateSecret(6)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate admin email: %w", err)
+	}
+	return "admin-" + secret + "@sub2api.local", nil
+}
+
+func prepareAdminCredentials(admin AdminConfig) (AdminConfig, error) {
+	admin.Email = strings.TrimSpace(admin.Email)
+	var err error
+	if admin.Email == "" {
+		admin.Email, err = generateAdminEmail()
+		if err != nil {
+			return admin, err
+		}
+	}
+	if !validateEmail(admin.Email) {
+		return admin, fmt.Errorf("invalid admin email")
+	}
+	if strings.TrimSpace(admin.Password) == "" {
+		admin.Password, err = generateSecret(16)
+		if err != nil {
+			return admin, fmt.Errorf("failed to generate admin password: %w", err)
+		}
+	}
+	return admin, validatePassword(admin.Password)
 }
 
 func writeConfigFile(cfg *SetupConfig) error {
@@ -584,7 +636,7 @@ func AutoSetupFromEnv() error {
 			EnableTLS: getEnvOrDefault("REDIS_ENABLE_TLS", "false") == "true",
 		},
 		Admin: AdminConfig{
-			Email:    getEnvOrDefault("ADMIN_EMAIL", "admin@sub2api.local"),
+			Email:    getEnvOrDefault("ADMIN_EMAIL", ""),
 			Password: getEnvOrDefault("ADMIN_PASSWORD", ""),
 		},
 		Server: ServerConfig{

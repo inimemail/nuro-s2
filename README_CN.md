@@ -298,9 +298,10 @@ JWT_SECRET=your_jwt_secret_here
 # TOTP 加密密钥（推荐 - 重启后保留双因素认证）
 TOTP_ENCRYPTION_KEY=your_totp_key_here
 
-# 可选：管理员账号
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your_admin_password
+# 可选：管理员账号。留空时首次安装会生成随机邮箱和密码，并写入首次启动日志。
+# 已有数据库中的管理员不会被替换。
+ADMIN_EMAIL=
+ADMIN_PASSWORD=
 
 # 可选：自定义端口
 SERVER_PORT=8080
@@ -361,9 +362,9 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 
 在浏览器中打开 `http://你的服务器IP:8080`
 
-如果管理员密码是自动生成的，在日志中查找：
+首次安装未设置管理员邮箱或密码时，在首次启动日志中保存生成的凭证。密码须为 8–72 个 UTF-8 字节；已有 `.env` 和数据库管理员不自动更换：
 ```bash
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose -f docker-compose.local.yml logs sub2api | grep -E "Generated admin (email|password)"
 ```
 
 #### 升级

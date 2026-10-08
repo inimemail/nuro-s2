@@ -170,6 +170,16 @@ func TestOpenAIAccountHealthSharedState_PropagatesAcrossInstances(t *testing.T) 
 	t.Cleanup(source.closeSharedHealth)
 	t.Cleanup(destination.closeSharedHealth)
 
+	// Wait for both asynchronous subscribers before publishing the sole event.
+	// Otherwise an initial empty snapshot can consume the one-time Redis load
+	// before persistence, while pub/sub has no subscriber to receive the update.
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		counts, err := clientA.PubSubNumSub(ctx, openAIAccountHealthSharedChannel).Result()
+		return err == nil && counts[openAIAccountHealthSharedChannel] == 2
+	}, 2*time.Second, 10*time.Millisecond)
+
 	ttft := 240
 	source.reportForRoute(99, true, &ttft, "gpt-5.6-sol", OpenAIUpstreamTransportHTTPSSE)
 

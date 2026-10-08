@@ -16,12 +16,12 @@
 
       <!-- Progress Steps -->
       <div class="mb-8">
-        <div class="flex items-center justify-center">
+        <div class="flex items-start justify-center sm:items-center">
           <template v-for="(step, index) in steps" :key="step.id">
-            <div class="flex items-center">
+            <div class="flex min-w-0 flex-1 flex-col items-center gap-2 text-center sm:flex-none sm:flex-row sm:gap-0 sm:text-left" :aria-current="currentStep === index ? 'step' : undefined">
               <div
                 :class="[
-                  'flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-all',
+                  'flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold transition-colors',
                   currentStep > index
                     ? 'bg-primary-500 text-white'
                     : currentStep === index
@@ -38,7 +38,7 @@
                 <span v-else>{{ index + 1 }}</span>
               </div>
               <span
-                class="ml-2 text-sm font-medium"
+                class="w-full break-words text-xs font-medium sm:ml-2 sm:w-auto sm:text-sm"
                 :class="
                   currentStep >= index
                     ? 'text-gray-900 dark:text-white'
@@ -50,7 +50,7 @@
             </div>
             <div
               v-if="index < steps.length - 1"
-              class="mx-3 h-0.5 w-12"
+              class="mt-5 h-0.5 w-3 shrink-0 sm:mx-3 sm:mt-0 sm:w-12"
               :class="currentStep > index ? 'bg-primary-500' : 'bg-gray-200 dark:bg-dark-700'"
             ></div>
           </template>
@@ -313,13 +313,25 @@
           </div>
 
           <div>
-            <label class="input-label">{{ t('setup.admin.password') }}</label>
+            <label for="admin-password" class="input-label">{{ t('setup.admin.password') }}</label>
             <input
               v-model="formData.admin.password"
+              id="admin-password"
               type="password"
               class="input"
+              :class="formData.admin.password && !adminPasswordValid ? 'border-red-400 focus:ring-red-500' : ''"
+              :aria-invalid="!!formData.admin.password && !adminPasswordValid"
+              aria-describedby="admin-password-status"
+              autocomplete="new-password"
               :placeholder="t('setup.admin.passwordPlaceholder')"
             />
+            <div id="admin-password-status" class="mt-2 flex items-start justify-between gap-3 text-xs" aria-live="polite">
+              <span class="flex items-start gap-1.5" :class="!formData.admin.password ? 'text-gray-500 dark:text-gray-400' : adminPasswordValid ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'">
+                <Icon :name="adminPasswordValid ? 'checkCircle' : 'shield'" size="sm" class="shrink-0" />
+                {{ t('setup.admin.passwordByteRange') }}
+              </span>
+              <span class="shrink-0 tabular-nums text-gray-500 dark:text-gray-400">{{ adminPasswordBytes }} / 72 {{ t('setup.admin.bytes') }}</span>
+            </div>
           </div>
 
           <div>
@@ -565,13 +577,16 @@ const canProceed = computed(() => {
     case 2:
       return (
         formData.admin.email &&
-        formData.admin.password.length >= 8 &&
+        adminPasswordValid.value &&
         formData.admin.password === confirmPassword.value
       )
     default:
       return true
   }
 })
+
+const adminPasswordBytes = computed(() => new TextEncoder().encode(formData.admin.password).length)
+const adminPasswordValid = computed(() => adminPasswordBytes.value >= 8 && adminPasswordBytes.value <= 72)
 
 async function testDatabaseConnection() {
   testingDb.value = true

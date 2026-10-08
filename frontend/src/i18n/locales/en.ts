@@ -289,7 +289,9 @@ export default {
       email: 'Email',
       password: 'Password',
       confirmPassword: 'Confirm Password',
-      passwordPlaceholder: 'Min 8 characters',
+      passwordPlaceholder: '8–72 bytes',
+      passwordByteRange: 'Password must contain 8–72 bytes',
+      bytes: 'bytes',
       confirmPasswordPlaceholder: 'Confirm password',
       passwordMismatch: 'Passwords do not match'
     },
@@ -828,6 +830,9 @@ export default {
       noGroupTitle: 'Please assign a group first',
       noGroupDescription: 'This API key has not been assigned to a group. Please click the group column in the key list to assign one before viewing the configuration.',
       openai: {
+        catalogSource: 'Model catalog source',
+        currentConfig: 'Current config',
+        remoteCatalog: 'Remote catalog',
         description: 'Add the following configuration files to your Codex CLI config directory.',
         configTomlHint: 'Put this content at the beginning of config.toml. After changing API Key configuration, fully restart Codex and create a new task.',
         note: 'Make sure the config directory exists. macOS/Linux users can run mkdir -p ~/.codex to create it.',

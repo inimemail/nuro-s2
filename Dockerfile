@@ -8,7 +8,7 @@
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.26.5-alpine
+ARG GOLANG_IMAGE=golang:1.26.6-alpine
 ARG RUST_IMAGE=rust:1.90-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
@@ -89,6 +89,14 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
 FROM --platform=${TARGETPLATFORM} ${RUST_IMAGE} AS edge-builder
 
 RUN apk add --no-cache build-base pkgconfig perl
+# Some cached musl images contain a damaged self-contained libc archive.
+# Repair the installed standard library without changing the Rust toolchain.
+RUN host="$(rustc -vV | sed -n 's/^host: //p')" && \
+    archive="$(rustc --print sysroot)/lib/rustlib/${host}/lib/self-contained/libc.a" && \
+    if [ -f "${archive}" ] && ! ar t "${archive}" >/dev/null 2>&1; then \
+      RUSTUP_PERMIT_COPY_RENAME=1 rustup component remove rust-std && \
+      rustup component add rust-std && ar t "${archive}" >/dev/null; \
+    fi
 WORKDIR /app/edge-rs
 COPY edge-rs/Cargo.toml edge-rs/Cargo.lock ./
 COPY edge-rs/src ./src

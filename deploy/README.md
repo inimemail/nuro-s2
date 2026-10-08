@@ -2,6 +2,13 @@
 
 This directory contains files for deploying Sub2API on Linux servers.
 
+Nuro's root-level `deploy-nuro.sh` keeps its existing credential workflow:
+on a new installation it generates a random admin email and a 24-character
+random password, saves both in the deployment directory's `.env`, and displays
+them directly when deployment completes. Existing `.env` credentials are
+preserved during upgrades. The first-start log instructions below apply to
+Compose installations where admin credentials have been left empty.
+
 ## Deployment Methods
 
 | Method | Best For | Setup Wizard |
@@ -58,8 +65,8 @@ docker compose -f docker-compose.local.yml up -d
 # View logs
 docker compose -f docker-compose.local.yml logs -f sub2api
 
-# If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+# Save generated admin email and password from the first-start logs:
+docker compose -f docker-compose.local.yml logs sub2api | grep -E "Generated admin (email|password)"
 
 # Access Web UI
 # http://localhost:8080
@@ -90,7 +97,7 @@ mkdir -p data postgres_data redis_data
 # Start all services using local directory version
 docker compose -f docker-compose.local.yml up -d
 
-# View logs (check for auto-generated admin password)
+# View first-start logs for generated admin email and password
 docker compose -f docker-compose.local.yml logs -f sub2api
 
 # Access Web UI
@@ -121,7 +128,7 @@ When using Docker Compose with `AUTO_SETUP=true`:
 
 3. If `ADMIN_PASSWORD` is not set, check logs for the generated password:
    ```bash
-   docker compose logs sub2api | grep "admin password"
+   docker compose logs sub2api | grep -E "Generated admin (email|password)"
    ```
 
 ### Database Migration Notes (PostgreSQL)
@@ -207,13 +214,19 @@ docker compose down -v
 
 ### Environment Variables
 
+Empty admin settings generate random credentials only for an empty database.
+Explicit passwords must contain 8–72 UTF-8 bytes. Save generated credentials
+from the first-start logs. Existing `.env` files and database users are preserved,
+including older default email addresses. Environment values describe the initial
+credentials and may differ from an account later changed in the admin panel.
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `POSTGRES_PASSWORD` | **Yes** | - | PostgreSQL password |
 | `JWT_SECRET` | **Recommended** | *(auto-generated)* | JWT secret (fixed for persistent sessions) |
 | `TOTP_ENCRYPTION_KEY` | **Recommended** | *(auto-generated)* | TOTP encryption key (fixed for persistent 2FA) |
 | `SERVER_PORT` | No | `8080` | Server port |
-| `ADMIN_EMAIL` | No | `admin@sub2api.local` | Admin email |
+| `ADMIN_EMAIL` | No | *(random on first install)* | Initial admin email; existing accounts are preserved |
 | `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password |
 | `TZ` | No | `Asia/Shanghai` | Timezone |
 | `GEMINI_OAUTH_CLIENT_ID` | No | *(builtin)* | Google OAuth client ID (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |

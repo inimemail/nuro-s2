@@ -4,7 +4,6 @@ package setup
 import (
 	"bufio"
 	"fmt"
-	"net/mail"
 	"os"
 	"regexp"
 	"strconv"
@@ -30,8 +29,7 @@ func cliValidateUsername(name string) bool {
 }
 
 func cliValidateEmail(email string) bool {
-	_, err := mail.ParseAddress(email)
-	return err == nil && len(email) <= 254
+	return validateEmail(email)
 }
 
 func cliValidatePort(port int) bool {
@@ -162,9 +160,13 @@ func RunCLI() error {
 	// Admin configuration with validation
 	fmt.Println()
 	fmt.Println("── Admin Account ──")
+	defaultEmail, err := generateAdminEmail()
+	if err != nil {
+		return err
+	}
 
 	for {
-		cfg.Admin.Email = promptString(reader, "Admin Email", "admin@example.com")
+		cfg.Admin.Email = promptString(reader, "Admin Email", defaultEmail)
 		if cliValidateEmail(cfg.Admin.Email) {
 			break
 		}
@@ -173,13 +175,8 @@ func RunCLI() error {
 
 	for {
 		cfg.Admin.Password = promptPassword("Admin Password")
-		// SECURITY: Match Web API requirement of 8 characters minimum
-		if len(cfg.Admin.Password) < 8 {
-			fmt.Println("  Password must be at least 8 characters")
-			continue
-		}
-		if len(cfg.Admin.Password) > 128 {
-			fmt.Println("  Password must be at most 128 characters")
+		if err := validatePassword(cfg.Admin.Password); err != nil {
+			fmt.Printf("  %s\n", err)
 			continue
 		}
 		confirm := promptPassword("Confirm Password")

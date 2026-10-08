@@ -19,15 +19,17 @@ import (
 
 // PaymentWebhookHandler handles payment provider webhook callbacks.
 type PaymentWebhookHandler struct {
-	paymentService *service.PaymentService
+	paymentService paymentWebhookService
 	registry       *payment.Registry
+}
+
+type paymentWebhookService interface {
+	GetWebhookProviders(context.Context, string, string) ([]payment.Provider, error)
+	HandlePaymentNotification(context.Context, *payment.PaymentNotification, string) error
 }
 
 // maxWebhookBodySize is the maximum allowed webhook request body size (1 MB).
 const maxWebhookBodySize = 1 << 20
-
-// webhookLogTruncateLen is the maximum length of raw body logged on verify failure.
-const webhookLogTruncateLen = 200
 
 // NewPaymentWebhookHandler creates a new PaymentWebhookHandler.
 func NewPaymentWebhookHandler(paymentService *service.PaymentService, registry *payment.Registry) *PaymentWebhookHandler {
@@ -69,18 +71,11 @@ func (h *PaymentWebhookHandler) AirwallexWebhook(c *gin.Context) {
 
 // handleNotify is the shared logic for all provider webhook handlers.
 func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string) {
-	var rawBody string
-	if c.Request.Method == http.MethodGet {
-		// GET callbacks (e.g. EasyPay) pass params as URL query string
-		rawBody = c.Request.URL.RawQuery
-	} else {
-		body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
-		if err != nil {
-			slog.Error("[Payment Webhook] failed to read body", "provider", providerKey, "error", err)
-			c.String(http.StatusBadRequest, "failed to read body")
-			return
-		}
-		rawBody = string(body)
+	rawBody, err := readWebhookBody(c.Request)
+	if err != nil {
+		slog.Warn("[Payment Webhook] invalid body", "provider", providerKey, "reason", "body_rejected")
+		c.String(http.StatusBadRequest, "invalid body")
+		return
 	}
 
 	// Extract out_trade_no to look up the order's specific provider instance.
@@ -89,12 +84,11 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 
 	providers, err := h.paymentService.GetWebhookProviders(c.Request.Context(), providerKey, outTradeNo)
 	if err != nil {
-		slog.Warn("[Payment Webhook] provider not found", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
-		if providerKey == payment.TypeWxpay {
-			c.String(http.StatusBadRequest, "verify failed")
-			return
-		}
-		writeSuccessResponse(c, providerKey)
+		slog.Warn("[Payment Webhook] provider not found", "provider", providerKey, "reason", "provider_unavailable")
+		// Provider resolution has not verified this event. A database or
+		// configuration failure must remain retryable instead of acknowledging
+		// a payment that has never reached fulfillment.
+		c.String(http.StatusServiceUnavailable, "provider unavailable")
 		return
 	}
 
@@ -105,13 +99,7 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 
 	resolvedProviderKey, notification, err := verifyNotificationWithProviders(c.Request.Context(), providers, rawBody, headers)
 	if err != nil {
-		truncatedBody := rawBody
-		if len(truncatedBody) > webhookLogTruncateLen {
-			truncatedBody = truncatedBody[:webhookLogTruncateLen] + "...(truncated)"
-		}
-		slog.Error("[Payment Webhook] verify failed", "provider", providerKey, "error", err, "method", c.Request.Method, "bodyLen", len(rawBody))
-		slog.Debug("[Payment Webhook] verify failed body", "provider", providerKey, "rawBody", truncatedBody)
-		c.String(http.StatusBadRequest, "verify failed")
+		rejectWebhookVerification(c, providerKey, len(rawBody))
 		return
 	}
 
@@ -142,6 +130,28 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 	}
 
 	writeSuccessResponse(c, resolvedProviderKey)
+}
+
+func readWebhookBody(request *http.Request) (string, error) {
+	if request.Method == http.MethodGet {
+		if len(request.URL.RawQuery) > maxWebhookBodySize {
+			return "", fmt.Errorf("webhook body too large")
+		}
+		return request.URL.RawQuery, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxWebhookBodySize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(body) > maxWebhookBodySize {
+		return "", fmt.Errorf("webhook body too large")
+	}
+	return string(body), nil
+}
+
+func rejectWebhookVerification(c *gin.Context, providerKey string, bodyLen int) {
+	slog.Error("[Payment Webhook] verify failed", "provider", providerKey, "reason", "notification_rejected", "method", c.Request.Method, "bodyLen", bodyLen)
+	c.String(http.StatusBadRequest, "verify failed")
 }
 
 // extractOutTradeNo parses the webhook body to find the out_trade_no.

@@ -6,7 +6,54 @@ from datetime import date
 
 
 HIGH_SEVERITIES = {"high", "critical"}
-REQUIRED_FIELDS = {"package", "advisory", "severity", "mitigation", "expires_on"}
+REQUIRED_FIELDS = {"package", "advisory", "severity", "mitigation", "expires_on", "owner"}
+
+
+def validate_audit_report(data: dict) -> None:
+    if not isinstance(data, dict) or data.get("error") or data.get("errors"):
+        raise ValueError("Audit failed or returned an error report")
+    advisories = data.get("advisories")
+    vulnerabilities = data.get("vulnerabilities")
+    if not isinstance(advisories, dict) and not isinstance(vulnerabilities, dict):
+        raise ValueError("Audit report lacks a valid vulnerability collection")
+    # These are alternative audit schemas. Combining populated collections
+    # makes severity totals and advisory de-duplication ambiguous.
+    if advisories and vulnerabilities:
+        raise ValueError("Audit report mixes vulnerability schemas")
+    counts = data.get("metadata", {}).get("vulnerabilities")
+    if not isinstance(counts, dict) or not all(
+        isinstance(counts.get(severity), int) and not isinstance(counts.get(severity), bool)
+        and counts[severity] >= 0
+        for severity in ("info", "low", "moderate", "high", "critical")
+    ):
+        raise ValueError("Audit report lacks valid vulnerability totals")
+    for collection in (advisories, vulnerabilities):
+        if not isinstance(collection, dict):
+            continue
+        for entry in collection.values():
+            if not isinstance(entry, dict) or entry.get("severity") not in {
+                "info", "low", "moderate", "high", "critical"
+            }:
+                raise ValueError("Audit report contains an invalid vulnerability")
+    primary = advisories if advisories else vulnerabilities or {}
+    for severity in HIGH_SEVERITIES:
+        detailed_count = sum(entry["severity"] == severity for entry in primary.values())
+        if detailed_count != counts[severity]:
+            raise ValueError("Audit High/Critical totals disagree with vulnerability details")
+    reported = list(iter_vulns(data))
+    advisory_severities = {}
+    for name, severity, advisory_id, _ in reported:
+        if not name or not advisory_id:
+            continue
+        key = (normalize_package(name), normalize_advisory(advisory_id))
+        previous = advisory_severities.setdefault(key, severity)
+        if previous != severity:
+            raise ValueError("Audit report contains conflicting advisory severities")
+    for severity in HIGH_SEVERITIES:
+        if counts[severity] > 0 and not any(item[1] == severity for item in reported):
+            raise ValueError("Audit report omits reported High/Critical vulnerability details")
+    if not advisories and not vulnerabilities and any(counts.values()):
+        raise ValueError("Audit totals disagree with the empty vulnerability collection")
 
 
 def split_kv(line: str) -> tuple[str, str]:
@@ -109,6 +156,8 @@ def iter_vulns(data: dict):
             title = "; ".join([t for t in titles if t])
             for advisory_id in [a for a in advisories if a]:
                 yield name, severity, advisory_id, title
+            if not any(advisories):
+                yield name, severity, None, title
 
 
 def normalize_severity(severity: str) -> str:
@@ -145,8 +194,13 @@ def main() -> int:
     parser.add_argument("--exceptions", required=True)
     args = parser.parse_args()
 
-    with open(args.audit, "r", encoding="utf-8") as handle:
-        audit = json.load(handle)
+    try:
+        with open(args.audit, "r", encoding="utf-8") as handle:
+            audit = json.load(handle)
+        validate_audit_report(audit)
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        sys.stderr.write(f"Invalid audit report: {error}\n")
+        return 1
 
     # 读取异常清单并建立索引，便于快速匹配包名 + advisory。
     exceptions = parse_exceptions(args.exceptions)
@@ -192,7 +246,10 @@ def main() -> int:
     seen = set()
     for name, severity, advisory_id, title in iter_vulns(audit):
         sev = normalize_severity(severity)
-        if sev not in HIGH_SEVERITIES or not name:
+        if sev not in HIGH_SEVERITIES:
+            continue
+        if not name:
+            errors.append("High/Critical vulnerability missing package name")
             continue
         advisory_key = normalize_advisory(advisory_id)
         if not advisory_key:

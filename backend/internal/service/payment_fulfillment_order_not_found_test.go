@@ -104,3 +104,23 @@ func TestErrOrderNotFound_DistinctFromOtherErrors(t *testing.T) {
 	require.False(t, errors.Is(wrappedLookupErr, ErrOrderNotFound),
 		"DB connection failures must not masquerade as order-not-found")
 }
+
+func TestConfirmPaymentLookupFailureRemainsRetryable(t *testing.T) {
+	client := newPaymentConfigServiceTestClient(t)
+	svc := &PaymentService{entClient: client}
+	err := svc.confirmPayment(context.Background(), 999, "trade", 10, payment.TypeEasyPay, nil)
+	require.ErrorIs(t, err, ErrOrderNotFound)
+	require.NoError(t, client.Close())
+	err = svc.confirmPayment(context.Background(), 999, "trade", 10, payment.TypeEasyPay, nil)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrOrderNotFound)
+}
+
+func TestWebhookOrderLookupFailureDoesNotFallBack(t *testing.T) {
+	client := newPaymentConfigServiceTestClient(t)
+	require.NoError(t, client.Close())
+	svc := &PaymentService{entClient: client}
+	_, err := svc.GetWebhookProviders(context.Background(), payment.TypeEasyPay, "sub2_999")
+	require.ErrorContains(t, err, "lookup webhook order")
+	require.NotErrorIs(t, err, payment.ErrProviderNotFound)
+}
