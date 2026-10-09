@@ -39,14 +39,19 @@ func (c *ssoDeviceFakeClient) Do(req *http.Request) (*http.Response, error) {
 		require.Equal(c.t, "USER-1", values.Get("user_code"))
 		return ssoDeviceResponse(http.StatusFound, http.Header{"Location": {"/oauth2/device/consent"}}, ``), nil
 	case "https://auth.x.ai/oauth2/device/consent":
-		return ssoDeviceResponse(http.StatusOK, nil, `<html>consent</html>`), nil
+		return ssoDeviceResponse(http.StatusOK, nil, `<input value='token&amp;value' name='consent_token' type='hidden'>`), nil
 	case SSOApproveURL:
 		values := readSSODeviceForm(c.t, req)
 		require.Equal(c.t, "USER-1", values.Get("user_code"))
 		require.Equal(c.t, "allow", values.Get("action"))
 		require.Equal(c.t, "User", values.Get("principal_type"))
+		require.Equal(c.t, "token&value", values.Get("consent_token"))
+		require.Equal(c.t, "https://auth.x.ai", req.Header.Get("Origin"))
+		require.Equal(c.t, "https://auth.x.ai/oauth2/device/consent", req.Header.Get("Referer"))
 		return ssoDeviceResponse(http.StatusSeeOther, http.Header{"Location": {"/oauth2/device/done"}}, ``), nil
 	case "https://auth.x.ai/oauth2/device/done":
+		require.Empty(c.t, req.Header.Get("Origin"))
+		require.Empty(c.t, req.Header.Get("Referer"))
 		return ssoDeviceResponse(http.StatusOK, nil, `<html>done</html>`), nil
 	case SSOTokenURL:
 		c.tokenCalls++

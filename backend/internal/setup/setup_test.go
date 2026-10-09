@@ -3,8 +3,84 @@ package setup
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestSetupConfigKeepsFirstPublishedSecret(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	first := &SetupConfig{JWT: JWTConfig{Secret: strings.Repeat("a", 64)}}
+	second := &SetupConfig{JWT: JWTConfig{Secret: strings.Repeat("b", 64)}}
+	if err := writeConfigFile(first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(GetConfigFilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigFile(second); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(GetConfigFilePath())
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("a competing setup replaced the published configuration: %v", err)
+	}
+}
+
+func TestSharedSetupFilesConcurrentPublish(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	const replicas = 16
+	var wg sync.WaitGroup
+	errors := make(chan error, replicas)
+	for i := 0; i < replicas; i++ {
+		wg.Add(1)
+		secret := strings.Repeat(string(rune('a'+i)), 4096)
+		go func() {
+			defer wg.Done()
+			if err := writeConfigFile(&SetupConfig{JWT: JWTConfig{Secret: secret}}); err != nil {
+				errors <- err
+				return
+			}
+			errors <- createInstallLock()
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadFile(GetInstallLockPath())
+	if err != nil || !strings.HasPrefix(string(before), "installed_at=") {
+		t.Fatalf("invalid installation marker: %v", err)
+	}
+	if err := createInstallLock(); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(GetInstallLockPath())
+	if string(before) != string(after) {
+		t.Fatal("existing installation marker was replaced")
+	}
+	for path, expected := range map[string]os.FileMode{GetConfigFilePath(): 0600, GetInstallLockPath(): 0400} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != expected {
+			t.Fatalf("unexpected permissions for %s: %v", path, err)
+		}
+	}
+	data, err := os.ReadFile(GetConfigFilePath())
+	completeSecret := false
+	for i := 0; i < replicas; i++ {
+		completeSecret = completeSecret || strings.Contains(string(data), strings.Repeat(string(rune('a'+i)), 4096))
+	}
+	if err != nil || !completeSecret {
+		t.Fatalf("partial config file: %v", err)
+	}
+	files, err := os.ReadDir(GetDataDir())
+	if err != nil || len(files) != 2 {
+		t.Fatalf("temporary setup files leaked: %v", err)
+	}
+}
 
 func TestDecideAdminBootstrap(t *testing.T) {
 	t.Parallel()

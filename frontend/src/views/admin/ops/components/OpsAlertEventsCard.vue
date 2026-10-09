@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import Select from '@/components/common/Select.vue'
@@ -18,6 +18,9 @@ const loading = ref(false)
 const loadingMore = ref(false)
 const events = ref<AlertEvent[]>([])
 const hasMore = ref(true)
+let listVersion = 0
+let disposed = false
+onUnmounted(() => { disposed = true; listVersion++ })
 
 // Detail modal
 const showDetail = ref(false)
@@ -88,22 +91,29 @@ function buildQuery(overrides: Partial<AlertEventsQuery> = {}): AlertEventsQuery
 }
 
 async function loadFirstPage() {
+  const version = ++listVersion
+  const isCurrent = () => !disposed && version === listVersion
+  loadingMore.value = false
   loading.value = true
   try {
     const data = await opsAPI.listAlertEvents(buildQuery())
+    if (!isCurrent()) return
     events.value = data
     hasMore.value = data.length === PAGE_SIZE
   } catch (err: any) {
+    if (!isCurrent()) return
     console.error('[OpsAlertEventsCard] Failed to load alert events', err)
     appStore.showError(err?.response?.data?.detail || t('admin.ops.alertEvents.loadFailed'))
     events.value = []
     hasMore.value = false
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
 async function loadMore() {
+  const version = listVersion
+  const isCurrent = () => !disposed && version === listVersion
   if (loadingMore.value || loading.value) return
   if (!hasMore.value) return
   const last = events.value[events.value.length - 1]
@@ -114,6 +124,7 @@ async function loadMore() {
     const data = await opsAPI.listAlertEvents(
       buildQuery({ before_fired_at: last.fired_at || last.created_at, before_id: last.id })
     )
+    if (!isCurrent()) return
     if (!data.length) {
       hasMore.value = false
       return
@@ -121,10 +132,11 @@ async function loadMore() {
     events.value = [...events.value, ...data]
     if (data.length < PAGE_SIZE) hasMore.value = false
   } catch (err: any) {
+    if (!isCurrent()) return
     console.error('[OpsAlertEventsCard] Failed to load more alert events', err)
     hasMore.value = false
   } finally {
-    loadingMore.value = false
+    if (isCurrent()) loadingMore.value = false
   }
 }
 
@@ -645,4 +657,3 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
     </BaseDialog>
   </div>
 </template>
-

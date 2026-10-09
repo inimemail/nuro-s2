@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -62,7 +63,10 @@ func defaultOpenCodeProtocolRules(mode string) []OpenCodeGoProtocolRule {
 		{Pattern: "qwen*", Protocol: APIProtocolAnthropic},
 	}
 	if mode == AccountModeZen {
-		rules = append([]OpenCodeGoProtocolRule{{Pattern: "claude-*", Protocol: APIProtocolAnthropic}}, rules...)
+		rules = append([]OpenCodeGoProtocolRule{
+			{Pattern: "qwen3.8-max", Protocol: APIProtocolChatCompletions},
+			{Pattern: "claude-*", Protocol: APIProtocolAnthropic},
+		}, rules...)
 	} else {
 		rules = append(rules, OpenCodeGoProtocolRule{Pattern: "minimax-*", Protocol: APIProtocolAnthropic})
 	}
@@ -162,6 +166,38 @@ func (a *Account) ResolveOpenCodeGoUpstreamProtocol(model string) string {
 		}
 	}
 	return matchOpenCodeProtocolRules(model, defaultOpenCodeProtocolRules(a.GetOpenCodeAccountMode()))
+}
+
+func validateStandardOpenCodeZenModel(account *Account, model string) error {
+	if account == nil || !account.IsOpenCodeZen() {
+		return nil
+	}
+	if base := strings.TrimSpace(account.GetCredential("base_url")); base != "" {
+		if parsed, err := url.Parse(base); err == nil && parsed.Hostname() != "" && !strings.EqualFold(parsed.Hostname(), "opencode.ai") {
+			return nil
+		}
+	}
+	// Only valid rules that explicitly route this model override the default catalog.
+	if raw, ok := account.Credentials[openCodeGoProtocolRulesKey]; ok && raw != nil {
+		if rules, err := parseOpenCodeProtocolRules(raw); err == nil {
+			for _, rule := range rules {
+				if openCodePatternMatches(rule.Pattern, model) {
+					return nil
+				}
+			}
+		}
+	}
+	if protocol := account.getExtraString(cnAPIProtocolExtraKey); protocol == APIProtocolAnthropic || protocol == APIProtocolResponses || protocol == APIProtocolChatCompletions {
+		return nil
+	}
+	if protocol := account.GetCredential("api_protocol"); protocol == APIProtocolAnthropic || protocol == APIProtocolResponses || protocol == APIProtocolChatCompletions {
+		return nil
+	}
+	model = normalizeOpenCodeModelID(model)
+	if strings.HasPrefix(model, "gemini") || strings.HasPrefix(model, "google/gemini") || strings.HasPrefix(model, "jev-") || model == "jev" {
+		return fmt.Errorf("OpenCode Zen does not support this model through the standard API")
+	}
+	return nil
 }
 
 func NormalizeOpenCodeProtocolRulesCredentials(credentials map[string]any) error {

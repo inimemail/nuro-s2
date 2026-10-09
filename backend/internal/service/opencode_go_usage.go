@@ -208,10 +208,8 @@ func (s *CNProviderQuotaService) fetchOpenCodeGoUsage(ctx context.Context, a *Ac
 		snapshot := &OpenCodeGoUsageSnapshot{LastAttemptAt: now.Unix(), HTTPStatus: response.StatusCode}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			snapshot.Error = fmt.Sprintf("OpenCode usage returned HTTP %d", response.StatusCode)
-			if delay, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && delay > 0 {
-				snapshot.NextRefreshAt = now.Add(time.Duration(min(delay, 86400)) * time.Second).Unix()
-			} else if at, err := http.ParseTime(response.Header.Get("Retry-After")); err == nil {
-				snapshot.NextRefreshAt = min(at.Unix(), now.Add(24*time.Hour).Unix())
+			if at, ok := openCodeUsageRetryAfter(response.Header.Get("Retry-After"), now); ok {
+				snapshot.NextRefreshAt = at.Unix()
 			}
 			return snapshot, nil
 		}
@@ -234,6 +232,29 @@ func (s *CNProviderQuotaService) fetchOpenCodeGoUsage(ctx context.Context, a *Ac
 		copy.Tiers = append([]CNQuotaTier(nil), copy.Tiers...)
 		return &copy, nil
 	}
+}
+
+func openCodeUsageRetryAfter(raw string, now time.Time) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if seconds, err := strconv.ParseUint(raw, 10, 64); err == nil {
+		return now.Add(time.Duration(min(seconds, uint64(86400))) * time.Second), true
+	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		return now.Add(24 * time.Hour), true
+	}
+	at, err := http.ParseTime(raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if at.Before(now) {
+		at = now
+	}
+	if limit := now.Add(24 * time.Hour); at.After(limit) {
+		at = limit
+	}
+	return at, true
 }
 
 type OpenCodeGoUsageService struct {

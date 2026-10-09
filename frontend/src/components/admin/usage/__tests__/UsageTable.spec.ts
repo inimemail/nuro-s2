@@ -64,6 +64,7 @@ const DataTableStub = {
         <slot name="cell-billing_mode" :row="row" />
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
+        <slot name="cell-tps" :row="row" />
       </div>
     </div>
   `,
@@ -98,6 +99,16 @@ const baseImageRow = {
 }
 
 describe('admin UsageTable tooltip', () => {
+  it('shows request average TPS while excluding media and invalid duration', () => {
+    const wrapper = mount(UsageTable, {
+      props: { data: [{ ...baseImageRow, request_id: 'text', billing_mode: 'token', image_count: 0, output_tokens: 120, duration_ms: 2000 }, baseImageRow, { ...baseImageRow, request_id: 'invalid', duration_ms: 0 }], loading: false, columns: [] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } }
+    })
+    expect(wrapper.text()).toContain('60.0')
+    const tps = wrapper.findAll('[title="usage.requestTpsHint"]')
+    expect(tps.map(node => node.text())).toEqual(['60.0', '-', '-'])
+  })
+
   beforeEach(() => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       x: 0,

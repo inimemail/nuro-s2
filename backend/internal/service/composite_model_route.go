@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -117,6 +118,58 @@ func (r *CompositeRouteResolver) List(ctx context.Context, groupID int64) ([]Com
 		return nil, nil
 	}
 	return r.repo.ListByGroup(ctx, groupID, true)
+}
+
+// CatalogModels uses the same route precedence as inference with one repository read.
+func (r *CompositeRouteResolver) CatalogModels(ctx context.Context, groupID int64, models []string, endpoint string, includeSystemOne bool) ([]string, error) {
+	routes, err := r.List(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(models)+len(routes))
+	for _, model := range models {
+		if model != "" && !strings.Contains(model, "*") {
+			seen[model] = true
+		}
+	}
+	for _, route := range routes {
+		if !route.Enabled || normalizeCompositeRouteMatchType(route.MatchType) != CompositeRouteMatchExact {
+			continue
+		}
+		if endpoint != "" && normalizeCompositeRouteEndpoint(route.Endpoint) != CompositeRouteEndpointAny && normalizeCompositeRouteEndpoint(route.Endpoint) != endpoint {
+			continue
+		}
+		if model := strings.TrimSpace(route.PublicModel); model != "" && !strings.Contains(model, "*") {
+			seen[model] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for model := range seen {
+		route, routed := matchCompositeRoute(routes, model, normalizeCompositeRouteEndpoint(endpoint))
+		if endpoint != "" && !routed {
+			otherEndpointOnly := false
+			for _, candidate := range routes {
+				if candidate.Enabled && normalizeCompositeRouteMatchType(candidate.MatchType) == CompositeRouteMatchExact && strings.TrimSpace(candidate.PublicModel) == model {
+					otherEndpointOnly = true
+					break
+				}
+			}
+			if _, detected := DetectCompositeModelPlatform(model); otherEndpointOnly && !detected {
+				continue
+			}
+		}
+		if !includeSystemOne {
+			if routed && route.TargetPlatform == PlatformTypeSafe {
+				continue
+			}
+			if platform, matched := DetectCompositeModelPlatform(model); !routed && matched && platform == PlatformTypeSafe {
+				continue
+			}
+		}
+		result = append(result, model)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (r *CompositeRouteResolver) CreateRoute(ctx context.Context, groupID int64, in CompositeRouteInput) (*CompositeModelRoute, error) {

@@ -376,6 +376,9 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
 	full := joinURL(endpoint, adapter.buildPath(model))
+	if provider == MonitorProviderZhipu {
+		full = zhipuMonitorURL(endpoint)
+	}
 	respBytes, status, err := postRawJSON(ctx, full, body, headers)
 	if err != nil {
 		return "", status, &monitorRequestError{cause: err}
@@ -610,6 +613,25 @@ func joinURL(base, path string) string {
 		}
 	}
 	return base + path
+}
+
+func zhipuMonitorURL(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return joinURL(base, "/v1/chat/completions")
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if strings.EqualFold(u.Hostname(), "open.bigmodel.cn") {
+		if path == "" || path == "/api" {
+			u.Path = "/api/paas/v4"
+			u.RawPath = ""
+		}
+		return joinURL(u.String(), "/chat/completions")
+	}
+	if strings.HasSuffix(path, "/paas/v4") {
+		return joinURL(u.String(), "/chat/completions")
+	}
+	return joinURL(u.String(), "/v1/chat/completions")
 }
 
 // extractOrigin 从一个 endpoint URL 中提取 scheme://host[:port] 部分。

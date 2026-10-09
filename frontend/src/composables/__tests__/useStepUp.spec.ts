@@ -1,7 +1,35 @@
 import { describe, expect, it, vi } from 'vitest'
+import { effectScope } from 'vue'
 import { isStepUpBlocked, isStepUpCancelled, isStepUpRequired, StepUpCancelledError, useStepUp } from '../useStepUp'
 
 describe('useStepUp', () => {
+  it('shares verification and settles every waiter on cancel', async () => {
+    const controller = useStepUp()
+    const first = controller.prompt()
+    const second = controller.prompt()
+    expect(second).toBe(first)
+    controller.onCancel()
+    await expect(first).resolves.toBe(false)
+    await expect(second).resolves.toBe(false)
+    const next = controller.prompt()
+    expect(next).not.toBe(first)
+    controller.onVerified()
+    await expect(next).resolves.toBe(true)
+  })
+
+  it('does not open a prompt after an in-flight action outlives its scope', async () => {
+    const scope = effectScope()
+    const controller = scope.run(() => useStepUp())!
+    let reject!: (error: unknown) => void
+    const action = vi.fn(() => new Promise<never>((_, fail) => { reject = fail }))
+    const result = controller.run(action)
+    const assertion = expect(result).rejects.toBeInstanceOf(StepUpCancelledError)
+    scope.stop()
+    reject({ code: 'STEP_UP_REQUIRED' })
+    await assertion
+    expect(controller.visible.value).toBe(false)
+    expect(action).toHaveBeenCalledTimes(1)
+  })
   it('classifies backend markers', () => {
     expect(isStepUpRequired({ code: 'STEP_UP_REQUIRED' })).toBe(true)
     expect(isStepUpRequired({ reason: 'STEP_UP_REQUIRED' })).toBe(true)

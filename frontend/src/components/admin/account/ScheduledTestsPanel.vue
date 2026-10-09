@@ -170,6 +170,7 @@
               <div class="flex items-center gap-1.5" @click.stop>
                 <Toggle
                   :model-value="plan.enabled"
+                  :disabled="togglingPlanIds.has(plan.id)"
                   @update:model-value="(val: boolean) => handleToggleEnabled(plan, val)"
                 />
                 <span class="text-xs text-gray-500 dark:text-gray-400">
@@ -463,7 +464,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -503,6 +504,13 @@ const showDeleteConfirm = ref(false)
 const deletingPlan = ref<ScheduledTestPlan | null>(null)
 const editingPlanId = ref<number | null>(null)
 const updating = ref(false)
+const togglingPlanIds = reactive(new Set<number>())
+let session = 0
+let plansRequest = 0
+let resultsRequest = 0
+let disposed = false
+onUnmounted(() => { disposed = true; session++; plansRequest++; resultsRequest++ })
+const currentSession = (version: number) => !disposed && props.show && version === session
 const editForm = reactive({
   model_id: '' as string,
   cron_expression: '' as string,
@@ -529,8 +537,24 @@ const resetNewPlan = () => {
 
 // Load plans when dialog opens
 watch(
-  () => props.show,
-  async (visible) => {
+  [() => props.show, () => props.accountId],
+  async ([visible]) => {
+    session++
+    plansRequest++
+    resultsRequest++
+    loading.value = false
+    creating.value = false
+    updating.value = false
+    togglingPlanIds.clear()
+    loadingResults.value = false
+    plans.value = []
+    results.value = []
+    expandedPlanId.value = null
+    expandedResultIds.clear()
+    editingPlanId.value = null
+    deletingPlan.value = null
+    showAddForm.value = false
+    showDeleteConfirm.value = false
     if (visible && props.accountId) {
       await loadPlans()
     } else {
@@ -546,19 +570,26 @@ watch(
 )
 
 async function loadPlans() {
-  if (!props.accountId) return
+  if (!props.accountId || !props.show || disposed) return
+  const version = session
+  const request = ++plansRequest
+  const isCurrent = () => currentSession(version) && request === plansRequest
   loading.value = true
   try {
-    plans.value = await adminAPI.scheduledTests.listByAccount(props.accountId)
+    const loaded = await adminAPI.scheduledTests.listByAccount(props.accountId)
+    if (isCurrent()) plans.value = loaded
   } catch (error: any) {
+    if (!isCurrent()) return
     appStore.showError(error?.message || 'Failed to load plans')
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
 const handleCreate = async () => {
-  if (!props.accountId || !newPlan.model_id || !newPlan.cron_expression) return
+  if (!props.accountId || !props.show || creating.value || !newPlan.model_id || !newPlan.cron_expression) return
+  const version = session
+  const submittedForm = JSON.stringify(newPlan)
   creating.value = true
   try {
     const maxResults = Number(newPlan.max_results) || 100
@@ -570,27 +601,38 @@ const handleCreate = async () => {
       max_results: maxResults,
       auto_recover: newPlan.auto_recover
     })
+    if (!currentSession(version)) return
     appStore.showSuccess(t('admin.scheduledTests.createSuccess'))
-    showAddForm.value = false
-    resetNewPlan()
+    if (JSON.stringify(newPlan) === submittedForm) {
+      showAddForm.value = false
+      resetNewPlan()
+    }
     await loadPlans()
   } catch (error: any) {
+    if (!currentSession(version)) return
     appStore.showError(error?.message || 'Failed to create plan')
   } finally {
-    creating.value = false
+    if (currentSession(version)) creating.value = false
   }
 }
 
 const handleToggleEnabled = async (plan: ScheduledTestPlan, enabled: boolean) => {
+  if (!props.show || disposed || togglingPlanIds.has(plan.id)) return
+  const version = session
+  togglingPlanIds.add(plan.id)
   try {
     const updated = await adminAPI.scheduledTests.update(plan.id, { enabled })
+    if (!currentSession(version)) return
     const index = plans.value.findIndex((p) => p.id === plan.id)
     if (index !== -1) {
       plans.value[index] = updated
     }
     appStore.showSuccess(t('admin.scheduledTests.updateSuccess'))
   } catch (error: any) {
+    if (!currentSession(version)) return
     appStore.showError(error?.message || 'Failed to update plan')
+  } finally {
+    if (currentSession(version)) togglingPlanIds.delete(plan.id)
   }
 }
 
@@ -608,26 +650,31 @@ const cancelEdit = () => {
 }
 
 const handleEdit = async () => {
-  if (!editingPlanId.value || !editForm.model_id || !editForm.cron_expression) return
+  if (!props.show || updating.value || !editingPlanId.value || !editForm.model_id || !editForm.cron_expression) return
+  const version = session
+  const planId = editingPlanId.value
+  const submittedForm = JSON.stringify(editForm)
   updating.value = true
   try {
-    const updated = await adminAPI.scheduledTests.update(editingPlanId.value, {
+    const updated = await adminAPI.scheduledTests.update(planId, {
       model_id: editForm.model_id,
       cron_expression: editForm.cron_expression,
       max_results: Number(editForm.max_results) || 100,
       enabled: editForm.enabled,
       auto_recover: editForm.auto_recover
     })
-    const index = plans.value.findIndex((p) => p.id === editingPlanId.value)
+    if (!currentSession(version)) return
+    const index = plans.value.findIndex((p) => p.id === planId)
     if (index !== -1) {
       plans.value[index] = updated
     }
     appStore.showSuccess(t('admin.scheduledTests.updateSuccess'))
-    editingPlanId.value = null
+    if (editingPlanId.value === planId && JSON.stringify(editForm) === submittedForm) editingPlanId.value = null
   } catch (error: any) {
+    if (!currentSession(version)) return
     appStore.showError(error?.message || 'Failed to update plan')
   } finally {
-    updating.value = false
+    if (currentSession(version)) updating.value = false
   }
 }
 
@@ -638,40 +685,53 @@ const confirmDeletePlan = (plan: ScheduledTestPlan) => {
 
 const handleDelete = async () => {
   if (!deletingPlan.value) return
+  const plan = deletingPlan.value
+  const version = session
   try {
-    await adminAPI.scheduledTests.delete(deletingPlan.value.id)
+    await adminAPI.scheduledTests.delete(plan.id)
+    if (!currentSession(version)) return
     appStore.showSuccess(t('admin.scheduledTests.deleteSuccess'))
-    plans.value = plans.value.filter((p) => p.id !== deletingPlan.value!.id)
-    if (expandedPlanId.value === deletingPlan.value.id) {
+    plans.value = plans.value.filter((p) => p.id !== plan.id)
+    if (expandedPlanId.value === plan.id) {
       expandedPlanId.value = null
       results.value = []
     }
   } catch (error: any) {
+    if (!currentSession(version)) return
     appStore.showError(error?.message || 'Failed to delete plan')
   } finally {
-    showDeleteConfirm.value = false
-    deletingPlan.value = null
+    if (currentSession(version) && deletingPlan.value === plan) {
+      showDeleteConfirm.value = false
+      deletingPlan.value = null
+    }
   }
 }
 
 const toggleExpand = async (planId: number) => {
+  const request = ++resultsRequest
+  const accountId = props.accountId
+  const isCurrent = () => !disposed && props.show && props.accountId === accountId && expandedPlanId.value === planId && request === resultsRequest
   if (expandedPlanId.value === planId) {
     expandedPlanId.value = null
+    loadingResults.value = false
     results.value = []
     expandedResultIds.clear()
     return
   }
 
   expandedPlanId.value = planId
+  results.value = []
   expandedResultIds.clear()
   loadingResults.value = true
   try {
-    results.value = await adminAPI.scheduledTests.listResults(planId, 20)
+    const loaded = await adminAPI.scheduledTests.listResults(planId, 20)
+    if (isCurrent()) results.value = loaded
   } catch (error: any) {
+    if (!isCurrent()) return
     appStore.showError(error?.message || 'Failed to load results')
     results.value = []
   } finally {
-    loadingResults.value = false
+    if (isCurrent()) loadingResults.value = false
   }
 }
 

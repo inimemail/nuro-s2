@@ -142,7 +142,7 @@ func TestFetchCodexModelsManifestNotModified(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIfNoneMatch = r.Header.Get("If-None-Match")
 		w.Header().Set("ETag", `W/"abc123"`)
-		w.WriteHeader(http.StatusNotModified)
+		_, _ = io.WriteString(w, `{"models":[]}`)
 	}))
 	defer server.Close()
 
@@ -158,7 +158,7 @@ func TestFetchCodexModelsManifestNotModified(t *testing.T) {
 	if !manifest.NotModified {
 		t.Error("expected NotModified to be true")
 	}
-	if gotIfNoneMatch != `W/"abc123"` {
+	if gotIfNoneMatch != "" {
 		t.Errorf("if-none-match header: got %q", gotIfNoneMatch)
 	}
 }

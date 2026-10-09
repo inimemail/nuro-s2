@@ -4495,6 +4495,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	clearOpenAIResponsesNamespaceNames(c)
 	if account != nil && account.IsOpenCodeGo() {
 		reqModel, _, _ := extractOpenAIRequestMetaFromBody(body)
+		reqModel = strings.TrimSpace(reqModel)
+		if err := validateStandardOpenCodeZenModel(account, resolveOpenAIForwardModel(account, reqModel, "")); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		switch account.ResolveOpenCodeGoUpstreamProtocol(resolveOpenAIForwardModel(account, reqModel, "")) {
 		case APIProtocolAnthropic:
 			return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
@@ -4505,6 +4510,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if account != nil && (account.IsAnthropicProtocol() ||
 		(account.IsCNProvider() && account.IsAdaptiveAPIProtocol() && !account.IsDeepSeek() && !account.IsOpenCodeGo())) {
 		reqModel, _, _ := extractOpenAIRequestMetaFromBody(body)
+		reqModel = strings.TrimSpace(reqModel)
 		return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
 	}
 	if account != nil && account.IsCNProvider() && account.GetAPIProtocol() == APIProtocolChatCompletions {
@@ -5669,7 +5675,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					continue
 				}
 			}
-			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
+			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && isRejectedOpenAIEncryptedReasoning(upstreamCode, upstreamMsg) {
 				invalidDigests := collectOpenAIEncryptedContentDigestsRaw(lineageEntryBody)
 				if trimOpenAIEncryptedReasoningItems(reqBody) {
 					body, err = json.Marshal(reqBody)
@@ -9477,6 +9483,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	needModelReplace := originalModel != mappedModel
 	streamDoneItems := newResponsesStreamOutputItems()
+	responsesSemanticOutputSeen := false
+	responsesUsageSeen := false
+	responsesErrorSeen := false
 	searchCounter := 0
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResult {
@@ -9587,6 +9596,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if streamFailoverErr != nil {
 			return
 		}
+		if account != nil && account.Platform == PlatformGrok {
+			if eventType, ok := extractOpenAISSEEventLine(line); ok && (eventType == "error" || eventType == "response.failed") {
+				responsesErrorSeen = true
+			}
+		}
 		defer func() {
 			atSSEEventBoundary = line == ""
 			if atSSEEventBoundary {
@@ -9615,6 +9629,23 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				return
 			}
 			progressObservation := classifyOpenAIStreamProgress(dataBytes, eventType)
+			if account != nil && account.Platform == PlatformGrok {
+				responsesSemanticOutputSeen = responsesSemanticOutputSeen || (!progressObservation.terminal && progressObservation.semantic) || progressObservation.visible || gjson.GetBytes(dataBytes, "response.output.#").Int() > 0
+				for _, path := range []string{"usage", "response.usage"} {
+					if value := gjson.GetBytes(dataBytes, path); value.Exists() && value.Type != gjson.Null {
+						responsesUsageSeen = true
+					}
+				}
+				for _, path := range []string{"error", "response.error"} {
+					if value := gjson.GetBytes(dataBytes, path); value.Exists() && value.Type != gjson.Null {
+						responsesErrorSeen = true
+					}
+				}
+				if (eventType == "response.completed" || eventType == "response.done") && !responsesSemanticOutputSeen && !responsesUsageSeen && !responsesErrorSeen && !sawFailedEvent && !clientDisconnected && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+					streamFailoverErr = newOpenAISilentRefusalFailoverError(c, account, upstreamRequestID)
+					return
+				}
+			}
 			progressTracker.observe(time.Now(), progressObservation)
 			if progressObservation.visible && semanticStallTimer != nil {
 				if semanticStallTimer.Stop() {

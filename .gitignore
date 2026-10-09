@@ -131,6 +131,7 @@ vite.config.js
 docs/*
 !docs/upgrade-v027-status.md
 !docs/upgrade-v0214-nuro-status.md
+!docs/upgrade-v0215-nuro-status.md
 !docs/seedance-api.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md

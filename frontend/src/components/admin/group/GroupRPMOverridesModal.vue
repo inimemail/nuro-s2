@@ -20,8 +20,8 @@
         <h4 class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.groups.addUserRpm') }}
         </h4>
-        <div class="flex items-end gap-2">
-          <div class="relative flex-1">
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="relative min-w-0 basis-full sm:flex-1 sm:basis-auto">
             <input
               v-model="searchQuery"
               type="text"
@@ -62,7 +62,7 @@
           <button
             type="button"
             class="btn btn-primary shrink-0"
-            :disabled="!selectedUser || newRpm == null || !Number.isInteger(newRpm) || newRpm < 0"
+            :disabled="!selectedUser || newRpm == null || !Number.isSafeInteger(newRpm) || newRpm < 0"
             @click="handleAddLocal"
           >
             {{ t('common.add') }}
@@ -102,8 +102,8 @@
 
         <div v-else>
           <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600">
-            <div class="max-h-[420px] overflow-y-auto">
-              <table class="w-full text-sm">
+            <div class="max-h-[420px] overflow-auto">
+              <table class="w-full min-w-[640px] text-sm">
                 <thead class="sticky top-0 z-[1]">
                   <tr class="border-b border-gray-200 bg-gray-50 dark:border-dark-600 dark:bg-dark-700">
                     <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.groups.columns.userEmail') }}</th>
@@ -145,7 +145,7 @@
                         autocomplete="off"
                         :value="entry.rpm_override"
                         class="hide-spinner w-20 rounded border border-gray-200 bg-white px-2 py-1 text-center text-sm font-medium transition-colors focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/20 dark:border-dark-500 dark:bg-dark-700 dark:focus:border-primary-500"
-                        @change="updateLocalRpm(entry.user_id, ($event.target as HTMLInputElement).value)"
+                        @change="updateLocalRpm(entry.user_id, $event.target as HTMLInputElement)"
                       />
                     </td>
                     <td class="px-2 py-2">
@@ -174,7 +174,7 @@
       </div>
 
       <!-- 底部 -->
-      <div class="flex items-center gap-3 border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div class="flex flex-wrap items-center gap-3 border-t border-gray-200 pt-4 dark:border-dark-600">
         <template v-if="isDirty">
           <span class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.groups.unsavedChanges') }}</span>
           <button
@@ -193,7 +193,7 @@
             v-if="isDirty"
             type="button"
             class="btn btn-primary btn-sm px-4 py-1.5"
-            :disabled="saving"
+            :disabled="saving || clearing || loading || !loaded"
             @click="handleSave"
           >
             <Icon v-if="saving" name="refresh" size="sm" class="mr-1 animate-spin" />
@@ -206,7 +206,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
@@ -233,6 +233,7 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const loading = ref(false)
+const loaded = ref(false)
 const saving = ref(false)
 const serverEntries = ref<GroupRPMOverrideEntry[]>([])
 const localEntries = ref<LocalEntry[]>([])
@@ -271,17 +272,25 @@ const cloneEntries = (entries: GroupRPMOverrideEntry[]): LocalEntry[] => {
 }
 
 const loadEntries = async () => {
-  if (!props.group) return
+  if (!props.group || !props.show) return
+  const groupId = props.group.id
+  const version = ++loadVersion
+  const isCurrent = () => !disposed && props.show && props.group?.id === groupId && version === loadVersion
   loading.value = true
+  loaded.value = false
   try {
-    serverEntries.value = await adminAPI.groups.getGroupRPMOverrides(props.group.id)
+    const entries = await adminAPI.groups.getGroupRPMOverrides(groupId)
+    if (!isCurrent()) return
+    serverEntries.value = entries
     localEntries.value = cloneEntries(serverEntries.value)
+    loaded.value = true
     adjustPage()
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(t('admin.groups.failedToLoad'))
     console.error('Error loading RPM overrides:', error)
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
@@ -290,7 +299,32 @@ const adjustPage = () => {
   if (currentPage.value > totalPages) currentPage.value = totalPages
 }
 
-watch(() => props.show, (val) => {
+let loadVersion = 0
+let session = 0
+let searchVersion = 0
+let disposed = false
+const clearing = ref(false)
+onUnmounted(() => {
+  disposed = true
+  loadVersion++
+  session++
+  searchVersion++
+  clearTimeout(searchTimeout)
+  document.removeEventListener('click', handleClickOutside)
+})
+watch([() => props.show, () => props.group?.id], () => {
+  loadVersion++
+  session++
+  searchVersion++
+  clearTimeout(searchTimeout)
+  saving.value = false
+  clearing.value = false
+  loading.value = false
+  loaded.value = false
+  serverEntries.value = []
+  localEntries.value = []
+  showDropdown.value = false
+  const val = props.show
   if (val && props.group) {
     currentPage.value = 1
     searchQuery.value = ''
@@ -299,7 +333,7 @@ watch(() => props.show, (val) => {
     newRpm.value = null
     loadEntries()
   }
-})
+}, { immediate: true })
 
 const handlePageSizeChange = (newSize: number) => {
   pageSize.value = newSize
@@ -308,6 +342,10 @@ const handlePageSizeChange = (newSize: number) => {
 
 const handleSearchUsers = () => {
   clearTimeout(searchTimeout)
+  const version = ++searchVersion
+  const currentSession = session
+  const query = searchQuery.value.trim()
+  const isCurrent = () => !disposed && props.show && session === currentSession && version === searchVersion && query === searchQuery.value.trim()
   selectedUser.value = null
   if (!searchQuery.value.trim()) {
     searchResults.value = []
@@ -316,16 +354,18 @@ const handleSearchUsers = () => {
   }
   searchTimeout = setTimeout(async () => {
     try {
-      const res = await adminAPI.users.list(1, 10, { search: searchQuery.value.trim() })
+      const res = await adminAPI.users.list(1, 10, { search: query })
+      if (!isCurrent()) return
       searchResults.value = res.items
       showDropdown.value = true
     } catch {
-      searchResults.value = []
+      if (isCurrent()) searchResults.value = []
     }
   }, 300)
 }
 
 const selectUser = (user: AdminUser) => {
+  searchVersion++
   selectedUser.value = user
   searchQuery.value = user.email
   showDropdown.value = false
@@ -333,7 +373,7 @@ const selectUser = (user: AdminUser) => {
 }
 
 const handleAddLocal = () => {
-  if (!selectedUser.value || newRpm.value == null || !Number.isInteger(newRpm.value) || newRpm.value < 0) return
+  if (!selectedUser.value || newRpm.value == null || !Number.isSafeInteger(newRpm.value) || newRpm.value < 0) return
   const user = selectedUser.value
   const idx = localEntries.value.findIndex(e => e.user_id === user.id)
   const entry: LocalEntry = {
@@ -355,11 +395,15 @@ const handleAddLocal = () => {
   adjustPage()
 }
 
-const updateLocalRpm = (userId: number, value: string) => {
-  const num = parseInt(value, 10)
-  if (isNaN(num) || num < 0) return
+const updateLocalRpm = (userId: number, input: HTMLInputElement) => {
   const entry = localEntries.value.find(e => e.user_id === userId)
-  if (entry) entry.rpm_override = num
+  if (!entry) return
+  const num = Number(input.value)
+  if (!input.value.trim() || !Number.isSafeInteger(num) || num < 0) {
+    input.value = String(entry.rpm_override)
+    return
+  }
+  entry.rpm_override = num
 }
 
 const removeLocal = (userId: number) => {
@@ -367,20 +411,27 @@ const removeLocal = (userId: number) => {
   adjustPage()
 }
 
-const clearing = ref(false)
 const clearAllLocal = async () => {
-  if (!props.group || clearing.value) return
+  if (!props.group || !props.show || disposed || !loaded.value || loading.value || saving.value || clearing.value) return
+  const currentSession = session
+  const isCurrent = () => !disposed && props.show && session === currentSession
+  const submittedEntries = cloneEntries(localEntries.value)
   clearing.value = true
   try {
     await adminAPI.groups.clearGroupRPMOverrides(props.group.id)
-    localEntries.value = []
+    if (!isCurrent()) return
+    const submittedMap = new Map(submittedEntries.map(entry => [entry.user_id, entry.rpm_override]))
+    localEntries.value = localEntries.value.filter(entry => submittedMap.get(entry.user_id) !== entry.rpm_override)
     serverEntries.value = []
+    adjustPage()
     appStore.showSuccess(t('admin.groups.rpmSaved'))
+    emit('success')
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(t('admin.groups.failedToSave'))
     console.error('Error clearing RPM overrides:', error)
   } finally {
-    clearing.value = false
+    if (isCurrent()) clearing.value = false
   }
 }
 
@@ -390,22 +441,28 @@ const handleCancel = () => {
 }
 
 const handleSave = async () => {
-  if (!props.group) return
+  if (!props.group || !props.show || disposed || !loaded.value || loading.value || saving.value || clearing.value) return
+  const currentSession = session
+  const isCurrent = () => !disposed && props.show && session === currentSession
+  const submittedEntries = cloneEntries(localEntries.value)
   saving.value = true
   try {
-    const entries = localEntries.value.map(e => ({
+    const entries = submittedEntries.map(e => ({
       user_id: e.user_id,
       rpm_override: e.rpm_override
     }))
     await adminAPI.groups.batchSetGroupRPMOverrides(props.group.id, entries)
+    if (!isCurrent()) return
     appStore.showSuccess(t('admin.groups.rpmSaved'))
+    serverEntries.value = submittedEntries
     emit('success')
-    emit('close')
+    if (!isDirty.value) emit('close')
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(t('admin.groups.failedToSave'))
     console.error('Error saving RPM overrides:', error)
   } finally {
-    saving.value = false
+    if (isCurrent()) saving.value = false
   }
 }
 

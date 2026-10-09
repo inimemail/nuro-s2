@@ -131,4 +131,16 @@ describe('AirwallexPaymentView', () => {
     expect(airwallexInit).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('payment.airwallexMissingParams')
   })
+
+  it('does not redirect when SDK initialization finishes after unmount', async () => {
+    let resolveInit!: (value: { payments: { redirectToCheckout: typeof redirectToCheckout } }) => void
+    airwallexInit.mockReturnValue(new Promise(resolve => { resolveInit = resolve }))
+    window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify(airwallexSnapshot()))
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.unmount()
+    resolveInit({ payments: { redirectToCheckout } })
+    await flushPromises()
+    expect(redirectToCheckout).not.toHaveBeenCalled()
+  })
 })

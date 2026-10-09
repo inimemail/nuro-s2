@@ -635,7 +635,7 @@ const exportToExcel = async () => {
 
 // Column visibility
 const ALWAYS_VISIBLE = ['user', 'created_at']
-const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'user_agent']
+const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'user_agent', 'tps']
 const HIDDEN_COLUMNS_KEY = 'usage-hidden-columns'
 
 const allColumns = computed(() => [
@@ -652,6 +652,7 @@ const allColumns = computed(() => [
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'latency', label: t('usage.latency'), sortable: false },
+  { key: 'tps', label: t('usage.requestTps'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },
   { key: 'user_agent', label: t('usage.userAgent'), sortable: false },
   { key: 'ip_address', label: t('admin.usage.ipAddress'), sortable: false }
@@ -679,6 +680,7 @@ const toggleColumn = (key: string) => {
   }
   try {
     localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
+    if (key === 'tps') localStorage.setItem('usage-tps-column-configured', 'true')
   } catch (e) {
     console.error('Failed to save columns:', e)
   }
@@ -686,6 +688,7 @@ const toggleColumn = (key: string) => {
 
 const loadSavedColumns = () => {
   try {
+    if (localStorage.getItem('usage-tps-column-configured') !== 'true') hiddenColumns.add('tps')
     const saved = localStorage.getItem(HIDDEN_COLUMNS_KEY)
     if (saved) {
       (JSON.parse(saved) as string[]).forEach((key) => {

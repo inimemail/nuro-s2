@@ -145,43 +145,39 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepNamespaces ...bool) ([
 		return body, nil
 	}
 
-	items := make([][]byte, 0)
-	changed := false
+	var rebuilt []byte
+	lastEnd := 0
 	var stripErr error
 	input.ForEach(func(_, item gjson.Result) bool {
-		itemBody := []byte(item.Raw)
 		if item.IsObject() && item.Get("namespace").Exists() &&
 			(!keepToolCallNamespaces || !openAIResponsesToolCallItemTypes[strings.ToLower(strings.TrimSpace(item.Get("type").String()))]) {
-			itemBody, stripErr = sjson.DeleteBytes(itemBody, "namespace")
+			start, end := item.Index, item.Index+len(item.Raw)
+			if start < lastEnd || end > len(body) || !bytes.Equal(body[start:end], []byte(item.Raw)) {
+				stripErr = fmt.Errorf("invalid input item span")
+				return false
+			}
+			itemBody, err := sjson.DeleteBytes(body[start:end], "namespace")
+			stripErr = err
 			if stripErr != nil {
 				return false
 			}
-			changed = true
+			if rebuilt == nil {
+				rebuilt = make([]byte, 0, len(body))
+			}
+			rebuilt = append(rebuilt, body[lastEnd:start]...)
+			rebuilt = append(rebuilt, itemBody...)
+			lastEnd = end
 		}
-		items = append(items, itemBody)
 		return true
 	})
 	if stripErr != nil {
 		return body, fmt.Errorf("delete OpenAI input namespace: %w", stripErr)
 	}
-	if !changed {
+	if rebuilt == nil {
 		return body, nil
 	}
-
-	rebuilt := make([]byte, 0, len(input.Raw))
-	rebuilt = append(rebuilt, '[')
-	for index, item := range items {
-		if index > 0 {
-			rebuilt = append(rebuilt, ',')
-		}
-		rebuilt = append(rebuilt, item...)
-	}
-	rebuilt = append(rebuilt, ']')
-	stripped, err := sjson.SetRawBytes(body, "input", rebuilt)
-	if err != nil {
-		return body, fmt.Errorf("replace OpenAI input after namespace deletion: %w", err)
-	}
-	return stripped, nil
+	rebuilt = append(rebuilt, body[lastEnd:]...)
+	return rebuilt, nil
 }
 
 func clearOpenAIResponsesNamespaceNames(c *gin.Context) {

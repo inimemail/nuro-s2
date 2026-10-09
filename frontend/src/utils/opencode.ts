@@ -18,6 +18,7 @@ export function openCodeBaseURL(mode: OpenCodeMode, protocol = 'chat_completions
 
 export function defaultOpenCodeRules(mode: OpenCodeMode): OpenCodeRule[] {
   return [
+    ...(mode === 'zen' ? [{ pattern: 'qwen3.8-max', protocol: 'chat_completions' as const }] : []),
     { pattern: 'grok-*', protocol: 'responses' },
     { pattern: 'gpt-*', protocol: 'responses' },
     { pattern: 'muse-spark-*', protocol: 'responses' },

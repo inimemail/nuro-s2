@@ -155,6 +155,8 @@ const cancelConfirmVisible = ref(false)
 const canceling = ref(false)
 const cancelTarget = ref<UsageCleanupTask | null>(null)
 let pollTimer: number | null = null
+let tasksRequest = 0
+let disposed = false
 
 const noop = () => {}
 
@@ -171,7 +173,7 @@ const resetFilters = () => {
 const startPolling = () => {
   stopPolling()
   pollTimer = window.setInterval(() => {
-    loadTasks()
+    if (!tasksLoading.value) loadTasks()
   }, 10000)
 }
 
@@ -183,6 +185,8 @@ const stopPolling = () => {
 }
 
 const handleClose = () => {
+  tasksRequest++
+  tasksLoading.value = false
   stopPolling()
   confirmVisible.value = false
   cancelConfirmVisible.value = false
@@ -236,13 +240,16 @@ const getUserTimezone = () => {
 }
 
 const loadTasks = async () => {
-  if (!props.show) return
+  if (!props.show || disposed) return
+  const request = ++tasksRequest
+  const isCurrent = () => !disposed && props.show && request === tasksRequest
   tasksLoading.value = true
   try {
     const res = await adminUsageAPI.listCleanupTasks({
       page: tasksPage.value,
       page_size: tasksPageSize.value
     })
+    if (!isCurrent()) return
     tasks.value = res.items || []
     tasksTotal.value = res.total || 0
     if (res.page) {
@@ -252,10 +259,11 @@ const loadTasks = async () => {
       tasksPageSize.value = res.page_size
     }
   } catch (error) {
+    if (!isCurrent()) return
     console.error('Failed to load cleanup tasks:', error)
     appStore.showError(t('admin.usage.cleanup.loadFailed'))
   } finally {
-    tasksLoading.value = false
+    if (isCurrent()) tasksLoading.value = false
   }
 }
 
@@ -371,6 +379,8 @@ const cancelTask = async () => {
 watch(
   () => props.show,
   (show) => {
+    tasksRequest++
+    tasksLoading.value = false
     if (show) {
       resetFilters()
       loadTasks()
@@ -382,6 +392,8 @@ watch(
 )
 
 onUnmounted(() => {
+  disposed = true
+  tasksRequest++
   stopPolling()
 })
 </script>

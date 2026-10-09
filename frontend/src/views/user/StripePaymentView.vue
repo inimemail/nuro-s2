@@ -132,6 +132,9 @@ const showPaymentElement = ref(false)
 let stripeInstance: Stripe | null = null
 let elementsInstance: StripeElements | null = null
 let redirectTimer: ReturnType<typeof setTimeout> | null = null
+let disposed = false
+const paymentQuery = JSON.stringify(route.query)
+const isCurrent = () => !disposed && JSON.stringify(route.query) === paymentQuery
 
 onMounted(async () => {
   const orderId = Number(route.query.order_id)
@@ -156,17 +159,21 @@ onMounted(async () => {
       }
     }
     const res = await paymentAPI.getOrder(orderId)
+    if (!isCurrent()) return
     order.value = res.data
     if (res.data.currency) {
       currency.value = normalizePaymentCurrency(res.data.currency)
     }
 
     await paymentStore.fetchConfig()
+    if (!isCurrent()) return
     const publishableKey = paymentStore.config?.stripe_publishable_key
     if (!publishableKey) { initError.value = t('payment.stripeNotConfigured'); return }
 
     const { loadStripe } = await import('@stripe/stripe-js/pure')
+    if (!isCurrent()) return
     const stripe = await loadStripe(publishableKey)
+    if (!isCurrent()) return
     if (!stripe) { initError.value = t('payment.stripeLoadFailed'); return }
 
     stripeInstance = stripe
@@ -181,12 +188,14 @@ onMounted(async () => {
       // 未指定方式时渲染完整 Payment Element
       showPaymentElement.value = true
       await nextTick()
+      if (!isCurrent()) return
       mountPaymentElement(stripe, clientSecret)
     }
   } catch (err: unknown) {
+    if (!isCurrent()) return
     initError.value = extractI18nErrorMessage(err, t, 'payment.errors', t('payment.stripeLoadFailed'))
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 })
 
@@ -204,9 +213,11 @@ function formatGatewayAmount(value: number): string {
 }
 
 async function confirmAlipay(stripe: Stripe, clientSecret: string, orderId: number) {
+  if (!isCurrent()) return
   redirecting.value = true
   const returnUrl = window.location.origin + '/payment/result?order_id=' + orderId + '&status=success'
   const { error } = await stripe.confirmAlipayPayment(clientSecret, { return_url: returnUrl })
+  if (!isCurrent()) return
   if (error) {
     redirecting.value = false
     stripeError.value = error.message || t('payment.result.failed')
@@ -215,11 +226,13 @@ async function confirmAlipay(stripe: Stripe, clientSecret: string, orderId: numb
 }
 
 async function confirmWechatPay(stripe: Stripe, clientSecret: string) {
+  if (!isCurrent()) return
   const { paymentIntent, error } = await (stripe as Stripe & {
     confirmWechatPayPayment: (cs: string, opts: Record<string, unknown>) => Promise<{ paymentIntent?: { status: string; next_action?: { wechat_pay_display_qr_code?: { image_data_url?: string } } }; error?: { message?: string } }>
   }).confirmWechatPayPayment(clientSecret, {
     payment_method_options: { wechat_pay: { client: isMobileDevice() ? 'mobile_web' : 'web' } },
   })
+  if (!isCurrent()) return
 
   if (error) {
     stripeError.value = error.message || t('payment.result.failed')
@@ -241,6 +254,7 @@ async function confirmWechatPay(stripe: Stripe, clientSecret: string) {
 }
 
 function mountPaymentElement(stripe: Stripe, clientSecret: string) {
+  if (!isCurrent()) return
   const isDark = document.documentElement.classList.contains('dark')
   const elements = stripe.elements({
     clientSecret,
@@ -252,11 +266,11 @@ function mountPaymentElement(stripe: Stripe, clientSecret: string) {
     paymentMethodOrder: ['alipay', 'wechat_pay', 'card', 'link'],
   } as Record<string, unknown>)
   paymentElement.mount('#stripe-payment-element')
-  paymentElement.on('ready', () => { stripeReady.value = true })
+  paymentElement.on('ready', () => { if (isCurrent()) stripeReady.value = true })
 }
 
 async function handleGenericPay() {
-  if (!stripeInstance || !elementsInstance || stripeSubmitting.value) return
+  if (!isCurrent() || !stripeInstance || !elementsInstance || stripeSubmitting.value) return
   stripeSubmitting.value = true
   stripeError.value = ''
   try {
@@ -267,6 +281,7 @@ async function handleGenericPay() {
       },
       redirect: 'if_required',
     })
+    if (!isCurrent()) return
     if (error) {
       stripeError.value = error.message || t('payment.result.failed')
     } else {
@@ -274,40 +289,54 @@ async function handleGenericPay() {
       scheduleClose()
     }
   } catch (err: unknown) {
+    if (!isCurrent()) return
     stripeError.value = extractI18nErrorMessage(err, t, 'payment.errors', t('payment.result.failed'))
   } finally {
-    stripeSubmitting.value = false
+    if (isCurrent()) stripeSubmitting.value = false
   }
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function startPolling() {
+  if (!isCurrent() || pollTimer) return
   const orderId = Number(route.query.order_id)
   if (!orderId) return
+  let inFlight = false
   pollTimer = setInterval(async () => {
-    const o = await paymentStore.pollOrderStatus(orderId)
-    if (!o) return
-    if (o.status === 'COMPLETED' || o.status === 'PAID') {
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-      stripeSuccess.value = true
-      wechatQrUrl.value = ''
-      scheduleClose()
+    if (!isCurrent() || inFlight) return
+    inFlight = true
+    try {
+      const o = await paymentStore.pollOrderStatus(orderId)
+      if (!isCurrent() || !o) return
+      if (o.status === 'COMPLETED' || o.status === 'PAID') {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        stripeSuccess.value = true
+        wechatQrUrl.value = ''
+        scheduleClose()
+      }
+    } finally {
+      inFlight = false
     }
   }, 3000)
 }
 
 function scheduleClose() {
+  if (!isCurrent()) return
+  if (redirectTimer) clearTimeout(redirectTimer)
   if (window.opener) {
-    redirectTimer = setTimeout(() => { window.close() }, 2000)
+    redirectTimer = setTimeout(() => { if (isCurrent()) window.close() }, 2000)
   } else {
     redirectTimer = setTimeout(() => {
+      if (!isCurrent()) return
       router.push({ path: '/payment/result', query: { order_id: String(route.query.order_id || ''), status: 'success' } })
     }, 2000)
   }
 }
 
 onUnmounted(() => {
+  disposed = true
+  elementsInstance?.getElement('payment')?.destroy()
   if (redirectTimer) clearTimeout(redirectTimer)
   if (pollTimer) clearInterval(pollTimer)
 })

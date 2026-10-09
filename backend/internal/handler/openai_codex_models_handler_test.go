@@ -13,6 +13,7 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 type codexModelsFailoverAccountRepo struct {
@@ -116,6 +117,42 @@ func performCodexModelsHandlerRequest(handler *OpenAIGatewayHandler, groupID int
 	})
 	handler.CodexModels(c)
 	return recorder
+}
+
+func TestV0215CompositeCodexManifestIsFilteredAndConditional(t *testing.T) {
+	groupID := int64(81)
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+		groupID: {
+			{ID: 1, Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"public": "gpt-5.6", "private": "gpt-5.6"}}},
+			{ID: 2, Platform: service.PlatformTypeSafe, Credentials: map[string]any{"model_mapping": map[string]any{"jev-latest": "jev-latest"}}},
+		},
+	}}
+	svc := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := &OpenAIGatewayHandler{gatewayService: svc}
+	group := &service.Group{ID: groupID, Platform: service.PlatformComposite, ModelsListConfig: service.GroupModelsListConfig{Enabled: true, Models: []string{"public"}}}
+	request := func(etag string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.0", nil)
+		c.Request.Header.Set("If-None-Match", etag)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{GroupID: &groupID, Group: group})
+		h.CodexModels(c)
+		c.Writer.WriteHeaderNow()
+		return recorder
+	}
+	response := request("")
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"slug":"public"`)
+	require.NotContains(t, response.Body.String(), "private")
+	require.NotContains(t, response.Body.String(), "jev-latest")
+	require.Contains(t, response.Body.String(), `"supported_reasoning_levels":[]`)
+	require.Contains(t, response.Body.String(), `"context_window":null`)
+	require.Contains(t, response.Body.String(), `"instructions_template":""`)
+	require.Equal(t, http.StatusNotModified, request(response.Header().Get("ETag")).Code)
+	group.ModelsListConfig.Models = []string{"missing"}
+	empty := request(response.Header().Get("ETag"))
+	require.Equal(t, http.StatusOK, empty.Code)
+	require.JSONEq(t, `{"models":[]}`, empty.Body.String())
 }
 
 func TestCodexModelsFailsOverFromInvalidManifestEnvelope(t *testing.T) {

@@ -1,2 +1,5 @@
 .cache/
+.gocache/
+bin/
+server
 .DS_Store

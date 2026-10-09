@@ -149,6 +149,8 @@ const tocItems = ref<TocItem[]>([])
 const tocVisible = ref(typeof window !== 'undefined' ? window.innerWidth > 768 : true)
 const activeHeadingId = ref('')
 let themeObserver: MutationObserver | null = null
+let markdownRequest = 0
+let disposed = false
 
 const menuItemId = computed(() => route.params.id as string)
 
@@ -222,6 +224,8 @@ function buildPageImageUrl(slug: string, src: string): string {
 }
 
 async function fetchAndRenderMarkdown(slug: string) {
+  const request = ++markdownRequest
+  const isCurrent = () => !disposed && request === markdownRequest && markdownSlug.value === slug
   loading.value = true
   tocItems.value = []
   activeHeadingId.value = ''
@@ -229,11 +233,13 @@ async function fetchAndRenderMarkdown(slug: string) {
     const resp = await fetch(buildApiUrl(`/pages/${encodeURIComponent(slug)}`), {
       headers: authStore.token ? { Authorization: `Bearer ${authStore.token}` } : {},
     })
+    if (!isCurrent()) return
     if (!resp.ok) {
       renderedHtml.value = `<p class="text-red-500">${t('common.pageNotFound')}</p>`
       return
     }
     let raw = await resp.text()
+    if (!isCurrent()) return
 
     raw = raw.replace(
       /!\[([^\]]*)\]\(([^)]+)\)/g,
@@ -263,12 +269,17 @@ async function fetchAndRenderMarkdown(slug: string) {
     renderedHtml.value = withIds
     tocItems.value = toc
   } catch {
+    if (!isCurrent()) return
     renderedHtml.value = '<p class="text-red-500">Failed to load page</p>'
   } finally {
-    loading.value = false
-    await nextTick()
-    await nextTick()
-    injectCopyButtons()
+    if (isCurrent()) {
+      loading.value = false
+      await nextTick()
+      if (isCurrent()) {
+        await nextTick()
+        if (isCurrent()) injectCopyButtons()
+      }
+    }
   }
 }
 
@@ -335,6 +346,8 @@ function injectCopyButtons() {
 }
 
 watch(markdownSlug, (slug) => {
+  markdownRequest++
+  loading.value = false
   if (slug) {
     fetchAndRenderMarkdown(slug)
   } else {
@@ -366,6 +379,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  markdownRequest++
   if (themeObserver) {
     themeObserver.disconnect()
     themeObserver = null

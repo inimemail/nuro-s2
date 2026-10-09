@@ -29,12 +29,16 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicfp"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -6598,6 +6602,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
 	body = enforceCacheControlLimit(body)
+	if shouldMimicClaudeCode {
+		body = normalizeMimicCacheControlTTLOrder(body)
+	}
 
 	// 应用模型映射：
 	// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
@@ -8859,9 +8866,13 @@ func (s *GatewayService) computeFinalAnthropicBeta(
 
 	if tokenType == "oauth" {
 		if mimicClaudeCode {
-			// Mimic requests ignore client beta and use the complete Claude Code
-			// feature set for every model, including Haiku.
-			return mergeAnthropicBetaDropping(claude.FullClaudeCodeMimicryBetas(), "", effectiveDropSet), true
+			var requested []string
+			for _, beta := range []string{claude.BetaStructuredOutputs, claude.BetaMidConversationToolChanges, claude.BetaInlineTools} {
+				if containsBetaToken(clientBeta, beta) {
+					requested = append(requested, beta)
+				}
+			}
+			return mergeAnthropicBetaDropping(claude.FullClaudeCodeMimicryBetas(), strings.Join(requested, ","), effectiveDropSet), true
 		}
 		// 真 Claude Code 客户端透传路径
 		return stripBetaTokensWithSet(s.getBetaHeader(modelID, clientBeta), effectiveDropSet), true
@@ -11967,6 +11978,10 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return nil
 	}
 
+	if shouldMimicClaudeCode {
+		body = normalizeMimicCacheControlTTLOrder(body)
+	}
+
 	// 应用模型映射：
 	// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
 	// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）
@@ -12569,6 +12584,9 @@ func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
 // GetAvailableModels returns the list of models available for a group
 // It aggregates model_mapping keys from all schedulable accounts in the group
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
+	if platform == PlatformComposite {
+		return s.GetCompositeCatalogModels(ctx, groupID, "", true)
+	}
 	cacheKey := modelsListCacheKey(groupID, platform)
 	if s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
@@ -12639,6 +12657,79 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		modelsListCacheStoreTotal.Add(1)
 	}
 	return cloneStringSlice(models)
+}
+
+func (s *GatewayService) GetCompositeCatalogModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool) []string {
+	if s == nil || s.accountRepo == nil || groupID == nil {
+		return nil
+	}
+	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, account := range accounts {
+		if !includeSystemOne && account.Platform == PlatformTypeSafe {
+			continue
+		}
+		mapping := account.GetModelMapping()
+		if len(mapping) == 0 {
+			for _, model := range compositeDefaultModelIDs(account.Platform) {
+				seen[model] = true
+			}
+		}
+		for model := range mapping {
+			if !strings.Contains(model, "*") {
+				seen[model] = true
+			}
+		}
+	}
+	models := make([]string, 0, len(seen))
+	for model := range seen {
+		models = append(models, model)
+	}
+	if resolver := DefaultCompositeRouteResolver(); resolver != nil {
+		if catalog, routeErr := resolver.CatalogModels(ctx, *groupID, models, endpoint, includeSystemOne); routeErr == nil {
+			return catalog
+		} else if !includeSystemOne {
+			return nil
+		}
+	}
+	sort.Strings(models)
+	return models
+}
+
+func compositeDefaultModelIDs(platform string) []string {
+	switch platform {
+	case PlatformOpenAI:
+		return openai.DefaultModelIDs()
+	case PlatformAnthropic:
+		models := make([]string, 0, len(claude.DefaultModels))
+		for _, model := range claude.DefaultModels {
+			models = append(models, model.ID)
+		}
+		return models
+	case PlatformGemini:
+		models := make([]string, 0, len(geminicli.DefaultModels))
+		for _, model := range geminicli.DefaultModels {
+			models = append(models, model.ID)
+		}
+		return models
+	case PlatformAntigravity:
+		models := make([]string, 0)
+		for _, model := range antigravity.DefaultModels() {
+			models = append(models, model.ID)
+		}
+		return models
+	case PlatformGrok:
+		return xai.DefaultModelIDs()
+	case PlatformTypeSafe:
+		return []string{"jev-latest"}
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek, PlatformMiniMax, PlatformOpenCodeGo:
+		return DefaultCNModelIDs(platform)
+	default:
+		return nil
+	}
 }
 
 func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform string) {

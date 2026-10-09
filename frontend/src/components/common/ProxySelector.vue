@@ -168,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Icon from '@/components/icons/Icon.vue'
@@ -240,16 +240,24 @@ const toggle = () => {
   isOpen.value = !isOpen.value
   if (isOpen.value) {
     nextTick(() => {
-      searchInputRef.value?.focus()
+      if (isOpen.value && !props.disabled) searchInputRef.value?.focus()
     })
   }
 }
 
 const selectOption = (value: number | null) => {
+  if (props.disabled) return
   emit('update:modelValue', value)
   isOpen.value = false
   searchQuery.value = ''
 }
+
+watch(() => props.disabled, disabled => {
+  if (disabled) {
+    isOpen.value = false
+    searchQuery.value = ''
+  }
+}, { flush: 'sync' })
 
 const handleTestProxy = async (proxy: Proxy) => {
   if (testingProxyIds.has(proxy.id)) return

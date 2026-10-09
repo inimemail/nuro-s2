@@ -83,10 +83,20 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		out.Tools = convertChatToolsToResponses(req.Tools, req.Functions)
 	}
 
-	// tool_choice: already compatible format — pass through directly.
-	// Legacy function_call needs mapping.
 	if len(req.ToolChoice) > 0 {
+		var choice struct {
+			Type     string `json:"type"`
+			Function *struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
 		out.ToolChoice = req.ToolChoice
+		if json.Unmarshal(req.ToolChoice, &choice) == nil && choice.Type == "function" && choice.Function != nil && strings.TrimSpace(choice.Function.Name) != "" {
+			out.ToolChoice, err = json.Marshal(map[string]string{"type": "function", "name": strings.TrimSpace(choice.Function.Name)})
+			if err != nil {
+				return nil, err
+			}
+		}
 	} else if len(req.FunctionCall) > 0 {
 		tc, err := convertChatFunctionCallToToolChoice(req.FunctionCall)
 		if err != nil {
@@ -102,10 +112,51 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 // array into a Responses API input items array.
 func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputItem, error) {
 	var out []ResponsesInputItem
+	var used map[string]bool
+	var pending map[string][]string
+	for _, m := range msgs {
+		if m.Role == "assistant" && m.FunctionCall != nil {
+			used = make(map[string]bool)
+			pending = make(map[string][]string)
+			break
+		}
+	}
+	for _, m := range msgs {
+		if used == nil {
+			break
+		}
+		for _, call := range m.ToolCalls {
+			used[call.ID] = true
+		}
+		if m.ToolCallID != "" {
+			used[m.ToolCallID] = true
+		}
+	}
+	next := 0
 	for _, m := range msgs {
 		items, err := chatMessageToResponsesItems(m)
 		if err != nil {
 			return nil, err
+		}
+		if m.Role == "assistant" && m.FunctionCall != nil {
+			var id string
+			for {
+				next++
+				id = fmt.Sprintf("call_legacy_%d", next)
+				if !used[id] {
+					break
+				}
+			}
+			used[id] = true
+			pending[m.FunctionCall.Name] = append(pending[m.FunctionCall.Name], id)
+			args := m.FunctionCall.Arguments
+			if args == "" {
+				args = "{}"
+			}
+			items = append(items, ResponsesInputItem{Type: "function_call", CallID: id, Name: m.FunctionCall.Name, Arguments: args})
+		} else if m.Role == "function" && len(pending[m.Name]) > 0 {
+			items[0].CallID = pending[m.Name][0]
+			pending[m.Name] = pending[m.Name][1:]
 		}
 		out = append(out, items...)
 	}
@@ -116,7 +167,7 @@ func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputIt
 // ResponsesInputItem values.
 func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
-	case "system":
+	case "system", "developer":
 		return chatSystemToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
@@ -141,7 +192,7 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+	return []ResponsesInputItem{{Role: m.Role, Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and

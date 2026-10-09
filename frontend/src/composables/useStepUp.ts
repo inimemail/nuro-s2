@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, getCurrentScope, onScopeDispose } from 'vue'
 
 const required = 'STEP_UP_REQUIRED'
 const blocked = new Set(['STEP_UP_TOTP_NOT_ENABLED', 'STEP_UP_ADMIN_API_KEY_FORBIDDEN'])
@@ -25,12 +25,29 @@ export type StepUpController = ReturnType<typeof useStepUp>
 export function useStepUp() {
   const visible = ref(false)
   let resolver: ((verified: boolean) => void) | null = null
-  const prompt = () => { visible.value = true; return new Promise<boolean>((resolve) => { resolver = resolve }) }
-  const finish = (verified: boolean) => { visible.value = false; resolver?.(verified); resolver = null }
+  let pending: Promise<boolean> | null = null
+  let disposed = false
+  const prompt = () => {
+    if (disposed) return Promise.resolve(false)
+    if (pending) return pending
+    visible.value = true
+    pending = new Promise<boolean>((resolve) => { resolver = resolve })
+    return pending
+  }
+  const finish = (verified: boolean) => {
+    visible.value = false
+    const resolve = resolver
+    resolver = null
+    pending = null
+    resolve?.(verified)
+  }
+  if (getCurrentScope()) onScopeDispose(() => { disposed = true; finish(false) })
   async function run<T>(action: () => Promise<T>): Promise<T> {
+    if (disposed) throw new StepUpCancelledError()
     try { return await action() } catch (error) {
       if (isStepUpBlocked(error) || !isStepUpRequired(error)) throw error
       if (!await prompt()) throw new StepUpCancelledError()
+      if (disposed) throw new StepUpCancelledError()
       return action()
     }
   }

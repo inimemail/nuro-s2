@@ -2575,8 +2575,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle Antigravity accounts: return Claude + Gemini models
 	if account.Platform == service.PlatformAntigravity {
-		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, antigravity.DefaultModels())
+		response.Success(c, antigravityAccountTestModels(account.Credentials["model_mapping"]))
 		return
 	}
 
@@ -2711,6 +2710,41 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"models": models})
+}
+
+func antigravityAccountTestModels(rawMapping any) []antigravity.ClaudeModel {
+	ids := make([]string, 0)
+	switch mapping := rawMapping.(type) {
+	case map[string]any:
+		for id := range mapping {
+			if strings.TrimSpace(id) != "" {
+				ids = append(ids, id)
+			}
+		}
+	case map[string]string:
+		for id := range mapping {
+			if strings.TrimSpace(id) != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return antigravity.DefaultModels()
+	}
+	sort.Strings(ids)
+	defaults := make(map[string]antigravity.ClaudeModel)
+	for _, model := range antigravity.DefaultModels() {
+		defaults[model.ID] = model
+	}
+	models := make([]antigravity.ClaudeModel, 0, len(ids))
+	for _, id := range ids {
+		model, ok := defaults[id]
+		if !ok {
+			model = antigravity.ClaudeModel{ID: id, Type: "model", DisplayName: id}
+		}
+		models = append(models, model)
+	}
+	return models
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

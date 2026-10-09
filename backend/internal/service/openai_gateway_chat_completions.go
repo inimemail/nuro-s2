@@ -82,6 +82,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	beginUpstreamResponseModelObservation(c)
 	if account.IsOpenCodeGo() {
 		model := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), defaultMappedModel)
+		if err := validateStandardOpenCodeZenModel(account, model); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		switch account.ResolveOpenCodeGoUpstreamProtocol(model) {
 		case APIProtocolAnthropic:
 			return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
@@ -815,6 +819,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	terminalEventType := ""
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	if account != nil && account.Platform == PlatformGrok {
+		refusalDetector.enabled = true
+	}
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 

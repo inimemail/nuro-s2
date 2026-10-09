@@ -258,7 +258,51 @@ func (s *OpenAIGatewayService) codexModelsManifestAccountUsable(ctx context.Cont
 // FetchCodexModelsManifest fetches the live Codex manifest from ChatGPT OAuth
 // or a configured custom API key upstream. Only API key manifests use the
 // isolated short-lived cache below.
+func (s *OpenAIGatewayService) CompositeCodexCatalogModels(ctx context.Context, group *Group) []string {
+	if s == nil || s.accountRepo == nil || group == nil {
+		return nil
+	}
+	gateway := &GatewayService{accountRepo: s.accountRepo}
+	models := gateway.GetCompositeCatalogModels(ctx, &group.ID, CompositeRouteEndpointResponses, false)
+	if !group.CustomModelsListEnabled() {
+		return models
+	}
+	filtered := make([]string, 0, len(models))
+	for _, model := range models {
+		if groupModelAllowed(group.ModelsListConfig.Models, model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func CodexModelsManifestETag(body []byte) string { return codexModelsManifestBodyETag(body) }
+
 func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
+	return s.FetchCodexModelsManifestForGroup(ctx, account, nil, clientVersion, ifNoneMatch)
+}
+
+func (s *OpenAIGatewayService) FetchCodexModelsManifestForGroup(ctx context.Context, account *Account, group *Group, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
+	manifest, err := s.fetchRawCodexModelsManifest(ctx, account, clientVersion, "")
+	if err != nil || manifest == nil {
+		return manifest, err
+	}
+	body, err := projectCodexManifestForAccount(manifest.Body, account)
+	if err == nil && group != nil && group.CustomModelsListEnabled() {
+		body, err = filterCodexManifestForGroup(body, group)
+	}
+	if err != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_INVALID", "invalid Codex models manifest")
+	}
+	projected := *manifest
+	if !bytes.Equal(body, manifest.Body) {
+		projected.Body = body
+		projected.ETag = codexModelsManifestBodyETag(body)
+	}
+	return codexModelsManifestForClient(&projected, ifNoneMatch), nil
+}
+
+func (s *OpenAIGatewayService) fetchRawCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
 	if s == nil || account == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_ACCOUNT_REQUIRED", "account is required")
 	}
@@ -353,7 +397,7 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if recoveryErr := s.recoverAgentIdentityTask(ctx, credAccount, expectedTaskID); recoveryErr != nil {
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_AUTH_FAILED", "Agent Identity task recovery failed")
 	}
-	return s.FetchCodexModelsManifest(markAgentIdentityTaskRecoveryTried(ctx), account, clientVersion, ifNoneMatch)
+	return s.fetchRawCodexModelsManifest(markAgentIdentityTaskRecoveryTried(ctx), account, clientVersion, ifNoneMatch)
 }
 
 func (s *OpenAIGatewayService) fetchCachedAPIKeyCodexModelsManifest(ctx context.Context, request codexModelsManifestRequest, ifNoneMatch string) (*CodexModelsManifest, error) {

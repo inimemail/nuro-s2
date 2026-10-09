@@ -336,6 +336,10 @@ const toggle = () => {
   isOpen.value = !isOpen.value
 }
 
+watch(() => props.disabled, disabled => {
+  if (disabled) isOpen.value = false
+}, { flush: 'sync' })
+
 watch(isOpen, (open) => {
   if (open) {
     calculateDropdownPosition()
@@ -351,9 +355,9 @@ watch(isOpen, (open) => {
     }
 
     if (isSearchable.value) {
-      nextTick(() => searchInputRef.value?.focus())
+      nextTick(() => { if (isOpen.value && !props.disabled) searchInputRef.value?.focus() })
     } else {
-      nextTick(() => dropdownRef.value?.focus())
+      nextTick(() => { if (isOpen.value && !props.disabled) dropdownRef.value?.focus() })
     }
     // Add scroll listener to update position
     window.addEventListener('scroll', updateTriggerRect, { capture: true, passive: true })
@@ -367,6 +371,7 @@ watch(isOpen, (open) => {
 })
 
 const selectOption = (option: any) => {
+  if (props.disabled || isOptionDisabled(option)) return
   const value = getOptionValue(option) ?? null
   emit('update:modelValue', value)
   emit('change', value, option)
@@ -376,6 +381,7 @@ const selectOption = (option: any) => {
 
 // Keyboards
 const onTriggerKeyDown = () => {
+  if (props.disabled) return
   if (!isOpen.value) {
     isOpen.value = true
   }

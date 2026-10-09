@@ -43,6 +43,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	beginUpstreamResponseModelObservation(c)
 	if account.IsOpenCodeGo() {
 		model := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), defaultMappedModel)
+		if err := validateStandardOpenCodeZenModel(account, model); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
 		switch account.ResolveOpenCodeGoUpstreamProtocol(model) {
 		case APIProtocolAnthropic:
 			return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)

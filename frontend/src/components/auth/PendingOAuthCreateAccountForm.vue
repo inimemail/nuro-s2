@@ -131,6 +131,7 @@ const turnstileToken = ref('')
 const turnstileRef = ref<InstanceType<typeof TurnstileWidget> | null>(null)
 
 let countdownTimer: ReturnType<typeof setInterval> | null = null
+let disposed = false
 
 watch(
   () => props.initialEmail,
@@ -207,6 +208,7 @@ function onTurnstileError() {
 }
 
 async function handleSendCode() {
+  if (disposed || isSendingCode.value) return
   const trimmedEmail = email.value.trim()
   if (!trimmedEmail) {
     return
@@ -226,15 +228,17 @@ async function handleSendCode() {
       email: trimmedEmail,
       turnstile_token: turnstileEnabled.value ? turnstileToken.value : undefined
     })
+    if (disposed || email.value.trim() !== trimmedEmail) return
     sendCodeSuccess.value = true
     startCountdown(response.countdown)
     if (turnstileEnabled.value) {
       resetTurnstile()
     }
   } catch (error: unknown) {
+    if (disposed || email.value.trim() !== trimmedEmail) return
     sendCodeError.value = getRequestErrorMessage(error, t('auth.sendCodeFailed'))
   } finally {
-    isSendingCode.value = false
+    if (!disposed) isSendingCode.value = false
   }
 }
 
@@ -259,10 +263,12 @@ function emitSwitchToBind() {
 onMounted(async () => {
   try {
     const settings = await getPublicSettings()
+    if (disposed) return
     invitationCodeEnabled.value = settings.invitation_code_enabled === true
     turnstileEnabled.value = settings.turnstile_enabled === true
     turnstileSiteKey.value = settings.turnstile_site_key || ''
   } catch {
+    if (disposed) return
     invitationCodeEnabled.value = false
     turnstileEnabled.value = false
     turnstileSiteKey.value = ''
@@ -270,6 +276,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
   clearCountdown()
 })
 </script>

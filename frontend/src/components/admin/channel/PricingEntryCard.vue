@@ -287,7 +287,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted, toRaw } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -402,23 +402,26 @@ function removeInterval(idx: number) {
 }
 
 async function onModelsUpdate(newModels: string[]) {
+  const request = ++pricingRequest
   const oldModels = props.entry.models
-  emit('update', { ...props.entry, models: newModels })
+  const submittedEntry = { ...props.entry, models: newModels }
+  const platform = props.platform
+  emit('update', submittedEntry)
 
   // 只在新增模型且当前无价格时自动填充
   const addedModels = newModels.filter(m => !oldModels.includes(m))
-  if (addedModels.length === 0) return
+  if (oldModels.length !== 0 || newModels.length !== 1 || addedModels.length !== 1) return
 
   // 检查是否所有价格字段都为空
   const e = props.entry
-  const hasPrice = e.input_price != null || e.output_price != null ||
-                   e.cache_write_price != null || e.cache_write_1h_price != null || e.cache_read_price != null
-  if (hasPrice) return
+  if (!hasEmptyPrices(e)) return
+  const initialShape = JSON.stringify({ ...e, models: newModels })
 
   // 查询第一个新增模型的默认价格
   try {
     const result = await channelsAPI.getModelDefaultPricing(addedModels[0])
-    if (result.found) {
+    if (request === pricingRequest && toRaw(props.entry) === submittedEntry && props.platform === platform &&
+        JSON.stringify(props.entry) === initialShape && hasEmptyPrices(props.entry) && result.found) {
       emit('update', {
         ...props.entry,
         models: newModels,
@@ -434,6 +437,17 @@ async function onModelsUpdate(newModels: string[]) {
   } catch {
     // 查询失败不影响用户操作
   }
+}
+
+let pricingRequest = 0
+onUnmounted(() => { pricingRequest++ })
+
+function hasEmptyPrices(entry: PricingFormEntry): boolean {
+  return entry.billing_mode === 'token' && entry.input_price == null && entry.output_price == null &&
+    entry.cache_write_price == null && entry.cache_write_1h_price == null && entry.cache_read_price == null &&
+    entry.image_input_price == null && entry.image_output_price == null && entry.per_request_price == null &&
+    entry.fast_multiplier == null && entry.flex_multiplier == null && entry.max_reasoning_effort_multiplier == null &&
+    !entry.time_pricing && !entry.intervals?.length
 }
 </script>
 

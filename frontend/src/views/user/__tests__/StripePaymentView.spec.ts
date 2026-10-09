@@ -14,10 +14,12 @@ const paymentStore = vi.hoisted(() => ({
 const loadStripe = vi.hoisted(() => vi.fn())
 const stripeElements = vi.hoisted(() => ({
   create: vi.fn(),
+  getElement: vi.fn(),
 }))
 const stripePaymentElement = vi.hoisted(() => ({
   mount: vi.fn(),
   on: vi.fn(),
+  destroy: vi.fn(),
 }))
 const stripeInstance = vi.hoisted(() => ({
   elements: vi.fn(),
@@ -107,6 +109,8 @@ describe('StripePaymentView', () => {
     paymentStore.pollOrderStatus.mockReset()
     loadStripe.mockReset().mockResolvedValue(stripeInstance)
     stripeElements.create.mockReset().mockReturnValue(stripePaymentElement)
+    stripeElements.getElement.mockReset().mockReturnValue(stripePaymentElement)
+    stripePaymentElement.destroy.mockReset()
     stripePaymentElement.mount.mockReset()
     stripePaymentElement.on.mockReset().mockImplementation((event: string, callback: () => void) => {
       if (event === 'ready') callback()
@@ -130,5 +134,31 @@ describe('StripePaymentView', () => {
     expect(getOrder).toHaveBeenCalledWith(42)
     expect(loadStripe).toHaveBeenCalledWith('pk_test')
     expect(wrapper.text()).toContain(formatPaymentAmount(103, 'HKD', 'zh-CN'))
+    wrapper.unmount()
+    expect(stripePaymentElement.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('does not load the payment SDK after the order request resolves on an unmounted page', async () => {
+    let resolveOrder!: (value: { data: PaymentOrder }) => void
+    getOrder.mockReturnValue(new Promise(resolve => { resolveOrder = resolve }))
+    const wrapper = mountView()
+    wrapper.unmount()
+    resolveOrder({ data: orderFactory() })
+    await flushPromises()
+    expect(loadStripe).not.toHaveBeenCalled()
+    expect(paymentStore.fetchConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not mount a stale SDK after its order query changes', async () => {
+    let resolveStripe!: (value: typeof stripeInstance) => void
+    getOrder.mockResolvedValue({ data: orderFactory() })
+    loadStripe.mockReturnValue(new Promise(resolve => { resolveStripe = resolve }))
+    const wrapper = mountView()
+    await flushPromises()
+    routeState.query = { order_id: '43', client_secret: 'other' }
+    resolveStripe(stripeInstance)
+    await flushPromises()
+    expect(stripeElements.create).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

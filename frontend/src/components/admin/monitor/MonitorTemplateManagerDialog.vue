@@ -227,7 +227,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -361,20 +361,34 @@ function backToList() {
 
 // --- data fetch ---
 async function fetchTemplates() {
+  if (!props.show) return
+  const version = ++listVersion
+  const isCurrent = () => props.show && version === listVersion
   loading.value = true
   try {
     const { items } = await adminAPI.channelMonitorTemplate.list()
+    if (!isCurrent()) return
     templates.value = items
   } catch (err: unknown) {
+    if (!isCurrent()) return
     appStore.showError(extractApiErrorMessage(err, t('common.error')))
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
+
+let listVersion = 0
+let dialogSession = 0
+let disposed = false
+onUnmounted(() => { disposed = true; listVersion++; dialogSession++ })
 
 watch(
   () => props.show,
   (show) => {
+    listVersion++
+    dialogSession++
+    loading.value = false
+    submitting.value = false
     if (show) {
       editing.value = null
       fetchTemplates()
@@ -385,7 +399,11 @@ watch(
 
 // --- submit ---
 async function handleSubmit() {
-  if (submitting.value) return
+  if (submitting.value || !props.show || disposed) return
+  const session = dialogSession
+  const submittedEditing = editing.value
+  const submittedForm = JSON.stringify(form)
+  const isCurrent = () => !disposed && props.show && session === dialogSession
   if (!form.name.trim()) {
     appStore.showError(t('admin.channelMonitor.template.missingName'))
     return
@@ -402,6 +420,7 @@ async function handleSubmit() {
         body_override_mode: form.body_override_mode,
         body_override: form.body_override,
       })
+      if (!isCurrent()) return
       appStore.showSuccess(t('admin.channelMonitor.template.createSuccess'))
     } else if (typeof editing.value === 'number') {
       await adminAPI.channelMonitorTemplate.update(editing.value, {
@@ -412,15 +431,18 @@ async function handleSubmit() {
         body_override_mode: form.body_override_mode,
         body_override: form.body_override,
       })
+      if (!isCurrent()) return
       appStore.showSuccess(t('admin.channelMonitor.template.updateSuccess'))
     }
     await fetchTemplates()
+    if (!isCurrent()) return
     emit('updated')
-    editing.value = null
+    if (editing.value === submittedEditing && JSON.stringify(form) === submittedForm) editing.value = null
   } catch (err: unknown) {
+    if (!isCurrent()) return
     appStore.showError(extractApiErrorMessage(err, t('common.error')))
   } finally {
-    submitting.value = false
+    if (isCurrent()) submitting.value = false
   }
 }
 
@@ -463,14 +485,19 @@ const confirmDeleteMessage = computed(() => {
 
 async function doDelete() {
   const tpl = confirmDelete.tpl
+  const session = dialogSession
+  const isCurrent = () => !disposed && props.show && session === dialogSession
   confirmDelete.show = false
   if (!tpl) return
   try {
     await adminAPI.channelMonitorTemplate.del(tpl.id)
+    if (!isCurrent()) return
     appStore.showSuccess(t('admin.channelMonitor.template.deleteSuccess'))
     await fetchTemplates()
+    if (!isCurrent()) return
     emit('updated')
   } catch (err: unknown) {
+    if (!isCurrent()) return
     appStore.showError(extractApiErrorMessage(err, t('common.error')))
   }
 }

@@ -122,6 +122,18 @@ type ClaudeContentItem struct {
 	Input any    `json:"input,omitempty"`
 }
 
+func (c ClaudeContentItem) MarshalJSON() ([]byte, error) {
+	type contentItem ClaudeContentItem
+	if c.Type != "thinking" {
+		return json.Marshal(contentItem(c))
+	}
+	return json.Marshal(struct {
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		contentItem
+	}{Thinking: c.Thinking, Signature: c.Signature, contentItem: contentItem(c)})
+}
+
 // ClaudeUsage Claude 用量统计
 type ClaudeUsage struct {
 	InputTokens              int `json:"input_tokens"`

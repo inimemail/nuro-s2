@@ -86,10 +86,9 @@ export const useAnnouncementStore = defineStore('announcements', () => {
   async function dismissPopup() {
     if (!currentPopup.value) return
     const id = currentPopup.value.id
+    const currentSession = session
+    if (!await markAsRead(id) || currentSession !== session || currentPopup.value?.id !== id) return
     currentPopup.value = null
-
-    // Mark as read (fire-and-forget, UI already updated)
-    markAsRead(id)
 
     // Show next popup after a short delay
     if (popupQueue.value.length > 0) {
@@ -102,13 +101,15 @@ export const useAnnouncementStore = defineStore('announcements', () => {
     const currentSession = session
     try {
       await announcementsAPI.markRead(id)
-      if (currentSession !== session) return
+      if (currentSession !== session) return false
       const ann = announcements.value.find((a) => a.id === id)
       if (ann) {
         ann.read_at = new Date().toISOString()
       }
+      return true
     } catch (err: any) {
       console.error('Failed to mark announcement as read:', err)
+      return false
     }
   }
 

@@ -203,8 +203,9 @@
               <span
                 v-if="row.long_context_billing_applied"
                 data-testid="long-context-billing-marker"
+                :title="t('usage.longContextPricingHint')"
                 class="inline-flex items-center rounded px-1 py-px text-[10px] font-semibold leading-tight bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-500/30"
-              >x2</span>
+              >{{ t('usage.longContextPricing') }}</span>
               <!-- Cost Detail Tooltip -->
               <div
                 class="group relative"
@@ -239,6 +240,12 @@
               <span class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
             </div>
           </div>
+        </template>
+
+        <template #cell-tps="{ row }">
+          <span class="whitespace-nowrap text-xs tabular-nums text-gray-700 dark:text-gray-300" :title="t('usage.requestTpsHint')">
+            {{ formatRequestTps(row) }}
+          </span>
         </template>
 
         <template #cell-created_at="{ value }">
@@ -443,7 +450,7 @@
           </div>
           <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.rate') }}</span>
-            <span class="font-semibold text-blue-400">{{ formatMultiplier(tooltipData?.rate_multiplier || 1) }}x</span>
+            <span class="font-semibold text-blue-400">{{ formatMultiplier(tooltipData?.rate_multiplier ?? 1) }}x</span>
           </div>
           <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.original') }}</span>
@@ -522,6 +529,15 @@ function imageUnitPrice(row: AdminUsageLog | null): number {
 
 function isImageUsage(row: Pick<AdminUsageLog, 'image_count'> | null | undefined): boolean {
   return (row?.image_count ?? 0) > 0
+}
+
+function formatRequestTps(row: AdminUsageLog): string {
+  if ((row.billing_mode && row.billing_mode !== BILLING_MODE_TOKEN) || row.image_count > 0 ||
+      (row.image_output_tokens ?? 0) > 0 || row.duration_ms == null ||
+      !Number.isFinite(row.duration_ms) || row.duration_ms <= 0) return '-'
+  const output = textOutputTokens(row)
+  if (!Number.isFinite(output) || output < 0) return '-'
+  return (output * 1000 / row.duration_ms).toFixed(1)
 }
 
 function getDisplayBillingMode(row: Pick<AdminUsageLog, 'billing_mode' | 'image_count'> | null | undefined): string | null | undefined {

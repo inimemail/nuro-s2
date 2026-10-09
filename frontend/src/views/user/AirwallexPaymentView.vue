@@ -25,7 +25,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -42,6 +42,11 @@ const router = useRouter()
 
 const loading = ref(true)
 const errorMessage = ref('')
+let disposed = false
+const paymentQuery = JSON.stringify(route.query)
+const isCurrent = () => !disposed && JSON.stringify(route.query) === paymentQuery
+
+onUnmounted(() => { disposed = true })
 
 function queryString(key: string): string {
   const value = route.query[key]
@@ -101,11 +106,13 @@ onMounted(async () => {
 
   try {
     const airwallex = await import('@airwallex/components-sdk')
+    if (!isCurrent()) return
     const result = await airwallex.init({
       env: snapshot.paymentEnv === 'prod' ? 'prod' : 'demo',
       enabledElements: ['payments'],
       locale: checkoutLocale,
     })
+    if (!isCurrent()) return
 
     loading.value = false
     const checkoutOptions = {
@@ -124,6 +131,7 @@ onMounted(async () => {
       window.location.assign(redirectResult)
     }
   } catch (err: unknown) {
+    if (!isCurrent()) return
     loading.value = false
     errorMessage.value = err instanceof Error && err.message
       ? err.message

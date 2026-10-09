@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -201,12 +202,18 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
 func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, media ...AccountTestMedia) error {
 	ctx := c.Request.Context()
+	if _, exists := c.Get("account_test_id"); !exists {
+		c.Set("account_test_id", uuid.NewString())
+	}
+	c.Set("account_test_account_id", accountID)
 
 	// Get account
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	c.Set("account_test_platform", account.Platform)
+	c.Set("account_test_type", account.Type)
 
 	// Route to platform-specific test method
 	if account.IsTypeSafe() {
@@ -2017,7 +2024,17 @@ func (s *AccountTestService) openAIAccountTestModelLimitProtectionEnabled(c *gin
 
 // sendErrorAndEnd sends an error event and ends the stream
 func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
-	log.Printf("Account test error: %s", errorMsg)
+	errorMsg, _ = sanitizeErrorBodyForStorage(errorMsg, 4096)
+	fields := []any{"account_id", c.GetInt64("account_test_account_id"), "test_id", c.GetString("account_test_id"), "platform", c.GetString("account_test_platform"), "type", c.GetString("account_test_type"), "source", "admin"}
+	if source := c.GetString("account_test_source"); source != "" {
+		fields[len(fields)-1] = source
+	}
+	fields = append(fields, "error", errorMsg)
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	slog.WarnContext(ctx, "Account connection test failed", fields...)
 	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)
 }
@@ -2030,6 +2047,7 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	w := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(w)
 	ginCtx.Request = (&http.Request{}).WithContext(ctx)
+	ginCtx.Set("account_test_source", "background")
 
 	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", AccountTestModeDefault)
 

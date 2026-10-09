@@ -21,8 +21,8 @@
         <h4 class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.groups.addUserRate') }}
         </h4>
-        <div class="flex items-end gap-2">
-          <div class="relative flex-1">
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="relative min-w-0 basis-full sm:flex-1 sm:basis-auto">
             <input
               v-model="searchQuery"
               type="text"
@@ -71,7 +71,7 @@
         </div>
 
         <!-- 批量调整 + 全部清空 -->
-        <div v-if="localEntries.length > 0" class="mt-3 flex items-center gap-3 border-t border-gray-100 pt-3 dark:border-dark-600">
+        <div v-if="localEntries.length > 0" class="mt-3 flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3 dark:border-dark-600">
           <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.groups.batchAdjust') }}</span>
           <div class="flex items-center gap-1.5">
             <span class="text-xs text-gray-400">×</span>
@@ -126,8 +126,8 @@
         <div v-else>
           <!-- 表格 -->
           <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600">
-            <div class="max-h-[420px] overflow-y-auto">
-              <table class="w-full text-sm">
+            <div class="max-h-[420px] overflow-auto">
+              <table class="w-full min-w-[640px] text-sm">
                 <thead class="sticky top-0 z-[1]">
                   <tr class="border-b border-gray-200 bg-gray-50 dark:border-dark-600 dark:bg-dark-700">
                     <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.groups.columns.userEmail') }}</th>
@@ -204,7 +204,7 @@
       </div>
 
       <!-- 底部操作栏 -->
-      <div class="flex items-center gap-3 border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div class="flex flex-wrap items-center gap-3 border-t border-gray-200 pt-4 dark:border-dark-600">
         <!-- 左侧：未保存提示 + 撤销 -->
         <template v-if="isDirty">
           <span class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.groups.unsavedChanges') }}</span>
@@ -225,7 +225,7 @@
             v-if="isDirty"
             type="button"
             class="btn btn-primary btn-sm px-4 py-1.5"
-            :disabled="saving"
+            :disabled="saving || loading || !loaded"
             @click="handleSave"
           >
             <Icon v-if="saving" name="refresh" size="sm" class="mr-1 animate-spin" />
@@ -239,7 +239,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
@@ -266,6 +266,7 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const loading = ref(false)
+const loaded = ref(false)
 const saving = ref(false)
 const serverEntries = ref<GroupRateMultiplierEntry[]>([])
 const localEntries = ref<LocalEntry[]>([])
@@ -318,19 +319,26 @@ const cloneEntries = (entries: GroupRateMultiplierEntry[]): LocalEntry[] => {
 }
 
 const loadEntries = async () => {
-  if (!props.group) return
+  if (!props.group || !props.show) return
+  const groupId = props.group.id
+  const version = ++loadVersion
+  const isCurrent = () => !disposed && props.show && props.group?.id === groupId && version === loadVersion
   loading.value = true
+  loaded.value = false
   try {
     const raw = await adminAPI.groups.getGroupRateMultipliers(props.group.id)
+    if (!isCurrent()) return
     // 仅显示已设置 rate_multiplier 的条目；rpm_override 在另一个弹窗管理，保留不动
     serverEntries.value = raw.filter(e => e.rate_multiplier != null)
     localEntries.value = cloneEntries(serverEntries.value)
+    loaded.value = true
     adjustPage()
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(t('admin.groups.failedToLoad'))
     console.error('Error loading group rate multipliers:', error)
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
@@ -341,7 +349,30 @@ const adjustPage = () => {
   }
 }
 
-watch(() => props.show, (val) => {
+let loadVersion = 0
+let session = 0
+let searchVersion = 0
+let disposed = false
+onUnmounted(() => {
+  disposed = true
+  loadVersion++
+  session++
+  searchVersion++
+  clearTimeout(searchTimeout)
+  document.removeEventListener('click', handleClickOutside)
+})
+watch([() => props.show, () => props.group?.id], () => {
+  loadVersion++
+  session++
+  searchVersion++
+  clearTimeout(searchTimeout)
+  saving.value = false
+  serverEntries.value = []
+  localEntries.value = []
+  showDropdown.value = false
+  loading.value = false
+  loaded.value = false
+  const val = props.show
   if (val && props.group) {
     currentPage.value = 1
     batchFactor.value = null
@@ -351,7 +382,7 @@ watch(() => props.show, (val) => {
     newRate.value = null
     loadEntries()
   }
-})
+}, { immediate: true })
 
 const handlePageSizeChange = (newSize: number) => {
   pageSize.value = newSize
@@ -360,6 +391,10 @@ const handlePageSizeChange = (newSize: number) => {
 
 const handleSearchUsers = () => {
   clearTimeout(searchTimeout)
+  const version = ++searchVersion
+  const currentSession = session
+  const query = searchQuery.value.trim()
+  const isCurrent = () => !disposed && props.show && session === currentSession && version === searchVersion && query === searchQuery.value.trim()
   selectedUser.value = null
   if (!searchQuery.value.trim()) {
     searchResults.value = []
@@ -368,16 +403,18 @@ const handleSearchUsers = () => {
   }
   searchTimeout = setTimeout(async () => {
     try {
-      const res = await adminAPI.users.list(1, 10, { search: searchQuery.value.trim() })
+      const res = await adminAPI.users.list(1, 10, { search: query })
+      if (!isCurrent()) return
       searchResults.value = res.items
       showDropdown.value = true
     } catch {
-      searchResults.value = []
+      if (isCurrent()) searchResults.value = []
     }
   }, 300)
 }
 
 const selectUser = (user: AdminUser) => {
+  searchVersion++
   selectedUser.value = user
   searchQuery.value = user.email
   showDropdown.value = false
@@ -453,24 +490,30 @@ const handleCancel = () => {
 
 // 保存：一次性提交所有数据（只提交 rate_multiplier；rpm_override 由独立弹窗管理）
 const handleSave = async () => {
-  if (!props.group) return
+  if (!props.group || !props.show || disposed || !loaded.value || loading.value || saving.value) return
+  const currentSession = session
+  const isCurrent = () => !disposed && props.show && session === currentSession
+  const submittedEntries = cloneEntries(localEntries.value)
   saving.value = true
   try {
-    const entries = localEntries.value
+    const entries = submittedEntries
       .filter(e => e.rate_multiplier != null)
       .map(e => ({
         user_id: e.user_id,
         rate_multiplier: e.rate_multiplier as number
       }))
     await adminAPI.groups.batchSetGroupRateMultipliers(props.group.id, entries)
+    if (!isCurrent()) return
     appStore.showSuccess(t('admin.groups.rateSaved'))
+    serverEntries.value = submittedEntries.filter(e => e.rate_multiplier != null)
     emit('success')
-    emit('close')
+    if (!isDirty.value) emit('close')
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(t('admin.groups.failedToSave'))
     console.error('Error saving rate multipliers:', error)
   } finally {
-    saving.value = false
+    if (isCurrent()) saving.value = false
   }
 }
 

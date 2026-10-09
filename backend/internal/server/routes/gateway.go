@@ -143,7 +143,7 @@ func RegisterGatewayRoutes(
 		}
 	}
 	modelsHandler := func(c *gin.Context) {
-		if isOpenAIGatewayPlatform(c) && c.Query("client_version") != "" {
+		if (isOpenAIGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformComposite) && c.Query("client_version") != "" {
 			h.OpenAIGateway.CodexModels(c)
 			return
 		}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -338,7 +339,45 @@ func Install(cfg *SetupConfig) error {
 // createInstallLock creates a lock file to prevent re-installation attacks
 func createInstallLock() error {
 	content := fmt.Sprintf("installed_at=%s\n", time.Now().UTC().Format(time.RFC3339))
-	return os.WriteFile(GetInstallLockPath(), []byte(content), 0400) // Read-only for owner
+	return writeSetupFile(GetInstallLockPath(), []byte(content), 0400)
+}
+
+// Publish complete files atomically when replicas bootstrap a shared data dir.
+// First publication wins so a late replica cannot replace active configuration.
+func writeSetupFile(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".setup-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if removeErr := os.Remove(f.Name()); removeErr != nil && !os.IsNotExist(removeErr) {
+			logger.LegacyPrintf("setup", "failed to remove temporary setup file: %v", removeErr)
+		}
+	}()
+	if err = f.Chmod(mode); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = os.Link(f.Name(), path); !os.IsExist(err) {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("setup file is not a regular file")
+	}
+	return nil
 }
 
 func initializeDatabase(cfg *SetupConfig) error {
@@ -567,7 +606,7 @@ func writeConfigFile(cfg *SetupConfig) error {
 		return err
 	}
 
-	return os.WriteFile(GetConfigFilePath(), data, 0600)
+	return writeSetupFile(GetConfigFilePath(), data, 0600)
 }
 
 func generateSecret(length int) (string, error) {

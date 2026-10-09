@@ -29,6 +29,22 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "invalid_request_error", "API key group is required")
 		return
 	}
+	if apiKey.Group.Platform == service.PlatformComposite {
+		models := h.gatewayService.CompositeCodexCatalogModels(c.Request.Context(), apiKey.Group)
+		body, err := service.BuildCompositeCodexManifest(models)
+		if err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build models manifest")
+			return
+		}
+		etag := service.CodexModelsManifestETag(body)
+		c.Header("ETag", etag)
+		if service.CodexModelsManifestETagMatches(c.GetHeader("If-None-Match"), etag) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Data(http.StatusOK, "application/json", body)
+		return
+	}
 	if apiKey.Group.Platform != service.PlatformOpenAI {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Models manifest is not available for this group")
 		return
@@ -80,7 +96,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		}
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
+		manifest, err := h.gatewayService.FetchCodexModelsManifestForGroup(c.Request.Context(), account, apiKey.Group, c.Query("client_version"), c.GetHeader("If-None-Match"))
 		if err != nil {
 			if c.Request.Context().Err() != nil {
 				return

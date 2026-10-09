@@ -423,9 +423,10 @@
                 <label class="input-label text-xs mb-0">{{ t('admin.channels.form.modelPricing', 'Model Pricing') }}</label>
                 <div class="flex items-center gap-2">
                   <button
+                    v-if="supportsPricingModelSync(section.platform)"
                     type="button"
                     @click="syncLatestModels(sIdx)"
-                    :disabled="syncingPlatform === section.platform"
+                    :disabled="syncingPlatform !== null"
                     class="text-xs text-gray-500 hover:text-primary-600 disabled:opacity-50"
                   >
                     {{ syncingPlatform === section.platform ? t('admin.channels.form.syncingModels') : t('admin.channels.form.syncLatestModels') }}
@@ -648,6 +649,7 @@ import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import PricingEntryCard from '@/components/admin/channel/PricingEntryCard.vue'
+import { supportsPricingModelSync } from '@/utils/channelModelSync'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
 
@@ -866,16 +868,22 @@ function addPricingEntry(sectionIdx: number) {
 }
 
 const syncingPlatform = ref<string | null>(null)
+let modelSyncRequest = 0
+let modelSyncDisposed = false
 
 async function syncLatestModels(sectionIdx: number) {
-  const platform = form.platforms[sectionIdx].platform
-  if (syncingPlatform.value) return
+  const section = form.platforms[sectionIdx]
+  if (!section || !showDialog.value || modelSyncDisposed || !supportsPricingModelSync(section.platform) || syncingPlatform.value) return
+  const platform = section.platform
+  const request = ++modelSyncRequest
+  const isCurrent = () => !modelSyncDisposed && showDialog.value && request === modelSyncRequest && form.platforms.includes(section) && section.platform === platform
   syncingPlatform.value = platform
   try {
     const result = await adminAPI.channels.syncPricingModels(platform)
+    if (!isCurrent()) return
     // Collect all model names already present in this platform's pricing entries
     const existingModels = new Set<string>()
-    for (const entry of form.platforms[sectionIdx].model_pricing) {
+    for (const entry of section.model_pricing) {
       for (const m of entry.models) existingModels.add(m)
     }
     const newModels = result.models.filter(m => !existingModels.has(m))
@@ -884,7 +892,7 @@ async function syncLatestModels(sectionIdx: number) {
       return
     }
     // Add new models as a single new pricing entry (user fills in prices)
-    form.platforms[sectionIdx].model_pricing.push({
+    section.model_pricing.push({
       models: newModels,
       billing_mode: 'token',
       input_price: null,
@@ -901,9 +909,10 @@ async function syncLatestModels(sectionIdx: number) {
     })
     appStore.showSuccess(t('admin.channels.form.syncModelsSuccess', { count: newModels.length }))
   } catch (error) {
+    if (!isCurrent()) return
     appStore.showError(extractApiErrorMessage(error, t('admin.channels.form.syncModelsError')))
   } finally {
-    syncingPlatform.value = null
+    if (request === modelSyncRequest) syncingPlatform.value = null
   }
 }
 
@@ -1332,6 +1341,8 @@ function handleSort(key: string, order: 'asc' | 'desc') {
 
 // ── Dialog ──
 function resetForm() {
+  modelSyncRequest++
+  syncingPlatform.value = null
   form.name = ''
   form.description = ''
   form.status = 'active'
@@ -1656,6 +1667,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  modelSyncDisposed = true
+  modelSyncRequest++
   clearTimeout(searchTimeout)
   abortController?.abort()
   document.removeEventListener('click', handleRuleAccountClickOutside)

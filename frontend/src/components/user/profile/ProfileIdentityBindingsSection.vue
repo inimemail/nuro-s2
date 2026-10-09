@@ -257,13 +257,21 @@ const emailBindingForm = reactive({
 
 watch(
   () => props.user,
-  (user) => {
+  (user, previous) => {
     localUser.value = null
     if (!user) {
+      emailBindingForm.email = ''
+      emailBindingForm.verifyCode = ''
+      emailBindingForm.password = ''
       return
     }
-    if (typeof user.email === 'string' && !user.email.endsWith('.invalid')) {
-      emailBindingForm.email = user.email
+    const previousEmail = previous?.email && !previous.email.endsWith('.invalid') ? previous.email : ''
+    if (user.id !== previous?.id || emailBindingForm.email === previousEmail) {
+      emailBindingForm.email = typeof user.email === 'string' && !user.email.endsWith('.invalid') ? user.email : ''
+    }
+    if (user.id !== previous?.id) {
+      emailBindingForm.verifyCode = ''
+      emailBindingForm.password = ''
     }
   },
   { immediate: true }

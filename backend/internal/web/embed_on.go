@@ -303,6 +303,11 @@ func tryServeOverrideFile(c *gin.Context, overrideDir, cleanPath string) bool {
 
 func shouldBypassEmbeddedFrontend(path string) bool {
 	trimmed := strings.TrimSpace(path)
+	for _, base := range []string{"/api", "/v1", "/v1beta", "/backend-api", "/internal/edge", "/internal/runtime", "/antigravity", "/setup", "/images", "/videos"} {
+		if trimmed == base {
+			return true
+		}
+	}
 	return strings.HasPrefix(trimmed, "/api/") ||
 		strings.HasPrefix(trimmed, "/v1/") ||
 		strings.HasPrefix(trimmed, "/v1beta/") ||

@@ -163,6 +163,7 @@
               <td class="px-3 py-2">
                 <button
                   @click="toggleEnabled(rule)"
+                  :disabled="togglingRuleIds.has(rule.id)"
                   :class="[
                     'relative inline-flex h-4 w-7 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                     rule.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -455,6 +456,7 @@ const appStore = useAppStore()
 
 const rules = ref<ErrorPassthroughRule[]>([])
 const loading = ref(false)
+const togglingRuleIds = reactive(new Set<number>())
 const submitting = ref(false)
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
@@ -625,12 +627,16 @@ const handleSubmit = async () => {
 }
 
 const toggleEnabled = async (rule: ErrorPassthroughRule) => {
+  if (togglingRuleIds.has(rule.id)) return
+  togglingRuleIds.add(rule.id)
   try {
-    await adminAPI.errorPassthrough.toggleEnabled(rule.id, !rule.enabled)
-    rule.enabled = !rule.enabled
+    const saved = await adminAPI.errorPassthrough.toggleEnabled(rule.id, !rule.enabled)
+    rule.enabled = saved.enabled
   } catch (error: any) {
     appStore.showError(error.response?.data?.detail || t('admin.errorPassthrough.failedToToggle'))
     console.error('Error toggling rule:', error)
+  } finally {
+    togglingRuleIds.delete(rule.id)
   }
 }
 

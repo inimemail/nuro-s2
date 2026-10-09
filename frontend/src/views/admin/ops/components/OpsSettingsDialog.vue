@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { opsAPI } from '@/api/admin/ops'
@@ -22,6 +22,9 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const saving = ref(false)
+const loaded = ref(false)
+let loadVersion = 0
+onUnmounted(() => { loadVersion++ })
 
 // 运行时设置
 const runtimeSettings = ref<OpsAlertRuntimeSettings | null>(null)
@@ -39,6 +42,9 @@ const metricThresholds = ref<OpsMetricThresholds>({
 
 // 加载所有配置
 async function loadAllSettings() {
+  const version = ++loadVersion
+  const isCurrent = () => props.show && version === loadVersion
+  loaded.value = false
   loading.value = true
   try {
     const [runtime, email, advanced, thresholds] = await Promise.all([
@@ -47,6 +53,7 @@ async function loadAllSettings() {
       opsAPI.getAdvancedSettings(),
       opsAPI.getMetricThresholds()
     ])
+    if (!isCurrent()) return
     runtimeSettings.value = runtime
     emailConfig.value = email
     advancedSettings.value = advanced
@@ -63,20 +70,25 @@ async function loadAllSettings() {
           upstream_error_rate_percent_max: thresholds.upstream_error_rate_percent_max ?? 5
         }
     }
+    loaded.value = true
   } catch (err: any) {
+    if (!isCurrent()) return
     console.error('[OpsSettingsDialog] Failed to load settings', err)
     appStore.showError(err?.response?.data?.detail || t('admin.ops.settings.loadFailed'))
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
 // 监听弹窗打开
 watch(() => props.show, (show) => {
+  loadVersion++
+  saving.value = false
+  loaded.value = false
   if (show) {
     loadAllSettings()
   }
-})
+}, { immediate: true })
 
 // 邮件输入
 const alertRecipientInput = ref('')
@@ -196,13 +208,21 @@ const validation = computed(() => {
 })
 
 // 保存所有配置
+const settingsSnapshot = () => JSON.stringify({
+  runtime: runtimeSettings.value, email: emailConfig.value,
+  advanced: advancedSettings.value, thresholds: metricThresholds.value
+})
+
 async function saveAllSettings() {
+  if (!props.show || !loaded.value || loading.value || saving.value) return
   if (!validation.value.valid) {
     appStore.showError(validation.value.errors[0])
     return
   }
 
   saving.value = true
+  const version = loadVersion
+  const isCurrent = () => props.show && version === loadVersion
   try {
     // 无收件人时自动禁用邮件通知
     if (emailConfig.value) {
@@ -213,20 +233,23 @@ async function saveAllSettings() {
         emailConfig.value.report.enabled = false
       }
     }
+    const submittedSettings = settingsSnapshot()
     await Promise.all([
       runtimeSettings.value ? opsAPI.updateAlertRuntimeSettings(runtimeSettings.value) : Promise.resolve(),
       emailConfig.value ? opsAPI.updateEmailNotificationConfig(emailConfig.value) : Promise.resolve(),
       advancedSettings.value ? opsAPI.updateAdvancedSettings(advancedSettings.value) : Promise.resolve(),
       opsAPI.updateMetricThresholds(metricThresholds.value)
     ])
+    if (!isCurrent()) return
     appStore.showSuccess(t('admin.ops.settings.saveSuccess'))
     emit('saved')
-    emit('close')
+    if (settingsSnapshot() === submittedSettings) emit('close')
   } catch (err: any) {
+    if (!isCurrent()) return
     console.error('[OpsSettingsDialog] Failed to save settings', err)
     appStore.showError(err?.response?.data?.message || err?.response?.data?.detail || t('admin.ops.settings.saveFailed'))
   } finally {
-    saving.value = false
+    if (isCurrent()) saving.value = false
   }
 }
 </script>
@@ -641,7 +664,7 @@ async function saveAllSettings() {
     <template #footer>
       <div class="flex justify-end gap-2">
         <button class="btn btn-secondary" @click="emit('close')">{{ t('common.cancel') }}</button>
-        <button class="btn btn-primary" :disabled="saving || !validation.valid" @click="saveAllSettings">
+        <button class="btn btn-primary" :disabled="loading || !loaded || saving || !validation.valid" @click="saveAllSettings">
           {{ saving ? t('common.saving') : t('common.save') }}
         </button>
       </div>

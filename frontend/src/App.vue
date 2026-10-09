@@ -141,7 +141,7 @@ onMounted(async () => {
 
 <template>
   <NavigationProgress />
-  <RouterView />
+  <RouterView :key="route.name === 'StripePayment' || route.name === 'AirwallexPayment' ? route.fullPath : undefined" />
   <Toast />
   <AnnouncementPopup />
 </template>

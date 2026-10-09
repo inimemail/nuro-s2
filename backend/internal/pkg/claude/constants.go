@@ -11,13 +11,16 @@ package claude
 // 缺少任何"官方 Claude Code 请求才会带"的 beta，都会被降级到第三方额度，
 // 对应报错：`Third-party apps now draw from your extra usage, not your plan limits.`
 const (
-	BetaOAuth                    = "oauth-2025-04-20"
-	BetaClaudeCode               = "claude-code-20250219"
-	BetaInterleavedThinking      = "interleaved-thinking-2025-05-14"
-	BetaFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
-	BetaTokenCounting            = "token-counting-2024-11-01"
-	BetaContext1M                = "context-1m-2025-08-07"
-	BetaFastMode                 = "fast-mode-2026-02-01"
+	BetaOAuth                      = "oauth-2025-04-20"
+	BetaClaudeCode                 = "claude-code-20250219"
+	BetaInterleavedThinking        = "interleaved-thinking-2025-05-14"
+	BetaFineGrainedToolStreaming   = "fine-grained-tool-streaming-2025-05-14"
+	BetaTokenCounting              = "token-counting-2024-11-01"
+	BetaContext1M                  = "context-1m-2025-08-07"
+	BetaFastMode                   = "fast-mode-2026-02-01"
+	BetaStructuredOutputs          = "structured-outputs-2025-11-13"
+	BetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
+	BetaInlineTools                = "inline-tools-2026-09-15"
 
 	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
 	BetaPromptCachingScope          = "prompt-caching-scope-2026-01-05"

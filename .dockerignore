@@ -26,6 +26,13 @@ Thumbs.db
 dist/
 build/
 **/target/
+.cache/
+.gocache/
+.tmp/
+backend/.cache/
+backend/.gocache/
+backend/bin/
+backend/server
 
 # Node modules (will be installed in container)
 frontend/node_modules/

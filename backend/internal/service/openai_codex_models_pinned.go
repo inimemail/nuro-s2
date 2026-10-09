@@ -38,7 +38,7 @@ func (s *OpenAIGatewayService) FetchPinnedCodexModelsManifest(ctx context.Contex
 		if account == nil || account.Platform != PlatformOpenAI || !account.IsSchedulable() {
 			continue
 		}
-		manifest, fetchErr := s.FetchCodexModelsManifest(fetchCtx, account, clientVersion, "")
+		manifest, fetchErr := s.FetchCodexModelsManifestForGroup(fetchCtx, account, group, clientVersion, "")
 		if fetchErr != nil {
 			lastErr = fetchErr
 			continue
@@ -70,8 +70,8 @@ func mergePinnedCodexManifestBodies(bodies [][]byte) ([]byte, error) {
 	if err := json.Unmarshal(bodies[0], &base); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	var merged []json.RawMessage
+	seen := map[string]int{}
+	merged := make([]json.RawMessage, 0)
 	for _, body := range bodies {
 		var env map[string]json.RawMessage
 		if err := json.Unmarshal(body, &env); err != nil {
@@ -92,10 +92,15 @@ func mergePinnedCodexManifestBodies(bodies [][]byte) ([]byte, error) {
 			if key == "" {
 				key = string(model)
 			}
-			if seen[key] {
+			if index, exists := seen[key]; exists {
+				intersected, err := intersectCodexManifestCapabilities(merged[index], model)
+				if err != nil {
+					return nil, err
+				}
+				merged[index] = intersected
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(merged)
 			merged = append(merged, model)
 		}
 	}
