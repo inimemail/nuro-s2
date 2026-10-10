@@ -95,13 +95,14 @@ const TablePageLayoutStub = {
   template: '<div><slot name="actions" /><slot name="filters" /><slot name="table" /><slot /></div>',
 }
 const DataTableStub = {
-  props: ['data'],
+  props: ['data', 'columns'],
   template: `
     <div>
       <div v-for="row in data" :key="row.request_id">
         <slot name="cell-billing_mode" :row="row" />
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
+        <slot name="cell-latency" :row="row" />
       </div>
     </div>
   `,
@@ -169,8 +170,8 @@ describe('user UsageView tooltip', () => {
           cache_creation_1h_tokens: 0,
           image_count: 0,
           image_size: null,
-          first_token_ms: null,
-          duration_ms: 1,
+          first_token_ms: 734,
+          duration_ms: 8330,
           created_at: '2026-03-08T00:00:00Z',
         },
       ],
@@ -203,6 +204,14 @@ describe('user UsageView tooltip', () => {
 
     await flushPromises()
     await nextTick()
+
+    const columnKeys = wrapper.findComponent(DataTableStub).props('columns').map((col: { key: string }) => col.key)
+    expect(columnKeys).toContain('latency')
+    expect(columnKeys).not.toContain('first_token')
+    expect(columnKeys).not.toContain('duration')
+    expect(wrapper.get('[data-testid="output-tps"]').text()).toBe('12.1 tok/s')
+    expect(wrapper.get('[data-testid="usage-latency"]').text()).toContain('734ms')
+    expect(wrapper.get('[data-testid="usage-latency"]').text()).toContain('8.33s')
 
     const setupState = (wrapper.vm as any).$?.setupState
     setupState.tooltipData = {

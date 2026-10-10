@@ -994,7 +994,7 @@ export default {
     latency: 'Latency',
     latencyFirstToken: 'First token',
     latencyDuration: 'Total',
-    requestTps: 'Avg. Output TPS',
+    requestTps: 'Output TPS',
     requestTpsHint: 'Text output tokens divided by total request time; excludes image and video requests.',
     longContextPricing: 'Long context',
     longContextPricingHint: 'Long-context tier pricing applied. See cost details for the actual rate.',

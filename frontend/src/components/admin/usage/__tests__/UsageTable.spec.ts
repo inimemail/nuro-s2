@@ -64,7 +64,7 @@ const DataTableStub = {
         <slot name="cell-billing_mode" :row="row" />
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
-        <slot name="cell-tps" :row="row" />
+        <slot name="cell-latency" :row="row" />
       </div>
     </div>
   `,
@@ -105,8 +105,8 @@ describe('admin UsageTable tooltip', () => {
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } }
     })
     expect(wrapper.text()).toContain('60.0')
-    const tps = wrapper.findAll('[title="usage.requestTpsHint"]')
-    expect(tps.map(node => node.text())).toEqual(['60.0', '-', '-'])
+    const tps = wrapper.findAll('[data-testid="output-tps"]')
+    expect(tps.map(node => node.text())).toEqual(['60.0 tok/s', '-', '-'])
   })
 
   beforeEach(() => {

@@ -40,6 +40,7 @@ vi.mock('@/api/admin', () => ({
     },
     dashboard: {
       getSnapshotV2,
+      getModelStats: vi.fn().mockResolvedValue({ models: [] }),
     },
     users: {
       getById,
@@ -108,6 +109,7 @@ const GroupDistributionChartStub = {
 describe('admin UsageView distribution metric toggles', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    vi.mocked(localStorage.getItem).mockReturnValue(null)
     list.mockReset()
     getStats.mockReset()
     getSnapshotV2.mockReset()
@@ -137,6 +139,51 @@ describe('admin UsageView distribution metric toggles', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it.each([
+    JSON.stringify(['latency', 'tps', 'model']),
+    null,
+    '{invalid-json',
+    JSON.stringify({ latency: true }),
+  ])('keeps latency visible and unhideable with saved preferences %s', async (saved) => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'usage-hidden-columns' ? saved : null
+    )
+    const wrapper = mount(UsageView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
+          UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: true,
+          UserBalanceHistoryModal: true, Pagination: true, Select: true,
+          DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+          ModelDistributionChart: true, GroupDistributionChart: true,
+          EndpointDistributionChart: true,
+        },
+      },
+    })
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    const state = (wrapper.vm as any).$?.setupState
+    expect(state.visibleColumns.map((col: { key: string }) => col.key)).toContain('latency')
+    if (saved === JSON.stringify(['latency', 'tps', 'model'])) {
+      expect(state.visibleColumns.map((col: { key: string }) => col.key)).not.toContain('model')
+    }
+    expect(state.toggleableColumns.map((col: { key: string }) => col.key)).not.toContain('latency')
+    expect(state.allColumns.map((col: { key: string }) => col.key)).not.toContain('tps')
+    state.toggleColumn('latency')
+    expect(state.isColumnVisible('latency')).toBe(true)
+    state.toggleColumn('tokens')
+    expect(state.isColumnVisible('tokens')).toBe(false)
+    expect(state.isColumnVisible('latency')).toBe(true)
+    const persisted = JSON.parse(vi.mocked(localStorage.setItem).mock.lastCall?.[1] ?? '[]')
+    expect(persisted).toContain('tokens')
+    expect(persisted).not.toContain('latency')
+    expect(persisted).not.toContain('tps')
+    if (saved === JSON.stringify(['latency', 'tps', 'model'])) expect(persisted).toContain('model')
+    state.toggleColumn('tokens')
+    expect(state.isColumnVisible('tokens')).toBe(true)
+    wrapper.unmount()
   })
 
   it('keeps model and group metric toggles independent without refetching chart data', async () => {

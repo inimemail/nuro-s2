@@ -224,28 +224,7 @@
         </template>
 
         <template #cell-latency="{ row }">
-          <div class="flex items-stretch gap-2">
-            <span
-              class="w-1 shrink-0 rounded-full"
-              :class="row.first_token_ms != null
-                ? ['bg-gradient-to-b', LATENCY_BAR_FROM_CLASSES[firstTokenSeverity(row.first_token_ms)], LATENCY_BAR_TO_CLASSES[durationSeverity(row.duration_ms ?? 0)]]
-                : LATENCY_BAR_CLASSES[durationSeverity(row.duration_ms ?? 0)]"
-              aria-hidden="true"
-            ></span>
-            <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 text-xs">
-              <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
-              <span v-if="row.first_token_ms != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
-              <span v-else class="text-gray-400 dark:text-gray-500">-</span>
-              <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyDuration') }}</span>
-              <span class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
-            </div>
-          </div>
-        </template>
-
-        <template #cell-tps="{ row }">
-          <span class="whitespace-nowrap text-xs tabular-nums text-gray-700 dark:text-gray-300" :title="t('usage.requestTpsHint')">
-            {{ formatRequestTps(row) }}
-          </span>
+          <UsageLatencyCell :row="row" />
         </template>
 
         <template #cell-created_at="{ value }">
@@ -490,14 +469,7 @@ import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
-import {
-  LATENCY_BAR_CLASSES,
-  LATENCY_BAR_FROM_CLASSES,
-  LATENCY_BAR_TO_CLASSES,
-  LATENCY_TEXT_CLASSES,
-  durationSeverity,
-  firstTokenSeverity,
-} from '@/utils/latencyHealth'
+import UsageLatencyCell from '@/components/common/UsageLatencyCell.vue'
 import { getBillingModeLabel, getBillingModeBadgeClass, BILLING_MODE_TOKEN, BILLING_MODE_IMAGE } from '@/utils/billingMode'
 import {
   formatImageBillingSize,
@@ -529,15 +501,6 @@ function imageUnitPrice(row: AdminUsageLog | null): number {
 
 function isImageUsage(row: Pick<AdminUsageLog, 'image_count'> | null | undefined): boolean {
   return (row?.image_count ?? 0) > 0
-}
-
-function formatRequestTps(row: AdminUsageLog): string {
-  if ((row.billing_mode && row.billing_mode !== BILLING_MODE_TOKEN) || row.image_count > 0 ||
-      (row.image_output_tokens ?? 0) > 0 || row.duration_ms == null ||
-      !Number.isFinite(row.duration_ms) || row.duration_ms <= 0) return '-'
-  const output = textOutputTokens(row)
-  if (!Number.isFinite(output) || output < 0) return '-'
-  return (output * 1000 / row.duration_ms).toFixed(1)
 }
 
 function getDisplayBillingMode(row: Pick<AdminUsageLog, 'billing_mode' | 'image_count'> | null | undefined): string | null | undefined {
@@ -638,15 +601,6 @@ const getRequestTypeBadgeClass = (row: AdminUsageLog): string => {
 
 const formatUserAgent = (ua: string): string => {
   return ua
-}
-
-const formatDuration = (ms: number | null | undefined): string => {
-  if (ms == null) return '-'
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`
-  const totalSec = Math.round(ms / 1000)
-  if (totalSec < 3600) return `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`
-  return `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m`
 }
 
 // Cost tooltip functions
