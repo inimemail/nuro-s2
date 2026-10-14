@@ -70,6 +70,16 @@ func DeletedAt(v time.Time) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldDeletedAt, v))
 }
 
+// GeminiCachePending applies equality check predicate on the "gemini_cache_pending" field. It's identical to GeminiCachePendingEQ.
+func GeminiCachePending(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCacheGeneration applies equality check predicate on the "gemini_cache_generation" field. It's identical to GeminiCacheGenerationEQ.
+func GeminiCacheGeneration(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
 // UserID applies equality check predicate on the "user_id" field. It's identical to UserIDEQ.
 func UserID(v int64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldUserID, v))
@@ -268,6 +278,86 @@ func DeletedAtIsNil() predicate.UserSubscription {
 // DeletedAtNotNil applies the NotNil predicate on the "deleted_at" field.
 func DeletedAtNotNil() predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldNotNull(FieldDeletedAt))
+}
+
+// GeminiCachePendingEQ applies the EQ predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingEQ(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingNEQ applies the NEQ predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingNEQ(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingIn applies the In predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingIn(vs ...float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldGeminiCachePending, vs...))
+}
+
+// GeminiCachePendingNotIn applies the NotIn predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingNotIn(vs ...float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldGeminiCachePending, vs...))
+}
+
+// GeminiCachePendingGT applies the GT predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingGT(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingGTE applies the GTE predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingGTE(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingLT applies the LT predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingLT(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingLTE applies the LTE predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingLTE(v float64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldGeminiCachePending, v))
+}
+
+// GeminiCacheGenerationEQ applies the EQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationEQ(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationNEQ applies the NEQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNEQ(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationIn applies the In predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationIn(vs ...int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationNotIn applies the NotIn predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNotIn(vs ...int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationGT applies the GT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGT(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationGTE applies the GTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGTE(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLT applies the LT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLT(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLTE applies the LTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLTE(v int64) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldGeminiCacheGeneration, v))
 }
 
 // UserIDEQ applies the EQ predicate on the "user_id" field.

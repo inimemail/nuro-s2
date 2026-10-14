@@ -127,6 +127,7 @@ export interface OpsRequestDetail {
 
   user_id?: number | null
   api_key_id?: number | null
+  account_name?: string
   account_id?: number | null
   group_id?: number | null
 
@@ -1155,8 +1156,8 @@ export async function listRequestErrorUpstreamErrors(
   return data
 }
 
-export async function listRequestDetails(params: OpsRequestDetailsParams): Promise<OpsRequestDetailsResponse> {
-  const { data } = await apiClient.get<OpsRequestDetailsResponse>('/admin/ops/requests', { params })
+export async function listRequestDetails(params: OpsRequestDetailsParams, options?: { signal?: AbortSignal }): Promise<OpsRequestDetailsResponse> {
+  const { data } = await apiClient.get<OpsRequestDetailsResponse>('/admin/ops/requests', { params, signal: options?.signal })
   return data
 }
 

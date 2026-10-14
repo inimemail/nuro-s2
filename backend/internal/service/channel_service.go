@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -699,6 +700,7 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 		{"cache_write_price", p.CacheWritePrice},
 		{"cache_write_1h_price", p.CacheWrite1hPrice},
 		{"cache_read_price", p.CacheReadPrice},
+		{"cache_storage_cost_per_token_per_hour", p.CacheStoragePrice},
 		{"image_input_price", p.ImageInputPrice},
 		{"image_output_price", p.ImageOutputPrice},
 		{"per_request_price", p.PerRequestPrice},
@@ -707,6 +709,9 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 	for _, c := range checks {
 		if c.val != nil && *c.val < 0 {
 			return infraerrors.BadRequest("NEGATIVE_PRICE", fmt.Sprintf("%s must be >= 0", c.field))
+		}
+		if c.val != nil && (math.IsNaN(*c.val) || math.IsInf(*c.val, 0)) {
+			return infraerrors.BadRequest("INVALID_PRICE", fmt.Sprintf("%s must be finite", c.field))
 		}
 	}
 	return nil

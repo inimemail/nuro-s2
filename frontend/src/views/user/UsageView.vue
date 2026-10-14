@@ -642,6 +642,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { ref, computed, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1275,4 +1276,6 @@ onMounted(() => {
   loadUsageLogs()
   loadUsageStats()
 })
+
+useLocaleRefresh(() => Promise.all([loadUsageLogs(), loadApiKeys()]))
 </script>

@@ -21,6 +21,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -44,4 +45,6 @@ async function load(): Promise<void> {
   try { data.value = await getModelPlaza() } catch { failed.value = true } finally { loading.value = false }
 }
 onMounted(() => { void appStore.fetchPublicSettings(); void load() })
+
+useLocaleRefresh(() => load())
 </script>

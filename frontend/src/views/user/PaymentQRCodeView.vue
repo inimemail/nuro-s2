@@ -42,6 +42,7 @@ import { paymentAPI } from '@/api/payment'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { useAppStore } from '@/stores'
 import QRCode from 'qrcode'
+import { useDeadlineCountdown } from '@/composables/useDeadlineCountdown'
 import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
 
@@ -55,13 +56,13 @@ const qrCanvas = ref<HTMLCanvasElement | null>(null)
 const qrUrl = ref('')
 const payUrl = ref('')
 const orderId = ref(0)
-const remainingSeconds = ref(0)
 const expired = ref(false)
 const cancelling = ref(false)
 const paymentType = ref('')
 
+let sessionVersion = 0
+let pollingVersion: number | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let countdownTimer: ReturnType<typeof setInterval> | null = null
 
 const countdownDisplay = computed(() => {
   const m = Math.floor(remainingSeconds.value / 60)
@@ -133,8 +134,12 @@ async function renderQR() {
 
 async function pollStatus() {
   if (!orderId.value) return
+  const version = sessionVersion
+  if (pollingVersion === version) return
+  pollingVersion = version
+  try {
   const order = await paymentStore.pollOrderStatus(orderId.value)
-  if (!order) return
+  if (!order || version !== sessionVersion) return
   if (order.status === 'COMPLETED' || order.status === 'PAID') {
     cleanup()
     router.push({ path: '/payment/result', query: { order_id: String(orderId.value), status: 'success' } })
@@ -142,40 +147,38 @@ async function pollStatus() {
     cleanup()
     expired.value = true
   }
+  } finally {
+    if (pollingVersion === version) pollingVersion = null
+  }
 }
 
-function startCountdown(seconds: number) {
-  remainingSeconds.value = Math.max(0, seconds)
-  if (remainingSeconds.value <= 0) {
-    expired.value = true
-    return
-  }
-  countdownTimer = setInterval(() => {
-    remainingSeconds.value--
-    if (remainingSeconds.value <= 0) {
-      expired.value = true
-      cleanup()
-    }
-  }, 1000)
-}
+const { remainingSeconds, start: startCountdown, stop: stopCountdown } = useDeadlineCountdown(() => {
+  expired.value = true
+  cleanup()
+})
 
 async function handleCancel() {
   if (!orderId.value || cancelling.value) return
+  const version = sessionVersion, id = orderId.value
   cancelling.value = true
   try {
-    await paymentAPI.cancelOrder(orderId.value)
+    await paymentAPI.cancelOrder(id)
+    if (version !== sessionVersion) return
+    cancelling.value = false
     cleanup()
     router.push('/purchase')
   } catch (err: unknown) {
+    if (version !== sessionVersion) return
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
   } finally {
-    cancelling.value = false
+    if (version === sessionVersion) cancelling.value = false
   }
 }
 
 function cleanup() {
+  sessionVersion++
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+  stopCountdown()
 }
 
 watch(qrUrl, () => renderQR())
@@ -186,16 +189,8 @@ onMounted(() => {
   payUrl.value = String(route.query.pay_url || '')
   paymentType.value = String(route.query.payment_type || '')
 
-  // Calculate countdown from expiresAt
-  const expiresAtStr = String(route.query.expires_at || '')
-  let seconds = 30 * 60 // fallback: 30 minutes
-  if (expiresAtStr) {
-    const expiresAt = new Date(expiresAtStr)
-    const now = new Date()
-    seconds = Math.floor((expiresAt.getTime() - now.getTime()) / 1000)
-  }
-  startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  startCountdown(String(route.query.expires_at || ''), orderId.value)
+  if (!expired.value) pollTimer = setInterval(pollStatus, 3000)
   renderQR()
 })
 

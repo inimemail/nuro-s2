@@ -57,6 +57,89 @@ func (a *Account) IsVertexServiceAccount() bool {
 	return a != nil && a.Type == AccountTypeServiceAccount
 }
 
+func (a *Account) IsVertexAPIKey() bool {
+	return a.IsVertexServiceAccount() && a.Platform == PlatformGemini && strings.TrimSpace(a.GetCredential("auth_mode")) == "apikey"
+}
+
+func normalizeVertexGeminiCredentials(account *Account) error {
+	if account == nil || !account.IsVertexServiceAccount() {
+		return nil
+	}
+	mode := strings.TrimSpace(account.GetCredential("auth_mode"))
+	if mode != "" && mode != "apikey" && mode != "service_account" {
+		return errors.New("unsupported Vertex authentication mode")
+	}
+	if mode == "apikey" && account.Platform != PlatformGemini {
+		return errors.New("Vertex API key authentication requires Gemini")
+	}
+	if mode == "apikey" {
+		key := strings.TrimSpace(account.GetCredential("api_key"))
+		if key == "" || key == "REDACTED" || strings.ContainsAny(key, "\r\n") {
+			return errors.New("Vertex API key is required")
+		}
+		if _, err := buildVertexGeminiAccountURL(account, "gemini-3.6-flash", "generateContent", false); err != nil {
+			return err
+		}
+		account.Credentials["api_key"] = key
+		delete(account.Credentials, "service_account_json")
+		delete(account.Credentials, "service_account")
+		delete(account.Credentials, "client_email")
+	} else if mode == "service_account" {
+		if _, err := parseVertexServiceAccountKey(account); err != nil {
+			return err
+		}
+		delete(account.Credentials, "api_key")
+	}
+	return nil
+}
+
+func buildVertexGeminiAccountURL(account *Account, model, action string, stream bool) (string, error) {
+	if account == nil {
+		return "", errors.New("vertex account is required")
+	}
+	if account.IsVertexAPIKey() && account.VertexProjectID() == "" {
+		switch action {
+		case "generateContent", "streamGenerateContent", "countTokens":
+		default:
+			return "", errors.New("unsupported vertex gemini action")
+		}
+		if strings.TrimSpace(model) == "" {
+			return "", errors.New("vertex model is required")
+		}
+		u := "https://aiplatform.googleapis.com/v1/publishers/google/models/" + url.PathEscape(strings.TrimSpace(model)) + ":" + action
+		if stream {
+			u += "?alt=sse"
+		}
+		return u, nil
+	}
+	return buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(model), model, action, stream)
+}
+
+func setVertexGeminiAuth(ctx context.Context, req *http.Request, account *Account, provider *GeminiTokenProvider) error {
+	if account == nil || req == nil || account.Platform != PlatformGemini {
+		return errors.New("vertex Gemini account is required")
+	}
+	req.Header.Del("Authorization")
+	req.Header.Del("x-goog-api-key")
+	if account.IsVertexAPIKey() {
+		key := strings.TrimSpace(account.GetCredential("api_key"))
+		if key == "" || strings.ContainsAny(key, "\r\n") {
+			return errors.New("vertex api_key is invalid")
+		}
+		req.Header.Set("x-goog-api-key", key)
+		return nil
+	}
+	if provider == nil {
+		return errors.New("gemini token provider not configured")
+	}
+	token, err := provider.GetAccessToken(ctx, account)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
+}
+
 func (a *Account) VertexProjectID() string {
 	if a == nil {
 		return ""

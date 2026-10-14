@@ -116,8 +116,12 @@ func provideCleanup(
 	authCacheInvalidation *service.AuthCacheInvalidationWorker,
 	ingressRejectAggregator *service.OpsIngressRejectAggregator,
 	apiKeyService *service.APIKeyService,
+	geminiCache *service.GeminiCachedContentService,
 ) func() {
 	return func() {
+		if geminiCache != nil {
+			geminiCache.Stop()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 

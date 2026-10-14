@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,7 +133,13 @@ func (c *apiKeyCache) SetAuthCache(ctx context.Context, key string, entry *servi
 	if err != nil {
 		return err
 	}
-	return c.rdb.Set(ctx, apiKeyAuthCacheKey(key), payload, ttl).Err()
+	generation := int64(0)
+	if entry.Snapshot != nil {
+		generation = entry.Snapshot.GeminiCacheGeneration
+	}
+	const script = `if tonumber(ARGV[1])<tonumber(redis.call('GET',KEYS[2]) or '0') then return 0 end if tonumber(ARGV[1])>0 then redis.call('SET',KEYS[2],ARGV[1]) end redis.call('SET',KEYS[1],ARGV[2],'PX',ARGV[3]) return 1`
+	cacheKey := apiKeyAuthCacheKey(key)
+	return c.rdb.Eval(ctx, script, []string{cacheKey, cacheKey + ":gc-generation"}, generation, payload, ttl.Milliseconds()).Err()
 }
 
 func (c *apiKeyCache) DeleteAuthCache(ctx context.Context, key string) error {
@@ -175,4 +183,12 @@ func (c *apiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handle
 			}
 		}
 	}
+}
+
+func (c *apiKeyCache) FenceCacheChargeAuth(ctx context.Context, rawKey string, generation int64) error {
+	sum := sha256.Sum256([]byte(rawKey))
+	hash := hex.EncodeToString(sum[:])
+	key := apiKeyAuthCacheKey(hash)
+	const script = `if tonumber(ARGV[1])<tonumber(redis.call('GET',KEYS[2]) or '0') then return 0 end redis.call('SET',KEYS[2],ARGV[1]) redis.call('DEL',KEYS[1]) redis.call('PUBLISH',KEYS[3],ARGV[2]) return 1`
+	return c.rdb.Eval(ctx, script, []string{key, key + ":gc-generation", authCacheInvalidateChannel}, generation, hash).Err()
 }

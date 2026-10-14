@@ -18,6 +18,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"golang.org/x/net/http2"
 	"golang.org/x/sync/singleflight"
 )
@@ -624,23 +625,55 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
 		return body
 	}
-	if _, ok := envelope["models"]; ok {
-		return body
+	if raw, ok := envelope["models"]; ok {
+		var models []map[string]json.RawMessage
+		if json.Unmarshal(raw, &models) != nil {
+			return body
+		}
+		changed := false
+		for _, model := range models {
+			var slug string
+			_ = json.Unmarshal(model["slug"], &slug)
+			if _, exists := model["context_window"]; !exists && openai.IsGPT61SolModelSpelling(slug) {
+				model["context_window"] = json.RawMessage("500000")
+				changed = true
+			}
+		}
+		if !changed {
+			return body
+		}
+		encoded, err := json.Marshal(models)
+		if err != nil {
+			return body
+		}
+		envelope["models"] = encoded
+		converted, err := json.Marshal(envelope)
+		if err != nil {
+			return body
+		}
+		return converted
 	}
 	raw, ok := envelope["data"]
 	if !ok {
 		return body
 	}
 	var entries []struct {
-		ID string `json:"id"`
+		ID            string `json:"id"`
+		ContextWindow *int   `json:"context_window"`
 	}
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return body
 	}
-	models := make([]map[string]string, 0, len(entries))
+	models := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		if id := strings.TrimSpace(entry.ID); id != "" {
-			models = append(models, map[string]string{"slug": id})
+			model := map[string]any{"slug": id}
+			if entry.ContextWindow != nil {
+				model["context_window"] = *entry.ContextWindow
+			} else if openai.IsGPT61SolModelSpelling(id) {
+				model["context_window"] = 500000
+			}
+			models = append(models, model)
 		}
 	}
 	if len(models) == 0 {

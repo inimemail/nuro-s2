@@ -1,6 +1,8 @@
+import geminiCache from './en/geminiCache'
 import batchImage from './en/batchImage'
 
 export default {
+  geminiCache,
   openCodeUsage: {
     "title": "OpenCode Go usage windows",
     "description": "Refresh subscription usage after real request activity. Both global and account switches must be on; idle accounts are not polled continuously.",
@@ -2466,6 +2468,8 @@ export default {
       multiplierFactor: 'Factor',
       applyMultiplier: 'Apply',
       rateAdjusted: 'Rates adjusted successfully',
+      i18n: { title: 'Group translations', optional: 'Optional', hint: 'Empty fields use the original name and description. Translations affect display only.', language: 'Interface language' },
+      invalidRateMultiplier: 'Rates must be finite and positive; batch results cannot overflow or round to zero',
       rateSaved: 'Rate multipliers saved',
       finalRate: 'Final Rate',
       unsavedChanges: 'Unsaved changes',
@@ -3688,6 +3692,9 @@ export default {
         },
       },
       tempUnschedulable: {
+        scope: 'Scope',
+        scopeModel: 'Current model only',
+        scopeAccount: 'Entire account (legacy default)',
         title: 'Temp Unschedulable',
         statusTitle: 'Temp Unschedulable Status',
         hint: 'Disable accounts temporarily when error code and keyword both match.',
@@ -3862,6 +3869,9 @@ export default {
       vertexSaJsonMissingProjectId: 'Service Account JSON is missing project_id',
       vertexSaJsonMissingClientEmail: 'Service Account JSON is missing client_email',
       vertexSaJsonInvalid: 'Service Account JSON format is invalid',
+      vertexAuthMode: 'Authentication',
+      vertexKeyKeepHint: 'Leave blank to retain saved key',
+      vertexKeyModeHint: 'Leave Project ID empty for the Express global endpoint; this mode supports generation and token counting.',
       vertexSaJsonRequired: 'Please upload a Service Account JSON',
       oauthSetupToken: 'OAuth / Setup Token',
       addMethod: 'Add Method',

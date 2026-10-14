@@ -162,4 +162,22 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.emitted('success')).toHaveLength(1)
   })
+
+  it('ignores a late cancellation after switching to another order', async () => {
+    let finish!: () => void
+    cancelOrder.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const wrapper = mount(PaymentStatusPanel, {
+      props: { orderId: 42, qrCode: 'qr-42', expiresAt: '2099-01-01T12:30:00Z', paymentType: 'alipay', orderType: 'balance' },
+      global: { stubs: { Icon: true } },
+    })
+    await flushPromises()
+    const cancel = wrapper.findAll('button').find(button => button.text().includes('payment.qr.cancelOrder'))!
+    await cancel.trigger('click'); await flushPromises()
+    expect(cancelOrder).toHaveBeenCalledWith(42)
+    await wrapper.setProps({ orderId: 43, qrCode: 'qr-43' })
+    finish(); await flushPromises()
+    expect(wrapper.emitted('settled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('payment.result.cancelled')
+    wrapper.unmount()
+  })
 })

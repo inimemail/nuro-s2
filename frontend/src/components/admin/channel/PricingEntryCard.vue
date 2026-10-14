@@ -182,6 +182,12 @@
             </div>
           </div>
 
+          <label v-if="props.platform === 'gemini'" class="mt-3 block rounded-xl border border-teal-200 bg-teal-50/50 p-3 dark:border-teal-900 dark:bg-teal-950/20">
+            <span class="text-xs font-medium text-teal-800 dark:text-teal-300">{{ t('geminiCache.storagePrice') }} <span class="font-normal">($/MTok/h)</span></span>
+            <input :value="entry.cache_storage_cost_per_token_per_hour" type="number" step="any" min="0" class="input mt-2 max-w-xs text-sm" :aria-label="t('geminiCache.storagePrice')" :placeholder="t('admin.channels.form.pricePlaceholder', '默认')" @input="emitField('cache_storage_cost_per_token_per_hour', ($event.target as HTMLInputElement).value)" />
+            <span class="mt-2 block text-xs leading-5 text-teal-700 dark:text-teal-400">{{ t('geminiCache.storagePriceHint') }}</span>
+          </label>
+
           <!-- Token intervals -->
           <div v-if="!props.hideTokenIntervals" class="mt-3">
             <div class="flex items-center justify-between">

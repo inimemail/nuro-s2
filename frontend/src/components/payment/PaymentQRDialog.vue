@@ -83,6 +83,7 @@ import { getPaymentPopupFeatures } from '@/components/payment/providerConfig'
 import type { PaymentOrder } from '@/types/payment'
 import { currencySymbol } from '@/components/payment/currency'
 import QRCode from 'qrcode'
+import { useDeadlineCountdown } from '@/composables/useDeadlineCountdown'
 import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
 
@@ -107,7 +108,6 @@ const appStore = useAppStore()
 
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
 const qrUrl = ref('')
-const remainingSeconds = ref(0)
 const expired = ref(false)
 const cancelling = ref(false)
 const success = ref(false)
@@ -118,8 +118,9 @@ function paymentAmountSymbol(order: PaymentOrder): string {
   return currencySymbol(order.currency)
 }
 
+let sessionVersion = 0
+let pollingVersion: number | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let countdownTimer: ReturnType<typeof setInterval> | null = null
 let verifyAttempts = 0
 let lastVerifyAt = 0
 
@@ -197,9 +198,14 @@ async function renderQR() {
 
 async function pollStatus() {
   if (!props.orderId) return
+  const version = sessionVersion
+  if (pollingVersion === version) return
+  pollingVersion = version
+  try {
   let order = await paymentStore.pollOrderStatus(props.orderId)
-  if (!order) return
+  if (!order || version !== sessionVersion) return
   order = await tryRecoverPendingOrder(order)
+  if (version !== sessionVersion) return
   if (order.status === 'COMPLETED' || order.status === 'PAID') {
     cleanup()
     paidOrder.value = order
@@ -208,6 +214,9 @@ async function pollStatus() {
   } else if (order.status === 'EXPIRED' || order.status === 'CANCELLED' || order.status === 'FAILED') {
     cleanup()
     expired.value = true
+  }
+  } finally {
+    if (pollingVersion === version) pollingVersion = null
   }
 }
 
@@ -232,32 +241,26 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
   }
 }
 
-function startCountdown(seconds: number) {
-  remainingSeconds.value = Math.max(0, seconds)
-  if (remainingSeconds.value <= 0) {
-    expired.value = true
-    return
-  }
-  countdownTimer = setInterval(() => {
-    remainingSeconds.value--
-    if (remainingSeconds.value <= 0) {
-      expired.value = true
-      cleanup()
-    }
-  }, 1000)
-}
+const { remainingSeconds, start: startCountdown, stop: stopCountdown } = useDeadlineCountdown(() => {
+  expired.value = true
+  cleanup()
+})
 
 async function handleCancel() {
   if (!props.orderId || cancelling.value) return
+  const version = sessionVersion, id = props.orderId
   cancelling.value = true
   try {
-    await paymentAPI.cancelOrder(props.orderId)
+    await paymentAPI.cancelOrder(id)
+    if (version !== sessionVersion) return
+    cancelling.value = false
     cleanup()
     emit('close')
   } catch (err: unknown) {
+    if (version !== sessionVersion) return
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
   } finally {
-    cancelling.value = false
+    if (version === sessionVersion) cancelling.value = false
   }
 }
 
@@ -272,11 +275,13 @@ function handleDone() {
 }
 
 function cleanup() {
+  sessionVersion++
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+  stopCountdown()
 }
 
 function init() {
+  cleanup()
   // Reset state
   success.value = false
   paidOrder.value = null
@@ -286,24 +291,19 @@ function init() {
   verifyAttempts = 0
   lastVerifyAt = 0
 
-  let seconds = 30 * 60
-  if (props.expiresAt) {
-    const expiresAt = new Date(props.expiresAt)
-    seconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000)
-  }
-  startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  startCountdown(props.expiresAt, props.orderId)
+  if (!expired.value) pollTimer = setInterval(pollStatus, 3000)
   renderQR()
 }
 
 // Watch for dialog open/close
-watch(() => props.show, (isOpen) => {
+watch(() => [props.show, props.orderId, props.expiresAt] as const, ([isOpen]) => {
   if (isOpen) {
     init()
   } else {
     cleanup()
   }
-})
+}, { immediate: true })
 
 watch(qrUrl, () => renderQR())
 

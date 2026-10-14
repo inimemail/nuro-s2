@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -40,7 +40,12 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
 
-const close = () => emit('update:modelValue', false)
+let requestVersion = 0
+let controller: AbortController | null = null
+let disposed = false
+const invalidate = () => { requestVersion++; controller?.abort(); controller = null }
+const close = () => { invalidate(); emit('update:modelValue', false) }
+onUnmounted(() => { disposed = true; invalidate() })
 
 const showTTFT = computed(() => props.preset.sort === 'ttft_desc')
 const latencyLabel = computed(() => t(showTTFT.value ? 'admin.ops.ttftLabel' : 'admin.ops.requestDetails.table.duration'))
@@ -66,7 +71,12 @@ function buildTimeParams(): Pick<OpsRequestDetailsParams, 'start_time' | 'end_ti
 }
 
 const fetchData = async () => {
-  if (!props.modelValue) return
+  if (!props.modelValue || disposed) return
+  invalidate()
+  const version = requestVersion
+  const ctrl = new AbortController()
+  controller = ctrl
+  const isCurrent = () => !disposed && props.modelValue && version === requestVersion
   loading.value = true
   try {
     const params: OpsRequestDetailsParams = {
@@ -84,16 +94,18 @@ const fetchData = async () => {
     if (typeof props.preset.min_duration_ms === 'number') params.min_duration_ms = props.preset.min_duration_ms
     if (typeof props.preset.max_duration_ms === 'number') params.max_duration_ms = props.preset.max_duration_ms
 
-    const res = await opsAPI.listRequestDetails(params)
+    const res = await opsAPI.listRequestDetails(params, { signal: ctrl.signal })
+    if (!isCurrent()) return
     items.value = res.items || []
     total.value = res.total || 0
   } catch (e: any) {
+    if (!isCurrent() || ctrl.signal.aborted) return
     console.error('[OpsRequestDetailsModal] Failed to fetch request details', e)
     appStore.showError(e?.message || t('admin.ops.requestDetails.failedToLoad'))
     items.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
@@ -104,8 +116,12 @@ watch(
       page.value = 1
       pageSize.value = 10
       fetchData()
+    } else {
+      invalidate()
+      loading.value = false
     }
-  }
+  },
+  { immediate: true }
 )
 
 watch(
@@ -212,6 +228,9 @@ const kindBadgeClass = (kind: string) => {
                     {{ t('admin.ops.requestDetails.table.model') }}
                   </th>
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    {{ t('admin.accounts.accountName') }}
+                  </th>
+                  <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     {{ latencyLabel }}
                   </th>
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -240,6 +259,9 @@ const kindBadgeClass = (kind: string) => {
                   </td>
                   <td class="max-w-[240px] truncate px-4 py-3 text-xs text-gray-600 dark:text-gray-300" :title="row.model || ''">
                     {{ row.model || '-' }}
+                  </td>
+                  <td class="min-w-[120px] max-w-[220px] px-4 py-3 text-xs text-gray-700 dark:text-gray-200">
+                    <span class="break-words" :title="row.account_name || ''">{{ row.account_name || (row.account_id ? `#${row.account_id}` : '—') }}</span>
                   </td>
                   <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
                     {{ formatLatency(row) }}

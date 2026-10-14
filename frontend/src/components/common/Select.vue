@@ -388,6 +388,7 @@ const onTriggerKeyDown = () => {
 }
 
 const onDropdownKeyDown = (e: KeyboardEvent) => {
+  if (e.isComposing || e.keyCode === 229) return
   switch (e.key) {
     case 'ArrowDown':
       e.preventDefault()

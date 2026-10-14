@@ -60,6 +60,7 @@ func IsHealthCostBalancedSchedulingStrategy(value string) bool {
 }
 
 type Group struct {
+	I18n           GroupI18n
 	ID             int64
 	Name           string
 	Description    string

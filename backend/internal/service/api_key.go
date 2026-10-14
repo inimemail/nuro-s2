@@ -28,14 +28,16 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
-	Name        string
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
+	GeminiCachePending    float64
+	GeminiCacheGeneration int64
+	ID                    int64
+	UserID                int64
+	Key                   string
+	Name                  string
+	GroupID               *int64
+	Status                string
+	IPWhitelist           []string
+	IPBlacklist           []string
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`
@@ -86,7 +88,7 @@ func (k *APIKey) IsQuotaExhausted() bool {
 	if k.Quota <= 0 {
 		return false // unlimited
 	}
-	return k.QuotaUsed >= k.Quota
+	return k.QuotaUsed+k.GeminiCachePending >= k.Quota
 }
 
 // GetQuotaRemaining returns remaining quota (-1 for unlimited)
@@ -94,7 +96,7 @@ func (k *APIKey) GetQuotaRemaining() float64 {
 	if k.Quota <= 0 {
 		return -1 // unlimited
 	}
-	remaining := k.Quota - k.QuotaUsed
+	remaining := k.Quota - k.QuotaUsed - k.GeminiCachePending
 	if remaining < 0 {
 		return 0
 	}

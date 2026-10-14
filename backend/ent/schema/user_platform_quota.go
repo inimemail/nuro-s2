@@ -33,6 +33,14 @@ func (UserPlatformQuota) Mixin() []ent.Mixin {
 
 func (UserPlatformQuota) Fields() []ent.Field {
 	return []ent.Field{
+		field.Float("gemini_cache_pending").SchemaType(map[string]string{dialect.Postgres: "numeric(20,10)"}).Default(0),
+		field.Int64("gemini_cache_generation").Default(0),
+		field.Float("gemini_cache_daily_usage").SchemaType(map[string]string{dialect.Postgres: "numeric(20,10)"}).Default(0),
+		field.Time("gemini_cache_daily_start").Optional().Nillable(),
+		field.Float("gemini_cache_weekly_usage").SchemaType(map[string]string{dialect.Postgres: "numeric(20,10)"}).Default(0),
+		field.Time("gemini_cache_weekly_start").Optional().Nillable(),
+		field.Float("gemini_cache_monthly_usage").SchemaType(map[string]string{dialect.Postgres: "numeric(20,10)"}).Default(0),
+		field.Time("gemini_cache_monthly_start").Optional().Nillable(),
 		field.Int64("user_id"),
 		field.String("platform").
 			MaxLen(32).

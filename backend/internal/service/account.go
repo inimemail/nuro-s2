@@ -450,6 +450,7 @@ const (
 )
 
 type TempUnschedulableRule struct {
+	Scope           string   `json:"scope,omitempty"`
 	ErrorCode       int      `json:"error_code"`
 	Keywords        []string `json:"keywords"`
 	DurationMinutes int      `json:"duration_minutes"`
@@ -806,13 +807,14 @@ func (a *Account) GetTempUnschedulableRules() []TempUnschedulableRule {
 		}
 
 		rule := TempUnschedulableRule{
+			Scope:           parseTempUnschedString(entry["scope"]),
 			ErrorCode:       parseTempUnschedInt(entry["error_code"]),
 			Keywords:        parseTempUnschedStrings(entry["keywords"]),
 			DurationMinutes: parseTempUnschedInt(entry["duration_minutes"]),
 			Description:     parseTempUnschedString(entry["description"]),
 		}
 
-		if rule.ErrorCode <= 0 || rule.DurationMinutes <= 0 || len(rule.Keywords) == 0 {
+		if (rule.Scope != "" && rule.Scope != "account" && rule.Scope != "model") || rule.ErrorCode <= 0 || rule.DurationMinutes <= 0 || len(rule.Keywords) == 0 {
 			continue
 		}
 

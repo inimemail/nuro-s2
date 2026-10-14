@@ -65,6 +65,118 @@ func (_c *UserPlatformQuotaCreate) SetNillableDeletedAt(v *time.Time) *UserPlatf
 	return _c
 }
 
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCachePending(v float64) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCachePending(v)
+	return _c
+}
+
+// SetNillableGeminiCachePending sets the "gemini_cache_pending" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCachePending(v *float64) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCachePending(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheGeneration(v int64) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheGeneration(v)
+	return _c
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheGeneration(v *int64) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheGeneration(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheDailyUsage(v float64) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheDailyUsage(v)
+	return _c
+}
+
+// SetNillableGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheDailyUsage(v *float64) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheDailyUsage(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheDailyStart sets the "gemini_cache_daily_start" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheDailyStart(v time.Time) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheDailyStart(v)
+	return _c
+}
+
+// SetNillableGeminiCacheDailyStart sets the "gemini_cache_daily_start" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheDailyStart(v *time.Time) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheDailyStart(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheWeeklyUsage(v)
+	return _c
+}
+
+// SetNillableGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheWeeklyUsage(v *float64) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheWeeklyUsage(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheWeeklyStart(v time.Time) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheWeeklyStart(v)
+	return _c
+}
+
+// SetNillableGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheWeeklyStart(v *time.Time) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheWeeklyStart(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheMonthlyUsage(v)
+	return _c
+}
+
+// SetNillableGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheMonthlyUsage(v *float64) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheMonthlyUsage(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field.
+func (_c *UserPlatformQuotaCreate) SetGeminiCacheMonthlyStart(v time.Time) *UserPlatformQuotaCreate {
+	_c.mutation.SetGeminiCacheMonthlyStart(v)
+	return _c
+}
+
+// SetNillableGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field if the given value is not nil.
+func (_c *UserPlatformQuotaCreate) SetNillableGeminiCacheMonthlyStart(v *time.Time) *UserPlatformQuotaCreate {
+	if v != nil {
+		_c.SetGeminiCacheMonthlyStart(*v)
+	}
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *UserPlatformQuotaCreate) SetUserID(v int64) *UserPlatformQuotaCreate {
 	_c.mutation.SetUserID(v)
@@ -259,6 +371,26 @@ func (_c *UserPlatformQuotaCreate) defaults() error {
 		v := userplatformquota.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		v := userplatformquota.DefaultGeminiCachePending
+		_c.mutation.SetGeminiCachePending(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		v := userplatformquota.DefaultGeminiCacheGeneration
+		_c.mutation.SetGeminiCacheGeneration(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheDailyUsage(); !ok {
+		v := userplatformquota.DefaultGeminiCacheDailyUsage
+		_c.mutation.SetGeminiCacheDailyUsage(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheWeeklyUsage(); !ok {
+		v := userplatformquota.DefaultGeminiCacheWeeklyUsage
+		_c.mutation.SetGeminiCacheWeeklyUsage(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheMonthlyUsage(); !ok {
+		v := userplatformquota.DefaultGeminiCacheMonthlyUsage
+		_c.mutation.SetGeminiCacheMonthlyUsage(v)
+	}
 	if _, ok := _c.mutation.DailyUsageUsd(); !ok {
 		v := userplatformquota.DefaultDailyUsageUsd
 		_c.mutation.SetDailyUsageUsd(v)
@@ -281,6 +413,21 @@ func (_c *UserPlatformQuotaCreate) check() error {
 	}
 	if _, ok := _c.mutation.UpdatedAt(); !ok {
 		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "UserPlatformQuota.updated_at"`)}
+	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		return &ValidationError{Name: "gemini_cache_pending", err: errors.New(`ent: missing required field "UserPlatformQuota.gemini_cache_pending"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		return &ValidationError{Name: "gemini_cache_generation", err: errors.New(`ent: missing required field "UserPlatformQuota.gemini_cache_generation"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheDailyUsage(); !ok {
+		return &ValidationError{Name: "gemini_cache_daily_usage", err: errors.New(`ent: missing required field "UserPlatformQuota.gemini_cache_daily_usage"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheWeeklyUsage(); !ok {
+		return &ValidationError{Name: "gemini_cache_weekly_usage", err: errors.New(`ent: missing required field "UserPlatformQuota.gemini_cache_weekly_usage"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheMonthlyUsage(); !ok {
+		return &ValidationError{Name: "gemini_cache_monthly_usage", err: errors.New(`ent: missing required field "UserPlatformQuota.gemini_cache_monthly_usage"`)}
 	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "UserPlatformQuota.user_id"`)}
@@ -343,6 +490,38 @@ func (_c *UserPlatformQuotaCreate) createSpec() (*UserPlatformQuota, *sqlgraph.C
 	if value, ok := _c.mutation.DeletedAt(); ok {
 		_spec.SetField(userplatformquota.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
+	}
+	if value, ok := _c.mutation.GeminiCachePending(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCachePending, field.TypeFloat64, value)
+		_node.GeminiCachePending = value
+	}
+	if value, ok := _c.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheGeneration, field.TypeInt64, value)
+		_node.GeminiCacheGeneration = value
+	}
+	if value, ok := _c.mutation.GeminiCacheDailyUsage(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheDailyUsage, field.TypeFloat64, value)
+		_node.GeminiCacheDailyUsage = value
+	}
+	if value, ok := _c.mutation.GeminiCacheDailyStart(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheDailyStart, field.TypeTime, value)
+		_node.GeminiCacheDailyStart = &value
+	}
+	if value, ok := _c.mutation.GeminiCacheWeeklyUsage(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheWeeklyUsage, field.TypeFloat64, value)
+		_node.GeminiCacheWeeklyUsage = value
+	}
+	if value, ok := _c.mutation.GeminiCacheWeeklyStart(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheWeeklyStart, field.TypeTime, value)
+		_node.GeminiCacheWeeklyStart = &value
+	}
+	if value, ok := _c.mutation.GeminiCacheMonthlyUsage(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheMonthlyUsage, field.TypeFloat64, value)
+		_node.GeminiCacheMonthlyUsage = value
+	}
+	if value, ok := _c.mutation.GeminiCacheMonthlyStart(); ok {
+		_spec.SetField(userplatformquota.FieldGeminiCacheMonthlyStart, field.TypeTime, value)
+		_node.GeminiCacheMonthlyStart = &value
 	}
 	if value, ok := _c.mutation.Platform(); ok {
 		_spec.SetField(userplatformquota.FieldPlatform, field.TypeString, value)
@@ -480,6 +659,150 @@ func (u *UserPlatformQuotaUpsert) UpdateDeletedAt() *UserPlatformQuotaUpsert {
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (u *UserPlatformQuotaUpsert) ClearDeletedAt() *UserPlatformQuotaUpsert {
 	u.SetNull(userplatformquota.FieldDeletedAt)
+	return u
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCachePending(v float64) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCachePending, v)
+	return u
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCachePending() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCachePending)
+	return u
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsert) AddGeminiCachePending(v float64) *UserPlatformQuotaUpsert {
+	u.Add(userplatformquota.FieldGeminiCachePending, v)
+	return u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheGeneration, v)
+	return u
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheGeneration() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheGeneration)
+	return u
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsert) AddGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsert {
+	u.Add(userplatformquota.FieldGeminiCacheGeneration, v)
+	return u
+}
+
+// SetGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheDailyUsage, v)
+	return u
+}
+
+// UpdateGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheDailyUsage() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheDailyUsage)
+	return u
+}
+
+// AddGeminiCacheDailyUsage adds v to the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsert) AddGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Add(userplatformquota.FieldGeminiCacheDailyUsage, v)
+	return u
+}
+
+// SetGeminiCacheDailyStart sets the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheDailyStart(v time.Time) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheDailyStart, v)
+	return u
+}
+
+// UpdateGeminiCacheDailyStart sets the "gemini_cache_daily_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheDailyStart() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheDailyStart)
+	return u
+}
+
+// ClearGeminiCacheDailyStart clears the value of the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsert) ClearGeminiCacheDailyStart() *UserPlatformQuotaUpsert {
+	u.SetNull(userplatformquota.FieldGeminiCacheDailyStart)
+	return u
+}
+
+// SetGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheWeeklyUsage, v)
+	return u
+}
+
+// UpdateGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheWeeklyUsage() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheWeeklyUsage)
+	return u
+}
+
+// AddGeminiCacheWeeklyUsage adds v to the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsert) AddGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Add(userplatformquota.FieldGeminiCacheWeeklyUsage, v)
+	return u
+}
+
+// SetGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheWeeklyStart(v time.Time) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheWeeklyStart, v)
+	return u
+}
+
+// UpdateGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheWeeklyStart() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheWeeklyStart)
+	return u
+}
+
+// ClearGeminiCacheWeeklyStart clears the value of the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsert) ClearGeminiCacheWeeklyStart() *UserPlatformQuotaUpsert {
+	u.SetNull(userplatformquota.FieldGeminiCacheWeeklyStart)
+	return u
+}
+
+// SetGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheMonthlyUsage, v)
+	return u
+}
+
+// UpdateGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheMonthlyUsage() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheMonthlyUsage)
+	return u
+}
+
+// AddGeminiCacheMonthlyUsage adds v to the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsert) AddGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsert {
+	u.Add(userplatformquota.FieldGeminiCacheMonthlyUsage, v)
+	return u
+}
+
+// SetGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsert) SetGeminiCacheMonthlyStart(v time.Time) *UserPlatformQuotaUpsert {
+	u.Set(userplatformquota.FieldGeminiCacheMonthlyStart, v)
+	return u
+}
+
+// UpdateGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsert) UpdateGeminiCacheMonthlyStart() *UserPlatformQuotaUpsert {
+	u.SetExcluded(userplatformquota.FieldGeminiCacheMonthlyStart)
+	return u
+}
+
+// ClearGeminiCacheMonthlyStart clears the value of the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsert) ClearGeminiCacheMonthlyStart() *UserPlatformQuotaUpsert {
+	u.SetNull(userplatformquota.FieldGeminiCacheMonthlyStart)
 	return u
 }
 
@@ -764,6 +1087,174 @@ func (u *UserPlatformQuotaUpsertOne) UpdateDeletedAt() *UserPlatformQuotaUpsertO
 func (u *UserPlatformQuotaUpsertOne) ClearDeletedAt() *UserPlatformQuotaUpsertOne {
 	return u.Update(func(s *UserPlatformQuotaUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCachePending(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsertOne) AddGeminiCachePending(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCachePending() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsertOne) AddGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheGeneration() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheGeneration()
+	})
+}
+
+// SetGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheDailyUsage(v)
+	})
+}
+
+// AddGeminiCacheDailyUsage adds v to the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsertOne) AddGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheDailyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheDailyUsage() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheDailyUsage()
+	})
+}
+
+// SetGeminiCacheDailyStart sets the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheDailyStart(v time.Time) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheDailyStart(v)
+	})
+}
+
+// UpdateGeminiCacheDailyStart sets the "gemini_cache_daily_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheDailyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheDailyStart()
+	})
+}
+
+// ClearGeminiCacheDailyStart clears the value of the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsertOne) ClearGeminiCacheDailyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheDailyStart()
+	})
+}
+
+// SetGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheWeeklyUsage(v)
+	})
+}
+
+// AddGeminiCacheWeeklyUsage adds v to the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsertOne) AddGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheWeeklyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheWeeklyUsage() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheWeeklyUsage()
+	})
+}
+
+// SetGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheWeeklyStart(v time.Time) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheWeeklyStart(v)
+	})
+}
+
+// UpdateGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheWeeklyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheWeeklyStart()
+	})
+}
+
+// ClearGeminiCacheWeeklyStart clears the value of the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsertOne) ClearGeminiCacheWeeklyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheWeeklyStart()
+	})
+}
+
+// SetGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheMonthlyUsage(v)
+	})
+}
+
+// AddGeminiCacheMonthlyUsage adds v to the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsertOne) AddGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheMonthlyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheMonthlyUsage() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheMonthlyUsage()
+	})
+}
+
+// SetGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsertOne) SetGeminiCacheMonthlyStart(v time.Time) *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheMonthlyStart(v)
+	})
+}
+
+// UpdateGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertOne) UpdateGeminiCacheMonthlyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheMonthlyStart()
+	})
+}
+
+// ClearGeminiCacheMonthlyStart clears the value of the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsertOne) ClearGeminiCacheMonthlyStart() *UserPlatformQuotaUpsertOne {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheMonthlyStart()
 	})
 }
 
@@ -1248,6 +1739,174 @@ func (u *UserPlatformQuotaUpsertBulk) UpdateDeletedAt() *UserPlatformQuotaUpsert
 func (u *UserPlatformQuotaUpsertBulk) ClearDeletedAt() *UserPlatformQuotaUpsertBulk {
 	return u.Update(func(s *UserPlatformQuotaUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCachePending(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserPlatformQuotaUpsertBulk) AddGeminiCachePending(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCachePending() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserPlatformQuotaUpsertBulk) AddGeminiCacheGeneration(v int64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheGeneration() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheGeneration()
+	})
+}
+
+// SetGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheDailyUsage(v)
+	})
+}
+
+// AddGeminiCacheDailyUsage adds v to the "gemini_cache_daily_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) AddGeminiCacheDailyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheDailyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheDailyUsage() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheDailyUsage()
+	})
+}
+
+// SetGeminiCacheDailyStart sets the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheDailyStart(v time.Time) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheDailyStart(v)
+	})
+}
+
+// UpdateGeminiCacheDailyStart sets the "gemini_cache_daily_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheDailyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheDailyStart()
+	})
+}
+
+// ClearGeminiCacheDailyStart clears the value of the "gemini_cache_daily_start" field.
+func (u *UserPlatformQuotaUpsertBulk) ClearGeminiCacheDailyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheDailyStart()
+	})
+}
+
+// SetGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheWeeklyUsage(v)
+	})
+}
+
+// AddGeminiCacheWeeklyUsage adds v to the "gemini_cache_weekly_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) AddGeminiCacheWeeklyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheWeeklyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheWeeklyUsage() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheWeeklyUsage()
+	})
+}
+
+// SetGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheWeeklyStart(v time.Time) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheWeeklyStart(v)
+	})
+}
+
+// UpdateGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheWeeklyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheWeeklyStart()
+	})
+}
+
+// ClearGeminiCacheWeeklyStart clears the value of the "gemini_cache_weekly_start" field.
+func (u *UserPlatformQuotaUpsertBulk) ClearGeminiCacheWeeklyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheWeeklyStart()
+	})
+}
+
+// SetGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheMonthlyUsage(v)
+	})
+}
+
+// AddGeminiCacheMonthlyUsage adds v to the "gemini_cache_monthly_usage" field.
+func (u *UserPlatformQuotaUpsertBulk) AddGeminiCacheMonthlyUsage(v float64) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.AddGeminiCacheMonthlyUsage(v)
+	})
+}
+
+// UpdateGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheMonthlyUsage() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheMonthlyUsage()
+	})
+}
+
+// SetGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsertBulk) SetGeminiCacheMonthlyStart(v time.Time) *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.SetGeminiCacheMonthlyStart(v)
+	})
+}
+
+// UpdateGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field to the value that was provided on create.
+func (u *UserPlatformQuotaUpsertBulk) UpdateGeminiCacheMonthlyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.UpdateGeminiCacheMonthlyStart()
+	})
+}
+
+// ClearGeminiCacheMonthlyStart clears the value of the "gemini_cache_monthly_start" field.
+func (u *UserPlatformQuotaUpsertBulk) ClearGeminiCacheMonthlyStart() *UserPlatformQuotaUpsertBulk {
+	return u.Update(func(s *UserPlatformQuotaUpsert) {
+		s.ClearGeminiCacheMonthlyStart()
 	})
 }
 

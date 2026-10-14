@@ -130,6 +130,22 @@ type authCacheStub struct {
 	deleteAuthKeys []string
 }
 
+func TestAPIKeyServiceAuthCacheMissAndImmutableEntry(t *testing.T) {
+	cache := &authCacheStub{getAuthCache: func(context.Context, string) (*APIKeyAuthCacheEntry, error) {
+		return nil, nil
+	}}
+	svc := &APIKeyService{cache: cache, authCfg: apiKeyAuthCacheConfig{l2TTL: time.Minute}}
+	entry, hit := svc.getAuthCacheEntry(context.Background(), "miss")
+	require.False(t, hit)
+	require.Nil(t, entry)
+	shared := &APIKeyAuthCacheEntry{Snapshot: &APIKeyAuthSnapshot{APIKeyID: 1}}
+	cache.getAuthCache = func(context.Context, string) (*APIKeyAuthCacheEntry, error) { return shared, nil }
+	entry, hit = svc.getAuthCacheEntry(context.Background(), "hit")
+	require.True(t, hit)
+	require.False(t, entry.localOrigin.IsZero())
+	require.True(t, shared.localOrigin.IsZero(), "cache-owned entry remains immutable")
+}
+
 func (s *authCacheStub) GetCreateAttemptCount(ctx context.Context, userID int64) (int, error) {
 	return 0, nil
 }

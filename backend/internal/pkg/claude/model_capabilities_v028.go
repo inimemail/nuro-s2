@@ -40,8 +40,12 @@ func IsSonnet55(model string) bool {
 	return normalize55Model(model) == "claude-sonnet-5-5"
 }
 
+func IsHaiku55(model string) bool {
+	return normalize55Model(model) == "claude-haiku-5-5"
+}
+
 // IsAdaptiveThinkingModel identifies Claude 5.5 models that require the
 // adaptive-thinking request and Responses conversion rules.
 func IsAdaptiveThinkingModel(model string) bool {
-	return IsOpus55(model) || IsSonnet55(model)
+	return IsOpus55(model) || IsSonnet55(model) || IsHaiku55(model)
 }

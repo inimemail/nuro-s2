@@ -47,6 +47,7 @@ export interface ChannelModelPricing {
   output_price: number | null
   cache_write_price: number | null
   cache_write_1h_price?: number | null
+  cache_storage_cost_per_token_per_hour?: number | null
   cache_read_price: number | null
   fast_multiplier?: number | null
 	flex_multiplier?: number | null

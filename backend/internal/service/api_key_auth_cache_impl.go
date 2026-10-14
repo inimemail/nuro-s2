@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 22 // v22: include per-group account scheduling strategy
+const apiKeyAuthSnapshotVersion = 23 // v23: localized groups and cache reservation quota
 
 var errAPIKeyAuthGroupPricingVersionChanged = errors.New("API key auth group pricing version changed")
 
@@ -196,14 +196,14 @@ func (s *APIKeyService) authCacheKey(key string) string {
 func (s *APIKeyService) getAuthCacheEntry(ctx context.Context, cacheKey string) (*APIKeyAuthCacheEntry, bool) {
 	if s.authCacheL1 != nil {
 		if val, ok := s.authCacheL1.Get(cacheKey); ok {
-			if entry, ok := val.(*APIKeyAuthCacheEntry); ok {
+			if entry, ok := val.(*APIKeyAuthCacheEntry); ok && entry != nil && (entry.localOrigin.IsZero() || time.Since(entry.localOrigin) < s.authCfg.l1TTL*(100+time.Duration(s.authCfg.jitterPercent))/100) {
 				return entry, true
 			}
 		}
 	}
 	if s.authNegativeCacheL1 != nil {
 		if val, ok := s.authNegativeCacheL1.Get(cacheKey); ok {
-			if entry, ok := val.(*APIKeyAuthCacheEntry); ok && entry.NotFound {
+			if entry, ok := val.(*APIKeyAuthCacheEntry); ok && entry != nil && entry.NotFound {
 				return entry, true
 			}
 		}
@@ -211,10 +211,15 @@ func (s *APIKeyService) getAuthCacheEntry(ctx context.Context, cacheKey string) 
 	if s.cache == nil || !s.authCfg.l2Enabled() {
 		return nil, false
 	}
+	started := time.Now()
 	entry, err := s.cache.GetAuthCache(ctx, cacheKey)
-	if err != nil {
+	if err != nil || entry == nil {
 		return nil, false
 	}
+	// Keep cache-owned entries immutable when an implementation shares them.
+	localEntry := *entry
+	localEntry.localOrigin = started
+	entry = &localEntry
 	s.setAuthCacheL1(cacheKey, entry)
 	return entry, true
 }
@@ -234,6 +239,12 @@ func (s *APIKeyService) setAuthCacheL1(cacheKey string, entry *APIKeyAuthCacheEn
 	}
 	ttl := s.authCfg.l1TTL
 	ttl = s.authCfg.jitterTTL(ttl)
+	if !entry.localOrigin.IsZero() {
+		ttl -= time.Since(entry.localOrigin)
+	}
+	if ttl <= 0 {
+		return
+	}
 	_ = s.authCacheL1.SetWithTTL(cacheKey, entry, 1, ttl)
 }
 
@@ -292,6 +303,7 @@ func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey st
 			return nil, ErrAPIKeyAuthOverloaded
 		}
 	}
+	started := time.Now()
 	apiKey, err := s.apiKeyRepo.GetByKeyForAuth(ctx, key)
 	if err != nil {
 		if errors.Is(err, ErrAPIKeyNotFound) {
@@ -311,7 +323,7 @@ func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey st
 	if snapshot == nil {
 		return nil, fmt.Errorf("get api key: %w", ErrAPIKeyNotFound)
 	}
-	entry := &APIKeyAuthCacheEntry{Snapshot: snapshot}
+	entry := &APIKeyAuthCacheEntry{Snapshot: snapshot, localOrigin: started}
 	s.setAuthCacheEntry(ctx, cacheKey, entry, s.authCfg.l2TTL)
 	return entry, nil
 }
@@ -428,20 +440,22 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		return nil
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		Version:     apiKeyAuthSnapshotVersion,
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Name:        apiKey.Name,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
-		Quota:       apiKey.Quota,
-		QuotaUsed:   apiKey.QuotaUsed,
-		ExpiresAt:   apiKey.ExpiresAt,
-		RateLimit5h: apiKey.RateLimit5h,
-		RateLimit1d: apiKey.RateLimit1d,
-		RateLimit7d: apiKey.RateLimit7d,
+		Version:               apiKeyAuthSnapshotVersion,
+		APIKeyID:              apiKey.ID,
+		UserID:                apiKey.UserID,
+		GroupID:               apiKey.GroupID,
+		Name:                  apiKey.Name,
+		Status:                apiKey.Status,
+		IPWhitelist:           apiKey.IPWhitelist,
+		IPBlacklist:           apiKey.IPBlacklist,
+		Quota:                 apiKey.Quota,
+		GeminiCachePending:    apiKey.GeminiCachePending,
+		GeminiCacheGeneration: apiKey.GeminiCacheGeneration,
+		QuotaUsed:             apiKey.QuotaUsed,
+		ExpiresAt:             apiKey.ExpiresAt,
+		RateLimit5h:           apiKey.RateLimit5h,
+		RateLimit1d:           apiKey.RateLimit1d,
+		RateLimit7d:           apiKey.RateLimit7d,
 		User: APIKeyAuthUserSnapshot{
 			ID:                         apiKey.User.ID,
 			Status:                     apiKey.User.Status,
@@ -475,6 +489,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		snapshot.Group = &APIKeyAuthGroupSnapshot{
 			ID:                                apiKey.Group.ID,
 			Name:                              apiKey.Group.Name,
+			I18n:                              apiKey.Group.I18n.Clone(),
 			Platform:                          apiKey.Group.Platform,
 			IsExclusive:                       apiKey.Group.IsExclusive,
 			Status:                            apiKey.Group.Status,
@@ -552,20 +567,22 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Name:        snapshot.Name,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
-		Quota:       snapshot.Quota,
-		QuotaUsed:   snapshot.QuotaUsed,
-		ExpiresAt:   snapshot.ExpiresAt,
-		RateLimit5h: snapshot.RateLimit5h,
-		RateLimit1d: snapshot.RateLimit1d,
-		RateLimit7d: snapshot.RateLimit7d,
+		ID:                    snapshot.APIKeyID,
+		UserID:                snapshot.UserID,
+		GroupID:               snapshot.GroupID,
+		Key:                   key,
+		Name:                  snapshot.Name,
+		Status:                snapshot.Status,
+		IPWhitelist:           snapshot.IPWhitelist,
+		IPBlacklist:           snapshot.IPBlacklist,
+		Quota:                 snapshot.Quota,
+		GeminiCachePending:    snapshot.GeminiCachePending,
+		GeminiCacheGeneration: snapshot.GeminiCacheGeneration,
+		QuotaUsed:             snapshot.QuotaUsed,
+		ExpiresAt:             snapshot.ExpiresAt,
+		RateLimit5h:           snapshot.RateLimit5h,
+		RateLimit1d:           snapshot.RateLimit1d,
+		RateLimit7d:           snapshot.RateLimit7d,
 		User: &User{
 			ID:                         snapshot.User.ID,
 			Status:                     snapshot.User.Status,
@@ -590,6 +607,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		apiKey.Group = &Group{
 			ID:                                   snapshot.Group.ID,
 			Name:                                 snapshot.Group.Name,
+			I18n:                                 snapshot.Group.I18n.Clone(),
 			Platform:                             snapshot.Group.Platform,
 			IsExclusive:                          snapshot.Group.IsExclusive,
 			Status:                               snapshot.Group.Status,

@@ -39,6 +39,7 @@ func (Group) Fields() []ent.Field {
 		field.String("name").
 			MaxLen(100).
 			NotEmpty(),
+		field.JSON("i18n", domain.GroupI18n{}).Default(domain.GroupI18n{}),
 		field.String("description").
 			Optional().
 			Nillable().

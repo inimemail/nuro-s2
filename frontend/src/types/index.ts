@@ -537,7 +537,10 @@ export interface ReasoningEffortMapping {
   model?: string
 }
 
+export type GroupI18n = Record<string, { name?: string; description?: string }>
+
 export interface Group {
+  i18n?: GroupI18n
   id: number
   name: string
   description: string | null
@@ -567,6 +570,7 @@ export interface Group {
     cache_write_price: number | null
     cache_write_1h_price?: number | null
     cache_read_price: number | null
+    cache_storage_cost_per_token_per_hour?: number | null
     image_input_price: number | null
     image_output_price: number | null
     per_request_price: number | null
@@ -730,6 +734,7 @@ export interface UpdateApiKeyRequest {
 }
 
 export interface CreateGroupRequest {
+  i18n?: GroupI18n
   name: string
   description?: string | null
   platform?: GroupPlatform
@@ -798,6 +803,7 @@ export interface CreateGroupRequest {
 }
 
 export interface UpdateGroupRequest {
+  i18n?: GroupI18n
   name?: string
   description?: string | null
   platform?: GroupPlatform
@@ -976,6 +982,7 @@ export interface GeminiCredentials {
 }
 
 export interface TempUnschedulableRule {
+  scope?: 'model' | 'account'
   error_code: number
   keywords: string[]
   duration_minutes: number

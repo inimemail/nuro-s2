@@ -245,6 +245,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -1123,5 +1124,13 @@ onMounted(async () => {
   finally { loading.value = false }
   // Fetch active subscriptions (uses cache, non-blocking)
   subscriptionStore.fetchActiveSubscriptions().catch(() => {})
+})
+
+useLocaleRefresh(async () => {
+  try {
+    const res = await paymentAPI.getCheckoutInfo()
+    checkout.value = res.data
+    if (selectedPlan.value) selectedPlan.value = res.data.plans.find(plan => plan.id === selectedPlan.value?.id) ?? selectedPlan.value
+  } catch { /* Preserve the current checkout and payment session on refresh failure. */ }
 })
 </script>

@@ -108,51 +108,55 @@ const (
 // APIKeyMutation represents an operation that mutates the APIKey nodes in the graph.
 type APIKeyMutation struct {
 	config
-	op                 Op
-	typ                string
-	id                 *int64
-	created_at         *time.Time
-	updated_at         *time.Time
-	deleted_at         *time.Time
-	key                *string
-	name               *string
-	status             *string
-	last_used_at       *time.Time
-	ip_whitelist       *[]string
-	appendip_whitelist []string
-	ip_blacklist       *[]string
-	appendip_blacklist []string
-	quota              *float64
-	addquota           *float64
-	quota_used         *float64
-	addquota_used      *float64
-	expires_at         *time.Time
-	rate_limit_5h      *float64
-	addrate_limit_5h   *float64
-	rate_limit_1d      *float64
-	addrate_limit_1d   *float64
-	rate_limit_7d      *float64
-	addrate_limit_7d   *float64
-	usage_5h           *float64
-	addusage_5h        *float64
-	usage_1d           *float64
-	addusage_1d        *float64
-	usage_7d           *float64
-	addusage_7d        *float64
-	window_5h_start    *time.Time
-	window_1d_start    *time.Time
-	window_7d_start    *time.Time
-	clearedFields      map[string]struct{}
-	user               *int64
-	cleareduser        bool
-	group              *int64
-	clearedgroup       bool
-	usage_logs         map[int64]struct{}
-	removedusage_logs  map[int64]struct{}
-	clearedusage_logs  bool
-	done               bool
-	oldValue           func(context.Context) (*APIKey, error)
-	predicates         []predicate.APIKey
+	op                         Op
+	typ                        string
+	id                         *int64
+	created_at                 *time.Time
+	updated_at                 *time.Time
+	deleted_at                 *time.Time
+	gemini_cache_pending       *float64
+	addgemini_cache_pending    *float64
+	gemini_cache_generation    *int64
+	addgemini_cache_generation *int64
+	key                        *string
+	name                       *string
+	status                     *string
+	last_used_at               *time.Time
+	ip_whitelist               *[]string
+	appendip_whitelist         []string
+	ip_blacklist               *[]string
+	appendip_blacklist         []string
+	quota                      *float64
+	addquota                   *float64
+	quota_used                 *float64
+	addquota_used              *float64
+	expires_at                 *time.Time
+	rate_limit_5h              *float64
+	addrate_limit_5h           *float64
+	rate_limit_1d              *float64
+	addrate_limit_1d           *float64
+	rate_limit_7d              *float64
+	addrate_limit_7d           *float64
+	usage_5h                   *float64
+	addusage_5h                *float64
+	usage_1d                   *float64
+	addusage_1d                *float64
+	usage_7d                   *float64
+	addusage_7d                *float64
+	window_5h_start            *time.Time
+	window_1d_start            *time.Time
+	window_7d_start            *time.Time
+	clearedFields              map[string]struct{}
+	user                       *int64
+	cleareduser                bool
+	group                      *int64
+	clearedgroup               bool
+	usage_logs                 map[int64]struct{}
+	removedusage_logs          map[int64]struct{}
+	clearedusage_logs          bool
+	done                       bool
+	oldValue                   func(context.Context) (*APIKey, error)
+	predicates                 []predicate.APIKey
 }
 
 var _ ent.Mutation = (*APIKeyMutation)(nil)
@@ -372,6 +376,118 @@ func (m *APIKeyMutation) DeletedAtCleared() bool {
 func (m *APIKeyMutation) ResetDeletedAt() {
 	m.deleted_at = nil
 	delete(m.clearedFields, apikey.FieldDeletedAt)
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (m *APIKeyMutation) SetGeminiCachePending(f float64) {
+	m.gemini_cache_pending = &f
+	m.addgemini_cache_pending = nil
+}
+
+// GeminiCachePending returns the value of the "gemini_cache_pending" field in the mutation.
+func (m *APIKeyMutation) GeminiCachePending() (r float64, exists bool) {
+	v := m.gemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCachePending returns the old "gemini_cache_pending" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldGeminiCachePending(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCachePending is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCachePending requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCachePending: %w", err)
+	}
+	return oldValue.GeminiCachePending, nil
+}
+
+// AddGeminiCachePending adds f to the "gemini_cache_pending" field.
+func (m *APIKeyMutation) AddGeminiCachePending(f float64) {
+	if m.addgemini_cache_pending != nil {
+		*m.addgemini_cache_pending += f
+	} else {
+		m.addgemini_cache_pending = &f
+	}
+}
+
+// AddedGeminiCachePending returns the value that was added to the "gemini_cache_pending" field in this mutation.
+func (m *APIKeyMutation) AddedGeminiCachePending() (r float64, exists bool) {
+	v := m.addgemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCachePending resets all changes to the "gemini_cache_pending" field.
+func (m *APIKeyMutation) ResetGeminiCachePending() {
+	m.gemini_cache_pending = nil
+	m.addgemini_cache_pending = nil
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (m *APIKeyMutation) SetGeminiCacheGeneration(i int64) {
+	m.gemini_cache_generation = &i
+	m.addgemini_cache_generation = nil
+}
+
+// GeminiCacheGeneration returns the value of the "gemini_cache_generation" field in the mutation.
+func (m *APIKeyMutation) GeminiCacheGeneration() (r int64, exists bool) {
+	v := m.gemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheGeneration returns the old "gemini_cache_generation" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldGeminiCacheGeneration(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheGeneration: %w", err)
+	}
+	return oldValue.GeminiCacheGeneration, nil
+}
+
+// AddGeminiCacheGeneration adds i to the "gemini_cache_generation" field.
+func (m *APIKeyMutation) AddGeminiCacheGeneration(i int64) {
+	if m.addgemini_cache_generation != nil {
+		*m.addgemini_cache_generation += i
+	} else {
+		m.addgemini_cache_generation = &i
+	}
+}
+
+// AddedGeminiCacheGeneration returns the value that was added to the "gemini_cache_generation" field in this mutation.
+func (m *APIKeyMutation) AddedGeminiCacheGeneration() (r int64, exists bool) {
+	v := m.addgemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheGeneration resets all changes to the "gemini_cache_generation" field.
+func (m *APIKeyMutation) ResetGeminiCacheGeneration() {
+	m.gemini_cache_generation = nil
+	m.addgemini_cache_generation = nil
 }
 
 // SetUserID sets the "user_id" field.
@@ -1532,7 +1648,7 @@ func (m *APIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *APIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 23)
+	fields := make([]string, 0, 25)
 	if m.created_at != nil {
 		fields = append(fields, apikey.FieldCreatedAt)
 	}
@@ -1541,6 +1657,12 @@ func (m *APIKeyMutation) Fields() []string {
 	}
 	if m.deleted_at != nil {
 		fields = append(fields, apikey.FieldDeletedAt)
+	}
+	if m.gemini_cache_pending != nil {
+		fields = append(fields, apikey.FieldGeminiCachePending)
+	}
+	if m.gemini_cache_generation != nil {
+		fields = append(fields, apikey.FieldGeminiCacheGeneration)
 	}
 	if m.user != nil {
 		fields = append(fields, apikey.FieldUserID)
@@ -1616,6 +1738,10 @@ func (m *APIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.UpdatedAt()
 	case apikey.FieldDeletedAt:
 		return m.DeletedAt()
+	case apikey.FieldGeminiCachePending:
+		return m.GeminiCachePending()
+	case apikey.FieldGeminiCacheGeneration:
+		return m.GeminiCacheGeneration()
 	case apikey.FieldUserID:
 		return m.UserID()
 	case apikey.FieldKey:
@@ -1671,6 +1797,10 @@ func (m *APIKeyMutation) OldField(ctx context.Context, name string) (ent.Value, 
 		return m.OldUpdatedAt(ctx)
 	case apikey.FieldDeletedAt:
 		return m.OldDeletedAt(ctx)
+	case apikey.FieldGeminiCachePending:
+		return m.OldGeminiCachePending(ctx)
+	case apikey.FieldGeminiCacheGeneration:
+		return m.OldGeminiCacheGeneration(ctx)
 	case apikey.FieldUserID:
 		return m.OldUserID(ctx)
 	case apikey.FieldKey:
@@ -1740,6 +1870,20 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetDeletedAt(v)
+		return nil
+	case apikey.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCachePending(v)
+		return nil
+	case apikey.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheGeneration(v)
 		return nil
 	case apikey.FieldUserID:
 		v, ok := value.(int64)
@@ -1889,6 +2033,12 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 // this mutation.
 func (m *APIKeyMutation) AddedFields() []string {
 	var fields []string
+	if m.addgemini_cache_pending != nil {
+		fields = append(fields, apikey.FieldGeminiCachePending)
+	}
+	if m.addgemini_cache_generation != nil {
+		fields = append(fields, apikey.FieldGeminiCacheGeneration)
+	}
 	if m.addquota != nil {
 		fields = append(fields, apikey.FieldQuota)
 	}
@@ -1921,6 +2071,10 @@ func (m *APIKeyMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *APIKeyMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case apikey.FieldGeminiCachePending:
+		return m.AddedGeminiCachePending()
+	case apikey.FieldGeminiCacheGeneration:
+		return m.AddedGeminiCacheGeneration()
 	case apikey.FieldQuota:
 		return m.AddedQuota()
 	case apikey.FieldQuotaUsed:
@@ -1946,6 +2100,20 @@ func (m *APIKeyMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *APIKeyMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case apikey.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCachePending(v)
+		return nil
+	case apikey.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheGeneration(v)
+		return nil
 	case apikey.FieldQuota:
 		v, ok := value.(float64)
 		if !ok {
@@ -2094,6 +2262,12 @@ func (m *APIKeyMutation) ResetField(name string) error {
 		return nil
 	case apikey.FieldDeletedAt:
 		m.ResetDeletedAt()
+		return nil
+	case apikey.FieldGeminiCachePending:
+		m.ResetGeminiCachePending()
+		return nil
+	case apikey.FieldGeminiCacheGeneration:
+		m.ResetGeminiCacheGeneration()
 		return nil
 	case apikey.FieldUserID:
 		m.ResetUserID()
@@ -23394,6 +23568,7 @@ type GroupMutation struct {
 	updated_at                                  *time.Time
 	deleted_at                                  *time.Time
 	name                                        *string
+	i18n                                        *domain.GroupI18n
 	description                                 *string
 	rate_multiplier                             *float64
 	addrate_multiplier                          *float64
@@ -23769,6 +23944,42 @@ func (m *GroupMutation) OldName(ctx context.Context) (v string, err error) {
 // ResetName resets all changes to the "name" field.
 func (m *GroupMutation) ResetName() {
 	m.name = nil
+}
+
+// SetI18n sets the "i18n" field.
+func (m *GroupMutation) SetI18n(di domain.GroupI18n) {
+	m.i18n = &di
+}
+
+// I18n returns the value of the "i18n" field in the mutation.
+func (m *GroupMutation) I18n() (r domain.GroupI18n, exists bool) {
+	v := m.i18n
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldI18n returns the old "i18n" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldI18n(ctx context.Context) (v domain.GroupI18n, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldI18n is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldI18n requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldI18n: %w", err)
+	}
+	return oldValue.I18n, nil
+}
+
+// ResetI18n resets all changes to the "i18n" field.
+func (m *GroupMutation) ResetI18n() {
+	m.i18n = nil
 }
 
 // SetDescription sets the "description" field.
@@ -25948,8 +26159,8 @@ func (m *GroupMutation) ResetLongContextPricingEnabled() {
 }
 
 // SetModelPricing sets the "model_pricing" field.
-func (m *GroupMutation) SetModelPricing(jm json.RawMessage) {
-	m.model_pricing = &jm
+func (m *GroupMutation) SetModelPricing(j json.RawMessage) {
+	m.model_pricing = &j
 	m.appendmodel_pricing = nil
 }
 
@@ -25979,9 +26190,9 @@ func (m *GroupMutation) OldModelPricing(ctx context.Context) (v json.RawMessage,
 	return oldValue.ModelPricing, nil
 }
 
-// AppendModelPricing adds jm to the "model_pricing" field.
-func (m *GroupMutation) AppendModelPricing(jm json.RawMessage) {
-	m.appendmodel_pricing = append(m.appendmodel_pricing, jm...)
+// AppendModelPricing adds j to the "model_pricing" field.
+func (m *GroupMutation) AppendModelPricing(j json.RawMessage) {
+	m.appendmodel_pricing = append(m.appendmodel_pricing, j...)
 }
 
 // AppendedModelPricing returns the list of values that were appended to the "model_pricing" field in this mutation.
@@ -27461,7 +27672,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 70)
+	fields := make([]string, 0, 71)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -27473,6 +27684,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.name != nil {
 		fields = append(fields, group.FieldName)
+	}
+	if m.i18n != nil {
+		fields = append(fields, group.FieldI18n)
 	}
 	if m.description != nil {
 		fields = append(fields, group.FieldDescription)
@@ -27688,6 +27902,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.DeletedAt()
 	case group.FieldName:
 		return m.Name()
+	case group.FieldI18n:
+		return m.I18n()
 	case group.FieldDescription:
 		return m.Description()
 	case group.FieldRateMultiplier:
@@ -27837,6 +28053,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldDeletedAt(ctx)
 	case group.FieldName:
 		return m.OldName(ctx)
+	case group.FieldI18n:
+		return m.OldI18n(ctx)
 	case group.FieldDescription:
 		return m.OldDescription(ctx)
 	case group.FieldRateMultiplier:
@@ -28005,6 +28223,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetName(v)
+		return nil
+	case group.FieldI18n:
+		v, ok := value.(domain.GroupI18n)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetI18n(v)
 		return nil
 	case group.FieldDescription:
 		v, ok := value.(string)
@@ -29032,6 +29257,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldName:
 		m.ResetName()
+		return nil
+	case group.FieldI18n:
+		m.ResetI18n()
 		return nil
 	case group.FieldDescription:
 		m.ResetDescription()
@@ -45412,8 +45640,8 @@ func (m *UsageCleanupTaskMutation) ResetStatus() {
 }
 
 // SetFilters sets the "filters" field.
-func (m *UsageCleanupTaskMutation) SetFilters(jm json.RawMessage) {
-	m.filters = &jm
+func (m *UsageCleanupTaskMutation) SetFilters(j json.RawMessage) {
+	m.filters = &j
 	m.appendfilters = nil
 }
 
@@ -45443,9 +45671,9 @@ func (m *UsageCleanupTaskMutation) OldFilters(ctx context.Context) (v json.RawMe
 	return oldValue.Filters, nil
 }
 
-// AppendFilters adds jm to the "filters" field.
-func (m *UsageCleanupTaskMutation) AppendFilters(jm json.RawMessage) {
-	m.appendfilters = append(m.appendfilters, jm...)
+// AppendFilters adds j to the "filters" field.
+func (m *UsageCleanupTaskMutation) AppendFilters(j json.RawMessage) {
+	m.appendfilters = append(m.appendfilters, j...)
 }
 
 // AppendedFilters returns the list of values that were appended to the "filters" field in this mutation.
@@ -51146,6 +51374,8 @@ type UserMutation struct {
 	role                          *string
 	balance                       *float64
 	addbalance                    *float64
+	gemini_cache_generation       *int64
+	addgemini_cache_generation    *int64
 	frozen_balance                *float64
 	addfrozen_balance             *float64
 	concurrency                   *int
@@ -51595,6 +51825,62 @@ func (m *UserMutation) AddedBalance() (r float64, exists bool) {
 func (m *UserMutation) ResetBalance() {
 	m.balance = nil
 	m.addbalance = nil
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (m *UserMutation) SetGeminiCacheGeneration(i int64) {
+	m.gemini_cache_generation = &i
+	m.addgemini_cache_generation = nil
+}
+
+// GeminiCacheGeneration returns the value of the "gemini_cache_generation" field in the mutation.
+func (m *UserMutation) GeminiCacheGeneration() (r int64, exists bool) {
+	v := m.gemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheGeneration returns the old "gemini_cache_generation" field's value of the User entity.
+// If the User object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserMutation) OldGeminiCacheGeneration(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheGeneration: %w", err)
+	}
+	return oldValue.GeminiCacheGeneration, nil
+}
+
+// AddGeminiCacheGeneration adds i to the "gemini_cache_generation" field.
+func (m *UserMutation) AddGeminiCacheGeneration(i int64) {
+	if m.addgemini_cache_generation != nil {
+		*m.addgemini_cache_generation += i
+	} else {
+		m.addgemini_cache_generation = &i
+	}
+}
+
+// AddedGeminiCacheGeneration returns the value that was added to the "gemini_cache_generation" field in this mutation.
+func (m *UserMutation) AddedGeminiCacheGeneration() (r int64, exists bool) {
+	v := m.addgemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheGeneration resets all changes to the "gemini_cache_generation" field.
+func (m *UserMutation) ResetGeminiCacheGeneration() {
+	m.gemini_cache_generation = nil
+	m.addgemini_cache_generation = nil
 }
 
 // SetFrozenBalance sets the "frozen_balance" field.
@@ -53147,7 +53433,7 @@ func (m *UserMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UserMutation) Fields() []string {
-	fields := make([]string, 0, 25)
+	fields := make([]string, 0, 26)
 	if m.created_at != nil {
 		fields = append(fields, user.FieldCreatedAt)
 	}
@@ -53168,6 +53454,9 @@ func (m *UserMutation) Fields() []string {
 	}
 	if m.balance != nil {
 		fields = append(fields, user.FieldBalance)
+	}
+	if m.gemini_cache_generation != nil {
+		fields = append(fields, user.FieldGeminiCacheGeneration)
 	}
 	if m.frozen_balance != nil {
 		fields = append(fields, user.FieldFrozenBalance)
@@ -53245,6 +53534,8 @@ func (m *UserMutation) Field(name string) (ent.Value, bool) {
 		return m.Role()
 	case user.FieldBalance:
 		return m.Balance()
+	case user.FieldGeminiCacheGeneration:
+		return m.GeminiCacheGeneration()
 	case user.FieldFrozenBalance:
 		return m.FrozenBalance()
 	case user.FieldConcurrency:
@@ -53304,6 +53595,8 @@ func (m *UserMutation) OldField(ctx context.Context, name string) (ent.Value, er
 		return m.OldRole(ctx)
 	case user.FieldBalance:
 		return m.OldBalance(ctx)
+	case user.FieldGeminiCacheGeneration:
+		return m.OldGeminiCacheGeneration(ctx)
 	case user.FieldFrozenBalance:
 		return m.OldFrozenBalance(ctx)
 	case user.FieldConcurrency:
@@ -53397,6 +53690,13 @@ func (m *UserMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetBalance(v)
+		return nil
+	case user.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheGeneration(v)
 		return nil
 	case user.FieldFrozenBalance:
 		v, ok := value.(float64)
@@ -53535,6 +53835,9 @@ func (m *UserMutation) AddedFields() []string {
 	if m.addbalance != nil {
 		fields = append(fields, user.FieldBalance)
 	}
+	if m.addgemini_cache_generation != nil {
+		fields = append(fields, user.FieldGeminiCacheGeneration)
+	}
 	if m.addfrozen_balance != nil {
 		fields = append(fields, user.FieldFrozenBalance)
 	}
@@ -53560,6 +53863,8 @@ func (m *UserMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
 	case user.FieldBalance:
 		return m.AddedBalance()
+	case user.FieldGeminiCacheGeneration:
+		return m.AddedGeminiCacheGeneration()
 	case user.FieldFrozenBalance:
 		return m.AddedFrozenBalance()
 	case user.FieldConcurrency:
@@ -53585,6 +53890,13 @@ func (m *UserMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddBalance(v)
+		return nil
+	case user.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheGeneration(v)
 		return nil
 	case user.FieldFrozenBalance:
 		v, ok := value.(float64)
@@ -53707,6 +54019,9 @@ func (m *UserMutation) ResetField(name string) error {
 		return nil
 	case user.FieldBalance:
 		m.ResetBalance()
+		return nil
+	case user.FieldGeminiCacheGeneration:
+		m.ResetGeminiCacheGeneration()
 		return nil
 	case user.FieldFrozenBalance:
 		m.ResetFrozenBalance()
@@ -56381,34 +56696,47 @@ func (m *UserAttributeValueMutation) ResetEdge(name string) error {
 // UserPlatformQuotaMutation represents an operation that mutates the UserPlatformQuota nodes in the graph.
 type UserPlatformQuotaMutation struct {
 	config
-	op                   Op
-	typ                  string
-	id                   *int64
-	created_at           *time.Time
-	updated_at           *time.Time
-	deleted_at           *time.Time
-	platform             *string
-	daily_limit_usd      *float64
-	adddaily_limit_usd   *float64
-	weekly_limit_usd     *float64
-	addweekly_limit_usd  *float64
-	monthly_limit_usd    *float64
-	addmonthly_limit_usd *float64
-	daily_usage_usd      *float64
-	adddaily_usage_usd   *float64
-	weekly_usage_usd     *float64
-	addweekly_usage_usd  *float64
-	monthly_usage_usd    *float64
-	addmonthly_usage_usd *float64
-	daily_window_start   *time.Time
-	weekly_window_start  *time.Time
-	monthly_window_start *time.Time
-	clearedFields        map[string]struct{}
-	user                 *int64
-	cleareduser          bool
-	done                 bool
-	oldValue             func(context.Context) (*UserPlatformQuota, error)
-	predicates           []predicate.UserPlatformQuota
+	op                            Op
+	typ                           string
+	id                            *int64
+	created_at                    *time.Time
+	updated_at                    *time.Time
+	deleted_at                    *time.Time
+	gemini_cache_pending          *float64
+	addgemini_cache_pending       *float64
+	gemini_cache_generation       *int64
+	addgemini_cache_generation    *int64
+	gemini_cache_daily_usage      *float64
+	addgemini_cache_daily_usage   *float64
+	gemini_cache_daily_start      *time.Time
+	gemini_cache_weekly_usage     *float64
+	addgemini_cache_weekly_usage  *float64
+	gemini_cache_weekly_start     *time.Time
+	gemini_cache_monthly_usage    *float64
+	addgemini_cache_monthly_usage *float64
+	gemini_cache_monthly_start    *time.Time
+	platform                      *string
+	daily_limit_usd               *float64
+	adddaily_limit_usd            *float64
+	weekly_limit_usd              *float64
+	addweekly_limit_usd           *float64
+	monthly_limit_usd             *float64
+	addmonthly_limit_usd          *float64
+	daily_usage_usd               *float64
+	adddaily_usage_usd            *float64
+	weekly_usage_usd              *float64
+	addweekly_usage_usd           *float64
+	monthly_usage_usd             *float64
+	addmonthly_usage_usd          *float64
+	daily_window_start            *time.Time
+	weekly_window_start           *time.Time
+	monthly_window_start          *time.Time
+	clearedFields                 map[string]struct{}
+	user                          *int64
+	cleareduser                   bool
+	done                          bool
+	oldValue                      func(context.Context) (*UserPlatformQuota, error)
+	predicates                    []predicate.UserPlatformQuota
 }
 
 var _ ent.Mutation = (*UserPlatformQuotaMutation)(nil)
@@ -56628,6 +56956,433 @@ func (m *UserPlatformQuotaMutation) DeletedAtCleared() bool {
 func (m *UserPlatformQuotaMutation) ResetDeletedAt() {
 	m.deleted_at = nil
 	delete(m.clearedFields, userplatformquota.FieldDeletedAt)
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCachePending(f float64) {
+	m.gemini_cache_pending = &f
+	m.addgemini_cache_pending = nil
+}
+
+// GeminiCachePending returns the value of the "gemini_cache_pending" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCachePending() (r float64, exists bool) {
+	v := m.gemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCachePending returns the old "gemini_cache_pending" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCachePending(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCachePending is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCachePending requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCachePending: %w", err)
+	}
+	return oldValue.GeminiCachePending, nil
+}
+
+// AddGeminiCachePending adds f to the "gemini_cache_pending" field.
+func (m *UserPlatformQuotaMutation) AddGeminiCachePending(f float64) {
+	if m.addgemini_cache_pending != nil {
+		*m.addgemini_cache_pending += f
+	} else {
+		m.addgemini_cache_pending = &f
+	}
+}
+
+// AddedGeminiCachePending returns the value that was added to the "gemini_cache_pending" field in this mutation.
+func (m *UserPlatformQuotaMutation) AddedGeminiCachePending() (r float64, exists bool) {
+	v := m.addgemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCachePending resets all changes to the "gemini_cache_pending" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCachePending() {
+	m.gemini_cache_pending = nil
+	m.addgemini_cache_pending = nil
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheGeneration(i int64) {
+	m.gemini_cache_generation = &i
+	m.addgemini_cache_generation = nil
+}
+
+// GeminiCacheGeneration returns the value of the "gemini_cache_generation" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheGeneration() (r int64, exists bool) {
+	v := m.gemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheGeneration returns the old "gemini_cache_generation" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheGeneration(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheGeneration: %w", err)
+	}
+	return oldValue.GeminiCacheGeneration, nil
+}
+
+// AddGeminiCacheGeneration adds i to the "gemini_cache_generation" field.
+func (m *UserPlatformQuotaMutation) AddGeminiCacheGeneration(i int64) {
+	if m.addgemini_cache_generation != nil {
+		*m.addgemini_cache_generation += i
+	} else {
+		m.addgemini_cache_generation = &i
+	}
+}
+
+// AddedGeminiCacheGeneration returns the value that was added to the "gemini_cache_generation" field in this mutation.
+func (m *UserPlatformQuotaMutation) AddedGeminiCacheGeneration() (r int64, exists bool) {
+	v := m.addgemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheGeneration resets all changes to the "gemini_cache_generation" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheGeneration() {
+	m.gemini_cache_generation = nil
+	m.addgemini_cache_generation = nil
+}
+
+// SetGeminiCacheDailyUsage sets the "gemini_cache_daily_usage" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheDailyUsage(f float64) {
+	m.gemini_cache_daily_usage = &f
+	m.addgemini_cache_daily_usage = nil
+}
+
+// GeminiCacheDailyUsage returns the value of the "gemini_cache_daily_usage" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheDailyUsage() (r float64, exists bool) {
+	v := m.gemini_cache_daily_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheDailyUsage returns the old "gemini_cache_daily_usage" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheDailyUsage(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheDailyUsage is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheDailyUsage requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheDailyUsage: %w", err)
+	}
+	return oldValue.GeminiCacheDailyUsage, nil
+}
+
+// AddGeminiCacheDailyUsage adds f to the "gemini_cache_daily_usage" field.
+func (m *UserPlatformQuotaMutation) AddGeminiCacheDailyUsage(f float64) {
+	if m.addgemini_cache_daily_usage != nil {
+		*m.addgemini_cache_daily_usage += f
+	} else {
+		m.addgemini_cache_daily_usage = &f
+	}
+}
+
+// AddedGeminiCacheDailyUsage returns the value that was added to the "gemini_cache_daily_usage" field in this mutation.
+func (m *UserPlatformQuotaMutation) AddedGeminiCacheDailyUsage() (r float64, exists bool) {
+	v := m.addgemini_cache_daily_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheDailyUsage resets all changes to the "gemini_cache_daily_usage" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheDailyUsage() {
+	m.gemini_cache_daily_usage = nil
+	m.addgemini_cache_daily_usage = nil
+}
+
+// SetGeminiCacheDailyStart sets the "gemini_cache_daily_start" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheDailyStart(t time.Time) {
+	m.gemini_cache_daily_start = &t
+}
+
+// GeminiCacheDailyStart returns the value of the "gemini_cache_daily_start" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheDailyStart() (r time.Time, exists bool) {
+	v := m.gemini_cache_daily_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheDailyStart returns the old "gemini_cache_daily_start" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheDailyStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheDailyStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheDailyStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheDailyStart: %w", err)
+	}
+	return oldValue.GeminiCacheDailyStart, nil
+}
+
+// ClearGeminiCacheDailyStart clears the value of the "gemini_cache_daily_start" field.
+func (m *UserPlatformQuotaMutation) ClearGeminiCacheDailyStart() {
+	m.gemini_cache_daily_start = nil
+	m.clearedFields[userplatformquota.FieldGeminiCacheDailyStart] = struct{}{}
+}
+
+// GeminiCacheDailyStartCleared returns if the "gemini_cache_daily_start" field was cleared in this mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheDailyStartCleared() bool {
+	_, ok := m.clearedFields[userplatformquota.FieldGeminiCacheDailyStart]
+	return ok
+}
+
+// ResetGeminiCacheDailyStart resets all changes to the "gemini_cache_daily_start" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheDailyStart() {
+	m.gemini_cache_daily_start = nil
+	delete(m.clearedFields, userplatformquota.FieldGeminiCacheDailyStart)
+}
+
+// SetGeminiCacheWeeklyUsage sets the "gemini_cache_weekly_usage" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheWeeklyUsage(f float64) {
+	m.gemini_cache_weekly_usage = &f
+	m.addgemini_cache_weekly_usage = nil
+}
+
+// GeminiCacheWeeklyUsage returns the value of the "gemini_cache_weekly_usage" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheWeeklyUsage() (r float64, exists bool) {
+	v := m.gemini_cache_weekly_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheWeeklyUsage returns the old "gemini_cache_weekly_usage" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheWeeklyUsage(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheWeeklyUsage is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheWeeklyUsage requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheWeeklyUsage: %w", err)
+	}
+	return oldValue.GeminiCacheWeeklyUsage, nil
+}
+
+// AddGeminiCacheWeeklyUsage adds f to the "gemini_cache_weekly_usage" field.
+func (m *UserPlatformQuotaMutation) AddGeminiCacheWeeklyUsage(f float64) {
+	if m.addgemini_cache_weekly_usage != nil {
+		*m.addgemini_cache_weekly_usage += f
+	} else {
+		m.addgemini_cache_weekly_usage = &f
+	}
+}
+
+// AddedGeminiCacheWeeklyUsage returns the value that was added to the "gemini_cache_weekly_usage" field in this mutation.
+func (m *UserPlatformQuotaMutation) AddedGeminiCacheWeeklyUsage() (r float64, exists bool) {
+	v := m.addgemini_cache_weekly_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheWeeklyUsage resets all changes to the "gemini_cache_weekly_usage" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheWeeklyUsage() {
+	m.gemini_cache_weekly_usage = nil
+	m.addgemini_cache_weekly_usage = nil
+}
+
+// SetGeminiCacheWeeklyStart sets the "gemini_cache_weekly_start" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheWeeklyStart(t time.Time) {
+	m.gemini_cache_weekly_start = &t
+}
+
+// GeminiCacheWeeklyStart returns the value of the "gemini_cache_weekly_start" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheWeeklyStart() (r time.Time, exists bool) {
+	v := m.gemini_cache_weekly_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheWeeklyStart returns the old "gemini_cache_weekly_start" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheWeeklyStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheWeeklyStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheWeeklyStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheWeeklyStart: %w", err)
+	}
+	return oldValue.GeminiCacheWeeklyStart, nil
+}
+
+// ClearGeminiCacheWeeklyStart clears the value of the "gemini_cache_weekly_start" field.
+func (m *UserPlatformQuotaMutation) ClearGeminiCacheWeeklyStart() {
+	m.gemini_cache_weekly_start = nil
+	m.clearedFields[userplatformquota.FieldGeminiCacheWeeklyStart] = struct{}{}
+}
+
+// GeminiCacheWeeklyStartCleared returns if the "gemini_cache_weekly_start" field was cleared in this mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheWeeklyStartCleared() bool {
+	_, ok := m.clearedFields[userplatformquota.FieldGeminiCacheWeeklyStart]
+	return ok
+}
+
+// ResetGeminiCacheWeeklyStart resets all changes to the "gemini_cache_weekly_start" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheWeeklyStart() {
+	m.gemini_cache_weekly_start = nil
+	delete(m.clearedFields, userplatformquota.FieldGeminiCacheWeeklyStart)
+}
+
+// SetGeminiCacheMonthlyUsage sets the "gemini_cache_monthly_usage" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheMonthlyUsage(f float64) {
+	m.gemini_cache_monthly_usage = &f
+	m.addgemini_cache_monthly_usage = nil
+}
+
+// GeminiCacheMonthlyUsage returns the value of the "gemini_cache_monthly_usage" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheMonthlyUsage() (r float64, exists bool) {
+	v := m.gemini_cache_monthly_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheMonthlyUsage returns the old "gemini_cache_monthly_usage" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheMonthlyUsage(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheMonthlyUsage is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheMonthlyUsage requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheMonthlyUsage: %w", err)
+	}
+	return oldValue.GeminiCacheMonthlyUsage, nil
+}
+
+// AddGeminiCacheMonthlyUsage adds f to the "gemini_cache_monthly_usage" field.
+func (m *UserPlatformQuotaMutation) AddGeminiCacheMonthlyUsage(f float64) {
+	if m.addgemini_cache_monthly_usage != nil {
+		*m.addgemini_cache_monthly_usage += f
+	} else {
+		m.addgemini_cache_monthly_usage = &f
+	}
+}
+
+// AddedGeminiCacheMonthlyUsage returns the value that was added to the "gemini_cache_monthly_usage" field in this mutation.
+func (m *UserPlatformQuotaMutation) AddedGeminiCacheMonthlyUsage() (r float64, exists bool) {
+	v := m.addgemini_cache_monthly_usage
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheMonthlyUsage resets all changes to the "gemini_cache_monthly_usage" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheMonthlyUsage() {
+	m.gemini_cache_monthly_usage = nil
+	m.addgemini_cache_monthly_usage = nil
+}
+
+// SetGeminiCacheMonthlyStart sets the "gemini_cache_monthly_start" field.
+func (m *UserPlatformQuotaMutation) SetGeminiCacheMonthlyStart(t time.Time) {
+	m.gemini_cache_monthly_start = &t
+}
+
+// GeminiCacheMonthlyStart returns the value of the "gemini_cache_monthly_start" field in the mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheMonthlyStart() (r time.Time, exists bool) {
+	v := m.gemini_cache_monthly_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheMonthlyStart returns the old "gemini_cache_monthly_start" field's value of the UserPlatformQuota entity.
+// If the UserPlatformQuota object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserPlatformQuotaMutation) OldGeminiCacheMonthlyStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheMonthlyStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheMonthlyStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheMonthlyStart: %w", err)
+	}
+	return oldValue.GeminiCacheMonthlyStart, nil
+}
+
+// ClearGeminiCacheMonthlyStart clears the value of the "gemini_cache_monthly_start" field.
+func (m *UserPlatformQuotaMutation) ClearGeminiCacheMonthlyStart() {
+	m.gemini_cache_monthly_start = nil
+	m.clearedFields[userplatformquota.FieldGeminiCacheMonthlyStart] = struct{}{}
+}
+
+// GeminiCacheMonthlyStartCleared returns if the "gemini_cache_monthly_start" field was cleared in this mutation.
+func (m *UserPlatformQuotaMutation) GeminiCacheMonthlyStartCleared() bool {
+	_, ok := m.clearedFields[userplatformquota.FieldGeminiCacheMonthlyStart]
+	return ok
+}
+
+// ResetGeminiCacheMonthlyStart resets all changes to the "gemini_cache_monthly_start" field.
+func (m *UserPlatformQuotaMutation) ResetGeminiCacheMonthlyStart() {
+	m.gemini_cache_monthly_start = nil
+	delete(m.clearedFields, userplatformquota.FieldGeminiCacheMonthlyStart)
 }
 
 // SetUserID sets the "user_id" field.
@@ -57288,7 +58043,7 @@ func (m *UserPlatformQuotaMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UserPlatformQuotaMutation) Fields() []string {
-	fields := make([]string, 0, 14)
+	fields := make([]string, 0, 22)
 	if m.created_at != nil {
 		fields = append(fields, userplatformquota.FieldCreatedAt)
 	}
@@ -57297,6 +58052,30 @@ func (m *UserPlatformQuotaMutation) Fields() []string {
 	}
 	if m.deleted_at != nil {
 		fields = append(fields, userplatformquota.FieldDeletedAt)
+	}
+	if m.gemini_cache_pending != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCachePending)
+	}
+	if m.gemini_cache_generation != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheGeneration)
+	}
+	if m.gemini_cache_daily_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheDailyUsage)
+	}
+	if m.gemini_cache_daily_start != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheDailyStart)
+	}
+	if m.gemini_cache_weekly_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheWeeklyUsage)
+	}
+	if m.gemini_cache_weekly_start != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheWeeklyStart)
+	}
+	if m.gemini_cache_monthly_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheMonthlyUsage)
+	}
+	if m.gemini_cache_monthly_start != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheMonthlyStart)
 	}
 	if m.user != nil {
 		fields = append(fields, userplatformquota.FieldUserID)
@@ -57345,6 +58124,22 @@ func (m *UserPlatformQuotaMutation) Field(name string) (ent.Value, bool) {
 		return m.UpdatedAt()
 	case userplatformquota.FieldDeletedAt:
 		return m.DeletedAt()
+	case userplatformquota.FieldGeminiCachePending:
+		return m.GeminiCachePending()
+	case userplatformquota.FieldGeminiCacheGeneration:
+		return m.GeminiCacheGeneration()
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		return m.GeminiCacheDailyUsage()
+	case userplatformquota.FieldGeminiCacheDailyStart:
+		return m.GeminiCacheDailyStart()
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		return m.GeminiCacheWeeklyUsage()
+	case userplatformquota.FieldGeminiCacheWeeklyStart:
+		return m.GeminiCacheWeeklyStart()
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		return m.GeminiCacheMonthlyUsage()
+	case userplatformquota.FieldGeminiCacheMonthlyStart:
+		return m.GeminiCacheMonthlyStart()
 	case userplatformquota.FieldUserID:
 		return m.UserID()
 	case userplatformquota.FieldPlatform:
@@ -57382,6 +58177,22 @@ func (m *UserPlatformQuotaMutation) OldField(ctx context.Context, name string) (
 		return m.OldUpdatedAt(ctx)
 	case userplatformquota.FieldDeletedAt:
 		return m.OldDeletedAt(ctx)
+	case userplatformquota.FieldGeminiCachePending:
+		return m.OldGeminiCachePending(ctx)
+	case userplatformquota.FieldGeminiCacheGeneration:
+		return m.OldGeminiCacheGeneration(ctx)
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		return m.OldGeminiCacheDailyUsage(ctx)
+	case userplatformquota.FieldGeminiCacheDailyStart:
+		return m.OldGeminiCacheDailyStart(ctx)
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		return m.OldGeminiCacheWeeklyUsage(ctx)
+	case userplatformquota.FieldGeminiCacheWeeklyStart:
+		return m.OldGeminiCacheWeeklyStart(ctx)
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		return m.OldGeminiCacheMonthlyUsage(ctx)
+	case userplatformquota.FieldGeminiCacheMonthlyStart:
+		return m.OldGeminiCacheMonthlyStart(ctx)
 	case userplatformquota.FieldUserID:
 		return m.OldUserID(ctx)
 	case userplatformquota.FieldPlatform:
@@ -57433,6 +58244,62 @@ func (m *UserPlatformQuotaMutation) SetField(name string, value ent.Value) error
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetDeletedAt(v)
+		return nil
+	case userplatformquota.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCachePending(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheGeneration(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheDailyUsage(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheDailyStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheDailyStart(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheWeeklyUsage(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheWeeklyStart(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheMonthlyUsage(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheMonthlyStart(v)
 		return nil
 	case userplatformquota.FieldUserID:
 		v, ok := value.(int64)
@@ -57519,6 +58386,21 @@ func (m *UserPlatformQuotaMutation) SetField(name string, value ent.Value) error
 // this mutation.
 func (m *UserPlatformQuotaMutation) AddedFields() []string {
 	var fields []string
+	if m.addgemini_cache_pending != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCachePending)
+	}
+	if m.addgemini_cache_generation != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheGeneration)
+	}
+	if m.addgemini_cache_daily_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheDailyUsage)
+	}
+	if m.addgemini_cache_weekly_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheWeeklyUsage)
+	}
+	if m.addgemini_cache_monthly_usage != nil {
+		fields = append(fields, userplatformquota.FieldGeminiCacheMonthlyUsage)
+	}
 	if m.adddaily_limit_usd != nil {
 		fields = append(fields, userplatformquota.FieldDailyLimitUsd)
 	}
@@ -57545,6 +58427,16 @@ func (m *UserPlatformQuotaMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *UserPlatformQuotaMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case userplatformquota.FieldGeminiCachePending:
+		return m.AddedGeminiCachePending()
+	case userplatformquota.FieldGeminiCacheGeneration:
+		return m.AddedGeminiCacheGeneration()
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		return m.AddedGeminiCacheDailyUsage()
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		return m.AddedGeminiCacheWeeklyUsage()
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		return m.AddedGeminiCacheMonthlyUsage()
 	case userplatformquota.FieldDailyLimitUsd:
 		return m.AddedDailyLimitUsd()
 	case userplatformquota.FieldWeeklyLimitUsd:
@@ -57566,6 +58458,41 @@ func (m *UserPlatformQuotaMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *UserPlatformQuotaMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case userplatformquota.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCachePending(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheGeneration(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheDailyUsage(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheWeeklyUsage(v)
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheMonthlyUsage(v)
+		return nil
 	case userplatformquota.FieldDailyLimitUsd:
 		v, ok := value.(float64)
 		if !ok {
@@ -57619,6 +58546,15 @@ func (m *UserPlatformQuotaMutation) ClearedFields() []string {
 	if m.FieldCleared(userplatformquota.FieldDeletedAt) {
 		fields = append(fields, userplatformquota.FieldDeletedAt)
 	}
+	if m.FieldCleared(userplatformquota.FieldGeminiCacheDailyStart) {
+		fields = append(fields, userplatformquota.FieldGeminiCacheDailyStart)
+	}
+	if m.FieldCleared(userplatformquota.FieldGeminiCacheWeeklyStart) {
+		fields = append(fields, userplatformquota.FieldGeminiCacheWeeklyStart)
+	}
+	if m.FieldCleared(userplatformquota.FieldGeminiCacheMonthlyStart) {
+		fields = append(fields, userplatformquota.FieldGeminiCacheMonthlyStart)
+	}
 	if m.FieldCleared(userplatformquota.FieldDailyLimitUsd) {
 		fields = append(fields, userplatformquota.FieldDailyLimitUsd)
 	}
@@ -57654,6 +58590,15 @@ func (m *UserPlatformQuotaMutation) ClearField(name string) error {
 	case userplatformquota.FieldDeletedAt:
 		m.ClearDeletedAt()
 		return nil
+	case userplatformquota.FieldGeminiCacheDailyStart:
+		m.ClearGeminiCacheDailyStart()
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyStart:
+		m.ClearGeminiCacheWeeklyStart()
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyStart:
+		m.ClearGeminiCacheMonthlyStart()
+		return nil
 	case userplatformquota.FieldDailyLimitUsd:
 		m.ClearDailyLimitUsd()
 		return nil
@@ -57688,6 +58633,30 @@ func (m *UserPlatformQuotaMutation) ResetField(name string) error {
 		return nil
 	case userplatformquota.FieldDeletedAt:
 		m.ResetDeletedAt()
+		return nil
+	case userplatformquota.FieldGeminiCachePending:
+		m.ResetGeminiCachePending()
+		return nil
+	case userplatformquota.FieldGeminiCacheGeneration:
+		m.ResetGeminiCacheGeneration()
+		return nil
+	case userplatformquota.FieldGeminiCacheDailyUsage:
+		m.ResetGeminiCacheDailyUsage()
+		return nil
+	case userplatformquota.FieldGeminiCacheDailyStart:
+		m.ResetGeminiCacheDailyStart()
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyUsage:
+		m.ResetGeminiCacheWeeklyUsage()
+		return nil
+	case userplatformquota.FieldGeminiCacheWeeklyStart:
+		m.ResetGeminiCacheWeeklyStart()
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyUsage:
+		m.ResetGeminiCacheMonthlyUsage()
+		return nil
+	case userplatformquota.FieldGeminiCacheMonthlyStart:
+		m.ResetGeminiCacheMonthlyStart()
 		return nil
 	case userplatformquota.FieldUserID:
 		m.ResetUserID()
@@ -57803,39 +58772,43 @@ func (m *UserPlatformQuotaMutation) ResetEdge(name string) error {
 // UserSubscriptionMutation represents an operation that mutates the UserSubscription nodes in the graph.
 type UserSubscriptionMutation struct {
 	config
-	op                      Op
-	typ                     string
-	id                      *int64
-	created_at              *time.Time
-	updated_at              *time.Time
-	deleted_at              *time.Time
-	starts_at               *time.Time
-	expires_at              *time.Time
-	status                  *string
-	daily_window_start      *time.Time
-	weekly_window_start     *time.Time
-	monthly_window_start    *time.Time
-	daily_usage_usd         *float64
-	adddaily_usage_usd      *float64
-	weekly_usage_usd        *float64
-	addweekly_usage_usd     *float64
-	monthly_usage_usd       *float64
-	addmonthly_usage_usd    *float64
-	assigned_at             *time.Time
-	notes                   *string
-	clearedFields           map[string]struct{}
-	user                    *int64
-	cleareduser             bool
-	group                   *int64
-	clearedgroup            bool
-	assigned_by_user        *int64
-	clearedassigned_by_user bool
-	usage_logs              map[int64]struct{}
-	removedusage_logs       map[int64]struct{}
-	clearedusage_logs       bool
-	done                    bool
-	oldValue                func(context.Context) (*UserSubscription, error)
-	predicates              []predicate.UserSubscription
+	op                         Op
+	typ                        string
+	id                         *int64
+	created_at                 *time.Time
+	updated_at                 *time.Time
+	deleted_at                 *time.Time
+	gemini_cache_pending       *float64
+	addgemini_cache_pending    *float64
+	gemini_cache_generation    *int64
+	addgemini_cache_generation *int64
+	starts_at                  *time.Time
+	expires_at                 *time.Time
+	status                     *string
+	daily_window_start         *time.Time
+	weekly_window_start        *time.Time
+	monthly_window_start       *time.Time
+	daily_usage_usd            *float64
+	adddaily_usage_usd         *float64
+	weekly_usage_usd           *float64
+	addweekly_usage_usd        *float64
+	monthly_usage_usd          *float64
+	addmonthly_usage_usd       *float64
+	assigned_at                *time.Time
+	notes                      *string
+	clearedFields              map[string]struct{}
+	user                       *int64
+	cleareduser                bool
+	group                      *int64
+	clearedgroup               bool
+	assigned_by_user           *int64
+	clearedassigned_by_user    bool
+	usage_logs                 map[int64]struct{}
+	removedusage_logs          map[int64]struct{}
+	clearedusage_logs          bool
+	done                       bool
+	oldValue                   func(context.Context) (*UserSubscription, error)
+	predicates                 []predicate.UserSubscription
 }
 
 var _ ent.Mutation = (*UserSubscriptionMutation)(nil)
@@ -58055,6 +59028,118 @@ func (m *UserSubscriptionMutation) DeletedAtCleared() bool {
 func (m *UserSubscriptionMutation) ResetDeletedAt() {
 	m.deleted_at = nil
 	delete(m.clearedFields, usersubscription.FieldDeletedAt)
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (m *UserSubscriptionMutation) SetGeminiCachePending(f float64) {
+	m.gemini_cache_pending = &f
+	m.addgemini_cache_pending = nil
+}
+
+// GeminiCachePending returns the value of the "gemini_cache_pending" field in the mutation.
+func (m *UserSubscriptionMutation) GeminiCachePending() (r float64, exists bool) {
+	v := m.gemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCachePending returns the old "gemini_cache_pending" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldGeminiCachePending(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCachePending is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCachePending requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCachePending: %w", err)
+	}
+	return oldValue.GeminiCachePending, nil
+}
+
+// AddGeminiCachePending adds f to the "gemini_cache_pending" field.
+func (m *UserSubscriptionMutation) AddGeminiCachePending(f float64) {
+	if m.addgemini_cache_pending != nil {
+		*m.addgemini_cache_pending += f
+	} else {
+		m.addgemini_cache_pending = &f
+	}
+}
+
+// AddedGeminiCachePending returns the value that was added to the "gemini_cache_pending" field in this mutation.
+func (m *UserSubscriptionMutation) AddedGeminiCachePending() (r float64, exists bool) {
+	v := m.addgemini_cache_pending
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCachePending resets all changes to the "gemini_cache_pending" field.
+func (m *UserSubscriptionMutation) ResetGeminiCachePending() {
+	m.gemini_cache_pending = nil
+	m.addgemini_cache_pending = nil
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (m *UserSubscriptionMutation) SetGeminiCacheGeneration(i int64) {
+	m.gemini_cache_generation = &i
+	m.addgemini_cache_generation = nil
+}
+
+// GeminiCacheGeneration returns the value of the "gemini_cache_generation" field in the mutation.
+func (m *UserSubscriptionMutation) GeminiCacheGeneration() (r int64, exists bool) {
+	v := m.gemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeminiCacheGeneration returns the old "gemini_cache_generation" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldGeminiCacheGeneration(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeminiCacheGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeminiCacheGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeminiCacheGeneration: %w", err)
+	}
+	return oldValue.GeminiCacheGeneration, nil
+}
+
+// AddGeminiCacheGeneration adds i to the "gemini_cache_generation" field.
+func (m *UserSubscriptionMutation) AddGeminiCacheGeneration(i int64) {
+	if m.addgemini_cache_generation != nil {
+		*m.addgemini_cache_generation += i
+	} else {
+		m.addgemini_cache_generation = &i
+	}
+}
+
+// AddedGeminiCacheGeneration returns the value that was added to the "gemini_cache_generation" field in this mutation.
+func (m *UserSubscriptionMutation) AddedGeminiCacheGeneration() (r int64, exists bool) {
+	v := m.addgemini_cache_generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeminiCacheGeneration resets all changes to the "gemini_cache_generation" field.
+func (m *UserSubscriptionMutation) ResetGeminiCacheGeneration() {
+	m.gemini_cache_generation = nil
+	m.addgemini_cache_generation = nil
 }
 
 // SetUserID sets the "user_id" field.
@@ -58868,7 +59953,7 @@ func (m *UserSubscriptionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UserSubscriptionMutation) Fields() []string {
-	fields := make([]string, 0, 17)
+	fields := make([]string, 0, 19)
 	if m.created_at != nil {
 		fields = append(fields, usersubscription.FieldCreatedAt)
 	}
@@ -58877,6 +59962,12 @@ func (m *UserSubscriptionMutation) Fields() []string {
 	}
 	if m.deleted_at != nil {
 		fields = append(fields, usersubscription.FieldDeletedAt)
+	}
+	if m.gemini_cache_pending != nil {
+		fields = append(fields, usersubscription.FieldGeminiCachePending)
+	}
+	if m.gemini_cache_generation != nil {
+		fields = append(fields, usersubscription.FieldGeminiCacheGeneration)
 	}
 	if m.user != nil {
 		fields = append(fields, usersubscription.FieldUserID)
@@ -58934,6 +60025,10 @@ func (m *UserSubscriptionMutation) Field(name string) (ent.Value, bool) {
 		return m.UpdatedAt()
 	case usersubscription.FieldDeletedAt:
 		return m.DeletedAt()
+	case usersubscription.FieldGeminiCachePending:
+		return m.GeminiCachePending()
+	case usersubscription.FieldGeminiCacheGeneration:
+		return m.GeminiCacheGeneration()
 	case usersubscription.FieldUserID:
 		return m.UserID()
 	case usersubscription.FieldGroupID:
@@ -58977,6 +60072,10 @@ func (m *UserSubscriptionMutation) OldField(ctx context.Context, name string) (e
 		return m.OldUpdatedAt(ctx)
 	case usersubscription.FieldDeletedAt:
 		return m.OldDeletedAt(ctx)
+	case usersubscription.FieldGeminiCachePending:
+		return m.OldGeminiCachePending(ctx)
+	case usersubscription.FieldGeminiCacheGeneration:
+		return m.OldGeminiCacheGeneration(ctx)
 	case usersubscription.FieldUserID:
 		return m.OldUserID(ctx)
 	case usersubscription.FieldGroupID:
@@ -59034,6 +60133,20 @@ func (m *UserSubscriptionMutation) SetField(name string, value ent.Value) error 
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetDeletedAt(v)
+		return nil
+	case usersubscription.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCachePending(v)
+		return nil
+	case usersubscription.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeminiCacheGeneration(v)
 		return nil
 	case usersubscription.FieldUserID:
 		v, ok := value.(int64)
@@ -59141,6 +60254,12 @@ func (m *UserSubscriptionMutation) SetField(name string, value ent.Value) error 
 // this mutation.
 func (m *UserSubscriptionMutation) AddedFields() []string {
 	var fields []string
+	if m.addgemini_cache_pending != nil {
+		fields = append(fields, usersubscription.FieldGeminiCachePending)
+	}
+	if m.addgemini_cache_generation != nil {
+		fields = append(fields, usersubscription.FieldGeminiCacheGeneration)
+	}
 	if m.adddaily_usage_usd != nil {
 		fields = append(fields, usersubscription.FieldDailyUsageUsd)
 	}
@@ -59158,6 +60277,10 @@ func (m *UserSubscriptionMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *UserSubscriptionMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case usersubscription.FieldGeminiCachePending:
+		return m.AddedGeminiCachePending()
+	case usersubscription.FieldGeminiCacheGeneration:
+		return m.AddedGeminiCacheGeneration()
 	case usersubscription.FieldDailyUsageUsd:
 		return m.AddedDailyUsageUsd()
 	case usersubscription.FieldWeeklyUsageUsd:
@@ -59173,6 +60296,20 @@ func (m *UserSubscriptionMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *UserSubscriptionMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case usersubscription.FieldGeminiCachePending:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCachePending(v)
+		return nil
+	case usersubscription.FieldGeminiCacheGeneration:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeminiCacheGeneration(v)
+		return nil
 	case usersubscription.FieldDailyUsageUsd:
 		v, ok := value.(float64)
 		if !ok {
@@ -59268,6 +60405,12 @@ func (m *UserSubscriptionMutation) ResetField(name string) error {
 		return nil
 	case usersubscription.FieldDeletedAt:
 		m.ResetDeletedAt()
+		return nil
+	case usersubscription.FieldGeminiCachePending:
+		m.ResetGeminiCachePending()
+		return nil
+	case usersubscription.FieldGeminiCacheGeneration:
+		m.ResetGeminiCacheGeneration()
 		return nil
 	case usersubscription.FieldUserID:
 		m.ResetUserID()

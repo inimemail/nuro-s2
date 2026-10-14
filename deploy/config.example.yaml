@@ -191,6 +191,15 @@ gateway:
   # Enable Gemini upstream response header debug logs (default: false)
   # 是否开启 Gemini 上游响应头调试日志（默认 false）
   gemini_debug_response_headers: false
+
+  # 显式缓存默认关闭。维护模式保留列表、删除、已有引用及账务恢复，停止创建/收费续期。
+  # 环境变量：GATEWAY_GEMINI_EXPLICIT_CACHE_ENABLED / _MAINTENANCE / _MAX_RESOURCES / _MAX_TTL_SECONDS
+  gemini_explicit_cache_enabled: false
+  gemini_explicit_cache_maintenance: false
+  gemini_explicit_cache_max_resources: 10000 # 本地视图上限，单用户最多 1000 条
+  gemini_explicit_cache_max_ttl_seconds: 86400 # 60–86400；第三方账号可设更低上限
+  # 管理请求 100s，供应商请求 30s，租约 120s；Recovery 每 60s 最多 50 条/4 workers。
+  # 普通生成不查询该资源库。关闭后仍恢复未结资金；排空资源后再完整停用。
   # Sora max request body size in bytes (0=use max_body_size)
   # Sora 请求体最大字节数（0=使用 max_body_size）
   sora_max_body_size: 268435456

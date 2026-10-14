@@ -61,6 +61,9 @@ const showDetail = ref(false)
 const detailTarget = ref<UserMonitorView | null>(null)
 
 let abortController: AbortController | null = null
+let detailController: AbortController | null = null
+let refreshTask: Promise<void> | null = null
+let disposed = false
 
 const autoRefresh = useAutoRefresh({
   storageKey: 'channel-status-auto-refresh',
@@ -68,7 +71,7 @@ const autoRefresh = useAutoRefresh({
   defaultInterval: DEFAULT_INTERVAL_SECONDS,
   defaultEnabled: true,
   onRefresh: () => reload(true),
-  shouldPause: () => document.hidden || loading.value,
+  shouldPause: () => document.hidden || refreshTask !== null,
 })
 const countdown = autoRefresh.countdown
 
@@ -87,23 +90,37 @@ const detailTitle = computed(() => {
 })
 
 // ── Loaders ──
-async function reload(silent = false) {
-  if (abortController) abortController.abort()
+function reload(silent = false): Promise<void> {
+  // Join the current round; repeated refreshes must not restart it indefinitely.
+  if (!silent) loading.value = true
+  if (refreshTask) return refreshTask
+  refreshTask = reloadRound(silent).finally(() => {
+    refreshTask = null
+    if (!disposed) loading.value = false
+  })
+  return refreshTask
+}
+
+async function reloadRound(silent: boolean) {
   const ctrl = new AbortController()
   abortController = ctrl
-  if (!silent) loading.value = true
+  detailController?.abort()
   try {
     const res = await listChannelMonitorViews({ signal: ctrl.signal })
-    if (ctrl.signal.aborted || abortController !== ctrl) return
+    if (disposed || ctrl.signal.aborted) return
     items.value = res.items || []
+    const ids = new Set(items.value.map(it => it.id))
+    for (const id of Object.keys(detailCache)) {
+      if (!ids.has(Number(id))) delete detailCache[Number(id)]
+    }
+    await ensureDetailsForWindow(true, silent)
   } catch (err: unknown) {
     const e = err as { name?: string; code?: string }
-    if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') return
-    appStore.showError(extractApiErrorMessage(err, t('channelStatus.loadError')))
+    if (disposed || ctrl.signal.aborted || e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') return
+    if (!silent) appStore.showError(extractApiErrorMessage(err, t('channelStatus.loadError')))
   } finally {
     if (abortController === ctrl) {
-      if (!silent) loading.value = false
-      countdown.value = DEFAULT_INTERVAL_SECONDS
+      autoRefresh.resetCountdown()
       abortController = null
     }
   }
@@ -111,25 +128,32 @@ async function reload(silent = false) {
 
 async function manualReload() {
   await reload(false)
-  // After base reload, refresh any cached detail records so non-7d availability
-  // values stay in sync without forcing the user to switch tabs again.
-  if (currentWindow.value !== '7d') {
-    await Promise.all(items.value.map(it => loadDetail(it.id, true)))
-  }
 }
 
-async function loadDetail(id: number, force = false) {
-  if (!force && detailCache[id]) return
-  try {
-    detailCache[id] = await fetchChannelMonitorDetail(id)
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('channelStatus.detailLoadError')))
+async function ensureDetailsForWindow(force = false, silent = false) {
+  detailController?.abort()
+  if (disposed || currentWindow.value === '7d') return
+  const ctrl = new AbortController()
+  detailController = ctrl
+  const queue = items.value.filter(it => force || !detailCache[it.id]).map(it => it.id)
+  let cursor = 0
+  let reported = false
+  async function worker() {
+    while (!disposed && !ctrl.signal.aborted && cursor < queue.length) {
+      const id = queue[cursor++]
+      try {
+        const detail = await fetchChannelMonitorDetail(id, { signal: ctrl.signal })
+        if (!disposed && !ctrl.signal.aborted) detailCache[id] = detail
+      } catch (err: unknown) {
+        // Retain the last good snapshot and report at most once per manual round.
+        if (!disposed && !ctrl.signal.aborted && !silent && !reported) {
+          reported = true
+          appStore.showError(extractApiErrorMessage(err, t('channelStatus.detailLoadError')))
+        }
+      }
+    }
   }
-}
-
-async function ensureDetailsForWindow() {
-  if (currentWindow.value === '7d') return
-  await Promise.all(items.value.map(it => loadDetail(it.id)))
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
 }
 
 // ── Handlers ──
@@ -148,10 +172,6 @@ function closeDetail() {
   detailTarget.value = null
 }
 
-watch(items, () => {
-  void ensureDetailsForWindow()
-})
-
 watch(
   () => appStore.cachedPublicSettings?.channel_monitor_enabled,
   (enabled) => {
@@ -168,6 +188,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   if (abortController) abortController.abort()
+  detailController?.abort()
 })
 </script>

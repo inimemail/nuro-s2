@@ -1,6 +1,8 @@
+import geminiCache from './zh/geminiCache'
 import batchImage from './zh/batchImage'
 
 export default {
+  geminiCache,
   openCodeUsage: {
     "title": "OpenCode Go 用量窗口",
     "description": "按真实请求活动刷新订阅用量。全局与账号开关均开启后才自动查询；空闲账号不持续轮询。",
@@ -2565,6 +2567,8 @@ export default {
       multiplierFactor: '乘数',
       applyMultiplier: '应用',
       rateAdjusted: '倍率已批量调整',
+      i18n: { title: '分组多语言', optional: '可选', hint: '未填写的字段沿用原名称和描述。译文仅影响展示。', language: '界面语言' },
+      invalidRateMultiplier: '倍率必须为有限正数，且批量计算结果不能溢出或舍入为零',
       rateSaved: '专属倍率已保存',
       finalRate: '最终倍率',
       unsavedChanges: '有未保存的修改',
@@ -3815,6 +3819,9 @@ export default {
         viewTempUnschedDetails: '查看临时不可调度详情'
       },
       tempUnschedulable: {
+        scope: '作用范围',
+        scopeModel: '仅当前模型',
+        scopeAccount: '整个账号（旧规则保持此范围）',
         title: '临时不可调度',
         statusTitle: '临时不可调度状态',
         hint: '当错误码与关键词同时匹配时，账号会在指定时间内被临时禁用。',
@@ -4013,6 +4020,9 @@ export default {
       vertexSaJsonMissingProjectId: 'Service Account JSON 缺少 project_id',
       vertexSaJsonMissingClientEmail: 'Service Account JSON 缺少 client_email',
       vertexSaJsonInvalid: 'Service Account JSON 格式无效',
+      vertexAuthMode: '认证方式',
+      vertexKeyKeepHint: '留空保留已保存密钥',
+      vertexKeyModeHint: '未填写 Project ID 时使用 Express 全局端点；此模式支持生成与计数。',
       vertexSaJsonRequired: '请上传 Service Account JSON',
       oauthSetupToken: 'OAuth / Setup Token',
       addMethod: '添加方式',

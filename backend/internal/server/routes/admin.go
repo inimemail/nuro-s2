@@ -25,7 +25,11 @@ func RegisterAdminRoutes(
 	admin.Use(gin.HandlerFunc(adminAuth))
 	admin.Use(panelRateLimiter.Global())
 	admin.Use(gin.HandlerFunc(auditLog))
+	admin.Use(h.Gateway.GeminiCachePermissionBarrier)
 	{
+		admin.GET("/gemini-cache/reconcile", panelRateLimiter.Heavy(), h.Gateway.GeminiCacheReconcile)
+		admin.POST("/gemini-cache/reconcile/:operationID/recheck", panelRateLimiter.Heavy(), gin.HandlerFunc(stepUp), h.Gateway.GeminiCacheReconcile)
+		admin.POST("/gemini-cache/reconcile/:operationID/reserve-deficit", panelRateLimiter.Heavy(), gin.HandlerFunc(stepUp), h.Gateway.GeminiCacheReconcile)
 		// 仪表盘
 		registerDashboardRoutes(admin, h)
 

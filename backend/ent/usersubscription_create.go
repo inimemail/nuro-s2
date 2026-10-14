@@ -67,6 +67,34 @@ func (_c *UserSubscriptionCreate) SetNillableDeletedAt(v *time.Time) *UserSubscr
 	return _c
 }
 
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (_c *UserSubscriptionCreate) SetGeminiCachePending(v float64) *UserSubscriptionCreate {
+	_c.mutation.SetGeminiCachePending(v)
+	return _c
+}
+
+// SetNillableGeminiCachePending sets the "gemini_cache_pending" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableGeminiCachePending(v *float64) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetGeminiCachePending(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_c *UserSubscriptionCreate) SetGeminiCacheGeneration(v int64) *UserSubscriptionCreate {
+	_c.mutation.SetGeminiCacheGeneration(v)
+	return _c
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableGeminiCacheGeneration(v *int64) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetGeminiCacheGeneration(*v)
+	}
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *UserSubscriptionCreate) SetUserID(v int64) *UserSubscriptionCreate {
 	_c.mutation.SetUserID(v)
@@ -326,6 +354,14 @@ func (_c *UserSubscriptionCreate) defaults() error {
 		v := usersubscription.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		v := usersubscription.DefaultGeminiCachePending
+		_c.mutation.SetGeminiCachePending(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		v := usersubscription.DefaultGeminiCacheGeneration
+		_c.mutation.SetGeminiCacheGeneration(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := usersubscription.DefaultStatus
 		_c.mutation.SetStatus(v)
@@ -359,6 +395,12 @@ func (_c *UserSubscriptionCreate) check() error {
 	}
 	if _, ok := _c.mutation.UpdatedAt(); !ok {
 		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "UserSubscription.updated_at"`)}
+	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		return &ValidationError{Name: "gemini_cache_pending", err: errors.New(`ent: missing required field "UserSubscription.gemini_cache_pending"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		return &ValidationError{Name: "gemini_cache_generation", err: errors.New(`ent: missing required field "UserSubscription.gemini_cache_generation"`)}
 	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "UserSubscription.user_id"`)}
@@ -436,6 +478,14 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 	if value, ok := _c.mutation.DeletedAt(); ok {
 		_spec.SetField(usersubscription.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
+	}
+	if value, ok := _c.mutation.GeminiCachePending(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCachePending, field.TypeFloat64, value)
+		_node.GeminiCachePending = value
+	}
+	if value, ok := _c.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCacheGeneration, field.TypeInt64, value)
+		_node.GeminiCacheGeneration = value
 	}
 	if value, ok := _c.mutation.StartsAt(); ok {
 		_spec.SetField(usersubscription.FieldStartsAt, field.TypeTime, value)
@@ -627,6 +677,42 @@ func (u *UserSubscriptionUpsert) UpdateDeletedAt() *UserSubscriptionUpsert {
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (u *UserSubscriptionUpsert) ClearDeletedAt() *UserSubscriptionUpsert {
 	u.SetNull(usersubscription.FieldDeletedAt)
+	return u
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsert) SetGeminiCachePending(v float64) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldGeminiCachePending, v)
+	return u
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateGeminiCachePending() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldGeminiCachePending)
+	return u
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsert) AddGeminiCachePending(v float64) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldGeminiCachePending, v)
+	return u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsert) SetGeminiCacheGeneration(v int64) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldGeminiCacheGeneration, v)
+	return u
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateGeminiCacheGeneration() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldGeminiCacheGeneration)
+	return u
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsert) AddGeminiCacheGeneration(v int64) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldGeminiCacheGeneration, v)
 	return u
 }
 
@@ -923,6 +1009,48 @@ func (u *UserSubscriptionUpsertOne) UpdateDeletedAt() *UserSubscriptionUpsertOne
 func (u *UserSubscriptionUpsertOne) ClearDeletedAt() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsertOne) SetGeminiCachePending(v float64) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsertOne) AddGeminiCachePending(v float64) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateGeminiCachePending() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsertOne) SetGeminiCacheGeneration(v int64) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsertOne) AddGeminiCacheGeneration(v int64) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateGeminiCacheGeneration() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 
@@ -1421,6 +1549,48 @@ func (u *UserSubscriptionUpsertBulk) UpdateDeletedAt() *UserSubscriptionUpsertBu
 func (u *UserSubscriptionUpsertBulk) ClearDeletedAt() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsertBulk) SetGeminiCachePending(v float64) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *UserSubscriptionUpsertBulk) AddGeminiCachePending(v float64) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateGeminiCachePending() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsertBulk) SetGeminiCacheGeneration(v int64) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserSubscriptionUpsertBulk) AddGeminiCacheGeneration(v int64) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateGeminiCacheGeneration() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 

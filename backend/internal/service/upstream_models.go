@@ -86,6 +86,9 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	if s.httpUpstream == nil {
 		return nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
+	if account.IsGemini() && account.IsVertexServiceAccount() {
+		return s.fetchVertexGeminiUpstreamModels(ctx, account)
+	}
 
 	req, err := s.buildUpstreamModelsRequest(ctx, account)
 	if err != nil {

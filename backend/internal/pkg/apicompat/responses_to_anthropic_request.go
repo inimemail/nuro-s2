@@ -86,7 +86,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 				return nil, fmt.Errorf("invalid tool_choice: %w", err)
 			}
 		}
-		if choice.Type == "any" || choice.Type == "tool" {
+		if !claude.IsHaiku55(req.Model) && (choice.Type == "any" || choice.Type == "tool") {
 			return nil, fmt.Errorf("%s requires tool_choice auto or none", req.Model)
 		}
 		effort := "medium"
@@ -98,7 +98,9 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		default:
 			return nil, fmt.Errorf("unsupported %s reasoning effort %q", req.Model, effort)
 		}
-		out.Temperature, out.TopP = nil, nil
+		if !claude.IsHaiku55(req.Model) {
+			out.Temperature, out.TopP = nil, nil
+		}
 		out.Thinking = &AnthropicThinking{Type: "adaptive"}
 		out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
 		return out, nil

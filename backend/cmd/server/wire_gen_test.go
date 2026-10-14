@@ -96,6 +96,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // authCacheInvalidation
 		nil, // ingressRejectAggregator
 		nil, // apiKeyService
+		nil, // geminiCachedContentService
 	)
 
 	require.NotPanics(t, func() {

@@ -455,6 +455,7 @@
             :placeholder="t('admin.groups.optionalDescription')"
           ></textarea>
         </div>
+        <GroupI18nField v-model="createForm.i18n" />
         <div>
           <label class="input-label">{{
             t("admin.groups.form.platform")
@@ -2076,6 +2077,7 @@
             class="input"
           ></textarea>
         </div>
+        <GroupI18nField v-model="editForm.i18n" />
         <div>
           <label class="input-label">{{
             t("admin.groups.form.platform")
@@ -3799,6 +3801,8 @@
 </template>
 
 <script setup lang="ts">
+import GroupI18nField from '@/components/admin/group/GroupI18nField.vue';
+import type { GroupI18n } from '@/types';
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useAppStore } from "@/stores/app";
@@ -3872,14 +3876,14 @@ const groupPricingFromAPI = (pricing: AdminGroup["model_pricing"]): PricingFormE
   (pricing || []).map((entry) => ({
     models: entry.models || [], billing_mode: entry.billing_mode as PricingFormEntry["billing_mode"],
     input_price: perTokenToMTok(entry.input_price), output_price: perTokenToMTok(entry.output_price),
-    cache_write_price: perTokenToMTok(entry.cache_write_price), cache_write_1h_price: perTokenToMTok(entry.cache_write_1h_price), cache_read_price: perTokenToMTok(entry.cache_read_price),
+    cache_write_price: perTokenToMTok(entry.cache_write_price), cache_write_1h_price: perTokenToMTok(entry.cache_write_1h_price), cache_read_price: perTokenToMTok(entry.cache_read_price), cache_storage_cost_per_token_per_hour: perTokenToMTok(entry.cache_storage_cost_per_token_per_hour),
     image_input_price: perTokenToMTok(entry.image_input_price), image_output_price: perTokenToMTok(entry.image_output_price),
     per_request_price: entry.per_request_price, intervals: apiIntervalsToForm((entry.intervals || []) as any),
   }));
 const groupPricingToAPI = (pricing: PricingFormEntry[], platform: string) => pricing
   .map((entry) => ({ platform, models: entry.models, billing_mode: entry.billing_mode,
     input_price: mTokToPerToken(entry.input_price), output_price: mTokToPerToken(entry.output_price),
-    cache_write_price: mTokToPerToken(entry.cache_write_price), cache_write_1h_price: mTokToPerToken(entry.cache_write_1h_price), cache_read_price: mTokToPerToken(entry.cache_read_price),
+    cache_write_price: mTokToPerToken(entry.cache_write_price), cache_write_1h_price: mTokToPerToken(entry.cache_write_1h_price), cache_read_price: mTokToPerToken(entry.cache_read_price), cache_storage_cost_per_token_per_hour: mTokToPerToken(entry.cache_storage_cost_per_token_per_hour),
     image_input_price: mTokToPerToken(entry.image_input_price), image_output_price: mTokToPerToken(entry.image_output_price),
     per_request_price: toNullableNumber(entry.per_request_price),
     intervals: entry.billing_mode === "token" ? [] : formIntervalsToAPI(entry.intervals || []),
@@ -4278,6 +4282,7 @@ const editModelsListSelectedCount = computed(
 );
 
 const createForm = reactive({
+  i18n: {} as GroupI18n,
   name: "",
   description: "",
   platform: "anthropic" as GroupPlatform,
@@ -4641,6 +4646,7 @@ const convertApiFormatToRoutingRules = async (
 };
 
 const editForm = reactive({
+  i18n: {} as GroupI18n,
   name: "",
   description: "",
   platform: "anthropic" as GroupPlatform,
@@ -5103,6 +5109,7 @@ const closeCreateModal = () => {
   clearAllAccountSearchState();
   createForm.name = "";
   createForm.description = "";
+  createForm.i18n = {};
   createForm.platform = "anthropic";
   createForm.rate_multiplier = 1.0;
   createForm.upstream_billing_guard_max_multiplier = null;
@@ -5311,6 +5318,7 @@ const handleEdit = async (group: AdminGroup) => {
   editingGroup.value = group;
   editForm.name = group.name;
   editForm.description = group.description || "";
+  editForm.i18n = Object.fromEntries(Object.entries(group.i18n ?? {}).map(([locale, text]) => [locale, { ...text }]));
   editForm.platform = group.platform;
   editCompositeImageCapability.value = false;
   if (group.platform === "composite") {

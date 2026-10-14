@@ -116,6 +116,20 @@ func (_c *UserCreate) SetNillableBalance(v *float64) *UserCreate {
 	return _c
 }
 
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_c *UserCreate) SetGeminiCacheGeneration(v int64) *UserCreate {
+	_c.mutation.SetGeminiCacheGeneration(v)
+	return _c
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_c *UserCreate) SetNillableGeminiCacheGeneration(v *int64) *UserCreate {
+	if v != nil {
+		_c.SetGeminiCacheGeneration(*v)
+	}
+	return _c
+}
+
 // SetFrozenBalance sets the "frozen_balance" field.
 func (_c *UserCreate) SetFrozenBalance(v float64) *UserCreate {
 	_c.mutation.SetFrozenBalance(v)
@@ -622,6 +636,10 @@ func (_c *UserCreate) defaults() error {
 		v := user.DefaultBalance
 		_c.mutation.SetBalance(v)
 	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		v := user.DefaultGeminiCacheGeneration
+		_c.mutation.SetGeminiCacheGeneration(v)
+	}
 	if _, ok := _c.mutation.FrozenBalance(); !ok {
 		v := user.DefaultFrozenBalance
 		_c.mutation.SetFrozenBalance(v)
@@ -711,6 +729,9 @@ func (_c *UserCreate) check() error {
 	}
 	if _, ok := _c.mutation.Balance(); !ok {
 		return &ValidationError{Name: "balance", err: errors.New(`ent: missing required field "User.balance"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		return &ValidationError{Name: "gemini_cache_generation", err: errors.New(`ent: missing required field "User.gemini_cache_generation"`)}
 	}
 	if _, ok := _c.mutation.FrozenBalance(); !ok {
 		return &ValidationError{Name: "frozen_balance", err: errors.New(`ent: missing required field "User.frozen_balance"`)}
@@ -820,6 +841,10 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Balance(); ok {
 		_spec.SetField(user.FieldBalance, field.TypeFloat64, value)
 		_node.Balance = value
+	}
+	if value, ok := _c.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(user.FieldGeminiCacheGeneration, field.TypeInt64, value)
+		_node.GeminiCacheGeneration = value
 	}
 	if value, ok := _c.mutation.FrozenBalance(); ok {
 		_spec.SetField(user.FieldFrozenBalance, field.TypeFloat64, value)
@@ -1241,6 +1266,24 @@ func (u *UserUpsert) AddBalance(v float64) *UserUpsert {
 	return u
 }
 
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserUpsert) SetGeminiCacheGeneration(v int64) *UserUpsert {
+	u.Set(user.FieldGeminiCacheGeneration, v)
+	return u
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserUpsert) UpdateGeminiCacheGeneration() *UserUpsert {
+	u.SetExcluded(user.FieldGeminiCacheGeneration)
+	return u
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserUpsert) AddGeminiCacheGeneration(v int64) *UserUpsert {
+	u.Add(user.FieldGeminiCacheGeneration, v)
+	return u
+}
+
 // SetFrozenBalance sets the "frozen_balance" field.
 func (u *UserUpsert) SetFrozenBalance(v float64) *UserUpsert {
 	u.Set(user.FieldFrozenBalance, v)
@@ -1657,6 +1700,27 @@ func (u *UserUpsertOne) AddBalance(v float64) *UserUpsertOne {
 func (u *UserUpsertOne) UpdateBalance() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateBalance()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserUpsertOne) SetGeminiCacheGeneration(v int64) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserUpsertOne) AddGeminiCacheGeneration(v int64) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserUpsertOne) UpdateGeminiCacheGeneration() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 
@@ -2288,6 +2352,27 @@ func (u *UserUpsertBulk) AddBalance(v float64) *UserUpsertBulk {
 func (u *UserUpsertBulk) UpdateBalance() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateBalance()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *UserUpsertBulk) SetGeminiCacheGeneration(v int64) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *UserUpsertBulk) AddGeminiCacheGeneration(v int64) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *UserUpsertBulk) UpdateGeminiCacheGeneration() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 

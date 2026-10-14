@@ -70,8 +70,10 @@ export async function list(options?: { signal?: AbortSignal }): Promise<UserMoni
 /**
  * Get detailed status (multi-window availability + latency) for a single monitor.
  */
-export async function status(id: number): Promise<UserMonitorDetail> {
-  const { data } = await apiClient.get<UserMonitorDetail>(`/channel-monitors/${id}/status`)
+export async function status(id: number, options?: { signal?: AbortSignal }): Promise<UserMonitorDetail> {
+  const { data } = await apiClient.get<UserMonitorDetail>(`/channel-monitors/${id}/status`, {
+    signal: options?.signal,
+  })
   return data
 }
 

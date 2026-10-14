@@ -25,6 +25,7 @@ export interface PricingFormEntry {
   output_price: number | string | null
   cache_write_price: number | string | null
   cache_write_1h_price: number | string | null
+  cache_storage_cost_per_token_per_hour?: number | string | null
   cache_read_price: number | string | null
   fast_multiplier?: number | string | null
 	flex_multiplier?: number | string | null

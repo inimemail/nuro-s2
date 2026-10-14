@@ -16,17 +16,21 @@ import (
 // UserPlatformQuotaRecord 是 repository 层的传输结构体，
 // 与 ent.UserPlatformQuota 实体解耦，供业务层使用。
 type UserPlatformQuotaRecord struct {
-	UserID             int64
-	Platform           string
-	DailyLimitUSD      *float64
-	WeeklyLimitUSD     *float64
-	MonthlyLimitUSD    *float64
-	DailyUsageUSD      float64
-	WeeklyUsageUSD     float64
-	MonthlyUsageUSD    float64
-	DailyWindowStart   *time.Time
-	WeeklyWindowStart  *time.Time
-	MonthlyWindowStart *time.Time
+	GeminiCacheDailyUsage, GeminiCacheWeeklyUsage, GeminiCacheMonthlyUsage float64
+	GeminiCacheDailyStart, GeminiCacheWeeklyStart, GeminiCacheMonthlyStart *time.Time
+	GeminiCachePending                                                     float64
+	GeminiCacheGeneration                                                  int64
+	UserID                                                                 int64
+	Platform                                                               string
+	DailyLimitUSD                                                          *float64
+	WeeklyLimitUSD                                                         *float64
+	MonthlyLimitUSD                                                        *float64
+	DailyUsageUSD                                                          float64
+	WeeklyUsageUSD                                                         float64
+	MonthlyUsageUSD                                                        float64
+	DailyWindowStart                                                       *time.Time
+	WeeklyWindowStart                                                      *time.Time
+	MonthlyWindowStart                                                     *time.Time
 }
 
 // ErrUserPlatformQuotaNotFound 用于 ResetExpiredWindow 等需要"必须命中已有记录"的方法。
@@ -38,14 +42,15 @@ var ErrUserPlatformQuotaFKViolation = errors.New("user platform quota snapshot F
 // UserPlatformQuotaSnapshot 是 BatchSnapshotUsage 的输入结构体，
 // 表示 Redis 当前窗口快照（用于绝对值覆盖写入 DB）。
 type UserPlatformQuotaSnapshot struct {
-	UserID             int64
-	Platform           string
-	DailyUsageUSD      float64
-	WeeklyUsageUSD     float64
-	MonthlyUsageUSD    float64
-	DailyWindowStart   time.Time
-	WeeklyWindowStart  time.Time
-	MonthlyWindowStart time.Time
+	GeminiCacheGeneration int64
+	UserID                int64
+	Platform              string
+	DailyUsageUSD         float64
+	WeeklyUsageUSD        float64
+	MonthlyUsageUSD       float64
+	DailyWindowStart      time.Time
+	WeeklyWindowStart     time.Time
+	MonthlyWindowStart    time.Time
 }
 
 // UserPlatformQuotaRepository 定义用户平台配额的数据访问接口。
@@ -243,23 +248,22 @@ func (r *userPlatformQuotaRepository) IncrementUsageWithReset(ctx context.Contex
 // 未命中活跃记录时返回 ErrUserPlatformQuotaNotFound。
 func (r *userPlatformQuotaRepository) ResetExpiredWindow(ctx context.Context, userID int64, platform string, window string, newStart time.Time) error {
 	client := clientFromContext(ctx, r.client)
-	upd := client.UserPlatformQuota.Update().
-		Where(
-			userplatformquota.UserIDEQ(userID),
-			userplatformquota.PlatformEQ(platform),
-			userplatformquota.DeletedAtIsNil(),
-		)
 	switch window {
-	case "daily":
-		upd = upd.SetDailyUsageUsd(0).SetDailyWindowStart(newStart)
-	case "weekly":
-		upd = upd.SetWeeklyUsageUsd(0).SetWeeklyWindowStart(newStart)
-	case "monthly":
-		upd = upd.SetMonthlyUsageUsd(0).SetMonthlyWindowStart(newStart)
+	case "daily", "weekly", "monthly":
 	default:
 		return fmt.Errorf("unknown window %q", window)
 	}
-	n, err := upd.Save(ctx)
+	// Only this explicit admin reset advances the financial fence. A generic
+	// decrease trigger would also fence legitimate Redis period-rollover
+	// snapshots and permanently reject later flusher writes at that generation.
+	query := fmt.Sprintf(`UPDATE user_platform_quotas SET %s_usage_usd=0,%s_window_start=$3,
+ gemini_cache_generation=CASE WHEN gemini_cache_generation>0 THEN gemini_cache_generation+1 ELSE 0 END,
+ updated_at=$4 WHERE user_id=$1 AND platform=$2 AND deleted_at IS NULL`, window, window)
+	res, err := client.ExecContext(ctx, query, userID, platform, newStart, time.Now())
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
@@ -296,17 +300,25 @@ func (r *userPlatformQuotaRepository) withTx(ctx context.Context, fn func(txCtx 
 // 注意 ent 生成字段名为 DailyLimitUsd（非 DailyLimitUSD）。
 func entQuotaToRecord(e *dbent.UserPlatformQuota) *UserPlatformQuotaRecord {
 	return &UserPlatformQuotaRecord{
-		UserID:             e.UserID,
-		Platform:           e.Platform,
-		DailyLimitUSD:      e.DailyLimitUsd,
-		WeeklyLimitUSD:     e.WeeklyLimitUsd,
-		MonthlyLimitUSD:    e.MonthlyLimitUsd,
-		DailyUsageUSD:      e.DailyUsageUsd,
-		WeeklyUsageUSD:     e.WeeklyUsageUsd,
-		MonthlyUsageUSD:    e.MonthlyUsageUsd,
-		DailyWindowStart:   e.DailyWindowStart,
-		WeeklyWindowStart:  e.WeeklyWindowStart,
-		MonthlyWindowStart: e.MonthlyWindowStart,
+		UserID:                  e.UserID,
+		Platform:                e.Platform,
+		DailyLimitUSD:           e.DailyLimitUsd,
+		WeeklyLimitUSD:          e.WeeklyLimitUsd,
+		MonthlyLimitUSD:         e.MonthlyLimitUsd,
+		GeminiCachePending:      e.GeminiCachePending,
+		GeminiCacheDailyUsage:   e.GeminiCacheDailyUsage,
+		GeminiCacheDailyStart:   e.GeminiCacheDailyStart,
+		GeminiCacheWeeklyUsage:  e.GeminiCacheWeeklyUsage,
+		GeminiCacheWeeklyStart:  e.GeminiCacheWeeklyStart,
+		GeminiCacheMonthlyUsage: e.GeminiCacheMonthlyUsage,
+		GeminiCacheMonthlyStart: e.GeminiCacheMonthlyStart,
+		GeminiCacheGeneration:   e.GeminiCacheGeneration,
+		DailyUsageUSD:           e.DailyUsageUsd,
+		WeeklyUsageUSD:          e.WeeklyUsageUsd,
+		MonthlyUsageUSD:         e.MonthlyUsageUsd,
+		DailyWindowStart:        e.DailyWindowStart,
+		WeeklyWindowStart:       e.WeeklyWindowStart,
+		MonthlyWindowStart:      e.MonthlyWindowStart,
 	}
 }
 
@@ -467,7 +479,7 @@ func (r *userPlatformQuotaRepository) BatchSnapshotUsage(ctx context.Context, sn
 		_, _ = sb.WriteString(
 			"INSERT INTO user_platform_quotas" +
 				" (user_id, platform, daily_usage_usd, weekly_usage_usd, monthly_usage_usd," +
-				" daily_window_start, weekly_window_start, monthly_window_start, created_at, updated_at)" +
+				" daily_window_start, weekly_window_start, monthly_window_start, gemini_cache_generation, created_at, updated_at)" +
 				" VALUES ")
 
 		// $1 = now（共用）；每行 8 个 per-row 参，从 $2 起连续编号。
@@ -477,12 +489,12 @@ func (r *userPlatformQuotaRepository) BatchSnapshotUsage(ctx context.Context, sn
 				_, _ = sb.WriteString(",")
 			}
 			b := len(args) // 当前 per-row 第一个参数的 0-based 索引，实际占位符 = b+1
-			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$1,$1)",
-				b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8)
+			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$1,$1)",
+				b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9)
 			args = append(args,
 				s.UserID, s.Platform,
 				s.DailyUsageUSD, s.WeeklyUsageUSD, s.MonthlyUsageUSD,
-				s.DailyWindowStart, s.WeeklyWindowStart, s.MonthlyWindowStart,
+				s.DailyWindowStart, s.WeeklyWindowStart, s.MonthlyWindowStart, s.GeminiCacheGeneration,
 			)
 		}
 
@@ -494,7 +506,8 @@ func (r *userPlatformQuotaRepository) BatchSnapshotUsage(ctx context.Context, sn
 				"  daily_window_start   = EXCLUDED.daily_window_start," +
 				"  weekly_window_start  = EXCLUDED.weekly_window_start," +
 				"  monthly_window_start = EXCLUDED.monthly_window_start," +
-				"  updated_at           = EXCLUDED.updated_at")
+				"  updated_at           = EXCLUDED.updated_at" +
+				" WHERE user_platform_quotas.gemini_cache_generation = EXCLUDED.gemini_cache_generation")
 
 		if _, err := client.ExecContext(ctx, sb.String(), args...); err != nil {
 			var pqErr *pq.Error

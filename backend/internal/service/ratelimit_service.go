@@ -220,7 +220,7 @@ const (
 
 // CheckErrorPolicy 检查池模式、自定义错误码和临时不可调度规则。
 // 池模式错误只参与 failover/软冷却；非池模式下自定义错误码开启时覆盖后续逻辑。
-func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte) ErrorPolicyResult {
+func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) ErrorPolicyResult {
 	if account.IsPoolMode() && account.Platform == PlatformAnthropic {
 		return ErrorPolicySkipped
 	}
@@ -234,7 +234,7 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 	if account.IsPoolMode() {
 		return ErrorPolicySkipped
 	}
-	if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
+	if s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
 		return ErrorPolicyTempUnscheduled
 	}
 	return ErrorPolicyNone
@@ -260,6 +260,11 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return false
 	}
 
+	// Explicit model rules retain their configured duration and never become
+	// an account-wide authentication or rate-limit penalty.
+	if matchedTempUnschedulableScope(account, statusCode, responseBody) == "model" && s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
+		return true
+	}
 	if len(requestedModel) > 0 && s.HandleUpstreamModelNotFound(ctx, account, requestedModel[0], statusCode, responseBody) {
 		return true
 	}
@@ -267,7 +272,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 先尝试临时不可调度规则（401除外）
 	// 如果匹配成功，直接返回，不执行后续禁用逻辑
 	if statusCode != 401 {
-		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
+		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
 			return true
 		}
 	}
@@ -2198,7 +2203,7 @@ func modelRateLimitKeyForUpstreamModelNotFound(ctx context.Context, account *Acc
 	return modelKey
 }
 
-func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) bool {
 	if account == nil {
 		return false
 	}
@@ -2208,7 +2213,7 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 	// 401 首次命中可临时不可调度（给 token 刷新窗口）；
 	// 若历史上已因 401 进入过临时不可调度，则本次应升级为 error（返回 false 交由默认错误逻辑处理）。
 	// Antigravity 跳过：其 401 由 applyErrorPolicy 的 temp_unschedulable_rules 自行控制，无需升级逻辑。
-	if statusCode == http.StatusUnauthorized && account.Platform != PlatformAntigravity {
+	if statusCode == http.StatusUnauthorized && account.Platform != PlatformAntigravity && matchedTempUnschedulableScope(account, statusCode, responseBody) != "model" {
 		reason := account.TempUnschedulableReason
 		// 缓存可能没有 reason，从 DB 回退读取
 		if reason == "" {
@@ -2245,6 +2250,25 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 			continue
 		}
 
+		if rule.Scope == "model" {
+			if !modelTempUnschedulableAuthAllowed(account, statusCode, responseBody) {
+				return false
+			}
+			model := ""
+			if len(requestedModel) > 0 {
+				model = strings.TrimSpace(requestedModel[0])
+			}
+			// Missing model or persistence failure stops this failed candidate only.
+			// It must never widen a model rule into an account-wide cooldown.
+			if model == "" {
+				return true
+			}
+			until := time.Now().Add(time.Duration(rule.DurationMinutes) * time.Minute)
+			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, model, until, "temp_unschedulable_rule"); err != nil {
+				slog.Warn("model_temp_unsched_set_failed", "account_id", account.ID, "model", model, "error", err)
+			}
+			return true
+		}
 		if s.triggerTempUnschedulable(ctx, account, rule, idx, statusCode, matchedKeyword, responseBody) {
 			return true
 		}
@@ -2297,6 +2321,7 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 	until := now.Add(time.Duration(rule.DurationMinutes) * time.Minute)
 
 	state := &TempUnschedState{
+		Scope:           "account",
 		UntilUnix:       until.Unix(),
 		TriggeredAtUnix: now.Unix(),
 		StatusCode:      statusCode,

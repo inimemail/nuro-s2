@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -169,6 +170,8 @@ var (
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
+	CacheStorageCostPerTokenPerHour     float64 `json:"cache_storage_cost_per_token_per_hour"`
+	PricingOverrideCacheStorage         bool    `json:"-"`
 	InputCostPerToken                   float64 `json:"input_cost_per_token"`
 	InputCostPerTokenPriority           float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerToken                  float64 `json:"output_cost_per_token"`
@@ -203,6 +206,7 @@ type PricingRemoteClient interface {
 
 // LiteLLMRawEntry 用于解析原始JSON数据
 type LiteLLMRawEntry struct {
+	CacheStorageCostPerTokenPerHour     *float64 `json:"cache_storage_cost_per_token_per_hour"`
 	InputCostPerToken                   *float64 `json:"input_cost_per_token"`
 	InputCostPerTokenPriority           *float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerToken                  *float64 `json:"output_cost_per_token"`
@@ -588,18 +592,28 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		}
 
 		overrideFields := pricingOverrideFields(overrides[modelName])
+		var overrideObject map[string]json.RawMessage
+		_ = json.Unmarshal(overrides[modelName], &overrideObject)
+		_, storageOverride := overrideObject["cache_storage_cost_per_token_per_hour"]
+		if string(overrideObject["cache_storage_cost_per_token_per_hour"]) == "null" {
+			storageOverride = false
+		}
 		pricing := &LiteLLMModelPricing{
-			LiteLLMProvider:          entry.LiteLLMProvider,
-			Mode:                     entry.Mode,
-			SupportsPromptCaching:    entry.SupportsPromptCaching,
-			SupportsServiceTier:      entry.SupportsServiceTier,
-			TokenPricingAbsent:       entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
-			PricingOverride:          overrideFields.input || overrideFields.output || overrideFields.cacheRead,
-			PricingOverrideInput:     overrideFields.input,
-			PricingOverrideOutput:    overrideFields.output,
-			PricingOverrideCacheRead: overrideFields.cacheRead,
+			LiteLLMProvider:             entry.LiteLLMProvider,
+			PricingOverrideCacheStorage: storageOverride,
+			Mode:                        entry.Mode,
+			SupportsPromptCaching:       entry.SupportsPromptCaching,
+			SupportsServiceTier:         entry.SupportsServiceTier,
+			TokenPricingAbsent:          entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
+			PricingOverride:             overrideFields.input || overrideFields.output || overrideFields.cacheRead,
+			PricingOverrideInput:        overrideFields.input,
+			PricingOverrideOutput:       overrideFields.output,
+			PricingOverrideCacheRead:    overrideFields.cacheRead,
 		}
 
+		if entry.CacheStorageCostPerTokenPerHour != nil {
+			pricing.CacheStorageCostPerTokenPerHour = *entry.CacheStorageCostPerTokenPerHour
+		}
 		if entry.InputCostPerToken != nil {
 			pricing.InputCostPerToken = *entry.InputCostPerToken
 		}
@@ -1109,6 +1123,18 @@ func (s *PricingService) extractBaseName(model string) string {
 
 // matchByModelFamily 基于模型系列匹配
 func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
+	if claude.IsHaiku55(model) {
+		if pricing, ok := s.pricingData["claude-haiku-5-5"]; ok {
+			return pricing
+		}
+		return &LiteLLMModelPricing{
+			InputCostPerToken: 0.1e-6, OutputCostPerToken: 0.5e-6,
+			CacheCreationInputTokenCost: 0.125e-6, CacheCreationInputTokenCostAbove1hr: 0.2e-6,
+			CacheReadInputTokenCost: 0.01e-6, LongContextInputTokenThreshold: 100000,
+			LongContextInputCostMultiplier: 5, LongContextOutputCostMultiplier: 5,
+			LiteLLMProvider: "anthropic", Mode: "chat", SupportsPromptCaching: true,
+		}
+	}
 	// modelFamily 定义一个模型系列的匹配和定价查找规则。
 	type modelFamily struct {
 		name    string   // 系列名称
@@ -1420,4 +1446,17 @@ func isNumeric(s string) bool {
 		}
 	}
 	return true
+}
+
+// GetIdentifiedModelPricing is deliberately exact (including known normalized
+// prefixes). Cache management never guesses a provider price from a substring.
+func (s *PricingService) GetIdentifiedModelPricing(model string) *LiteLLMModelPricing {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, candidate := range s.buildModelLookupCandidates(strings.ToLower(strings.TrimSpace(model))) {
+		if p, ok := s.pricingData[candidate]; ok {
+			return p
+		}
+	}
+	return nil
 }

@@ -954,6 +954,10 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	GeminiExplicitCacheEnabled       bool `mapstructure:"gemini_explicit_cache_enabled"`
+	GeminiExplicitCacheMaxResources  int  `mapstructure:"gemini_explicit_cache_max_resources"`
+	GeminiExplicitCacheMaxTTLSeconds int  `mapstructure:"gemini_explicit_cache_max_ttl_seconds"`
+	GeminiExplicitCacheMaintenance   bool `mapstructure:"gemini_explicit_cache_maintenance"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
@@ -2306,6 +2310,7 @@ func setDefaults() {
 		"api.openai.com",
 		"api.anthropic.com",
 		"api.kimi.com",
+		"api.kimi.ai",
 		"api.moonshot.ai",
 		"api.moonshot.cn",
 		"open.bigmodel.cn",
@@ -2653,6 +2658,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.gemini_explicit_cache_enabled", false)
+	viper.SetDefault("gateway.gemini_explicit_cache_max_resources", 10000)
+	viper.SetDefault("gateway.gemini_explicit_cache_max_ttl_seconds", 86400)
+	viper.SetDefault("gateway.gemini_explicit_cache_maintenance", false)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
@@ -2902,6 +2911,12 @@ func setDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if c.Gateway.GeminiExplicitCacheMaxResources < 0 || c.Gateway.GeminiExplicitCacheMaxResources > 100000 {
+		return fmt.Errorf("gateway.gemini_explicit_cache_max_resources must be between 1 and 100000 (0 uses the default)")
+	}
+	if ttl := c.Gateway.GeminiExplicitCacheMaxTTLSeconds; ttl != 0 && (ttl < 60 || ttl > 86400) {
+		return fmt.Errorf("gateway.gemini_explicit_cache_max_ttl_seconds must be between 60 and 86400")
+	}
 	if c.APIKeyCreate.MaxActivePerUser < 0 {
 		return fmt.Errorf("api_key_create.max_active_per_user must be non-negative")
 	}

@@ -21,6 +21,22 @@ const (
 	FieldUpdatedAt = "updated_at"
 	// FieldDeletedAt holds the string denoting the deleted_at field in the database.
 	FieldDeletedAt = "deleted_at"
+	// FieldGeminiCachePending holds the string denoting the gemini_cache_pending field in the database.
+	FieldGeminiCachePending = "gemini_cache_pending"
+	// FieldGeminiCacheGeneration holds the string denoting the gemini_cache_generation field in the database.
+	FieldGeminiCacheGeneration = "gemini_cache_generation"
+	// FieldGeminiCacheDailyUsage holds the string denoting the gemini_cache_daily_usage field in the database.
+	FieldGeminiCacheDailyUsage = "gemini_cache_daily_usage"
+	// FieldGeminiCacheDailyStart holds the string denoting the gemini_cache_daily_start field in the database.
+	FieldGeminiCacheDailyStart = "gemini_cache_daily_start"
+	// FieldGeminiCacheWeeklyUsage holds the string denoting the gemini_cache_weekly_usage field in the database.
+	FieldGeminiCacheWeeklyUsage = "gemini_cache_weekly_usage"
+	// FieldGeminiCacheWeeklyStart holds the string denoting the gemini_cache_weekly_start field in the database.
+	FieldGeminiCacheWeeklyStart = "gemini_cache_weekly_start"
+	// FieldGeminiCacheMonthlyUsage holds the string denoting the gemini_cache_monthly_usage field in the database.
+	FieldGeminiCacheMonthlyUsage = "gemini_cache_monthly_usage"
+	// FieldGeminiCacheMonthlyStart holds the string denoting the gemini_cache_monthly_start field in the database.
+	FieldGeminiCacheMonthlyStart = "gemini_cache_monthly_start"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldPlatform holds the string denoting the platform field in the database.
@@ -62,6 +78,14 @@ var Columns = []string{
 	FieldCreatedAt,
 	FieldUpdatedAt,
 	FieldDeletedAt,
+	FieldGeminiCachePending,
+	FieldGeminiCacheGeneration,
+	FieldGeminiCacheDailyUsage,
+	FieldGeminiCacheDailyStart,
+	FieldGeminiCacheWeeklyUsage,
+	FieldGeminiCacheWeeklyStart,
+	FieldGeminiCacheMonthlyUsage,
+	FieldGeminiCacheMonthlyStart,
 	FieldUserID,
 	FieldPlatform,
 	FieldDailyLimitUsd,
@@ -99,6 +123,16 @@ var (
 	DefaultUpdatedAt func() time.Time
 	// UpdateDefaultUpdatedAt holds the default value on update for the "updated_at" field.
 	UpdateDefaultUpdatedAt func() time.Time
+	// DefaultGeminiCachePending holds the default value on creation for the "gemini_cache_pending" field.
+	DefaultGeminiCachePending float64
+	// DefaultGeminiCacheGeneration holds the default value on creation for the "gemini_cache_generation" field.
+	DefaultGeminiCacheGeneration int64
+	// DefaultGeminiCacheDailyUsage holds the default value on creation for the "gemini_cache_daily_usage" field.
+	DefaultGeminiCacheDailyUsage float64
+	// DefaultGeminiCacheWeeklyUsage holds the default value on creation for the "gemini_cache_weekly_usage" field.
+	DefaultGeminiCacheWeeklyUsage float64
+	// DefaultGeminiCacheMonthlyUsage holds the default value on creation for the "gemini_cache_monthly_usage" field.
+	DefaultGeminiCacheMonthlyUsage float64
 	// PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
 	PlatformValidator func(string) error
 	// DefaultDailyUsageUsd holds the default value on creation for the "daily_usage_usd" field.
@@ -130,6 +164,46 @@ func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
 // ByDeletedAt orders the results by the deleted_at field.
 func ByDeletedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDeletedAt, opts...).ToFunc()
+}
+
+// ByGeminiCachePending orders the results by the gemini_cache_pending field.
+func ByGeminiCachePending(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCachePending, opts...).ToFunc()
+}
+
+// ByGeminiCacheGeneration orders the results by the gemini_cache_generation field.
+func ByGeminiCacheGeneration(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheGeneration, opts...).ToFunc()
+}
+
+// ByGeminiCacheDailyUsage orders the results by the gemini_cache_daily_usage field.
+func ByGeminiCacheDailyUsage(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheDailyUsage, opts...).ToFunc()
+}
+
+// ByGeminiCacheDailyStart orders the results by the gemini_cache_daily_start field.
+func ByGeminiCacheDailyStart(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheDailyStart, opts...).ToFunc()
+}
+
+// ByGeminiCacheWeeklyUsage orders the results by the gemini_cache_weekly_usage field.
+func ByGeminiCacheWeeklyUsage(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheWeeklyUsage, opts...).ToFunc()
+}
+
+// ByGeminiCacheWeeklyStart orders the results by the gemini_cache_weekly_start field.
+func ByGeminiCacheWeeklyStart(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheWeeklyStart, opts...).ToFunc()
+}
+
+// ByGeminiCacheMonthlyUsage orders the results by the gemini_cache_monthly_usage field.
+func ByGeminiCacheMonthlyUsage(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheMonthlyUsage, opts...).ToFunc()
+}
+
+// ByGeminiCacheMonthlyStart orders the results by the gemini_cache_monthly_start field.
+func ByGeminiCacheMonthlyStart(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheMonthlyStart, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.

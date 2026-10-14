@@ -109,6 +109,7 @@ func cloneGroupMessagesConfig(value OpenAIMessagesDispatchModelConfig) OpenAIMes
 
 func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 	return &Group{
+		I18n:                                 source.I18n.Clone(),
 		Name:                                 duplicateGroupName(source.Name, 1),
 		Description:                          source.Description,
 		Platform:                             source.Platform,

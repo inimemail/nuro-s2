@@ -70,6 +70,46 @@ func DeletedAt(v time.Time) predicate.UserPlatformQuota {
 	return predicate.UserPlatformQuota(sql.FieldEQ(FieldDeletedAt, v))
 }
 
+// GeminiCachePending applies equality check predicate on the "gemini_cache_pending" field. It's identical to GeminiCachePendingEQ.
+func GeminiCachePending(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCacheGeneration applies equality check predicate on the "gemini_cache_generation" field. It's identical to GeminiCacheGenerationEQ.
+func GeminiCacheGeneration(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheDailyUsage applies equality check predicate on the "gemini_cache_daily_usage" field. It's identical to GeminiCacheDailyUsageEQ.
+func GeminiCacheDailyUsage(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyStart applies equality check predicate on the "gemini_cache_daily_start" field. It's identical to GeminiCacheDailyStartEQ.
+func GeminiCacheDailyStart(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheWeeklyUsage applies equality check predicate on the "gemini_cache_weekly_usage" field. It's identical to GeminiCacheWeeklyUsageEQ.
+func GeminiCacheWeeklyUsage(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyStart applies equality check predicate on the "gemini_cache_weekly_start" field. It's identical to GeminiCacheWeeklyStartEQ.
+func GeminiCacheWeeklyStart(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheMonthlyUsage applies equality check predicate on the "gemini_cache_monthly_usage" field. It's identical to GeminiCacheMonthlyUsageEQ.
+func GeminiCacheMonthlyUsage(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyStart applies equality check predicate on the "gemini_cache_monthly_start" field. It's identical to GeminiCacheMonthlyStartEQ.
+func GeminiCacheMonthlyStart(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheMonthlyStart, v))
+}
+
 // UserID applies equality check predicate on the "user_id" field. It's identical to UserIDEQ.
 func UserID(v int64) predicate.UserPlatformQuota {
 	return predicate.UserPlatformQuota(sql.FieldEQ(FieldUserID, v))
@@ -253,6 +293,356 @@ func DeletedAtIsNil() predicate.UserPlatformQuota {
 // DeletedAtNotNil applies the NotNil predicate on the "deleted_at" field.
 func DeletedAtNotNil() predicate.UserPlatformQuota {
 	return predicate.UserPlatformQuota(sql.FieldNotNull(FieldDeletedAt))
+}
+
+// GeminiCachePendingEQ applies the EQ predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingNEQ applies the NEQ predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingNEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingIn applies the In predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCachePending, vs...))
+}
+
+// GeminiCachePendingNotIn applies the NotIn predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingNotIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCachePending, vs...))
+}
+
+// GeminiCachePendingGT applies the GT predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingGT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingGTE applies the GTE predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingGTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingLT applies the LT predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingLT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCachePending, v))
+}
+
+// GeminiCachePendingLTE applies the LTE predicate on the "gemini_cache_pending" field.
+func GeminiCachePendingLTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCachePending, v))
+}
+
+// GeminiCacheGenerationEQ applies the EQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationEQ(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationNEQ applies the NEQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNEQ(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationIn applies the In predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationIn(vs ...int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationNotIn applies the NotIn predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNotIn(vs ...int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationGT applies the GT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGT(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationGTE applies the GTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGTE(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLT applies the LT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLT(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLTE applies the LTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLTE(v int64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheDailyUsageEQ applies the EQ predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyUsageNEQ applies the NEQ predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageNEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyUsageIn applies the In predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheDailyUsage, vs...))
+}
+
+// GeminiCacheDailyUsageNotIn applies the NotIn predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageNotIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheDailyUsage, vs...))
+}
+
+// GeminiCacheDailyUsageGT applies the GT predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageGT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyUsageGTE applies the GTE predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageGTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyUsageLT applies the LT predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageLT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyUsageLTE applies the LTE predicate on the "gemini_cache_daily_usage" field.
+func GeminiCacheDailyUsageLTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheDailyUsage, v))
+}
+
+// GeminiCacheDailyStartEQ applies the EQ predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartNEQ applies the NEQ predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartNEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartIn applies the In predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheDailyStart, vs...))
+}
+
+// GeminiCacheDailyStartNotIn applies the NotIn predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartNotIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheDailyStart, vs...))
+}
+
+// GeminiCacheDailyStartGT applies the GT predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartGT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartGTE applies the GTE predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartGTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartLT applies the LT predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartLT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartLTE applies the LTE predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartLTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheDailyStart, v))
+}
+
+// GeminiCacheDailyStartIsNil applies the IsNil predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartIsNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIsNull(FieldGeminiCacheDailyStart))
+}
+
+// GeminiCacheDailyStartNotNil applies the NotNil predicate on the "gemini_cache_daily_start" field.
+func GeminiCacheDailyStartNotNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotNull(FieldGeminiCacheDailyStart))
+}
+
+// GeminiCacheWeeklyUsageEQ applies the EQ predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyUsageNEQ applies the NEQ predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageNEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyUsageIn applies the In predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheWeeklyUsage, vs...))
+}
+
+// GeminiCacheWeeklyUsageNotIn applies the NotIn predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageNotIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheWeeklyUsage, vs...))
+}
+
+// GeminiCacheWeeklyUsageGT applies the GT predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageGT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyUsageGTE applies the GTE predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageGTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyUsageLT applies the LT predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageLT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyUsageLTE applies the LTE predicate on the "gemini_cache_weekly_usage" field.
+func GeminiCacheWeeklyUsageLTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheWeeklyUsage, v))
+}
+
+// GeminiCacheWeeklyStartEQ applies the EQ predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartNEQ applies the NEQ predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartNEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartIn applies the In predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheWeeklyStart, vs...))
+}
+
+// GeminiCacheWeeklyStartNotIn applies the NotIn predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartNotIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheWeeklyStart, vs...))
+}
+
+// GeminiCacheWeeklyStartGT applies the GT predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartGT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartGTE applies the GTE predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartGTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartLT applies the LT predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartLT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartLTE applies the LTE predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartLTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheWeeklyStart, v))
+}
+
+// GeminiCacheWeeklyStartIsNil applies the IsNil predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartIsNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIsNull(FieldGeminiCacheWeeklyStart))
+}
+
+// GeminiCacheWeeklyStartNotNil applies the NotNil predicate on the "gemini_cache_weekly_start" field.
+func GeminiCacheWeeklyStartNotNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotNull(FieldGeminiCacheWeeklyStart))
+}
+
+// GeminiCacheMonthlyUsageEQ applies the EQ predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyUsageNEQ applies the NEQ predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageNEQ(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyUsageIn applies the In predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheMonthlyUsage, vs...))
+}
+
+// GeminiCacheMonthlyUsageNotIn applies the NotIn predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageNotIn(vs ...float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheMonthlyUsage, vs...))
+}
+
+// GeminiCacheMonthlyUsageGT applies the GT predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageGT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyUsageGTE applies the GTE predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageGTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyUsageLT applies the LT predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageLT(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyUsageLTE applies the LTE predicate on the "gemini_cache_monthly_usage" field.
+func GeminiCacheMonthlyUsageLTE(v float64) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheMonthlyUsage, v))
+}
+
+// GeminiCacheMonthlyStartEQ applies the EQ predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldEQ(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartNEQ applies the NEQ predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartNEQ(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNEQ(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartIn applies the In predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIn(FieldGeminiCacheMonthlyStart, vs...))
+}
+
+// GeminiCacheMonthlyStartNotIn applies the NotIn predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartNotIn(vs ...time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotIn(FieldGeminiCacheMonthlyStart, vs...))
+}
+
+// GeminiCacheMonthlyStartGT applies the GT predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartGT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGT(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartGTE applies the GTE predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartGTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldGTE(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartLT applies the LT predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartLT(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLT(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartLTE applies the LTE predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartLTE(v time.Time) predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldLTE(FieldGeminiCacheMonthlyStart, v))
+}
+
+// GeminiCacheMonthlyStartIsNil applies the IsNil predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartIsNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldIsNull(FieldGeminiCacheMonthlyStart))
+}
+
+// GeminiCacheMonthlyStartNotNil applies the NotNil predicate on the "gemini_cache_monthly_start" field.
+func GeminiCacheMonthlyStartNotNil() predicate.UserPlatformQuota {
+	return predicate.UserPlatformQuota(sql.FieldNotNull(FieldGeminiCacheMonthlyStart))
 }
 
 // UserIDEQ applies the EQ predicate on the "user_id" field.

@@ -129,6 +129,27 @@ func (_u *UserUpdate) AddBalance(v float64) *UserUpdate {
 	return _u
 }
 
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_u *UserUpdate) SetGeminiCacheGeneration(v int64) *UserUpdate {
+	_u.mutation.ResetGeminiCacheGeneration()
+	_u.mutation.SetGeminiCacheGeneration(v)
+	return _u
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_u *UserUpdate) SetNillableGeminiCacheGeneration(v *int64) *UserUpdate {
+	if v != nil {
+		_u.SetGeminiCacheGeneration(*v)
+	}
+	return _u
+}
+
+// AddGeminiCacheGeneration adds value to the "gemini_cache_generation" field.
+func (_u *UserUpdate) AddGeminiCacheGeneration(v int64) *UserUpdate {
+	_u.mutation.AddGeminiCacheGeneration(v)
+	return _u
+}
+
 // SetFrozenBalance sets the "frozen_balance" field.
 func (_u *UserUpdate) SetFrozenBalance(v float64) *UserUpdate {
 	_u.mutation.ResetFrozenBalance()
@@ -1032,6 +1053,12 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedBalance(); ok {
 		_spec.AddField(user.FieldBalance, field.TypeFloat64, value)
 	}
+	if value, ok := _u.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(user.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCacheGeneration(); ok {
+		_spec.AddField(user.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
 	if value, ok := _u.mutation.FrozenBalance(); ok {
 		_spec.SetField(user.FieldFrozenBalance, field.TypeFloat64, value)
 	}
@@ -1819,6 +1846,27 @@ func (_u *UserUpdateOne) SetNillableBalance(v *float64) *UserUpdateOne {
 // AddBalance adds value to the "balance" field.
 func (_u *UserUpdateOne) AddBalance(v float64) *UserUpdateOne {
 	_u.mutation.AddBalance(v)
+	return _u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_u *UserUpdateOne) SetGeminiCacheGeneration(v int64) *UserUpdateOne {
+	_u.mutation.ResetGeminiCacheGeneration()
+	_u.mutation.SetGeminiCacheGeneration(v)
+	return _u
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_u *UserUpdateOne) SetNillableGeminiCacheGeneration(v *int64) *UserUpdateOne {
+	if v != nil {
+		_u.SetGeminiCacheGeneration(*v)
+	}
+	return _u
+}
+
+// AddGeminiCacheGeneration adds value to the "gemini_cache_generation" field.
+func (_u *UserUpdateOne) AddGeminiCacheGeneration(v int64) *UserUpdateOne {
+	_u.mutation.AddGeminiCacheGeneration(v)
 	return _u
 }
 
@@ -2754,6 +2802,12 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 	}
 	if value, ok := _u.mutation.AddedBalance(); ok {
 		_spec.AddField(user.FieldBalance, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(user.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCacheGeneration(); ok {
+		_spec.AddField(user.FieldGeminiCacheGeneration, field.TypeInt64, value)
 	}
 	if value, ok := _u.mutation.FrozenBalance(); ok {
 		_spec.SetField(user.FieldFrozenBalance, field.TypeFloat64, value)

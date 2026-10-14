@@ -65,6 +65,7 @@ type channelModelPricingRequest struct {
 	CacheWritePrice              *float64                    `json:"cache_write_price" binding:"omitempty,min=0"`
 	CacheWrite1hPrice            *float64                    `json:"cache_write_1h_price" binding:"omitempty,min=0"`
 	CacheReadPrice               *float64                    `json:"cache_read_price" binding:"omitempty,min=0"`
+	CacheStoragePrice            *float64                    `json:"cache_storage_cost_per_token_per_hour" binding:"omitempty,min=0"`
 	FastMultiplier               *float64                    `json:"fast_multiplier" binding:"omitempty,gt=0"`
 	FlexMultiplier               *float64                    `json:"flex_multiplier" binding:"omitempty,gt=0"`
 	MaxReasoningEffortMultiplier *float64                    `json:"max_reasoning_effort_multiplier" binding:"omitempty,gt=0"`
@@ -127,6 +128,7 @@ type channelModelPricingResponse struct {
 	CacheWritePrice              *float64                    `json:"cache_write_price"`
 	CacheWrite1hPrice            *float64                    `json:"cache_write_1h_price"`
 	CacheReadPrice               *float64                    `json:"cache_read_price"`
+	CacheStoragePrice            *float64                    `json:"cache_storage_cost_per_token_per_hour" binding:"omitempty,min=0"`
 	FastMultiplier               *float64                    `json:"fast_multiplier"`
 	FlexMultiplier               *float64                    `json:"flex_multiplier"`
 	MaxReasoningEffortMultiplier *float64                    `json:"max_reasoning_effort_multiplier,omitempty"`
@@ -245,6 +247,7 @@ func pricingToResponse(p *service.ChannelModelPricing) channelModelPricingRespon
 		CacheWritePrice:              p.CacheWritePrice,
 		CacheWrite1hPrice:            p.CacheWrite1hPrice,
 		CacheReadPrice:               p.CacheReadPrice,
+		CacheStoragePrice:            p.CacheStoragePrice,
 		FastMultiplier:               p.FastMultiplier,
 		FlexMultiplier:               p.FlexMultiplier,
 		MaxReasoningEffortMultiplier: p.MaxReasoningEffortMultiplier,
@@ -312,6 +315,7 @@ func pricingRequestToService(reqs []channelModelPricingRequest) []service.Channe
 			CacheWritePrice:              r.CacheWritePrice,
 			CacheWrite1hPrice:            r.CacheWrite1hPrice,
 			CacheReadPrice:               r.CacheReadPrice,
+			CacheStoragePrice:            r.CacheStoragePrice,
 			FastMultiplier:               r.FastMultiplier,
 			FlexMultiplier:               r.FlexMultiplier,
 			MaxReasoningEffortMultiplier: r.MaxReasoningEffortMultiplier,

@@ -28,6 +28,7 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
+        <GeminiCacheCapabilityFields v-if="account.platform === 'gemini'" v-model:enabled="geminiCacheEnabled" v-model:ttl="geminiCacheTTL" :base-url="editBaseUrl" :pool="poolModeEnabled" />
         <div v-if="!isCNProvider || cnApiMode !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -1550,6 +1551,11 @@
 
       <!-- Vertex Service Account -->
       <div v-if="(account.platform === 'gemini' || account.platform === 'anthropic') && account.type === 'service_account'" class="space-y-4">
+        <VertexAuthFields v-if="account.platform === 'gemini'" v-model:mode="editVertexAuthMode" v-model:api-key="editVertexApiKey" editing />
+        <div v-if="account.platform === 'gemini' && editVertexAuthMode === 'service_account' && isGeminiVertexApiKey">
+          <label class="input-label">Service Account JSON</label>
+          <textarea v-model="editVertexServiceAccountJson" class="input min-h-[120px] font-mono" autocomplete="off" />
+        </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label class="input-label">Project ID</label>
@@ -1557,7 +1563,7 @@
               v-model="editVertexProjectId"
               type="text"
               class="input font-mono"
-              readonly
+              :readonly="editVertexAuthMode !== 'apikey'"
               :placeholder="t('admin.accounts.vertexProjectIdPlaceholder')"
             />
             <p class="input-hint">{{ t('admin.accounts.vertexSaJsonEditHint') }}</p>
@@ -2203,6 +2209,13 @@
               </div>
 
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label class="input-label">{{ t('admin.accounts.tempUnschedulable.scope') }}</label>
+                  <select v-model="rule.scope" class="input">
+                    <option value="model">{{ t('admin.accounts.tempUnschedulable.scopeModel') }}</option>
+                    <option value="account">{{ t('admin.accounts.tempUnschedulable.scopeAccount') }}</option>
+                  </select>
+                </div>
                 <div>
                   <label class="input-label">{{ t('admin.accounts.tempUnschedulable.errorCode') }}</label>
                   <input
@@ -3871,6 +3884,8 @@
 </template>
 
 <script setup lang="ts">
+import VertexAuthFields from './VertexAuthFields.vue'
+import GeminiCacheCapabilityFields from './GeminiCacheCapabilityFields.vue'
 import SeedanceControl from './SeedanceControl.vue'
 import { isSeedanceEnabled } from '@/utils/seedance'
 import { ref, reactive, computed, watch } from 'vue'
@@ -3999,6 +4014,7 @@ interface ModelMapping {
 }
 
 interface TempUnschedRuleForm {
+  scope?: 'model' | 'account'
   error_code: number | null
   keywords: string
   duration_minutes: number | null
@@ -4008,6 +4024,8 @@ interface TempUnschedRuleForm {
 // State
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
+const geminiCacheEnabled = ref(false)
+const geminiCacheTTL = ref(86400)
 const editApiKey = ref('')
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
@@ -4016,6 +4034,10 @@ const editBedrockSessionToken = ref('')
 const editBedrockRegion = ref('')
 const editBedrockForceGlobal = ref(false)
 const editBedrockApiKeyValue = ref('')
+const editVertexAuthMode = ref<'service_account' | 'apikey'>('service_account')
+const editVertexApiKey = ref('')
+const editVertexServiceAccountJson = ref('')
+const isGeminiVertexApiKey = computed(() => props.account?.platform === 'gemini' && props.account?.type === 'service_account' && props.account?.credentials?.auth_mode === 'apikey')
 const editVertexProjectId = ref('')
 const editVertexClientEmail = ref('')
 const editVertexLocation = ref('us-central1')
@@ -5506,6 +5528,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  geminiCacheEnabled.value = credentials?.gemini_explicit_cache_enabled === true
+  geminiCacheTTL.value = Number(credentials?.gemini_explicit_cache_max_ttl_seconds ?? 86400)
   const accountExtra = (newAccount.extra as Record<string, unknown>) || {}
   const fpMode = accountExtra.codex_fingerprint_mode
   codexFingerprintMode.value = fpMode === 'device' || fpMode === 'session' || fpMode === 'full' ? fpMode : 'off'
@@ -5961,6 +5985,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     editBaseUrl.value = (credentials.base_url as string) || ''
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
+    editVertexAuthMode.value = credentials.auth_mode === 'apikey' ? 'apikey' : 'service_account'
+    editVertexApiKey.value = ''
+    editVertexServiceAccountJson.value = ''
     editVertexProjectId.value = (credentials.project_id as string) || ''
     editVertexClientEmail.value = (credentials.client_email as string) || ''
     editVertexLocation.value = (credentials.location as string) || (credentials.vertex_location as string) || 'us-central1'
@@ -6301,10 +6328,11 @@ const removeErrorCode = (code: number) => {
 
 const addTempUnschedRule = (preset?: TempUnschedRuleForm) => {
   if (preset) {
-    tempUnschedRules.value.push({ ...preset })
+    tempUnschedRules.value.push({ ...preset, scope: preset.scope ?? 'model' })
     return
   }
   tempUnschedRules.value.push({
+    scope: 'model',
     error_code: null,
     keywords: '',
     duration_minutes: 30,
@@ -6327,6 +6355,7 @@ const moveTempUnschedRule = (index: number, direction: number) => {
 
 const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
   const out: Array<{
+    scope: 'model' | 'account'
     error_code: number
     keywords: string[]
     duration_minutes: number
@@ -6347,6 +6376,7 @@ const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
       continue
     }
     out.push({
+      scope: rule.scope ?? 'account',
       error_code: Math.trunc(errorCode),
       keywords,
       duration_minutes: Math.trunc(duration),
@@ -6386,6 +6416,7 @@ function loadTempUnschedRules(credentials?: Record<string, unknown>) {
   tempUnschedRules.value = rawRules.map((rule) => {
     const entry = rule as Record<string, unknown>
     return {
+      scope: entry.scope === 'model' ? 'model' : 'account',
       error_code: toPositiveNumber(entry.error_code),
       keywords: formatTempUnschedKeywords(entry.keywords),
       duration_minutes: toPositiveNumber(entry.duration_minutes),
@@ -6680,6 +6711,14 @@ const handleSubmit = async () => {
         ...currentCredentials,
         base_url: newBaseUrl
       }
+      if (props.account.platform === 'gemini') {
+        if (geminiCacheEnabled.value && (!Number.isInteger(geminiCacheTTL.value) || geminiCacheTTL.value < 60 || geminiCacheTTL.value > 86400)) {
+          appStore.showError(t('geminiCache.capability.invalidTTL'))
+          return
+        }
+        newCredentials.gemini_explicit_cache_enabled = geminiCacheEnabled.value
+        newCredentials.gemini_explicit_cache_max_ttl_seconds = geminiCacheTTL.value
+      }
       if (isCNProvider.value && cnApiMode.value === 'adaptive') {
         newCredentials.base_url = (adaptiveBaseUrls.value.chat_completions || cnAdaptiveProtocolOptions.value[0]?.url || newBaseUrl).trim()
         newCredentials.api_base_urls = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, (adaptiveBaseUrls.value[option.value] || option.url).trim()]))
@@ -6898,6 +6937,24 @@ const handleSubmit = async () => {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
+      const keyMode = props.account.platform === 'gemini' && editVertexAuthMode.value === 'apikey'
+      newCredentials.auth_mode = keyMode ? 'apikey' : 'service_account'
+      if (keyMode) {
+        if (editVertexApiKey.value.trim()) newCredentials.api_key = editVertexApiKey.value.trim()
+        else if (!isGeminiVertexApiKey.value) { appStore.showError(t('admin.accounts.pleaseEnterApiKey')); return }
+        delete newCredentials.service_account_json
+        delete newCredentials.service_account
+        delete newCredentials.client_email
+      } else {
+        if (editVertexServiceAccountJson.value.trim()) {
+          try {
+            const parsed = JSON.parse(editVertexServiceAccountJson.value)
+            if (!parsed.project_id || !parsed.client_email || !parsed.private_key) throw new Error('invalid')
+            newCredentials.service_account_json = editVertexServiceAccountJson.value.trim()
+            editVertexProjectId.value = parsed.project_id
+            editVertexClientEmail.value = parsed.client_email
+          } catch { appStore.showError(t('admin.accounts.vertexSaJsonRequired')); return }
+        }
       if (!editVertexProjectId.value.trim()) {
         appStore.showError(t('admin.accounts.vertexSaJsonMissingProjectId'))
         return
@@ -6919,12 +6976,13 @@ const handleSubmit = async () => {
             credentialsStatus.has_service_account_json || credentialsStatus.has_service_account
           )
         : Boolean(currentCredentials.service_account_json || currentCredentials.service_account)
-      if (!hasExistingServiceAccountJson) {
+      if (!hasExistingServiceAccountJson && !editVertexServiceAccountJson.value.trim()) {
         appStore.showError(t('admin.accounts.vertexSaJsonRequired'))
         return
       }
+      }
       newCredentials.project_id = editVertexProjectId.value.trim()
-      newCredentials.client_email = editVertexClientEmail.value.trim()
+      if (!keyMode) newCredentials.client_email = editVertexClientEmail.value.trim()
       newCredentials.location = editVertexLocation.value.trim()
       newCredentials.tier_id = 'vertex'
 

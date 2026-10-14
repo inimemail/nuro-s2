@@ -1101,6 +1101,7 @@
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
 	import { useClipboard } from '@/composables/useClipboard'
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
@@ -1928,4 +1929,6 @@ onUnmounted(() => {
   document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })
+
+useLocaleRefresh(() => Promise.all([loadApiKeys(), loadGroups()]))
 </script>

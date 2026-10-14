@@ -703,11 +703,21 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if err != nil {
 		return nil, fmt.Errorf("marshal content moderation config: %w", err)
 	}
-	if err := s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw)); err != nil {
-		return nil, fmt.Errorf("save content moderation config: %w", err)
+	var saveErr error
+	if transactional, ok := s.settingRepo.(interface {
+		SetContentModerationConfig(context.Context, string, []int64) error
+	}); ok {
+		saveErr = transactional.SetContentModerationConfig(ctx, string(raw), cfg.GroupIDs)
+	} else {
+		saveErr = s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw))
+	}
+	if saveErr != nil {
+		return nil, fmt.Errorf("save content moderation config: %w", saveErr)
 	}
 	s.moderationProxyCache.Store(nil)
-	return s.configView(cfg), nil
+	// Read committed canonical state: a concurrent group deletion may already
+	// have pruned the submitted list. No request-path cache is introduced.
+	return s.GetConfig(ctx)
 }
 
 func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestContentModerationAPIKeysInput) (*TestContentModerationAPIKeysResult, error) {

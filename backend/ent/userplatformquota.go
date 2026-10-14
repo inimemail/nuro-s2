@@ -24,6 +24,22 @@ type UserPlatformQuota struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	// DeletedAt holds the value of the "deleted_at" field.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// GeminiCachePending holds the value of the "gemini_cache_pending" field.
+	GeminiCachePending float64 `json:"gemini_cache_pending,omitempty"`
+	// GeminiCacheGeneration holds the value of the "gemini_cache_generation" field.
+	GeminiCacheGeneration int64 `json:"gemini_cache_generation,omitempty"`
+	// GeminiCacheDailyUsage holds the value of the "gemini_cache_daily_usage" field.
+	GeminiCacheDailyUsage float64 `json:"gemini_cache_daily_usage,omitempty"`
+	// GeminiCacheDailyStart holds the value of the "gemini_cache_daily_start" field.
+	GeminiCacheDailyStart *time.Time `json:"gemini_cache_daily_start,omitempty"`
+	// GeminiCacheWeeklyUsage holds the value of the "gemini_cache_weekly_usage" field.
+	GeminiCacheWeeklyUsage float64 `json:"gemini_cache_weekly_usage,omitempty"`
+	// GeminiCacheWeeklyStart holds the value of the "gemini_cache_weekly_start" field.
+	GeminiCacheWeeklyStart *time.Time `json:"gemini_cache_weekly_start,omitempty"`
+	// GeminiCacheMonthlyUsage holds the value of the "gemini_cache_monthly_usage" field.
+	GeminiCacheMonthlyUsage float64 `json:"gemini_cache_monthly_usage,omitempty"`
+	// GeminiCacheMonthlyStart holds the value of the "gemini_cache_monthly_start" field.
+	GeminiCacheMonthlyStart *time.Time `json:"gemini_cache_monthly_start,omitempty"`
 	// UserID holds the value of the "user_id" field.
 	UserID int64 `json:"user_id,omitempty"`
 	// Platform holds the value of the "platform" field.
@@ -77,13 +93,13 @@ func (*UserPlatformQuota) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case userplatformquota.FieldDailyLimitUsd, userplatformquota.FieldWeeklyLimitUsd, userplatformquota.FieldMonthlyLimitUsd, userplatformquota.FieldDailyUsageUsd, userplatformquota.FieldWeeklyUsageUsd, userplatformquota.FieldMonthlyUsageUsd:
+		case userplatformquota.FieldGeminiCachePending, userplatformquota.FieldGeminiCacheDailyUsage, userplatformquota.FieldGeminiCacheWeeklyUsage, userplatformquota.FieldGeminiCacheMonthlyUsage, userplatformquota.FieldDailyLimitUsd, userplatformquota.FieldWeeklyLimitUsd, userplatformquota.FieldMonthlyLimitUsd, userplatformquota.FieldDailyUsageUsd, userplatformquota.FieldWeeklyUsageUsd, userplatformquota.FieldMonthlyUsageUsd:
 			values[i] = new(sql.NullFloat64)
-		case userplatformquota.FieldID, userplatformquota.FieldUserID:
+		case userplatformquota.FieldID, userplatformquota.FieldGeminiCacheGeneration, userplatformquota.FieldUserID:
 			values[i] = new(sql.NullInt64)
 		case userplatformquota.FieldPlatform:
 			values[i] = new(sql.NullString)
-		case userplatformquota.FieldCreatedAt, userplatformquota.FieldUpdatedAt, userplatformquota.FieldDeletedAt, userplatformquota.FieldDailyWindowStart, userplatformquota.FieldWeeklyWindowStart, userplatformquota.FieldMonthlyWindowStart:
+		case userplatformquota.FieldCreatedAt, userplatformquota.FieldUpdatedAt, userplatformquota.FieldDeletedAt, userplatformquota.FieldGeminiCacheDailyStart, userplatformquota.FieldGeminiCacheWeeklyStart, userplatformquota.FieldGeminiCacheMonthlyStart, userplatformquota.FieldDailyWindowStart, userplatformquota.FieldWeeklyWindowStart, userplatformquota.FieldMonthlyWindowStart:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -124,6 +140,57 @@ func (_m *UserPlatformQuota) assignValues(columns []string, values []any) error 
 			} else if value.Valid {
 				_m.DeletedAt = new(time.Time)
 				*_m.DeletedAt = value.Time
+			}
+		case userplatformquota.FieldGeminiCachePending:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_pending", values[i])
+			} else if value.Valid {
+				_m.GeminiCachePending = value.Float64
+			}
+		case userplatformquota.FieldGeminiCacheGeneration:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_generation", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheGeneration = value.Int64
+			}
+		case userplatformquota.FieldGeminiCacheDailyUsage:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_daily_usage", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheDailyUsage = value.Float64
+			}
+		case userplatformquota.FieldGeminiCacheDailyStart:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_daily_start", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheDailyStart = new(time.Time)
+				*_m.GeminiCacheDailyStart = value.Time
+			}
+		case userplatformquota.FieldGeminiCacheWeeklyUsage:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_weekly_usage", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheWeeklyUsage = value.Float64
+			}
+		case userplatformquota.FieldGeminiCacheWeeklyStart:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_weekly_start", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheWeeklyStart = new(time.Time)
+				*_m.GeminiCacheWeeklyStart = value.Time
+			}
+		case userplatformquota.FieldGeminiCacheMonthlyUsage:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_monthly_usage", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheMonthlyUsage = value.Float64
+			}
+		case userplatformquota.FieldGeminiCacheMonthlyStart:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_monthly_start", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheMonthlyStart = new(time.Time)
+				*_m.GeminiCacheMonthlyStart = value.Time
 			}
 		case userplatformquota.FieldUserID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -246,6 +313,36 @@ func (_m *UserPlatformQuota) String() string {
 	builder.WriteString(", ")
 	if v := _m.DeletedAt; v != nil {
 		builder.WriteString("deleted_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_pending=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCachePending))
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_generation=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCacheGeneration))
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_daily_usage=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCacheDailyUsage))
+	builder.WriteString(", ")
+	if v := _m.GeminiCacheDailyStart; v != nil {
+		builder.WriteString("gemini_cache_daily_start=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_weekly_usage=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCacheWeeklyUsage))
+	builder.WriteString(", ")
+	if v := _m.GeminiCacheWeeklyStart; v != nil {
+		builder.WriteString("gemini_cache_weekly_start=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_monthly_usage=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCacheMonthlyUsage))
+	builder.WriteString(", ")
+	if v := _m.GeminiCacheMonthlyStart; v != nil {
+		builder.WriteString("gemini_cache_monthly_start=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
 	builder.WriteString(", ")

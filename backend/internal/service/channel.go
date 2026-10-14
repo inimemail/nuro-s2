@@ -92,6 +92,7 @@ type ChannelModelPricing struct {
 	CacheWritePrice              *float64            // 缓存写入价格
 	CacheWrite1hPrice            *float64            // 1h 缓存写入价格；为空时沿用 CacheWritePrice
 	CacheReadPrice               *float64            // 缓存读取价格
+	CacheStoragePrice            *float64            `json:"cache_storage_cost_per_token_per_hour,omitempty"` // Gemini token-hour 存储价格
 	FastMultiplier               *float64            // Fast/priority 服务层级倍率
 	FlexMultiplier               *float64            // Flex 服务层级倍率
 	MaxReasoningEffortMultiplier *float64            // max 推理等级的额度/计费倍率
@@ -211,6 +212,8 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp.CacheWritePrice = cloneGroupPointer(p.CacheWritePrice)
 	cp.CacheWrite1hPrice = cloneGroupPointer(p.CacheWrite1hPrice)
 	cp.CacheReadPrice = cloneGroupPointer(p.CacheReadPrice)
+	cp.CacheStoragePrice = cloneGroupPointer(p.CacheStoragePrice)
+	cp.MaxReasoningEffortMultiplier = cloneGroupPointer(p.MaxReasoningEffortMultiplier)
 	cp.FastMultiplier = cloneGroupPointer(p.FastMultiplier)
 	cp.FlexMultiplier = cloneGroupPointer(p.FlexMultiplier)
 	cp.ImageInputPrice = cloneGroupPointer(p.ImageInputPrice)

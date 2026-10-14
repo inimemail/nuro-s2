@@ -133,6 +133,7 @@ import { currencySymbol, formatPaymentAmount, normalizePaymentCurrency } from '@
 import type { PaymentOrder } from '@/types/payment'
 import Icon from '@/components/icons/Icon.vue'
 import QRCode from 'qrcode'
+import { useDeadlineCountdown } from '@/composables/useDeadlineCountdown'
 import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
 
@@ -157,7 +158,6 @@ const appStore = useAppStore()
 
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
 const qrUrl = ref('')
-const remainingSeconds = ref(0)
 const cancelling = ref(false)
 const paidOrder = ref<PaymentOrder | null>(null)
 const paymentCurrency = computed(() => normalizePaymentCurrency(props.currency))
@@ -174,8 +174,9 @@ const localeCode = computed(() => {
 // Terminal outcome: null = still active, 'success' | 'cancelled' | 'expired'
 const outcome = ref<PaymentOutcome | null>(null)
 
+let sessionVersion = 0
+let pollingVersion: number | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let countdownTimer: ReturnType<typeof setInterval> | null = null
 let verifyAttempts = 0
 let lastVerifyAt = 0
 
@@ -270,9 +271,14 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
 
 async function pollStatus() {
   if (!props.orderId || outcome.value) return
+  const version = sessionVersion
+  if (pollingVersion === version) return
+  pollingVersion = version
+  try {
   let order = await paymentStore.pollOrderStatus(props.orderId)
-  if (!order) return
+  if (!order || version !== sessionVersion) return
   order = await tryRecoverPendingOrder(order)
+  if (version !== sessionVersion) return
   if (isSuccessStatus(order.status)) {
     cleanup()
     paidOrder.value = order
@@ -285,50 +291,55 @@ async function pollStatus() {
     cleanup()
     setOutcome('expired')
   }
+  } finally {
+    if (pollingVersion === version) pollingVersion = null
+  }
 }
 
-function startCountdown(seconds: number) {
-  remainingSeconds.value = Math.max(0, seconds)
-  if (remainingSeconds.value <= 0) { setOutcome('expired'); return }
-  countdownTimer = setInterval(() => {
-    remainingSeconds.value--
-    if (remainingSeconds.value <= 0) { setOutcome('expired'); cleanup() }
-  }, 1000)
-}
+const { remainingSeconds, start: startCountdown, stop: stopCountdown } = useDeadlineCountdown(() => {
+  setOutcome('expired')
+  cleanup()
+})
 
 async function handleCancel() {
   if (!props.orderId || cancelling.value) return
+  const version = sessionVersion, id = props.orderId
   cancelling.value = true
   try {
-    await paymentAPI.cancelOrder(props.orderId)
+    await paymentAPI.cancelOrder(id)
+    if (version !== sessionVersion) return
+    cancelling.value = false
     cleanup()
     setOutcome('cancelled')
   } catch (err: unknown) {
+    if (version !== sessionVersion) return
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
   } finally {
-    cancelling.value = false
+    if (version === sessionVersion) cancelling.value = false
   }
 }
 
 function handleDone() { cleanup(); emit('done') }
 
 function cleanup() {
+  sessionVersion++
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+  stopCountdown()
 }
 
-// Initialize on mount
-qrUrl.value = props.qrCode
-verifyAttempts = 0
-lastVerifyAt = 0
-let seconds = 30 * 60
-if (props.expiresAt) {
-  seconds = Math.floor((new Date(props.expiresAt).getTime() - Date.now()) / 1000)
-}
-startCountdown(seconds)
-pollTimer = setInterval(pollStatus, 3000)
-renderQR()
+watch(() => [props.orderId, props.expiresAt, props.qrCode] as const, () => {
+  cleanup()
+  qrUrl.value = props.qrCode
+  outcome.value = null
+  paidOrder.value = null
+  cancelling.value = false
+  verifyAttempts = 0
+  lastVerifyAt = 0
+  startCountdown(props.expiresAt, props.orderId)
+  if (!outcome.value) pollTimer = setInterval(pollStatus, 3000)
+  void renderQR()
+}, { immediate: true })
 
-watch(() => qrUrl.value, () => renderQR())
+watch(qrUrl, () => renderQR())
 onUnmounted(() => cleanup())
 </script>

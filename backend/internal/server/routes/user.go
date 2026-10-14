@@ -26,6 +26,7 @@ func RegisterUserRoutes(
 	authenticated.Use(middleware.BackendModeUserGuard(settingService))
 	authenticated.Use(panelRateLimiter.Global())
 	authenticated.Use(gin.HandlerFunc(auditLog))
+	authenticated.Use(h.Gateway.GeminiCachePermissionBarrier)
 	{
 		// 用户接口
 		user := authenticated.Group("/user")
@@ -74,6 +75,17 @@ func RegisterUserRoutes(
 		}
 
 		// API Key管理
+		cache := authenticated.Group("/user/gemini-cache")
+		cache.Use(panelRateLimiter.Heavy())
+		cache.GET("/keys", h.Gateway.GeminiCachePanelKeys)
+		cache.GET("/:keyID/operations/:idempotency", h.Gateway.GeminiCachePanel)
+		cache.POST("/:keyID/operations/:idempotency/cancel-unrecorded", h.Gateway.GeminiCachePanel)
+		cache.GET("/:keyID/cachedContents", h.Gateway.GeminiCachePanel)
+		cache.POST("/:keyID/cachedContents", h.Gateway.GeminiCachePanel)
+		cache.GET("/:keyID/cachedContents/:name", h.Gateway.GeminiCachePanel)
+		cache.PATCH("/:keyID/cachedContents/:name", h.Gateway.GeminiCachePanel)
+		cache.DELETE("/:keyID/cachedContents/:name", h.Gateway.GeminiCachePanel)
+
 		keys := authenticated.Group("/keys")
 		{
 			keys.GET("", h.APIKey.List)

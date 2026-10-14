@@ -205,6 +205,7 @@ type AdminBoundAuthIdentityChannel struct {
 }
 
 type CreateGroupInput struct {
+	I18n                              GroupI18n
 	Name                              string
 	Description                       string
 	Platform                          string
@@ -279,6 +280,7 @@ type CreateGroupInput struct {
 }
 
 type UpdateGroupInput struct {
+	I18n           *GroupI18n
 	Name           string
 	Description    string
 	Platform       string
@@ -2119,6 +2121,10 @@ func guardBoundsInvalid(min, max *float64) bool {
 }
 
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
+	normalizedI18n, i18nErr := normalizeGroupI18n(input.I18n)
+	if i18nErr != nil {
+		return nil, infraerrors.BadRequest("INVALID_GROUP_I18N", i18nErr.Error())
+	}
 	if input.RateMultiplier <= 0 {
 		return nil, errors.New("rate_multiplier must be > 0")
 	}
@@ -2303,6 +2309,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		longContextPricingEnabled = *input.LongContextPricingEnabled
 	}
 	group := &Group{
+		I18n:                                 normalizedI18n,
 		Name:                                 input.Name,
 		Description:                          input.Description,
 		Platform:                             platform,
@@ -2535,6 +2542,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	if input.I18n != nil {
+		normalized, err := normalizeGroupI18n(*input.I18n)
+		if err != nil {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_I18N", err.Error())
+		}
+		group.I18n = normalized
 	}
 
 	previousPlatform := group.Platform
@@ -3799,6 +3814,12 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		Credentials: input.Credentials,
 		Extra:       input.Extra,
 	}
+	if err := normalizeVertexGeminiCredentials(createCandidate); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_VERTEX_AUTH", err.Error())
+	}
+	if err := normalizeGeminiCacheCredentials(createCandidate); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_GEMINI_CACHE_CAPABILITY", err.Error())
+	}
 	if input.Platform == PlatformTypeSafe {
 		if input.Type != AccountTypeAPIKey {
 			return nil, infraerrors.BadRequest("INVALID_TYPESAFE_ACCOUNT", "TypeSafe accounts require type apikey")
@@ -4138,6 +4159,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
 		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
+		if err := normalizeVertexGeminiCredentials(account); err != nil {
+			return nil, infraerrors.BadRequest("INVALID_VERTEX_AUTH", err.Error())
+		}
+		if err := normalizeGeminiCacheCredentials(account); err != nil {
+			return nil, infraerrors.BadRequest("INVALID_GEMINI_CACHE_CAPABILITY", err.Error())
+		}
 		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
 			return nil, err
 		}

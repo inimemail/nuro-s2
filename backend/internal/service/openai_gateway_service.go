@@ -648,6 +648,9 @@ func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Cont
 }
 
 func (s *OpenAIGatewayService) isCodexImageGenerationBridgeEnabled(ctx context.Context, account *Account, apiKey *APIKey) bool {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
 	if override := account.CodexImageGenerationBridgeOverride(); override != nil {
 		return *override
 	}
@@ -11788,6 +11791,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 	longContextBillingEnabled := billingAccount.IsOpenAILongContextBillingEnabled()
+	if billingAccount.IsOpenAIOAuthLike() && openai.IsGPT61SolModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model)) {
+		// Only the official model surcharge is gated here. Custom intervals
+		// and channel/time/reasoning multipliers retain their existing paths.
+		longContextBillingEnabled = false
+	}
 	cost, err = s.calculateOpenAIRecordUsageCost(
 		ctx,
 		result,

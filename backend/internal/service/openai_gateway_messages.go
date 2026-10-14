@@ -538,7 +538,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		shouldFailover := s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 		tempUnscheduled := false
 		if account.Platform != PlatformGrok && !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
-			tempUnscheduled = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) == ErrorPolicyTempUnscheduled
+			tempUnscheduled = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, upstreamModel) == ErrorPolicyTempUnscheduled
 			shouldFailover = tempUnscheduled
 		}
 		if shouldFailover {

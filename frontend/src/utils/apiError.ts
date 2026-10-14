@@ -21,6 +21,23 @@ interface ApiErrorLike {
   }
 }
 
+export function isApiRequestCancelled(err: unknown): boolean {
+  const e = err as { name?: string; code?: string } | null
+  return e?.name === 'AbortError' || e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED'
+}
+
+/** Display bounded backend diagnostics without credentials, auth URLs or raw envelopes. */
+export function extractSafeApiErrorMessage(err: unknown, fallback: string): string {
+  const message = extractApiErrorMessage(err, fallback)
+  if (typeof message !== 'string' || /[<>]|^\s*[{[]|-----BEGIN/.test(message)) return fallback
+  return message
+    .replace(/https?:\/\/\S+/gi, '[URL]')
+    .replace(/AQ\.Ab[\w-]{20,}|AIza[\w-]{20,}|sk-[\w-]{10,}|ya29\.[\w.-]+/g, '[REDACTED]')
+    .replace(/(Bearer\s+)\S+/gi, '$1[REDACTED]')
+    .replace(/((?:access_token|refresh_token|api_key|authorization|client_secret|code|state)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 240)
+}
+
 /**
  * Extract the error code from an API error object.
  *

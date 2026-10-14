@@ -9,9 +9,11 @@ import (
 const subscriptionDayDuration = 24 * time.Hour
 
 type UserSubscription struct {
-	ID      int64
-	UserID  int64
-	GroupID int64
+	GeminiCachePending    float64
+	GeminiCacheGeneration int64
+	ID                    int64
+	UserID                int64
+	GroupID               int64
 
 	StartsAt  time.Time
 	ExpiresAt time.Time
@@ -250,4 +252,29 @@ func (s *UserSubscription) CheckAllLimits(group *Group, additionalCost float64) 
 	weekly = s.CheckWeeklyLimit(group, additionalCost)
 	monthly = s.CheckMonthlyLimit(group, additionalCost)
 	return
+}
+
+// CacheOperationWindowStarts shares the original subscription calendar and
+// short-term plan semantics with management-side financial transactions.
+func (s *UserSubscription) CacheOperationWindowStarts(now time.Time) [3]*time.Time {
+	starts := [3]*time.Time{s.DailyWindowStart, s.WeeklyWindowStart, s.MonthlyWindowStart}
+	if next, ok := s.automaticDailyWindowStartAt(starts[0], now); ok {
+		starts[0] = &next
+	}
+	if next, ok := s.automaticWindowStartAt(starts[1], 7*24*time.Hour, now); ok {
+		starts[1] = &next
+	}
+	if next, ok := s.automaticWindowStartAt(starts[2], 30*24*time.Hour, now); ok {
+		starts[2] = &next
+	}
+	for i, v := range starts {
+		if v == nil {
+			start := s.StartsAt
+			if start.After(now) {
+				start = now
+			}
+			starts[i] = &start
+		}
+	}
+	return starts
 }

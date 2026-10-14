@@ -274,6 +274,12 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/gemini-cache',
+    name: 'GeminiCache',
+    component: () => import('@/views/user/GeminiCacheView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Gemini Cache', titleKey: 'geminiCache.title' }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),
@@ -470,6 +476,12 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'admin.groups.title',
       descriptionKey: 'admin.groups.description'
     }
+  },
+  {
+    path: '/admin/gemini-cache',
+    name: 'AdminGeminiCache',
+    component: () => import('@/views/admin/GeminiCacheReconcileView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Gemini Cache Reconciliation', titleKey: 'geminiCache.admin.title' }
   },
   {
     path: '/admin/channels',

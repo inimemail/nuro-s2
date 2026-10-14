@@ -404,6 +404,11 @@ func RegisterGatewayRoutes(
 	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
 	gemini.Use(requireGroupGoogle)
 	{
+		gemini.GET("/cachedContents", h.Gateway.GeminiCachedContents)
+		gemini.POST("/cachedContents", h.Gateway.GeminiCachedContents)
+		gemini.GET("/cachedContents/:name", h.Gateway.GeminiCachedContents)
+		gemini.PATCH("/cachedContents/:name", h.Gateway.GeminiCachedContents)
+		gemini.DELETE("/cachedContents/:name", h.Gateway.GeminiCachedContents)
 		gemini.GET("/models", h.Gateway.GeminiV1BetaListModels)
 		gemini.GET("/models/:model", h.Gateway.GeminiV1BetaGetModel)
 		// Gin treats ":" as a param marker, but Gemini uses "{model}:{action}" in the same segment.

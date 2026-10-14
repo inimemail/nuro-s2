@@ -8,9 +8,9 @@
     <!-- Platform logo -->
     <PlatformIcon v-if="platform" :platform="platform" size="sm" />
     <!-- Group name -->
-    <span class="truncate">{{ name }}</span>
+    <span :class="wrapName ? 'min-w-0 whitespace-normal break-words' : 'truncate'" :title="name">{{ name }}</span>
     <!-- Right side label -->
-    <span v-if="showLabel" :class="labelClass">
+    <span v-if="showLabel" class="shrink-0" :class="labelClass">
       <template v-if="hasCustomRate">
         <!-- 原倍率删除线 + 专属倍率高亮 -->
         <span class="line-through opacity-50 mr-0.5">{{ rateMultiplier }}x</span>
@@ -30,6 +30,7 @@ import type { SubscriptionType, GroupPlatform } from '@/types'
 import PlatformIcon from './PlatformIcon.vue'
 
 interface Props {
+	wrapName?: boolean
   name: string
   platform?: GroupPlatform
   subscriptionType?: SubscriptionType

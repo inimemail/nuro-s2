@@ -67,6 +67,34 @@ func (_c *APIKeyCreate) SetNillableDeletedAt(v *time.Time) *APIKeyCreate {
 	return _c
 }
 
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (_c *APIKeyCreate) SetGeminiCachePending(v float64) *APIKeyCreate {
+	_c.mutation.SetGeminiCachePending(v)
+	return _c
+}
+
+// SetNillableGeminiCachePending sets the "gemini_cache_pending" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableGeminiCachePending(v *float64) *APIKeyCreate {
+	if v != nil {
+		_c.SetGeminiCachePending(*v)
+	}
+	return _c
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_c *APIKeyCreate) SetGeminiCacheGeneration(v int64) *APIKeyCreate {
+	_c.mutation.SetGeminiCacheGeneration(v)
+	return _c
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableGeminiCacheGeneration(v *int64) *APIKeyCreate {
+	if v != nil {
+		_c.SetGeminiCacheGeneration(*v)
+	}
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *APIKeyCreate) SetUserID(v int64) *APIKeyCreate {
 	_c.mutation.SetUserID(v)
@@ -383,6 +411,14 @@ func (_c *APIKeyCreate) defaults() error {
 		v := apikey.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		v := apikey.DefaultGeminiCachePending
+		_c.mutation.SetGeminiCachePending(v)
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		v := apikey.DefaultGeminiCacheGeneration
+		_c.mutation.SetGeminiCacheGeneration(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := apikey.DefaultStatus
 		_c.mutation.SetStatus(v)
@@ -429,6 +465,12 @@ func (_c *APIKeyCreate) check() error {
 	}
 	if _, ok := _c.mutation.UpdatedAt(); !ok {
 		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "APIKey.updated_at"`)}
+	}
+	if _, ok := _c.mutation.GeminiCachePending(); !ok {
+		return &ValidationError{Name: "gemini_cache_pending", err: errors.New(`ent: missing required field "APIKey.gemini_cache_pending"`)}
+	}
+	if _, ok := _c.mutation.GeminiCacheGeneration(); !ok {
+		return &ValidationError{Name: "gemini_cache_generation", err: errors.New(`ent: missing required field "APIKey.gemini_cache_generation"`)}
 	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "APIKey.user_id"`)}
@@ -522,6 +564,14 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.DeletedAt(); ok {
 		_spec.SetField(apikey.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
+	}
+	if value, ok := _c.mutation.GeminiCachePending(); ok {
+		_spec.SetField(apikey.FieldGeminiCachePending, field.TypeFloat64, value)
+		_node.GeminiCachePending = value
+	}
+	if value, ok := _c.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(apikey.FieldGeminiCacheGeneration, field.TypeInt64, value)
+		_node.GeminiCacheGeneration = value
 	}
 	if value, ok := _c.mutation.Key(); ok {
 		_spec.SetField(apikey.FieldKey, field.TypeString, value)
@@ -724,6 +774,42 @@ func (u *APIKeyUpsert) UpdateDeletedAt() *APIKeyUpsert {
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (u *APIKeyUpsert) ClearDeletedAt() *APIKeyUpsert {
 	u.SetNull(apikey.FieldDeletedAt)
+	return u
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *APIKeyUpsert) SetGeminiCachePending(v float64) *APIKeyUpsert {
+	u.Set(apikey.FieldGeminiCachePending, v)
+	return u
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateGeminiCachePending() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldGeminiCachePending)
+	return u
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *APIKeyUpsert) AddGeminiCachePending(v float64) *APIKeyUpsert {
+	u.Add(apikey.FieldGeminiCachePending, v)
+	return u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *APIKeyUpsert) SetGeminiCacheGeneration(v int64) *APIKeyUpsert {
+	u.Set(apikey.FieldGeminiCacheGeneration, v)
+	return u
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateGeminiCacheGeneration() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldGeminiCacheGeneration)
+	return u
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *APIKeyUpsert) AddGeminiCacheGeneration(v int64) *APIKeyUpsert {
+	u.Add(apikey.FieldGeminiCacheGeneration, v)
 	return u
 }
 
@@ -1140,6 +1226,48 @@ func (u *APIKeyUpsertOne) UpdateDeletedAt() *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) ClearDeletedAt() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *APIKeyUpsertOne) SetGeminiCachePending(v float64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *APIKeyUpsertOne) AddGeminiCachePending(v float64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateGeminiCachePending() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *APIKeyUpsertOne) SetGeminiCacheGeneration(v int64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *APIKeyUpsertOne) AddGeminiCacheGeneration(v int64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateGeminiCacheGeneration() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 
@@ -1778,6 +1906,48 @@ func (u *APIKeyUpsertBulk) UpdateDeletedAt() *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) ClearDeletedAt() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (u *APIKeyUpsertBulk) SetGeminiCachePending(v float64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetGeminiCachePending(v)
+	})
+}
+
+// AddGeminiCachePending adds v to the "gemini_cache_pending" field.
+func (u *APIKeyUpsertBulk) AddGeminiCachePending(v float64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddGeminiCachePending(v)
+	})
+}
+
+// UpdateGeminiCachePending sets the "gemini_cache_pending" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateGeminiCachePending() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateGeminiCachePending()
+	})
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (u *APIKeyUpsertBulk) SetGeminiCacheGeneration(v int64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetGeminiCacheGeneration(v)
+	})
+}
+
+// AddGeminiCacheGeneration adds v to the "gemini_cache_generation" field.
+func (u *APIKeyUpsertBulk) AddGeminiCacheGeneration(v int64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddGeminiCacheGeneration(v)
+	})
+}
+
+// UpdateGeminiCacheGeneration sets the "gemini_cache_generation" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateGeminiCacheGeneration() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateGeminiCacheGeneration()
 	})
 }
 

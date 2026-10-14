@@ -33,6 +33,8 @@ func (APIKey) Mixin() []ent.Mixin {
 
 func (APIKey) Fields() []ent.Field {
 	return []ent.Field{
+		field.Float("gemini_cache_pending").SchemaType(map[string]string{dialect.Postgres: "numeric(20,8)"}).Default(0),
+		field.Int64("gemini_cache_generation").Default(0),
 		field.Int64("user_id"),
 		field.String("key").
 			MaxLen(128).

@@ -73,6 +73,7 @@ func validatePlanPatch(req UpdatePlanRequest) error {
 
 // PlanGroupInfo holds the group details needed for subscription plan display.
 type PlanGroupInfo struct {
+	I18n               GroupI18n
 	Platform           string   `json:"platform"`
 	Name               string   `json:"name"`
 	RateMultiplier     float64  `json:"rate_multiplier"`
@@ -116,6 +117,7 @@ func (s *PaymentConfigService) GetGroupInfoMap(ctx context.Context, plans []*dbe
 	m := make(map[int64]PlanGroupInfo, len(groups))
 	for _, g := range groups {
 		m[int64(g.ID)] = PlanGroupInfo{
+			I18n:               g.I18n.Clone(),
 			Platform:           g.Platform,
 			Name:               g.Name,
 			RateMultiplier:     g.RateMultiplier,

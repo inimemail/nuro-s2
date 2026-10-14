@@ -1,8 +1,8 @@
 <template>
   <div v-if="groups && groups.length > 0" class="relative max-w-56">
     <!-- 分组容器：固定最大宽度，最多显示2行 -->
-    <div class="flex flex-wrap gap-1 max-h-14 overflow-hidden">
-      <GroupBadge
+    <div class="flex flex-wrap items-start gap-1">
+      <GroupBadge wrap-name
         v-for="group in displayGroups"
         :key="group.id"
         :name="group.name"
@@ -53,7 +53,7 @@
             </button>
           </div>
           <div class="flex flex-wrap gap-1.5 max-h-64 overflow-y-auto">
-            <GroupBadge
+            <GroupBadge wrap-name
               v-for="group in groups"
               :key="group.id"
               :name="group.name"

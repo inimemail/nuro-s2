@@ -35,6 +35,8 @@ func (UserSubscription) Mixin() []ent.Mixin {
 
 func (UserSubscription) Fields() []ent.Field {
 	return []ent.Field{
+		field.Float("gemini_cache_pending").SchemaType(map[string]string{dialect.Postgres: "numeric(20,10)"}).Default(0),
+		field.Int64("gemini_cache_generation").Default(0),
 		field.Int64("user_id"),
 		field.Int64("group_id"),
 

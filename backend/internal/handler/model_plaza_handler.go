@@ -59,6 +59,8 @@ type modelPlazaResponse struct {
 }
 
 func (h *ModelPlazaHandler) Get(c *gin.Context) {
+	c.Writer.Header().Add("Vary", "Accept-Language")
+	c.Header("Cache-Control", "private, no-store")
 	if h == nil || h.settingSvc == nil || h.plaza == nil {
 		response.NotFound(c, "Model plaza is not enabled")
 		return
@@ -103,7 +105,9 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 	visible := filterModelPlazaGroups(groups, allowed, authenticated, restrictPublicGroups)
 	result := make([]modelPlazaGroup, 0, len(visible))
 	for i := range visible {
-		result = append(result, modelPlazaGroupDTO(&visible[i], rates))
+		row := modelPlazaGroupDTO(&visible[i], rates)
+		row.Name, row.Description = visible[i].I18n.Localize(c.GetHeader("Accept-Language"), row.Name, row.Description)
+		result = append(result, row)
 	}
 	response.Success(c, modelPlazaResponse{Description: runtime.Description, Groups: result})
 }

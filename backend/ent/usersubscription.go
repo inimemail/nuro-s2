@@ -25,6 +25,10 @@ type UserSubscription struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	// DeletedAt holds the value of the "deleted_at" field.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// GeminiCachePending holds the value of the "gemini_cache_pending" field.
+	GeminiCachePending float64 `json:"gemini_cache_pending,omitempty"`
+	// GeminiCacheGeneration holds the value of the "gemini_cache_generation" field.
+	GeminiCacheGeneration int64 `json:"gemini_cache_generation,omitempty"`
 	// UserID holds the value of the "user_id" field.
 	UserID int64 `json:"user_id,omitempty"`
 	// GroupID holds the value of the "group_id" field.
@@ -121,9 +125,9 @@ func (*UserSubscription) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case usersubscription.FieldDailyUsageUsd, usersubscription.FieldWeeklyUsageUsd, usersubscription.FieldMonthlyUsageUsd:
+		case usersubscription.FieldGeminiCachePending, usersubscription.FieldDailyUsageUsd, usersubscription.FieldWeeklyUsageUsd, usersubscription.FieldMonthlyUsageUsd:
 			values[i] = new(sql.NullFloat64)
-		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldGroupID, usersubscription.FieldAssignedBy:
+		case usersubscription.FieldID, usersubscription.FieldGeminiCacheGeneration, usersubscription.FieldUserID, usersubscription.FieldGroupID, usersubscription.FieldAssignedBy:
 			values[i] = new(sql.NullInt64)
 		case usersubscription.FieldStatus, usersubscription.FieldNotes:
 			values[i] = new(sql.NullString)
@@ -168,6 +172,18 @@ func (_m *UserSubscription) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.DeletedAt = new(time.Time)
 				*_m.DeletedAt = value.Time
+			}
+		case usersubscription.FieldGeminiCachePending:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_pending", values[i])
+			} else if value.Valid {
+				_m.GeminiCachePending = value.Float64
+			}
+		case usersubscription.FieldGeminiCacheGeneration:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field gemini_cache_generation", values[i])
+			} else if value.Valid {
+				_m.GeminiCacheGeneration = value.Int64
 			}
 		case usersubscription.FieldUserID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -324,6 +340,12 @@ func (_m *UserSubscription) String() string {
 		builder.WriteString("deleted_at=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_pending=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCachePending))
+	builder.WriteString(", ")
+	builder.WriteString("gemini_cache_generation=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GeminiCacheGeneration))
 	builder.WriteString(", ")
 	builder.WriteString("user_id=")
 	builder.WriteString(fmt.Sprintf("%v", _m.UserID))

@@ -154,7 +154,7 @@ func (s *GeminiQuotaService) Policy(ctx context.Context) *GeminiQuotaPolicy {
 }
 
 func (s *GeminiQuotaService) QuotaForAccount(ctx context.Context, account *Account) (GeminiQuota, bool) {
-	if account == nil || account.Platform != PlatformGemini {
+	if account == nil || account.Platform != PlatformGemini || account.IsVertexServiceAccount() || account.IsThirdPartyGeminiAPIKey() {
 		return GeminiQuota{}, false
 	}
 

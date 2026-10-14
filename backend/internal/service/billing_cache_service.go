@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -40,12 +41,17 @@ var (
 
 // subscriptionCacheData 订阅缓存数据结构（内部使用）
 type subscriptionCacheData struct {
-	Status       string
-	ExpiresAt    time.Time
-	DailyUsage   float64
-	WeeklyUsage  float64
-	MonthlyUsage float64
-	Version      int64
+	DailyWindowStart      *time.Time
+	WeeklyWindowStart     *time.Time
+	MonthlyWindowStart    *time.Time
+	GeminiCachePending    float64
+	GeminiCacheGeneration int64
+	Status                string
+	ExpiresAt             time.Time
+	DailyUsage            float64
+	WeeklyUsage           float64
+	MonthlyUsage          float64
+	Version               int64
 }
 
 // 缓存写入任务类型
@@ -82,13 +88,14 @@ const (
 
 // cacheWriteTask 缓存写入任务
 type cacheWriteTask struct {
-	kind             cacheWriteKind
-	userID           int64
-	groupID          int64
-	apiKeyID         int64
-	balance          float64
-	amount           float64
-	subscriptionData *subscriptionCacheData
+	kind              cacheWriteKind
+	userID            int64
+	groupID           int64
+	apiKeyID          int64
+	balance           float64
+	balanceGeneration int64
+	amount            float64
+	subscriptionData  *subscriptionCacheData
 }
 
 // apiKeyRateLimitLoader defines the interface for loading rate limit data from DB.
@@ -214,7 +221,7 @@ func (s *BillingCacheService) cacheWriteWorker(ch <-chan cacheWriteTask) {
 		ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
 		switch task.kind {
 		case cacheWriteSetBalance:
-			s.setBalanceCache(ctx, task.userID, task.balance)
+			s.setBalanceCache(ctx, task.userID, task.balance, task.balanceGeneration)
 		case cacheWriteSetSubscription:
 			s.setSubscriptionCache(ctx, task.userID, task.groupID, task.subscriptionData)
 		case cacheWriteUpdateSubscriptionUsage:
@@ -320,18 +327,19 @@ func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) 
 		loadCtx, cancel := context.WithTimeout(context.Background(), balanceLoadTimeout)
 		defer cancel()
 
-		balance, err := s.getUserBalanceFromDB(loadCtx, userID)
+		user, err := s.userRepo.GetByID(loadCtx, userID)
 		if err != nil {
 			return nil, err
 		}
 
 		// 异步建立缓存
 		_ = s.enqueueCacheWrite(cacheWriteTask{
-			kind:    cacheWriteSetBalance,
-			userID:  userID,
-			balance: balance,
+			kind:              cacheWriteSetBalance,
+			userID:            userID,
+			balance:           user.Balance,
+			balanceGeneration: user.GeminiCacheGeneration,
 		})
-		return balance, nil
+		return user.Balance, nil
 	})
 	if err != nil {
 		return 0, err
@@ -353,11 +361,21 @@ func (s *BillingCacheService) getUserBalanceFromDB(ctx context.Context, userID i
 }
 
 // setBalanceCache 设置余额缓存
-func (s *BillingCacheService) setBalanceCache(ctx context.Context, userID int64, balance float64) {
+func (s *BillingCacheService) setBalanceCache(ctx context.Context, userID int64, balance float64, generations ...int64) {
 	if s.cache == nil {
 		return
 	}
-	if err := s.cache.SetUserBalance(ctx, userID, balance); err != nil {
+	var err error
+	if fenced, ok := s.cache.(GeminiCacheBalanceWriter); ok {
+		generation := int64(0)
+		if len(generations) > 0 {
+			generation = generations[0]
+		}
+		err = fenced.SetUserBalanceWithGeneration(ctx, userID, balance, generation)
+	} else {
+		err = s.cache.SetUserBalance(ctx, userID, balance)
+	}
+	if err != nil {
 		logger.LegacyPrintf("service.billing_cache", "Warning: set balance cache failed for user %d: %v", userID, err)
 	}
 }
@@ -437,23 +455,33 @@ func (s *BillingCacheService) GetSubscriptionStatus(ctx context.Context, userID,
 
 func (s *BillingCacheService) convertFromPortsData(data *SubscriptionCacheData) *subscriptionCacheData {
 	return &subscriptionCacheData{
-		Status:       data.Status,
-		ExpiresAt:    data.ExpiresAt,
-		DailyUsage:   data.DailyUsage,
-		WeeklyUsage:  data.WeeklyUsage,
-		MonthlyUsage: data.MonthlyUsage,
-		Version:      data.Version,
+		Status:                data.Status,
+		ExpiresAt:             data.ExpiresAt,
+		DailyUsage:            data.DailyUsage,
+		DailyWindowStart:      data.DailyWindowStart,
+		WeeklyWindowStart:     data.WeeklyWindowStart,
+		MonthlyWindowStart:    data.MonthlyWindowStart,
+		GeminiCachePending:    data.GeminiCachePending,
+		GeminiCacheGeneration: data.GeminiCacheGeneration,
+		WeeklyUsage:           data.WeeklyUsage,
+		MonthlyUsage:          data.MonthlyUsage,
+		Version:               data.Version,
 	}
 }
 
 func (s *BillingCacheService) convertToPortsData(data *subscriptionCacheData) *SubscriptionCacheData {
 	return &SubscriptionCacheData{
-		Status:       data.Status,
-		ExpiresAt:    data.ExpiresAt,
-		DailyUsage:   data.DailyUsage,
-		WeeklyUsage:  data.WeeklyUsage,
-		MonthlyUsage: data.MonthlyUsage,
-		Version:      data.Version,
+		Status:                data.Status,
+		ExpiresAt:             data.ExpiresAt,
+		DailyUsage:            data.DailyUsage,
+		DailyWindowStart:      data.DailyWindowStart,
+		WeeklyWindowStart:     data.WeeklyWindowStart,
+		MonthlyWindowStart:    data.MonthlyWindowStart,
+		GeminiCachePending:    data.GeminiCachePending,
+		GeminiCacheGeneration: data.GeminiCacheGeneration,
+		WeeklyUsage:           data.WeeklyUsage,
+		MonthlyUsage:          data.MonthlyUsage,
+		Version:               data.Version,
 	}
 }
 
@@ -465,12 +493,17 @@ func (s *BillingCacheService) getSubscriptionFromDB(ctx context.Context, userID,
 	}
 
 	return &subscriptionCacheData{
-		Status:       sub.Status,
-		ExpiresAt:    sub.ExpiresAt,
-		DailyUsage:   sub.DailyUsageUSD,
-		WeeklyUsage:  sub.WeeklyUsageUSD,
-		MonthlyUsage: sub.MonthlyUsageUSD,
-		Version:      sub.UpdatedAt.Unix(),
+		Status:                sub.Status,
+		ExpiresAt:             sub.ExpiresAt,
+		DailyUsage:            sub.DailyUsageUSD,
+		DailyWindowStart:      sub.DailyWindowStart,
+		WeeklyWindowStart:     sub.WeeklyWindowStart,
+		MonthlyWindowStart:    sub.MonthlyWindowStart,
+		GeminiCachePending:    sub.GeminiCachePending,
+		GeminiCacheGeneration: sub.GeminiCacheGeneration,
+		WeeklyUsage:           sub.WeeklyUsageUSD,
+		MonthlyUsage:          sub.MonthlyUsageUSD,
+		Version:               sub.UpdatedAt.Unix(),
 	}, nil
 }
 
@@ -518,6 +551,19 @@ func (s *BillingCacheService) InvalidateSubscription(ctx context.Context, userID
 	if s.cache == nil {
 		return nil
 	}
+	if fenced, ok := s.cache.(interface {
+		InvalidateSubscriptionCacheWithGeneration(context.Context, int64, int64, int64) error
+	}); ok && s.subRepo != nil {
+		sub, err := s.subRepo.GetByUserIDAndGroupID(ctx, userID, groupID)
+		if err == nil && sub != nil {
+			return fenced.InvalidateSubscriptionCacheWithGeneration(ctx, userID, groupID, sub.GeminiCacheGeneration)
+		}
+		// Deleted subscriptions have no new financial snapshot to publish.
+		if err != nil && !errors.Is(err, ErrSubscriptionNotFound) {
+			_ = s.cache.InvalidateSubscriptionCache(ctx, userID, groupID)
+			return err
+		}
+	}
 	if err := s.cache.InvalidateSubscriptionCache(ctx, userID, groupID); err != nil {
 		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate subscription cache failed for user %d group %d: %v", userID, groupID, err)
 		return err
@@ -529,6 +575,18 @@ func (s *BillingCacheService) InvalidateSubscription(ctx context.Context, userID
 func (s *BillingCacheService) InvalidateAPIKeyRateLimit(ctx context.Context, keyID int64) error {
 	if s.cache == nil {
 		return nil
+	}
+	if fenced, ok := s.cache.(interface {
+		InvalidateAPIKeyRateLimitWithGeneration(context.Context, int64, int64) error
+	}); ok && s.apiKeyRateLimitLoader != nil {
+		data, err := s.apiKeyRateLimitLoader.GetRateLimitData(ctx, keyID)
+		if err == nil && data != nil {
+			return fenced.InvalidateAPIKeyRateLimitWithGeneration(ctx, keyID, data.GeminiCacheGeneration)
+		}
+		if err != nil && !errors.Is(err, ErrAPIKeyNotFound) {
+			_ = s.cache.InvalidateAPIKeyRateLimit(ctx, keyID)
+			return err
+		}
 	}
 	if err := s.cache.InvalidateAPIKeyRateLimit(ctx, keyID); err != nil {
 		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate api key rate limit cache failed for key %d: %v", keyID, err)
@@ -556,7 +614,7 @@ func (s *BillingCacheService) checkAPIKeyRateLimits(ctx context.Context, apiKey 
 			return nil // Don't block requests on DB errors
 		}
 		return s.evaluateRateLimits(ctx, apiKey, data.Usage5h, data.Usage1d, data.Usage7d,
-			data.Window5hStart, data.Window1dStart, data.Window7dStart)
+			data.Window5hStart, data.Window1dStart, data.Window7dStart, data.GeminiCachePending)
 	}
 
 	cacheData, err := s.cache.GetAPIKeyRateLimit(ctx, apiKey.ID)
@@ -571,9 +629,11 @@ func (s *BillingCacheService) checkAPIKeyRateLimits(ctx context.Context, apiKey 
 		}
 		// Build cache entry from DB data
 		cacheEntry := &APIKeyRateLimitCacheData{
-			Usage5h: dbData.Usage5h,
-			Usage1d: dbData.Usage1d,
-			Usage7d: dbData.Usage7d,
+			Usage5h:               dbData.Usage5h,
+			GeminiCachePending:    dbData.GeminiCachePending,
+			GeminiCacheGeneration: dbData.GeminiCacheGeneration,
+			Usage1d:               dbData.Usage1d,
+			Usage7d:               dbData.Usage7d,
 		}
 		if dbData.Window5hStart != nil {
 			cacheEntry.Window5h = dbData.Window5hStart.Unix()
@@ -601,11 +661,15 @@ func (s *BillingCacheService) checkAPIKeyRateLimits(ctx context.Context, apiKey 
 		t := time.Unix(cacheData.Window7d, 0)
 		w7d = &t
 	}
-	return s.evaluateRateLimits(ctx, apiKey, cacheData.Usage5h, cacheData.Usage1d, cacheData.Usage7d, w5h, w1d, w7d)
+	return s.evaluateRateLimits(ctx, apiKey, cacheData.Usage5h, cacheData.Usage1d, cacheData.Usage7d, w5h, w1d, w7d, cacheData.GeminiCachePending)
 }
 
 // evaluateRateLimits checks usage against limits, triggering async resets for expired windows.
-func (s *BillingCacheService) evaluateRateLimits(ctx context.Context, apiKey *APIKey, usage5h, usage1d, usage7d float64, w5h, w1d, w7d *time.Time) error {
+func (s *BillingCacheService) evaluateRateLimits(ctx context.Context, apiKey *APIKey, usage5h, usage1d, usage7d float64, w5h, w1d, w7d *time.Time, pendingAmounts ...float64) error {
+	pending := 0.0
+	if len(pendingAmounts) > 0 {
+		pending = pendingAmounts[0]
+	}
 	needsReset := false
 
 	// Reset expired windows in-memory for check purposes
@@ -640,13 +704,17 @@ func (s *BillingCacheService) evaluateRateLimits(ctx context.Context, apiKey *AP
 			}
 			// Invalidate cache so next request loads fresh data
 			if s.cache != nil {
-				if err := s.cache.InvalidateAPIKeyRateLimit(resetCtx, keyID); err != nil {
+				if err := s.InvalidateAPIKeyRateLimit(resetCtx, keyID); err != nil {
 					logger.LegacyPrintf("service.billing_cache", "Warning: invalidate rate limit cache failed for api key %d: %v", keyID, err)
 				}
 			}
 		}()
 	}
 
+	// Pending reservations carry across every rolling window.
+	usage5h += pending
+	usage1d += pending
+	usage7d += pending
 	// Check limits
 	if apiKey.RateLimit5h > 0 && usage5h >= apiKey.RateLimit5h {
 		return ErrAPIKeyRateLimit5hExceeded
@@ -895,15 +963,15 @@ func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, 
 	}
 
 	// 检查限额（使用传入的Group限额配置）
-	if group.HasDailyLimit() && subData.DailyUsage >= *group.DailyLimitUSD {
+	if group.HasDailyLimit() && subData.DailyUsage+subData.GeminiCachePending >= *group.DailyLimitUSD {
 		return ErrDailyLimitExceeded
 	}
 
-	if group.HasWeeklyLimit() && subData.WeeklyUsage >= *group.WeeklyLimitUSD {
+	if group.HasWeeklyLimit() && subData.WeeklyUsage+subData.GeminiCachePending >= *group.WeeklyLimitUSD {
 		return ErrWeeklyLimitExceeded
 	}
 
-	if group.HasMonthlyLimit() && subData.MonthlyUsage >= *group.MonthlyLimitUSD {
+	if group.HasMonthlyLimit() && subData.MonthlyUsage+subData.GeminiCachePending >= *group.MonthlyLimitUSD {
 		return ErrMonthlyLimitExceeded
 	}
 
@@ -1119,16 +1187,24 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		isSentinel := entry.DailyLimitUSD == nil && entry.WeeklyLimitUSD == nil && entry.MonthlyLimitUSD == nil
 		if windowExpired && s.cache != nil && !isSentinel {
 			refreshed := &UserPlatformQuotaCacheEntry{
-				DailyUsageUSD:      dailyUsage,
-				WeeklyUsageUSD:     weeklyUsage,
-				MonthlyUsageUSD:    monthlyUsage,
-				SchemaVersion:      UserPlatformQuotaCacheSchemaV1,
-				DailyLimitUSD:      entry.DailyLimitUSD,
-				WeeklyLimitUSD:     entry.WeeklyLimitUSD,
-				MonthlyLimitUSD:    entry.MonthlyLimitUSD,
-				DailyWindowStart:   newDailyStart,
-				WeeklyWindowStart:  newWeeklyStart,
-				MonthlyWindowStart: newMonthlyStart,
+				GeminiCachePending:      entry.GeminiCachePending,
+				GeminiCacheGeneration:   entry.GeminiCacheGeneration,
+				GeminiCacheDailyUsage:   entry.GeminiCacheDailyUsage,
+				GeminiCacheDailyStart:   entry.GeminiCacheDailyStart,
+				GeminiCacheWeeklyUsage:  entry.GeminiCacheWeeklyUsage,
+				GeminiCacheWeeklyStart:  entry.GeminiCacheWeeklyStart,
+				GeminiCacheMonthlyUsage: entry.GeminiCacheMonthlyUsage,
+				GeminiCacheMonthlyStart: entry.GeminiCacheMonthlyStart,
+				DailyUsageUSD:           dailyUsage,
+				WeeklyUsageUSD:          weeklyUsage,
+				MonthlyUsageUSD:         monthlyUsage,
+				SchemaVersion:           UserPlatformQuotaCacheSchemaV1,
+				DailyLimitUSD:           entry.DailyLimitUSD,
+				WeeklyLimitUSD:          entry.WeeklyLimitUSD,
+				MonthlyLimitUSD:         entry.MonthlyLimitUSD,
+				DailyWindowStart:        newDailyStart,
+				WeeklyWindowStart:       newWeeklyStart,
+				MonthlyWindowStart:      newMonthlyStart,
 			}
 			ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
 			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -1139,13 +1215,17 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 			}
 			setCancel()
 		}
-		if entry.DailyLimitUSD != nil && dailyUsage >= *entry.DailyLimitUSD {
+		cacheDaily, cacheWeekly, cacheMonthly := geminiCachePlatformSettled(entry.GeminiCacheDailyUsage, entry.GeminiCacheWeeklyUsage, entry.GeminiCacheMonthlyUsage, entry.GeminiCacheDailyStart, entry.GeminiCacheWeeklyStart, entry.GeminiCacheMonthlyStart, now)
+		dailyUsage += cacheDaily
+		weeklyUsage += cacheWeekly
+		monthlyUsage += cacheMonthly
+		if entry.DailyLimitUSD != nil && dailyUsage+entry.GeminiCachePending >= *entry.DailyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformDailyQuotaExhausted, nextDailyReset(now))
 		}
-		if entry.WeeklyLimitUSD != nil && weeklyUsage >= *entry.WeeklyLimitUSD {
+		if entry.WeeklyLimitUSD != nil && weeklyUsage+entry.GeminiCachePending >= *entry.WeeklyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformWeeklyQuotaExhausted, nextWeeklyReset(now))
 		}
-		if entry.MonthlyLimitUSD != nil && monthlyUsage >= *entry.MonthlyLimitUSD {
+		if entry.MonthlyLimitUSD != nil && monthlyUsage+entry.GeminiCachePending >= *entry.MonthlyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformMonthlyQuotaExhausted, nextMonthlyResetFrom(entry.MonthlyWindowStart, now))
 		}
 		return nil
@@ -1224,15 +1304,16 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		monthlyUsage = 0
 	}
 
+	cacheDaily, cacheWeekly, cacheMonthly := geminiCachePlatformSettled(rec.GeminiCacheDailyUsage, rec.GeminiCacheWeeklyUsage, rec.GeminiCacheMonthlyUsage, rec.GeminiCacheDailyStart, rec.GeminiCacheWeeklyStart, rec.GeminiCacheMonthlyStart, now)
 	// Redis 故障时 fail-open：不回填，直接用 DB 数据做一次性检查
 	if cacheErr != nil {
-		if rec.DailyLimitUSD != nil && dailyUsage >= *rec.DailyLimitUSD {
+		if rec.DailyLimitUSD != nil && dailyUsage+cacheDaily+rec.GeminiCachePending >= *rec.DailyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformDailyQuotaExhausted, nextDailyReset(now))
 		}
-		if rec.WeeklyLimitUSD != nil && weeklyUsage >= *rec.WeeklyLimitUSD {
+		if rec.WeeklyLimitUSD != nil && weeklyUsage+cacheWeekly+rec.GeminiCachePending >= *rec.WeeklyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformWeeklyQuotaExhausted, nextWeeklyReset(now))
 		}
-		if rec.MonthlyLimitUSD != nil && monthlyUsage >= *rec.MonthlyLimitUSD {
+		if rec.MonthlyLimitUSD != nil && monthlyUsage+cacheMonthly+rec.GeminiCachePending >= *rec.MonthlyLimitUSD {
 			return withWindowResetsMetadata(ErrUserPlatformMonthlyQuotaExhausted, nextMonthlyResetFrom(rec.MonthlyWindowStart, now))
 		}
 		return nil
@@ -1240,16 +1321,24 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 
 	// cache MISS 或旧版 entry → 回填完整 entry（含 limits 和 window_start）
 	newEntry := &UserPlatformQuotaCacheEntry{
-		DailyUsageUSD:      dailyUsage,
-		WeeklyUsageUSD:     weeklyUsage,
-		MonthlyUsageUSD:    monthlyUsage,
-		SchemaVersion:      UserPlatformQuotaCacheSchemaV1,
-		DailyLimitUSD:      rec.DailyLimitUSD,
-		WeeklyLimitUSD:     rec.WeeklyLimitUSD,
-		MonthlyLimitUSD:    rec.MonthlyLimitUSD,
-		DailyWindowStart:   rec.DailyWindowStart,
-		WeeklyWindowStart:  rec.WeeklyWindowStart,
-		MonthlyWindowStart: rec.MonthlyWindowStart,
+		GeminiCachePending:      rec.GeminiCachePending,
+		GeminiCacheGeneration:   rec.GeminiCacheGeneration,
+		GeminiCacheDailyUsage:   rec.GeminiCacheDailyUsage,
+		GeminiCacheDailyStart:   rec.GeminiCacheDailyStart,
+		GeminiCacheWeeklyUsage:  rec.GeminiCacheWeeklyUsage,
+		GeminiCacheWeeklyStart:  rec.GeminiCacheWeeklyStart,
+		GeminiCacheMonthlyUsage: rec.GeminiCacheMonthlyUsage,
+		GeminiCacheMonthlyStart: rec.GeminiCacheMonthlyStart,
+		DailyUsageUSD:           dailyUsage,
+		WeeklyUsageUSD:          weeklyUsage,
+		MonthlyUsageUSD:         monthlyUsage,
+		SchemaVersion:           UserPlatformQuotaCacheSchemaV1,
+		DailyLimitUSD:           rec.DailyLimitUSD,
+		WeeklyLimitUSD:          rec.WeeklyLimitUSD,
+		MonthlyLimitUSD:         rec.MonthlyLimitUSD,
+		DailyWindowStart:        rec.DailyWindowStart,
+		WeeklyWindowStart:       rec.WeeklyWindowStart,
+		MonthlyWindowStart:      rec.MonthlyWindowStart,
 	}
 	if s.cache != nil {
 		ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
@@ -1263,13 +1352,13 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		setCancel()
 	}
 
-	if rec.DailyLimitUSD != nil && dailyUsage >= *rec.DailyLimitUSD {
+	if rec.DailyLimitUSD != nil && dailyUsage+cacheDaily+rec.GeminiCachePending >= *rec.DailyLimitUSD {
 		return withWindowResetsMetadata(ErrUserPlatformDailyQuotaExhausted, nextDailyReset(now))
 	}
-	if rec.WeeklyLimitUSD != nil && weeklyUsage >= *rec.WeeklyLimitUSD {
+	if rec.WeeklyLimitUSD != nil && weeklyUsage+cacheWeekly+rec.GeminiCachePending >= *rec.WeeklyLimitUSD {
 		return withWindowResetsMetadata(ErrUserPlatformWeeklyQuotaExhausted, nextWeeklyReset(now))
 	}
-	if rec.MonthlyLimitUSD != nil && monthlyUsage >= *rec.MonthlyLimitUSD {
+	if rec.MonthlyLimitUSD != nil && monthlyUsage+cacheMonthly+rec.GeminiCachePending >= *rec.MonthlyLimitUSD {
 		return withWindowResetsMetadata(ErrUserPlatformMonthlyQuotaExhausted, nextMonthlyResetFrom(rec.MonthlyWindowStart, now))
 	}
 	return nil

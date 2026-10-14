@@ -112,12 +112,14 @@ type apiKeyAllByUserIDLister interface {
 
 // APIKeyRateLimitData holds rate limit usage and window state for an API key.
 type APIKeyRateLimitData struct {
-	Usage5h       float64
-	Usage1d       float64
-	Usage7d       float64
-	Window5hStart *time.Time
-	Window1dStart *time.Time
-	Window7dStart *time.Time
+	GeminiCachePending    float64
+	GeminiCacheGeneration int64
+	Usage5h               float64
+	Usage1d               float64
+	Usage7d               float64
+	Window5hStart         *time.Time
+	Window1dStart         *time.Time
+	Window7dStart         *time.Time
 }
 
 // EffectiveUsage5h returns the 5h window usage, or 0 if the window has expired.

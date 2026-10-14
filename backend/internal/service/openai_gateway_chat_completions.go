@@ -424,11 +424,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// 8. Handle error response with failover
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		respBody, compatibilityBodyComplete := readOpenAICompatibilityErrorBody(resp.Body)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		if !requestFirstTokenPlaceholder.UpstreamCommitted && !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+		if compatibilityBodyComplete && !requestFirstTokenPlaceholder.UpstreamCommitted && !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := account.GetCredential("task_id")
 			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
@@ -440,12 +440,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if requestFirstTokenPlaceholder.UpstreamCommitted {
-			cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
+			cachePolicyCompatibilityFailure := compatibilityBodyComplete && cacheCreationOptimization.Applied &&
 				isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 			if cachePolicyCompatibilityFailure {
 				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 			}
-			s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
+			if compatibilityBodyComplete {
+				s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
+			}
 			if resp.StatusCode == http.StatusTooManyRequests {
 				_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
 			}
@@ -482,7 +484,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
 			return s.ForwardAsChatCompletions(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
-		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+		if compatibilityBodyComplete && cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 			logger.L().Info("openai chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
@@ -490,7 +492,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			)
 			return s.ForwardAsChatCompletions(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body, incomingPromptCacheKey, defaultMappedModel)
 		}
-		if (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+		if compatibilityBodyComplete && (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 			keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
 			stripKey := promptCacheBoostKeyInjected && keyUnsupported
 			stripRetention := promptCacheBoostRetentionInjected && retentionUnsupported

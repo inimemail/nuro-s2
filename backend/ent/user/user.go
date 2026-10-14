@@ -29,6 +29,8 @@ const (
 	FieldRole = "role"
 	// FieldBalance holds the string denoting the balance field in the database.
 	FieldBalance = "balance"
+	// FieldGeminiCacheGeneration holds the string denoting the gemini_cache_generation field in the database.
+	FieldGeminiCacheGeneration = "gemini_cache_generation"
 	// FieldFrozenBalance holds the string denoting the frozen_balance field in the database.
 	FieldFrozenBalance = "frozen_balance"
 	// FieldConcurrency holds the string denoting the concurrency field in the database.
@@ -203,6 +205,7 @@ var Columns = []string{
 	FieldPasswordHash,
 	FieldRole,
 	FieldBalance,
+	FieldGeminiCacheGeneration,
 	FieldFrozenBalance,
 	FieldConcurrency,
 	FieldStatus,
@@ -263,6 +266,8 @@ var (
 	RoleValidator func(string) error
 	// DefaultBalance holds the default value on creation for the "balance" field.
 	DefaultBalance float64
+	// DefaultGeminiCacheGeneration holds the default value on creation for the "gemini_cache_generation" field.
+	DefaultGeminiCacheGeneration int64
 	// DefaultFrozenBalance holds the default value on creation for the "frozen_balance" field.
 	DefaultFrozenBalance float64
 	// DefaultConcurrency holds the default value on creation for the "concurrency" field.
@@ -338,6 +343,11 @@ func ByRole(opts ...sql.OrderTermOption) OrderOption {
 // ByBalance orders the results by the balance field.
 func ByBalance(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldBalance, opts...).ToFunc()
+}
+
+// ByGeminiCacheGeneration orders the results by the gemini_cache_generation field.
+func ByGeminiCacheGeneration(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheGeneration, opts...).ToFunc()
 }
 
 // ByFrozenBalance orders the results by the frozen_balance field.

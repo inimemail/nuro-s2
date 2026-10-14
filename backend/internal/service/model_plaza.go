@@ -31,6 +31,7 @@ type ModelPlazaModel struct {
 }
 
 type ModelPlazaGroup struct {
+	I18n                 GroupI18n
 	ID                   int64
 	Name                 string
 	Description          string
@@ -126,7 +127,7 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 	for i := range groups {
 		g := &groups[i]
 		byGroup[g.ID] = &ModelPlazaGroup{
-			ID: g.ID, Name: g.Name, Description: g.Description, Platform: g.Platform,
+			ID: g.ID, Name: g.Name, Description: g.Description, I18n: g.I18n.Clone(), Platform: g.Platform,
 			SubscriptionType: g.SubscriptionType, RateMultiplier: g.RateMultiplier,
 			PeakRateEnabled: g.PeakRateEnabled, PeakStart: g.PeakStart, PeakEnd: g.PeakEnd,
 			PeakRateMultiplier: g.PeakRateMultiplier, IsExclusive: g.IsExclusive,
@@ -340,6 +341,7 @@ func cloneModelPlazaGroups(source []ModelPlazaGroup) []ModelPlazaGroup {
 	result := make([]ModelPlazaGroup, len(source))
 	for i := range source {
 		result[i] = source[i]
+		result[i].I18n = source[i].I18n.Clone()
 		result[i].Models = make([]ModelPlazaModel, len(source[i].Models))
 		for j := range source[i].Models {
 			result[i].Models[j] = source[i].Models[j]

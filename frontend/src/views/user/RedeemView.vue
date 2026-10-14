@@ -346,6 +346,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -506,6 +507,8 @@ onMounted(async () => {
     console.error('Failed to load contact info:', error)
   }
 })
+
+useLocaleRefresh(() => fetchHistory(historyPage.value))
 </script>
 
 <style scoped>

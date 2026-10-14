@@ -292,14 +292,15 @@ const platformColorClass = computed(() => {
 
 // 是否显示"最终倍率"预览列
 const showFinalRate = computed(() => {
-  return batchFactor.value != null && batchFactor.value > 0 && batchFactor.value !== 1
+  return batchFactor.value != null && Number.isFinite(batchFactor.value) && batchFactor.value > 0 && batchFactor.value !== 1
 })
 
 // 计算最终倍率预览
 const computeFinalRate = (rate: number | null | undefined) => {
   const base = rate ?? props.group?.rate_multiplier ?? 1
-  if (!batchFactor.value) return base
-  return parseFloat((base * batchFactor.value).toFixed(6))
+  if (!batchFactor.value || !Number.isFinite(batchFactor.value)) return base
+  const result = Number((base * batchFactor.value).toFixed(6))
+  return Number.isFinite(result) && result > 0 ? result : '—'
 }
 
 // 检测是否有未保存的修改
@@ -454,8 +455,11 @@ const updateLocalRate = (userId: number, value: string) => {
     entry.rate_multiplier = null
     return
   }
-  const num = parseFloat(value)
-  if (isNaN(num)) return
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) {
+    appStore.showError(t('admin.groups.invalidRateMultiplier'))
+    return
+  }
   entry.rate_multiplier = num
 }
 
@@ -467,12 +471,20 @@ const removeLocal = (userId: number) => {
 
 // 批量乘数应用到本地
 const applyBatchFactor = () => {
-  if (!batchFactor.value || batchFactor.value <= 0) return
-  for (const entry of localEntries.value) {
-    if (entry.rate_multiplier != null) {
-      entry.rate_multiplier = parseFloat((entry.rate_multiplier * batchFactor.value).toFixed(6))
-    }
+  const factor = batchFactor.value
+  if (factor == null || !Number.isFinite(factor) || factor <= 0) {
+    appStore.showError(t('admin.groups.invalidRateMultiplier'))
+    return
   }
+  const updated = localEntries.value.map(entry => ({
+    ...entry,
+    rate_multiplier: entry.rate_multiplier == null ? null : Number((entry.rate_multiplier * factor).toFixed(6))
+  }))
+  if (updated.some(entry => entry.rate_multiplier != null && (!Number.isFinite(entry.rate_multiplier) || entry.rate_multiplier <= 0))) {
+    appStore.showError(t('admin.groups.invalidRateMultiplier'))
+    return
+  }
+  localEntries.value = updated
   batchFactor.value = null
 }
 
@@ -494,6 +506,10 @@ const handleSave = async () => {
   const currentSession = session
   const isCurrent = () => !disposed && props.show && session === currentSession
   const submittedEntries = cloneEntries(localEntries.value)
+  if (submittedEntries.some(entry => entry.rate_multiplier != null && (!Number.isFinite(entry.rate_multiplier) || entry.rate_multiplier <= 0))) {
+    appStore.showError(t('admin.groups.invalidRateMultiplier'))
+    return
+  }
   saving.value = true
   try {
     const entries = submittedEntries

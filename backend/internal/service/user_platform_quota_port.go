@@ -18,26 +18,31 @@ var ErrUserPlatformQuotaFKViolation = errors.New("user platform quota snapshot F
 // UserPlatformQuotaSnapshot 是 service 层 flusher 向 DB 写入快照时使用的传输结构。
 // 字段语义与 repository.UserPlatformQuotaSnapshot 完全对应，由 adapter 负责转换。
 type UserPlatformQuotaSnapshot struct {
-	UserID             int64
-	Platform           string
-	DailyUsageUSD      float64
-	WeeklyUsageUSD     float64
-	MonthlyUsageUSD    float64
-	DailyWindowStart   time.Time
-	WeeklyWindowStart  time.Time
-	MonthlyWindowStart time.Time
+	GeminiCacheGeneration int64
+	UserID                int64
+	Platform              string
+	DailyUsageUSD         float64
+	WeeklyUsageUSD        float64
+	MonthlyUsageUSD       float64
+	DailyWindowStart      time.Time
+	WeeklyWindowStart     time.Time
+	MonthlyWindowStart    time.Time
 }
 
 // UserPlatformQuotaRecord service 层传输结构体（与 repository 层解耦）。
 type UserPlatformQuotaRecord struct {
-	UserID          int64
-	Platform        string
-	DailyLimitUSD   *float64
-	WeeklyLimitUSD  *float64
-	MonthlyLimitUSD *float64
-	DailyUsageUSD   float64
-	WeeklyUsageUSD  float64
-	MonthlyUsageUSD float64
+	GeminiCacheDailyUsage, GeminiCacheWeeklyUsage, GeminiCacheMonthlyUsage float64
+	GeminiCacheDailyStart, GeminiCacheWeeklyStart, GeminiCacheMonthlyStart *time.Time
+	GeminiCachePending                                                     float64
+	GeminiCacheGeneration                                                  int64
+	UserID                                                                 int64
+	Platform                                                               string
+	DailyLimitUSD                                                          *float64
+	WeeklyLimitUSD                                                         *float64
+	MonthlyLimitUSD                                                        *float64
+	DailyUsageUSD                                                          float64
+	WeeklyUsageUSD                                                         float64
+	MonthlyUsageUSD                                                        float64
 	// 窗口起始时间（可选，用于未来 reset 校验）
 	DailyWindowStart   *time.Time
 	WeeklyWindowStart  *time.Time

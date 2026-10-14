@@ -21,6 +21,10 @@ const (
 	FieldUpdatedAt = "updated_at"
 	// FieldDeletedAt holds the string denoting the deleted_at field in the database.
 	FieldDeletedAt = "deleted_at"
+	// FieldGeminiCachePending holds the string denoting the gemini_cache_pending field in the database.
+	FieldGeminiCachePending = "gemini_cache_pending"
+	// FieldGeminiCacheGeneration holds the string denoting the gemini_cache_generation field in the database.
+	FieldGeminiCacheGeneration = "gemini_cache_generation"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldKey holds the string denoting the key field in the database.
@@ -98,6 +102,8 @@ var Columns = []string{
 	FieldCreatedAt,
 	FieldUpdatedAt,
 	FieldDeletedAt,
+	FieldGeminiCachePending,
+	FieldGeminiCacheGeneration,
 	FieldUserID,
 	FieldKey,
 	FieldName,
@@ -144,6 +150,10 @@ var (
 	DefaultUpdatedAt func() time.Time
 	// UpdateDefaultUpdatedAt holds the default value on update for the "updated_at" field.
 	UpdateDefaultUpdatedAt func() time.Time
+	// DefaultGeminiCachePending holds the default value on creation for the "gemini_cache_pending" field.
+	DefaultGeminiCachePending float64
+	// DefaultGeminiCacheGeneration holds the default value on creation for the "gemini_cache_generation" field.
+	DefaultGeminiCacheGeneration int64
 	// KeyValidator is a validator for the "key" field. It is called by the builders before save.
 	KeyValidator func(string) error
 	// NameValidator is a validator for the "name" field. It is called by the builders before save.
@@ -191,6 +201,16 @@ func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
 // ByDeletedAt orders the results by the deleted_at field.
 func ByDeletedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDeletedAt, opts...).ToFunc()
+}
+
+// ByGeminiCachePending orders the results by the gemini_cache_pending field.
+func ByGeminiCachePending(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCachePending, opts...).ToFunc()
+}
+
+// ByGeminiCacheGeneration orders the results by the gemini_cache_generation field.
+func ByGeminiCacheGeneration(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGeminiCacheGeneration, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.

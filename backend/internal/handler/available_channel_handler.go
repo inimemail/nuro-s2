@@ -155,7 +155,7 @@ func (h *AvailableChannelHandler) List(c *gin.Context) {
 		if ch.Status != service.StatusActive {
 			continue
 		}
-		visibleGroups := filterUserVisibleGroups(ch.Groups, allowedGroupIDs)
+		visibleGroups := filterUserVisibleGroups(ch.Groups, allowedGroupIDs, c.GetHeader("Accept-Language"))
 		if len(visibleGroups) == 0 {
 			continue
 		}
@@ -213,7 +213,12 @@ func buildPlatformSections(
 func filterUserVisibleGroups(
 	groups []service.AvailableGroupRef,
 	allowed map[int64]struct{},
+	preferredLanguage ...string,
 ) []userAvailableGroup {
+	language := ""
+	if len(preferredLanguage) > 0 {
+		language = preferredLanguage[0]
+	}
 	visible := make([]userAvailableGroup, 0, len(groups))
 	for _, g := range groups {
 		if _, ok := allowed[g.ID]; !ok {
@@ -221,7 +226,7 @@ func filterUserVisibleGroups(
 		}
 		visible = append(visible, userAvailableGroup{
 			ID:                 g.ID,
-			Name:               g.Name,
+			Name:               g.I18n.LocalizeName(language, g.Name),
 			Platform:           g.Platform,
 			SubscriptionType:   g.SubscriptionType,
 			RateMultiplier:     g.RateMultiplier,

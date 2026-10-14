@@ -139,6 +139,16 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 
+		// Read/delete of an existing cache stays available after paid quota is
+		// exhausted. Identity, group permissions and IP restrictions above apply.
+		if isGeminiCacheFreeManagement(c.Request.Method, c.Request.URL.Path) {
+			c.Set(string(ContextKeyAPIKey), apiKey)
+			c.Set(string(ContextKeyUser), AuthSubject{UserID: apiKey.User.ID, Concurrency: apiKey.User.Concurrency})
+			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
+			setGroupContext(c, apiKey.Group)
+			c.Next()
+			return
+		}
 		switch apiKey.Status {
 		case service.StatusAPIKeyQuotaExhausted:
 			abortWithGoogleError(c, 429, "API key 额度已用完")
@@ -203,6 +213,42 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 		c.Next()
 	}
+}
+
+func isGeminiCacheFreeManagement(method, path string) bool {
+	const prefix = "/v1beta/cachedContents"
+	if method == "GET" && path == prefix {
+		return true
+	}
+	if method != "GET" && method != "DELETE" {
+		return false
+	}
+	return strings.HasPrefix(path, prefix+"/") && service.ValidGeminiCachePublicID(strings.TrimPrefix(path, prefix+"/"))
+}
+
+// Dashboard requests load the key by ID on the server. Apply the same identity,
+// group and IP rules without exposing its credential to the browser.
+func ValidateGeminiCachePanelKey(c *gin.Context, key *service.APIKey, cfg *config.Config, paid bool) bool {
+	if key == nil || key.User == nil || !key.User.IsActive() || (!key.IsActive() && key.Status != service.StatusAPIKeyExpired && key.Status != service.StatusAPIKeyQuotaExhausted) {
+		abortWithGoogleError(c, 403, "Cache key is unavailable")
+		return false
+	}
+	if _, _, ok := validateAPIKeyGroupAvailable(key); !ok || !validateAPIKeyGroupAllowed(key) {
+		abortWithGoogleError(c, 403, "Cache group is unavailable")
+		return false
+	}
+	if len(key.IPWhitelist) > 0 || len(key.IPBlacklist) > 0 {
+		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(ip.GetSecurityClientIP(c, cfg.TrustForwardedIPForAPIKeyACL()), key.CompiledIPWhitelist, key.CompiledIPBlacklist)
+		if !allowed {
+			abortWithGoogleError(c, 403, "Access denied")
+			return false
+		}
+	}
+	if paid && (key.IsExpired() || key.Status == service.StatusAPIKeyExpired || key.IsQuotaExhausted() || key.Status == service.StatusAPIKeyQuotaExhausted) {
+		abortWithGoogleError(c, 429, "Cache key quota is unavailable")
+		return false
+	}
+	return true
 }
 
 // extractAPIKeyForGoogle extracts API key for Google/Gemini endpoints.

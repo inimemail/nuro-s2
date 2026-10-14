@@ -141,7 +141,7 @@ func (r *apiKeyRepository) CreateWithActiveLimit(ctx context.Context, key *servi
 func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIKey, error) {
 	m, err := r.activeQuery().
 		Where(apikey.IDEQ(id)).
-		WithUser().
+		WithUser(func(q *dbent.UserQuery) { q.WithAllowedGroups() }).
 		WithGroup().
 		Only(ctx)
 	if err != nil {
@@ -200,6 +200,8 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			apikey.FieldIPBlacklist,
 			apikey.FieldQuota,
 			apikey.FieldQuotaUsed,
+			apikey.FieldGeminiCachePending,
+			apikey.FieldGeminiCacheGeneration,
 			apikey.FieldExpiresAt,
 			apikey.FieldRateLimit5h,
 			apikey.FieldRateLimit1d,
@@ -213,6 +215,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				user.FieldStatus,
 				user.FieldRole,
 				user.FieldBalance,
+				user.FieldGeminiCacheGeneration,
 				user.FieldConcurrency,
 				user.FieldBalanceNotifyEnabled,
 				user.FieldBalanceNotifyThresholdType,
@@ -233,6 +236,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			q.Select(
 				group.FieldID,
 				group.FieldName,
+				group.FieldI18n,
 				group.FieldPlatform,
 				group.FieldStatus,
 				group.FieldSubscriptionType,
@@ -909,7 +913,7 @@ func (r *apiKeyRepository) ResetRateLimitWindows(ctx context.Context, id int64) 
 // GetRateLimitData returns the current rate limit usage and window start times for an API key.
 func (r *apiKeyRepository) GetRateLimitData(ctx context.Context, id int64) (result *service.APIKeyRateLimitData, err error) {
 	rows, err := r.sql.QueryContext(ctx, `
-		SELECT usage_5h, usage_1d, usage_7d, window_5h_start, window_1d_start, window_7d_start
+		SELECT usage_5h, usage_1d, usage_7d, window_5h_start, window_1d_start, window_7d_start, gemini_cache_pending, gemini_cache_generation
 		FROM api_keys
 		WHERE id = $1 AND deleted_at IS NULL`,
 		id)
@@ -925,7 +929,7 @@ func (r *apiKeyRepository) GetRateLimitData(ctx context.Context, id int64) (resu
 		return nil, service.ErrAPIKeyNotFound
 	}
 	data := &service.APIKeyRateLimitData{}
-	if err := rows.Scan(&data.Usage5h, &data.Usage1d, &data.Usage7d, &data.Window5hStart, &data.Window1dStart, &data.Window7dStart); err != nil {
+	if err := rows.Scan(&data.Usage5h, &data.Usage1d, &data.Usage7d, &data.Window5hStart, &data.Window1dStart, &data.Window7dStart, &data.GeminiCachePending, &data.GeminiCacheGeneration); err != nil {
 		return nil, err
 	}
 	return data, rows.Err()
@@ -936,29 +940,31 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		return nil
 	}
 	out := &service.APIKey{
-		ID:            m.ID,
-		UserID:        m.UserID,
-		Key:           m.Key,
-		Name:          m.Name,
-		Status:        m.Status,
-		IPWhitelist:   m.IPWhitelist,
-		IPBlacklist:   m.IPBlacklist,
-		LastUsedAt:    m.LastUsedAt,
-		CreatedAt:     m.CreatedAt,
-		UpdatedAt:     m.UpdatedAt,
-		GroupID:       m.GroupID,
-		Quota:         m.Quota,
-		QuotaUsed:     m.QuotaUsed,
-		ExpiresAt:     m.ExpiresAt,
-		RateLimit5h:   m.RateLimit5h,
-		RateLimit1d:   m.RateLimit1d,
-		RateLimit7d:   m.RateLimit7d,
-		Usage5h:       m.Usage5h,
-		Usage1d:       m.Usage1d,
-		Usage7d:       m.Usage7d,
-		Window5hStart: m.Window5hStart,
-		Window1dStart: m.Window1dStart,
-		Window7dStart: m.Window7dStart,
+		ID:                    m.ID,
+		UserID:                m.UserID,
+		Key:                   m.Key,
+		Name:                  m.Name,
+		Status:                m.Status,
+		IPWhitelist:           m.IPWhitelist,
+		IPBlacklist:           m.IPBlacklist,
+		LastUsedAt:            m.LastUsedAt,
+		CreatedAt:             m.CreatedAt,
+		UpdatedAt:             m.UpdatedAt,
+		GroupID:               m.GroupID,
+		Quota:                 m.Quota,
+		GeminiCachePending:    m.GeminiCachePending,
+		GeminiCacheGeneration: m.GeminiCacheGeneration,
+		QuotaUsed:             m.QuotaUsed,
+		ExpiresAt:             m.ExpiresAt,
+		RateLimit5h:           m.RateLimit5h,
+		RateLimit1d:           m.RateLimit1d,
+		RateLimit7d:           m.RateLimit7d,
+		Usage5h:               m.Usage5h,
+		Usage1d:               m.Usage1d,
+		Usage7d:               m.Usage7d,
+		Window5hStart:         m.Window5hStart,
+		Window1dStart:         m.Window1dStart,
+		Window7dStart:         m.Window7dStart,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)
@@ -1030,6 +1036,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		}
 	}
 	return &service.Group{
+		I18n:                                 g.I18n.Clone(),
 		ID:                                   g.ID,
 		Name:                                 g.Name,
 		Description:                          derefString(g.Description),

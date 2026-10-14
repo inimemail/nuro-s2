@@ -57,6 +57,48 @@ func (_u *UserSubscriptionUpdate) ClearDeletedAt() *UserSubscriptionUpdate {
 	return _u
 }
 
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (_u *UserSubscriptionUpdate) SetGeminiCachePending(v float64) *UserSubscriptionUpdate {
+	_u.mutation.ResetGeminiCachePending()
+	_u.mutation.SetGeminiCachePending(v)
+	return _u
+}
+
+// SetNillableGeminiCachePending sets the "gemini_cache_pending" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableGeminiCachePending(v *float64) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetGeminiCachePending(*v)
+	}
+	return _u
+}
+
+// AddGeminiCachePending adds value to the "gemini_cache_pending" field.
+func (_u *UserSubscriptionUpdate) AddGeminiCachePending(v float64) *UserSubscriptionUpdate {
+	_u.mutation.AddGeminiCachePending(v)
+	return _u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_u *UserSubscriptionUpdate) SetGeminiCacheGeneration(v int64) *UserSubscriptionUpdate {
+	_u.mutation.ResetGeminiCacheGeneration()
+	_u.mutation.SetGeminiCacheGeneration(v)
+	return _u
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableGeminiCacheGeneration(v *int64) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetGeminiCacheGeneration(*v)
+	}
+	return _u
+}
+
+// AddGeminiCacheGeneration adds value to the "gemini_cache_generation" field.
+func (_u *UserSubscriptionUpdate) AddGeminiCacheGeneration(v int64) *UserSubscriptionUpdate {
+	_u.mutation.AddGeminiCacheGeneration(v)
+	return _u
+}
+
 // SetUserID sets the "user_id" field.
 func (_u *UserSubscriptionUpdate) SetUserID(v int64) *UserSubscriptionUpdate {
 	_u.mutation.SetUserID(v)
@@ -471,6 +513,18 @@ func (_u *UserSubscriptionUpdate) sqlSave(ctx context.Context) (_node int, err e
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(usersubscription.FieldDeletedAt, field.TypeTime)
 	}
+	if value, ok := _u.mutation.GeminiCachePending(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCachePending, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCachePending(); ok {
+		_spec.AddField(usersubscription.FieldGeminiCachePending, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCacheGeneration(); ok {
+		_spec.AddField(usersubscription.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
 	if value, ok := _u.mutation.StartsAt(); ok {
 		_spec.SetField(usersubscription.FieldStartsAt, field.TypeTime, value)
 	}
@@ -700,6 +754,48 @@ func (_u *UserSubscriptionUpdateOne) SetNillableDeletedAt(v *time.Time) *UserSub
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (_u *UserSubscriptionUpdateOne) ClearDeletedAt() *UserSubscriptionUpdateOne {
 	_u.mutation.ClearDeletedAt()
+	return _u
+}
+
+// SetGeminiCachePending sets the "gemini_cache_pending" field.
+func (_u *UserSubscriptionUpdateOne) SetGeminiCachePending(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetGeminiCachePending()
+	_u.mutation.SetGeminiCachePending(v)
+	return _u
+}
+
+// SetNillableGeminiCachePending sets the "gemini_cache_pending" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableGeminiCachePending(v *float64) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetGeminiCachePending(*v)
+	}
+	return _u
+}
+
+// AddGeminiCachePending adds value to the "gemini_cache_pending" field.
+func (_u *UserSubscriptionUpdateOne) AddGeminiCachePending(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.AddGeminiCachePending(v)
+	return _u
+}
+
+// SetGeminiCacheGeneration sets the "gemini_cache_generation" field.
+func (_u *UserSubscriptionUpdateOne) SetGeminiCacheGeneration(v int64) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetGeminiCacheGeneration()
+	_u.mutation.SetGeminiCacheGeneration(v)
+	return _u
+}
+
+// SetNillableGeminiCacheGeneration sets the "gemini_cache_generation" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableGeminiCacheGeneration(v *int64) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetGeminiCacheGeneration(*v)
+	}
+	return _u
+}
+
+// AddGeminiCacheGeneration adds value to the "gemini_cache_generation" field.
+func (_u *UserSubscriptionUpdateOne) AddGeminiCacheGeneration(v int64) *UserSubscriptionUpdateOne {
+	_u.mutation.AddGeminiCacheGeneration(v)
 	return _u
 }
 
@@ -1146,6 +1242,18 @@ func (_u *UserSubscriptionUpdateOne) sqlSave(ctx context.Context) (_node *UserSu
 	}
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(usersubscription.FieldDeletedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.GeminiCachePending(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCachePending, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCachePending(); ok {
+		_spec.AddField(usersubscription.FieldGeminiCachePending, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.GeminiCacheGeneration(); ok {
+		_spec.SetField(usersubscription.FieldGeminiCacheGeneration, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedGeminiCacheGeneration(); ok {
+		_spec.AddField(usersubscription.FieldGeminiCacheGeneration, field.TypeInt64, value)
 	}
 	if value, ok := _u.mutation.StartsAt(); ok {
 		_spec.SetField(usersubscription.FieldStartsAt, field.TypeTime, value)

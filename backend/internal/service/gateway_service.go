@@ -1502,7 +1502,7 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 	// temperature：真实 Claude Code CLI 总是发送 temperature（默认 1，客户端可覆盖）。
 	// 之前的实现直接 delete 会导致 payload 缺字段，与真实 CLI 字节级不一致。
 	// 策略：客户端传了什么就透传；没传则补默认 1。
-	if !gjson.GetBytes(out, "temperature").Exists() {
+	if !gjson.GetBytes(out, "temperature").Exists() && !(claude.IsHaiku55(gjson.GetBytes(out, "model").String()) && gjson.GetBytes(out, "top_p").Exists()) {
 		if next, ok := setJSONValueBytes(out, "temperature", 1); ok {
 			out = next
 			modified = true
@@ -2704,6 +2704,9 @@ func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
 		!s.isAccountSchedulableForWindowCost(ctx, account, true) {
 		return nil, ErrNoAvailableAccounts
 	}
+	if isGeminiCacheBoundRequest(ctx) && !s.isAccountSchedulableForRPM(ctx, account, false) {
+		return nil, ErrNoAvailableAccounts
+	}
 	if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
 		s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel) {
 		return nil, ErrNoAvailableAccounts
@@ -3143,6 +3146,9 @@ func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Conte
 	if account == nil {
 		return false
 	}
+	if !acceptsGeminiCacheCandidate(ctx, account) {
+		return false
+	}
 	if s.shouldSkipAnthropicPoolCoolingAccount(ctx, account, requestedModel) {
 		return false
 	}
@@ -3170,6 +3176,9 @@ func (s *GatewayService) shouldSkipAnthropicPoolCoolingAccount(ctx context.Conte
 }
 
 func (s *GatewayService) shouldIncludeAccountInPriorityBase(ctx context.Context, account *Account, requestedModel string) bool {
+	if !acceptsGeminiCacheCandidate(ctx, account) {
+		return false
+	}
 	if s == nil || account == nil || !isAnthropicPoolAccount(account) || !s.isAnthropicPoolAccountSoftCooling(account) {
 		return true
 	}
@@ -7008,7 +7017,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			})
 			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, reqModel)
 		}
-		return s.handleRetryExhaustedError(ctx, resp, c, account)
+		return s.handleRetryExhaustedError(ctx, resp, c, account, reqModel)
 	}
 
 	// 处理可切换账号的错误
@@ -7347,7 +7356,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, input.RequestModel)
 		}
-		return s.handleRetryExhaustedError(ctx, resp, c, account)
+		return s.handleRetryExhaustedError(ctx, resp, c, account, input.RequestModel)
 	}
 
 	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -9051,7 +9060,7 @@ func mergeDropSets(policySet map[string]struct{}, extra ...string) map[string]st
 // legacy fine-grained streaming beta, while ordinary tools and older models
 // continue to use the existing header unchanged.
 func sonnet55ToolsetBetaDrops(model string, body []byte) []string {
-	if !claude.IsSonnet55(model) {
+	if !claude.IsSonnet55(model) && !claude.IsHaiku55(model) {
 		return nil
 	}
 	tools := gjson.GetBytes(body, "tools")
@@ -9723,7 +9732,7 @@ func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, re
 
 	// OAuth/Setup Token 账号的 403：标记账号异常
 	if account.IsOAuth() && statusCode == 403 {
-		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, resp.Header, body)
+		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, resp.Header, body, requestedModel...)
 		logger.LegacyPrintf("service.gateway", "Account %d: marked as error after %d retries for status %d", account.ID, maxRetryAttempts, statusCode)
 	} else {
 		// API Key 未配置错误码：不标记账号状态
@@ -9809,13 +9818,13 @@ func (s *GatewayService) maybeMarkAnthropicPoolSoftCooldown(ctx context.Context,
 // handleRetryExhaustedError 处理重试耗尽后的错误
 // OAuth 403：标记账号异常
 // API Key 未配置错误码：仅返回错误，不标记账号
-func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error) {
+func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
 	// Capture upstream error body before side-effects consume the stream.
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-	s.handleRetryExhaustedSideEffects(ctx, resp, account)
+	s.handleRetryExhaustedSideEffects(ctx, resp, account, requestedModel...)
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -11303,6 +11312,8 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 
 // recordUsageOpts 内部选项，参数化 RecordUsage 与 RecordUsageWithLongContext 的差异点。
 type recordUsageOpts struct {
+	PricingAt                 time.Time
+	GeminiLaunchOfferEligible *bool
 	// Claude Max 策略所需的 ParsedRequest（可选，仅 Claude 路径传入）
 	ParsedRequest *ParsedRequest
 
@@ -11416,6 +11427,13 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	apiKey := input.APIKey
 	user := input.User
 	account := input.Account
+	options := *opts
+	opts = &options
+	opts.PricingAt = timezone.Now()
+	if account != nil && account.Platform == PlatformGemini {
+		eligible := account.Type == AccountTypeAPIKey && !account.IsThirdPartyGeminiAPIKey()
+		opts.GeminiLaunchOfferEligible = &eligible
+	}
 	subscription := input.Subscription
 	ApplyForwardImageBillingResolution(result)
 
@@ -11492,6 +11510,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			},
 			cost.TotalCost,
 		)
+		applyGemini36AccountStatsCost(ctx, usageLog, s.channelService, s.billingService, account, *apiKey.GroupID,
+			firstNonEmpty(result.UpstreamModel, result.Model), UsageTokens{
+				InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
+				CacheCreationTokens: result.Usage.CacheCreationInputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens,
+				ImageOutputTokens: result.Usage.ImageOutputTokens,
+			}, cost.TotalCost, opts.PricingAt, opts.GeminiLaunchOfferEligible)
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -11674,9 +11698,12 @@ func (s *GatewayService) calculateTokenCost(
 			RequestCount:    1,
 			RateMultiplier:  multiplier,
 			ReasoningEffort: optionalStringValue(result.ReasoningEffort),
-			Resolver:        s.resolver,
-			Resolved:        resolved,
+			PricingAt:       opts.PricingAt, GeminiLaunchOfferEligible: opts.GeminiLaunchOfferEligible,
+			Resolver: s.resolver,
+			Resolved: resolved,
 		})
+	} else if isGemini36FlashPricingModel(billingModel) {
+		cost, err = s.billingService.CalculateCostUnified(CostInput{Ctx: ctx, Model: billingModel, GroupID: apiKey.GroupID, Group: apiKey.Group, Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, Resolver: s.resolver, PricingAt: opts.PricingAt, GeminiLaunchOfferEligible: opts.GeminiLaunchOfferEligible})
 	} else if opts.LongContextThreshold > 0 && (apiKey.Group == nil || apiKey.Group.LongContextPricingEnabled) {
 		// 长上下文双倍计费（如 Gemini 200K 阈值）
 		cost, err = s.billingService.CalculateCostWithLongContext(
@@ -12083,7 +12110,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
 		// 标记账号状态（429/529等）
-		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)

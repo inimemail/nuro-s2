@@ -979,7 +979,8 @@
 
       <!-- Vertex Service Account -->
       <div v-if="(form.platform === 'gemini' || form.platform === 'anthropic') && accountCategory === 'service_account'" class="space-y-4">
-        <div>
+        <VertexAuthFields v-if="form.platform === 'gemini'" v-model:mode="vertexAuthMode" v-model:api-key="vertexApiKey" />
+        <div v-if="form.platform !== 'gemini' || vertexAuthMode === 'service_account'">
           <label class="input-label">Service Account JSON</label>
           <input
             ref="vertexServiceAccountFileInput"
@@ -1037,7 +1038,7 @@
               v-model="vertexProjectId"
               type="text"
               class="input font-mono"
-              readonly
+              :readonly="vertexAuthMode !== 'apikey'"
               :placeholder="t('admin.accounts.vertexProjectIdPlaceholder')"
             />
           </div>
@@ -1240,6 +1241,7 @@
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
       <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+        <GeminiCacheCapabilityFields v-if="form.platform === 'gemini'" v-model:enabled="geminiCacheEnabled" v-model:ttl="geminiCacheTTL" :base-url="apiKeyBaseUrl" :pool="poolModeEnabled" />
         <div>
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -2916,6 +2918,13 @@
 
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
+                  <label class="input-label">{{ t('admin.accounts.tempUnschedulable.scope') }}</label>
+                  <select v-model="rule.scope" class="input">
+                    <option value="model">{{ t('admin.accounts.tempUnschedulable.scopeModel') }}</option>
+                    <option value="account">{{ t('admin.accounts.tempUnschedulable.scopeAccount') }}</option>
+                  </select>
+                </div>
+                <div>
                   <label class="input-label">{{ t('admin.accounts.tempUnschedulable.errorCode') }}</label>
                   <input
                     v-model.number="rule.error_code"
@@ -4568,6 +4577,8 @@
 </template>
 
 <script setup lang="ts">
+import VertexAuthFields from './VertexAuthFields.vue'
+import GeminiCacheCapabilityFields from './GeminiCacheCapabilityFields.vue'
 import SeedanceControl from './SeedanceControl.vue'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -4770,6 +4781,7 @@ interface ModelMapping {
 }
 
 interface TempUnschedRuleForm {
+  scope?: 'model' | 'account'
   error_code: number | null
   keywords: string
   duration_minutes: number | null
@@ -4782,6 +4794,8 @@ const submitting = ref(false)
 const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
+const geminiCacheEnabled = ref(false)
+const geminiCacheTTL = ref(86400)
 const apiKeyValue = ref('')
 type CNBillingMode = 'payg' | 'coding_plan'
 type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
@@ -5335,6 +5349,8 @@ const bedrockRegion = ref('us-east-1')
 const bedrockForceGlobal = ref(false)
 const bedrockApiKeyValue = ref('')
 const vertexServiceAccountFileInput = ref<HTMLInputElement | null>(null)
+const vertexAuthMode = ref<'service_account' | 'apikey'>('service_account')
+const vertexApiKey = ref('')
 const vertexServiceAccountJson = ref('')
 const vertexProjectId = ref('')
 const vertexClientEmail = ref('')
@@ -5845,6 +5861,8 @@ watch(
     bedrockAuthMode.value = 'sigv4'
     bedrockApiKeyValue.value = ''
     vertexServiceAccountJson.value = ''
+    vertexApiKey.value = ''
+    vertexAuthMode.value = 'service_account'
     vertexProjectId.value = ''
     vertexClientEmail.value = ''
     vertexLocation.value = 'global'
@@ -6159,10 +6177,11 @@ const removeErrorCode = (code: number) => {
 
 const addTempUnschedRule = (preset?: TempUnschedRuleForm) => {
   if (preset) {
-    tempUnschedRules.value.push({ ...preset })
+    tempUnschedRules.value.push({ ...preset, scope: preset.scope ?? 'model' })
     return
   }
   tempUnschedRules.value.push({
+    scope: 'model',
     error_code: null,
     keywords: '',
     duration_minutes: 30,
@@ -6185,6 +6204,7 @@ const moveTempUnschedRule = (index: number, direction: number) => {
 
 const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
   const out: Array<{
+    scope: 'model' | 'account'
     error_code: number
     keywords: string[]
     duration_minutes: number
@@ -6205,6 +6225,7 @@ const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
       continue
     }
     out.push({
+      scope: rule.scope ?? 'account',
       error_code: Math.trunc(errorCode),
       keywords,
       duration_minutes: Math.trunc(duration),
@@ -6357,6 +6378,8 @@ const resetForm = () => {
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
+  geminiCacheEnabled.value = false
+  geminiCacheTTL.value = 86400
   apiKeyValue.value = ''
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
@@ -7157,6 +7180,13 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
+    if (form.platform === 'gemini' && vertexAuthMode.value === 'apikey') {
+      if (!vertexApiKey.value.trim()) { appStore.showError(t('admin.accounts.pleaseEnterApiKey')); return }
+      await createAccountAndFinish(form.platform, 'service_account' as AccountType, {
+        auth_mode: 'apikey', api_key: vertexApiKey.value.trim(), project_id: vertexProjectId.value.trim(), location: vertexLocation.value.trim(), tier_id: 'vertex'
+      })
+      return
+    }
     if (!parseVertexServiceAccountJson()) {
       return
     }
@@ -7165,6 +7195,7 @@ const handleSubmit = async () => {
       return
     }
     const credentials: Record<string, unknown> = {
+      auth_mode: 'service_account',
       service_account_json: vertexServiceAccountJson.value.trim(),
       project_id: vertexProjectId.value.trim(),
       client_email: vertexClientEmail.value.trim(),
@@ -7218,6 +7249,12 @@ const handleSubmit = async () => {
   }
   if (form.platform === 'gemini') {
     credentials.tier_id = geminiTierAIStudio.value
+    if (geminiCacheEnabled.value && (!Number.isInteger(geminiCacheTTL.value) || geminiCacheTTL.value < 60 || geminiCacheTTL.value > 86400)) {
+      appStore.showError(t('geminiCache.capability.invalidTTL'))
+      return
+    }
+    credentials.gemini_explicit_cache_enabled = geminiCacheEnabled.value
+    credentials.gemini_explicit_cache_max_ttl_seconds = geminiCacheTTL.value
   }
 
   // Add model mapping if configured（OpenAI 开启自动透传时不应用）

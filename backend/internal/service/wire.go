@@ -749,6 +749,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
+	ProvideGeminiCachedContentService,
 	ProvideAntigravityTokenProvider,
 	ProvideGrokTokenProvider,
 	ProvideOpenAITokenProvider,
@@ -886,4 +887,10 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetQuotaFetcher(quotaFetcher)
 	r.Start()
 	return r
+}
+
+func ProvideGeminiCachedContentService(repo GeminiCachedContentRepository, charges GeminiCacheChargeRepository, publisher GeminiCacheAdmissionPublisher, provider *GeminiMessagesCompatService, accounts AccountRepository, gateway *GatewayService, billing *BillingService, resolver *ModelPricingResolver, cfg *config.Config) *GeminiCachedContentService {
+	s := NewGeminiCachedContentService(repo, charges, publisher, provider, accounts, gateway, billing, resolver, cfg)
+	s.Start()
+	return s
 }

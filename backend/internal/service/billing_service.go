@@ -18,12 +18,14 @@ import (
 
 // APIKeyRateLimitCacheData holds rate limit usage data cached in Redis.
 type APIKeyRateLimitCacheData struct {
-	Usage5h  float64 `json:"usage_5h"`
-	Usage1d  float64 `json:"usage_1d"`
-	Usage7d  float64 `json:"usage_7d"`
-	Window5h int64   `json:"window_5h"` // unix timestamp, 0 = not started
-	Window1d int64   `json:"window_1d"`
-	Window7d int64   `json:"window_7d"`
+	GeminiCachePending    float64 `json:"gemini_cache_pending,omitempty"`
+	GeminiCacheGeneration int64   `json:"gemini_cache_generation,omitempty"`
+	Usage5h               float64 `json:"usage_5h"`
+	Usage1d               float64 `json:"usage_1d"`
+	Usage7d               float64 `json:"usage_7d"`
+	Window5h              int64   `json:"window_5h"` // unix timestamp, 0 = not started
+	Window1d              int64   `json:"window_1d"`
+	Window7d              int64   `json:"window_7d"`
 }
 
 // UserPlatformQuotaKey 标识一个 user×platform，用于脏集出入与批量读。
@@ -42,11 +44,15 @@ type UserPlatformQuotaKey struct {
 const UserPlatformQuotaCacheSchemaV1 = int64(1)
 
 type UserPlatformQuotaCacheEntry struct {
-	DailyUsageUSD   float64
-	WeeklyUsageUSD  float64
-	MonthlyUsageUSD float64
-	Version         int64
-	SchemaVersion   int64
+	GeminiCacheDailyUsage, GeminiCacheWeeklyUsage, GeminiCacheMonthlyUsage float64
+	GeminiCacheDailyStart, GeminiCacheWeeklyStart, GeminiCacheMonthlyStart *time.Time
+	GeminiCachePending                                                     float64
+	GeminiCacheGeneration                                                  int64
+	DailyUsageUSD                                                          float64
+	WeeklyUsageUSD                                                         float64
+	MonthlyUsageUSD                                                        float64
+	Version                                                                int64
+	SchemaVersion                                                          int64
 
 	// 以下字段仅在 SchemaVersion >= 1 时有效
 	DailyLimitUSD   *float64
@@ -94,6 +100,7 @@ type BillingCache interface {
 
 // ModelPricing 模型价格配置（per-token价格，与LiteLLM格式一致）
 type ModelPricing struct {
+	CacheStoragePricePerTokenHour      float64
 	InputPricePerToken                 float64  // 每token输入价格 (USD)
 	InputPricePerTokenPriority         float64  // priority service tier 下每token输入价格 (USD)
 	ImageInputPricePerToken            float64  // 图片输入 token 价格 (USD)，为 0 时回退到 InputPricePerToken
@@ -347,6 +354,14 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:     false,
 	}
 
+	// Claude Haiku 5.5: the >100k tier applies to the whole request.
+	s.fallbackPrices["claude-haiku-5-5"] = &ModelPricing{
+		InputPricePerToken: 0.1e-6, OutputPricePerToken: 0.5e-6,
+		CacheCreationPricePerToken: 0.125e-6, CacheReadPricePerToken: 0.01e-6,
+		CacheCreation5mPrice: 0.125e-6, CacheCreation1hPrice: 0.2e-6,
+		SupportsCacheBreakdown: true, LongContextInputThreshold: 100000,
+		LongContextInputMultiplier: 5, LongContextOutputMultiplier: 5,
+	}
 	// Claude 3.5 Haiku
 	s.fallbackPrices["claude-3-5-haiku"] = &ModelPricing{
 		InputPricePerToken:         1e-6,    // $1 per MTok
@@ -813,6 +828,9 @@ func (s *BillingService) initFallbackPricing() {
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	modelLower := strings.ToLower(model)
+	if claude.IsHaiku55(modelLower) {
+		return s.fallbackPrices["claude-haiku-5-5"]
+	}
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
@@ -1073,6 +1091,7 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 			price1h := litellmPricing.CacheCreationInputTokenCostAbove1hr
 			enableBreakdown := price1h > 0 && price1h > price5m
 			return s.applyModelSpecificPricingPolicy(model, &ModelPricing{
+				CacheStoragePricePerTokenHour:      litellmPricing.CacheStorageCostPerTokenPerHour,
 				InputPricePerToken:                 litellmPricing.InputCostPerToken,
 				InputPricePerTokenPriority:         litellmPricing.InputCostPerTokenPriority,
 				OutputPricePerToken:                litellmPricing.OutputCostPerToken,
@@ -1167,6 +1186,7 @@ type CostInput struct {
 	SizeTier                  string
 	RateMultiplier            float64
 	PricingAt                 time.Time
+	GeminiLaunchOfferEligible *bool                 // nil preserves callers without provider identity
 	ServiceTier               string                // "priority","flex","" 等
 	ReasoningEffort           string                // 最终转发的推理等级；max 可触发模型/渠道倍率
 	Resolver                  *ModelPricingResolver // 定价解析器
@@ -1190,6 +1210,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 			input.ServiceTier,
 			nil,
 			applyLongContextBilling,
+			geminiBillingTime{at: input.PricingAt, eligible: input.GeminiLaunchOfferEligible},
 		)
 		if err == nil {
 			applyCostBreakdownMultiplier(breakdown, maxReasoningEffortBillingMultiplier(input.Model, input.ReasoningEffort, nil))
@@ -1247,6 +1268,13 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 
 	useDefaultCatalogPricing := resolved.Source != PricingSourceGroup && resolved.Source != PricingSourceChannel
 	pricing = s.applyModelSpecificPricingPolicyEx(input.Model, pricing, useDefaultCatalogPricing)
+	if useDefaultCatalogPricing {
+		pricingAt := input.PricingAt
+		if input.GeminiLaunchOfferEligible != nil && !*input.GeminiLaunchOfferEligible {
+			pricingAt = gemini36LaunchOfferEnd
+		}
+		pricing = applyGemini36OfficialPricing(input.Model, pricing, pricingAt)
+	}
 	if resolved.Source != PricingSourceGroup && resolved.Source != PricingSourceChannel && isDeepSeekModel(input.Model) {
 		at := input.PricingAt
 		if at.IsZero() {
@@ -1506,6 +1534,7 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	serviceTier string,
 	channelPricing *ChannelModelPricing,
 	longContextBillingEnabled bool,
+	geminiTime ...geminiBillingTime,
 ) (*CostBreakdown, error) {
 	var pricing *ModelPricing
 	var err error
@@ -1519,6 +1548,13 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	}
 	if channelPricing == nil && isDeepSeekModel(model) {
 		pricing = applyDeepSeekOfficialPeakPricing(model, pricing, timezone.Now())
+	}
+	if channelPricing == nil {
+		at := time.Now()
+		if len(geminiTime) > 0 {
+			at = gemini36PricingAt(geminiTime[0].at, geminiTime[0].eligible)
+		}
+		pricing = applyGemini36OfficialPricing(model, pricing, at)
 	}
 	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, longContextBillingEnabled), nil
 }

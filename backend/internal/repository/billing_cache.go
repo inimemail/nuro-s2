@@ -153,8 +153,7 @@ func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float6
 }
 
 func (c *billingCache) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
-	key := billingBalanceKey(userID)
-	return c.rdb.Set(ctx, key, balance, jitteredTTL()).Err()
+	return c.SetUserBalanceWithGeneration(ctx, userID, balance, 0)
 }
 
 func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
@@ -187,6 +186,11 @@ func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID
 func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.SubscriptionCacheData, error) {
 	result := &service.SubscriptionCacheData{}
 
+	result.GeminiCachePending, _ = strconv.ParseFloat(data["gemini_cache_pending"], 64)
+	result.GeminiCacheGeneration, _ = strconv.ParseInt(data["gemini_cache_generation"], 10, 64)
+	result.DailyWindowStart = parseGeminiCacheWindow(data["daily_window_start"])
+	result.WeeklyWindowStart = parseGeminiCacheWindow(data["weekly_window_start"])
+	result.MonthlyWindowStart = parseGeminiCacheWindow(data["monthly_window_start"])
 	result.Status = data[subFieldStatus]
 	if result.Status == "" {
 		return nil, errors.New("invalid cache: missing status")
@@ -226,19 +230,20 @@ func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID
 	key := billingSubKey(userID, groupID)
 
 	fields := map[string]any{
-		subFieldStatus:       data.Status,
-		subFieldExpiresAt:    data.ExpiresAt.Unix(),
-		subFieldDailyUsage:   data.DailyUsage,
-		subFieldWeeklyUsage:  data.WeeklyUsage,
-		subFieldMonthlyUsage: data.MonthlyUsage,
-		subFieldVersion:      data.Version,
+		"gemini_cache_pending":    data.GeminiCachePending,
+		"gemini_cache_generation": data.GeminiCacheGeneration,
+		subFieldStatus:            data.Status,
+		"daily_window_start":      formatGeminiCacheWindow(data.DailyWindowStart),
+		"weekly_window_start":     formatGeminiCacheWindow(data.WeeklyWindowStart),
+		"monthly_window_start":    formatGeminiCacheWindow(data.MonthlyWindowStart),
+		subFieldExpiresAt:         data.ExpiresAt.Unix(),
+		subFieldDailyUsage:        data.DailyUsage,
+		subFieldWeeklyUsage:       data.WeeklyUsage,
+		subFieldMonthlyUsage:      data.MonthlyUsage,
+		subFieldVersion:           data.Version,
 	}
 
-	pipe := c.rdb.Pipeline()
-	pipe.HSet(ctx, key, fields)
-	pipe.Expire(ctx, key, jitteredTTL())
-	_, err := pipe.Exec(ctx)
-	return err
+	return c.setGeminiFencedHash(ctx, key, fields, data.GeminiCacheGeneration, jitteredTTL())
 }
 
 func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
@@ -266,6 +271,8 @@ func (c *billingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*se
 		return nil, redis.Nil
 	}
 	data := &service.APIKeyRateLimitCacheData{}
+	data.GeminiCachePending, _ = strconv.ParseFloat(result["gemini_cache_pending"], 64)
+	data.GeminiCacheGeneration, _ = strconv.ParseInt(result["gemini_cache_generation"], 10, 64)
 	if v, ok := result[rateLimitFieldUsage5h]; ok {
 		data.Usage5h, _ = strconv.ParseFloat(v, 64)
 	}
@@ -293,18 +300,16 @@ func (c *billingCache) SetAPIKeyRateLimit(ctx context.Context, keyID int64, data
 	}
 	key := billingRateLimitKey(keyID)
 	fields := map[string]any{
-		rateLimitFieldUsage5h:  data.Usage5h,
-		rateLimitFieldUsage1d:  data.Usage1d,
-		rateLimitFieldUsage7d:  data.Usage7d,
-		rateLimitFieldWindow5h: data.Window5h,
-		rateLimitFieldWindow1d: data.Window1d,
-		rateLimitFieldWindow7d: data.Window7d,
+		"gemini_cache_pending":    data.GeminiCachePending,
+		"gemini_cache_generation": data.GeminiCacheGeneration,
+		rateLimitFieldUsage5h:     data.Usage5h,
+		rateLimitFieldUsage1d:     data.Usage1d,
+		rateLimitFieldUsage7d:     data.Usage7d,
+		rateLimitFieldWindow5h:    data.Window5h,
+		rateLimitFieldWindow1d:    data.Window1d,
+		rateLimitFieldWindow7d:    data.Window7d,
 	}
-	pipe := c.rdb.Pipeline()
-	pipe.HSet(ctx, key, fields)
-	pipe.Expire(ctx, key, rateLimitCacheTTL)
-	_, err := pipe.Exec(ctx)
-	return err
+	return c.setGeminiFencedHash(ctx, key, fields, data.GeminiCacheGeneration, rateLimitCacheTTL)
 }
 
 func (c *billingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int64, cost float64) error {
@@ -383,17 +388,25 @@ func parseUserPlatformQuotaHash(m map[string]string) *service.UserPlatformQuotaC
 		return n
 	}
 	return &service.UserPlatformQuotaCacheEntry{
-		DailyUsageUSD:      parseFloat(m["daily_usage"]),
-		WeeklyUsageUSD:     parseFloat(m["weekly_usage"]),
-		MonthlyUsageUSD:    parseFloat(m["monthly_usage"]),
-		Version:            parseInt64(m["version"]),
-		SchemaVersion:      parseInt64(m["schema_version"]),
-		DailyLimitUSD:      parseFloatPtr(m["daily_limit"]),
-		WeeklyLimitUSD:     parseFloatPtr(m["weekly_limit"]),
-		MonthlyLimitUSD:    parseFloatPtr(m["monthly_limit"]),
-		DailyWindowStart:   parseTimePtr(m["daily_window_start"]),
-		WeeklyWindowStart:  parseTimePtr(m["weekly_window_start"]),
-		MonthlyWindowStart: parseTimePtr(m["monthly_window_start"]),
+		DailyUsageUSD:           parseFloat(m["daily_usage"]),
+		WeeklyUsageUSD:          parseFloat(m["weekly_usage"]),
+		MonthlyUsageUSD:         parseFloat(m["monthly_usage"]),
+		GeminiCachePending:      parseFloat(m["gemini_cache_pending"]),
+		GeminiCacheGeneration:   parseInt64(m["gemini_cache_generation"]),
+		GeminiCacheDailyUsage:   parseFloat(m["gemini_cache_daily_usage"]),
+		GeminiCacheDailyStart:   parseTimePtr(m["gemini_cache_daily_start"]),
+		GeminiCacheWeeklyUsage:  parseFloat(m["gemini_cache_weekly_usage"]),
+		GeminiCacheWeeklyStart:  parseTimePtr(m["gemini_cache_weekly_start"]),
+		GeminiCacheMonthlyUsage: parseFloat(m["gemini_cache_monthly_usage"]),
+		GeminiCacheMonthlyStart: parseTimePtr(m["gemini_cache_monthly_start"]),
+		Version:                 parseInt64(m["version"]),
+		SchemaVersion:           parseInt64(m["schema_version"]),
+		DailyLimitUSD:           parseFloatPtr(m["daily_limit"]),
+		WeeklyLimitUSD:          parseFloatPtr(m["weekly_limit"]),
+		MonthlyLimitUSD:         parseFloatPtr(m["monthly_limit"]),
+		DailyWindowStart:        parseTimePtr(m["daily_window_start"]),
+		WeeklyWindowStart:       parseTimePtr(m["weekly_window_start"]),
+		MonthlyWindowStart:      parseTimePtr(m["monthly_window_start"]),
 	}
 }
 
@@ -416,7 +429,6 @@ func (c *billingCache) SetUserPlatformQuotaCache(ctx context.Context, userID int
 		return nil
 	}
 	key := userPlatformQuotaCacheKey(userID, platform)
-	pipe := c.rdb.TxPipeline()
 
 	// 浮点可空字段：nil → 空字符串（读取时 parseFloatPtr 返回 nil，表示无限额）
 	fmtFloatPtr := func(p *float64) string {
@@ -433,22 +445,28 @@ func (c *billingCache) SetUserPlatformQuotaCache(ctx context.Context, userID int
 		return strconv.FormatInt(p.Unix(), 10)
 	}
 
-	pipe.HSet(ctx, key,
-		"daily_usage", entry.DailyUsageUSD,
-		"weekly_usage", entry.WeeklyUsageUSD,
-		"monthly_usage", entry.MonthlyUsageUSD,
-		"version", entry.Version,
-		"schema_version", entry.SchemaVersion,
-		"daily_limit", fmtFloatPtr(entry.DailyLimitUSD),
-		"weekly_limit", fmtFloatPtr(entry.WeeklyLimitUSD),
-		"monthly_limit", fmtFloatPtr(entry.MonthlyLimitUSD),
-		"daily_window_start", fmtTimePtr(entry.DailyWindowStart),
-		"weekly_window_start", fmtTimePtr(entry.WeeklyWindowStart),
-		"monthly_window_start", fmtTimePtr(entry.MonthlyWindowStart),
-	)
-	pipe.Expire(ctx, key, ttl)
-	_, err := pipe.Exec(ctx)
-	return err
+	fields := map[string]any{
+		"daily_usage":                entry.DailyUsageUSD,
+		"weekly_usage":               entry.WeeklyUsageUSD,
+		"monthly_usage":              entry.MonthlyUsageUSD,
+		"version":                    entry.Version,
+		"schema_version":             entry.SchemaVersion,
+		"daily_limit":                fmtFloatPtr(entry.DailyLimitUSD),
+		"weekly_limit":               fmtFloatPtr(entry.WeeklyLimitUSD),
+		"monthly_limit":              fmtFloatPtr(entry.MonthlyLimitUSD),
+		"daily_window_start":         fmtTimePtr(entry.DailyWindowStart),
+		"weekly_window_start":        fmtTimePtr(entry.WeeklyWindowStart),
+		"monthly_window_start":       fmtTimePtr(entry.MonthlyWindowStart),
+		"gemini_cache_pending":       entry.GeminiCachePending,
+		"gemini_cache_generation":    entry.GeminiCacheGeneration,
+		"gemini_cache_daily_usage":   entry.GeminiCacheDailyUsage,
+		"gemini_cache_daily_start":   fmtTimePtr(entry.GeminiCacheDailyStart),
+		"gemini_cache_weekly_usage":  entry.GeminiCacheWeeklyUsage,
+		"gemini_cache_weekly_start":  fmtTimePtr(entry.GeminiCacheWeeklyStart),
+		"gemini_cache_monthly_usage": entry.GeminiCacheMonthlyUsage,
+		"gemini_cache_monthly_start": fmtTimePtr(entry.GeminiCacheMonthlyStart),
+	}
+	return c.setGeminiFencedHash(ctx, key, fields, entry.GeminiCacheGeneration, ttl)
 }
 
 func (c *billingCache) DeleteUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) error {
@@ -600,4 +618,19 @@ func (c *billingCache) BatchGetUserPlatformQuotaCache(ctx context.Context, keys 
 		results[i] = parseUserPlatformQuotaHash(m)
 	}
 	return results, nil
+}
+
+func parseGeminiCacheWindow(value string) *time.Time {
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds <= 0 {
+		return nil
+	}
+	v := time.Unix(seconds, 0)
+	return &v
+}
+func formatGeminiCacheWindow(value *time.Time) int64 {
+	if value == nil {
+		return 0
+	}
+	return value.Unix()
 }

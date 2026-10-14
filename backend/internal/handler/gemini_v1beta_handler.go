@@ -268,6 +268,36 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		modelName = channelMapping.MappedModel
 	}
 
+	var cacheBinding *service.GeminiCacheBinding
+	cacheID, cachePath, localCache, cacheErr := service.FindGeminiCacheReference(body, action)
+	if cacheErr != nil {
+		writeCacheManagementError(c, cacheErr)
+		return
+	}
+	if localCache {
+		if middleware.HasForcePlatform(c) || h.geminiCachedContentService == nil {
+			writeCacheManagementError(c, service.ErrGeminiCacheUnavailable)
+			return
+		}
+		owner, err := service.GeminiCacheOwnerForKey(apiKey)
+		if err != nil {
+			writeCacheManagementError(c, err)
+			return
+		}
+		binding, err := h.geminiCachedContentService.ResolveBinding(owner, cacheID, reqModel)
+		if err != nil {
+			writeCacheManagementError(c, err)
+			return
+		}
+		cacheBinding = &binding
+		body, err = service.RewriteGeminiCacheReference(body, cachePath, binding.UpstreamName)
+		if err != nil {
+			writeCacheManagementError(c, service.ErrGeminiCacheNotFound)
+			return
+		}
+		c.Request = c.Request.WithContext(service.WithGeminiCacheBoundRequest(c.Request.Context()))
+	}
+
 	// Get subscription (may be nil)
 	subscription, _ := middleware.GetSubscriptionFromContext(c)
 
@@ -351,6 +381,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(parsedReq)
 	}
 	sessionKey := sessionHash
+	if cacheBinding != nil {
+		sessionHash = ""
+		sessionKey = ""
+	}
 	if sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
@@ -375,7 +409,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	var geminiPrefixHash string
 	var geminiSessionUUID string
 	var matchedDigestChain string
-	useDigestFallback := sessionBoundAccountID == 0
+	useDigestFallback := cacheBinding == nil && sessionBoundAccountID == 0
 
 	if useDigestFallback {
 		// 解析 Gemini 请求体
@@ -451,7 +485,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	for {
 		retryAccountID := fs.pendingSameAccountRetryID()
 		var selection *service.AccountSelectionResult
-		if retryAccountID > 0 {
+		if cacheBinding != nil {
+			selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, cacheBinding.AccountID, "", modelName, nil)
+		} else if retryAccountID > 0 {
 			selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(
 				c.Request.Context(), apiKey.GroupID, retryAccountID, sessionKey, modelName, fs.FailedAccountIDs,
 			)
@@ -491,11 +527,28 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			}
 		}
 		account := selection.Account
+		if cacheBinding != nil && (!service.IsExplicitCacheAccount(account) || account.GetMappedModel(modelName) != cacheBinding.UpstreamModel) {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			writeCacheManagementError(c, service.ErrGeminiCacheConflict)
+			return
+		}
+		if cacheBinding != nil {
+			account, err = service.GeminiCacheBoundAccount(account, cacheBinding.UpstreamName)
+			if err != nil {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				writeCacheManagementError(c, err)
+				return
+			}
+		}
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		// 检测账号切换：如果粘性会话绑定的账号与当前选择的账号不同，清除 thoughtSignature
 		// 注意：Gemini 原生 API 的 thoughtSignature 与具体上游账号强相关；跨账号透传会导致 400。
-		if sessionBoundAccountID > 0 && sessionBoundAccountID != account.ID {
+		if cacheBinding == nil && sessionBoundAccountID > 0 && sessionBoundAccountID != account.ID {
 			reqLog.Info("gemini.sticky_session_account_switched",
 				zap.Int64("from_account_id", sessionBoundAccountID),
 				zap.Int64("to_account_id", account.ID),
@@ -503,7 +556,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			)
 			body = service.CleanGeminiNativeThoughtSignatures(body)
 			sessionBoundAccountID = account.ID
-		} else if sessionKey != "" && sessionBoundAccountID == 0 && !cleanedForUnknownBinding && bytes.Contains(body, []byte(`"thoughtSignature"`)) {
+		} else if cacheBinding == nil && sessionKey != "" && sessionBoundAccountID == 0 && !cleanedForUnknownBinding && bytes.Contains(body, []byte(`"thoughtSignature"`)) {
 			// 无缓存绑定但请求里已有 thoughtSignature：常见于缓存丢失/TTL 过期后，客户端继续携带旧签名。
 			// 为避免第一次转发就 400，这里做一次确定性清理，让新账号重新生成签名链路。
 			reqLog.Info("gemini.sticky_session_binding_missing",
@@ -582,7 +635,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
 			}
-			if apiKey.Group == nil || !service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
+			if cacheBinding == nil && (apiKey.Group == nil || !service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy)) {
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gemini.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
@@ -612,6 +665,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if err != nil && !settleForwardError {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				if cacheBinding != nil {
+					h.handleGeminiFailoverExhausted(c, failoverErr)
+					return
+				}
 				failoverAction := fs.HandleFailoverErrorForAccount(c.Request.Context(), h.gatewayService, account, failoverErr)
 				if _, failed := fs.FailedAccountIDs[account.ID]; failed {
 					h.reportAccountScheduleResult(account, false, nil)

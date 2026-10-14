@@ -90,6 +90,11 @@ func Balance(v float64) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldBalance, v))
 }
 
+// GeminiCacheGeneration applies equality check predicate on the "gemini_cache_generation" field. It's identical to GeminiCacheGenerationEQ.
+func GeminiCacheGeneration(v int64) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
 // FrozenBalance applies equality check predicate on the "frozen_balance" field. It's identical to FrozenBalanceEQ.
 func FrozenBalance(v float64) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldFrozenBalance, v))
@@ -543,6 +548,46 @@ func BalanceLT(v float64) predicate.User {
 // BalanceLTE applies the LTE predicate on the "balance" field.
 func BalanceLTE(v float64) predicate.User {
 	return predicate.User(sql.FieldLTE(FieldBalance, v))
+}
+
+// GeminiCacheGenerationEQ applies the EQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationEQ(v int64) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationNEQ applies the NEQ predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNEQ(v int64) predicate.User {
+	return predicate.User(sql.FieldNEQ(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationIn applies the In predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationIn(vs ...int64) predicate.User {
+	return predicate.User(sql.FieldIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationNotIn applies the NotIn predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationNotIn(vs ...int64) predicate.User {
+	return predicate.User(sql.FieldNotIn(FieldGeminiCacheGeneration, vs...))
+}
+
+// GeminiCacheGenerationGT applies the GT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGT(v int64) predicate.User {
+	return predicate.User(sql.FieldGT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationGTE applies the GTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationGTE(v int64) predicate.User {
+	return predicate.User(sql.FieldGTE(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLT applies the LT predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLT(v int64) predicate.User {
+	return predicate.User(sql.FieldLT(FieldGeminiCacheGeneration, v))
+}
+
+// GeminiCacheGenerationLTE applies the LTE predicate on the "gemini_cache_generation" field.
+func GeminiCacheGenerationLTE(v int64) predicate.User {
+	return predicate.User(sql.FieldLTE(FieldGeminiCacheGeneration, v))
 }
 
 // FrozenBalanceEQ applies the EQ predicate on the "frozen_balance" field.

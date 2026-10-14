@@ -7,6 +7,8 @@ import (
 
 // TempUnschedState 临时不可调度状态
 type TempUnschedState struct {
+	Scope           string `json:"scope,omitempty"`
+	Model           string `json:"model,omitempty"`
 	UntilUnix       int64  `json:"until_unix"`        // 解除时间（Unix 时间戳）
 	TriggeredAtUnix int64  `json:"triggered_at_unix"` // 触发时间（Unix 时间戳）
 	StatusCode      int    `json:"status_code"`       // 触发的错误码

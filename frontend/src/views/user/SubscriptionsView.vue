@@ -242,6 +242,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -366,4 +367,6 @@ function formatResetTime(windowStart: string | null, windowHours: number): strin
 onMounted(() => {
   loadSubscriptions()
 })
+
+useLocaleRefresh(() => loadSubscriptions())
 </script>
