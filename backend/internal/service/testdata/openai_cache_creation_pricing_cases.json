@@ -1,0 +1,670 @@
+[
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "different_model_price",
+    "want": [
+      1545,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "priority",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "priority_price",
+    "want": [
+      1783,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": false,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "no_output_field",
+    "want": [
+      1595,
+      250,
+      0,
+      200
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 0,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 200,
+        "read": 0,
+        "creation": 300,
+        "output": 1000
+      }
+    },
+    "name": "zero_cache_read_price",
+    "want": [
+      1550,
+      200,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 0,
+        "output": 1000
+      },
+      "priority": {
+        "input": 200,
+        "read": 20,
+        "creation": 0,
+        "output": 1000
+      }
+    },
+    "name": "explicit_free_creation",
+    "want": [
+      100,
+      200,
+      0,
+      200
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "long_context_threshold": 1000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "long_context_price",
+    "want": [
+      1558,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "long_context_threshold": 1300,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "long_context_boundary_keeps_raw",
+    "want": [
+      100,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "intervals": [
+        {
+          "min_tokens": 0,
+          "max_tokens": 5000,
+          "pricing": {
+            "rates": {
+              "input": 200,
+              "read": 20,
+              "creation": 300,
+              "output": 1000
+            },
+            "priority": {
+              "input": 400,
+              "read": 40,
+              "creation": 700,
+              "output": 2500
+            }
+          }
+        }
+      ]
+    },
+    "name": "channel_interval_price",
+    "want": [
+      1545,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "intervals": [
+        {
+          "min_tokens": 0,
+          "max_tokens": 1500,
+          "pricing": {
+            "rates": {
+              "input": 200,
+              "read": 20,
+              "creation": 300,
+              "output": 1000
+            },
+            "priority": {
+              "input": 400,
+              "read": 40,
+              "creation": 700,
+              "output": 2500
+            }
+          }
+        }
+      ]
+    },
+    "name": "channel_interval_boundary_keeps_raw",
+    "want": [
+      100,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "intervals": [
+        {
+          "min_tokens": 0,
+          "max_tokens": 5000
+        }
+      ]
+    },
+    "name": "missing_interval_price_keeps_raw",
+    "want": [
+      100,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": null,
+    "name": "missing_price_keeps_raw",
+    "want": [
+      100,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 476,
+    "read": 4736,
+    "creation": 512,
+    "output": 20,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 300,
+        "read": 30,
+        "creation": 375,
+        "output": 1800
+      },
+      "priority": {
+        "input": 600,
+        "read": 60,
+        "creation": 750,
+        "output": 3600
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt56_legacy_exact",
+    "want": [
+      1102,
+      4756,
+      0,
+      22
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 271000,
+    "read": 488,
+    "creation": 512,
+    "output": 20,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 300,
+        "read": 30,
+        "creation": 375,
+        "output": 1800
+      },
+      "priority": {
+        "input": 600,
+        "read": 60,
+        "creation": 750,
+        "output": 3600
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt56_long_boundary_exact",
+    "want": [
+      271488,
+      508,
+      0,
+      45
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "fast",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "fast_uses_standard_ratio",
+    "want": [
+      1545,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "ultrafast",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "ultrafast_uses_standard_ratio",
+    "want": [
+      1545,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "flex",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "flex_uses_standard_ratio",
+    "want": [
+      1545,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 9223372036854775807,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 200,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      }
+    },
+    "name": "original_input_overflow_keeps_raw",
+    "want": [
+      9223372036854775807,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 100,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 9223372036854775807,
+        "read": 20,
+        "creation": 300,
+        "output": 1000
+      },
+      "priority": {
+        "input": 400,
+        "read": 40,
+        "creation": 700,
+        "output": 2500
+      },
+      "long_context_threshold": 1,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "scaled_price_overflow_keeps_raw",
+    "want": [
+      100,
+      200,
+      1000,
+      200
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 300000,
+    "read": 200,
+    "creation": 1000,
+    "output": 200,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 300,
+        "read": 30,
+        "creation": 375,
+        "output": 1800
+      },
+      "priority": {
+        "input": 600,
+        "read": 60,
+        "creation": 750,
+        "output": 3600
+      }
+    },
+    "name": "gpt56_account_long_context_off",
+    "want": [
+      301185,
+      250,
+      0,
+      210
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 476,
+    "read": 4736,
+    "creation": 512,
+    "output": 20,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 0,
+        "read": 0,
+        "creation": 0,
+        "output": 0
+      },
+      "priority": {
+        "input": 0,
+        "read": 0,
+        "creation": 0,
+        "output": 0
+      },
+      "intervals": [
+        {
+          "min_tokens": 0,
+          "max_tokens": 5800,
+          "pricing": {
+            "rates": {
+              "input": 300,
+              "read": 30,
+              "creation": 375,
+              "output": 1800
+            },
+            "priority": {
+              "input": 600,
+              "read": 60,
+              "creation": 750,
+              "output": 3600
+            }
+          }
+        }
+      ]
+    },
+    "name": "legacy_ratio_interval_crossing_keeps_raw",
+    "want": [
+      476,
+      4736,
+      512,
+      20
+    ],
+    "applied": false
+  }
+]

@@ -96,15 +96,16 @@ func TestOpenAIPromptCacheCreationOptimization_DefaultModeAReducesCacheCreation(
 	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 }
 
-func TestOpenAIPromptCacheCreationOptimization_NonGPT56IsNoOp(t *testing.T) {
+func TestOpenAIPromptCacheCreationOptimization_OtherTextModelsApply(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","prompt_cache_retention":"24h","input":"hello"}`)
 	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
 
 	updated, result, err := applyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-5.5", body)
 
 	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Equal(t, body, updated)
+	require.True(t, result.Applied)
+	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_DoesNotTouchImageRequests(t *testing.T) {
@@ -803,13 +804,13 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	nonTargetWSPlan, err := svc.BuildResponsesWSEdgePlan(context.Background(), nil, account, nonTargetWSBody, "oauth-token")
 	require.NoError(t, err)
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeSuppress, nonTargetWSPlan.Plan.PromptCacheCreationOptimizationMode,
-		"edge-rs needs the account policy for a later session.update to GPT-5.6")
-	require.False(t, nonTargetWSPlan.Plan.PromptCacheCreationOptimizationApplied,
-		"carrying the account policy must not claim that a non-target first frame was rewritten")
+		"edge-rs retains the account policy across text-model changes")
+	require.True(t, nonTargetWSPlan.Plan.PromptCacheCreationOptimizationApplied,
+		"every eligible text model applies the selected policy")
 	require.Equal(t, "gpt-5.5", nonTargetWSPlan.Plan.PromptCacheCreationOptimizationModel)
 	nonTargetWSDecoded, err := base64.StdEncoding.DecodeString(nonTargetWSPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
-	require.Equal(t, nonTargetWSBody, nonTargetWSDecoded, "the initial non-target frame must remain byte-exact")
+	require.Equal(t, "explicit", gjson.GetBytes(nonTargetWSDecoded, "prompt_cache_options.mode").String())
 }
 
 func TestBuildResponsesWSEdgePlanIncludesEnabledRoutingHintAfterHeaderSnapshot(t *testing.T) {

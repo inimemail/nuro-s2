@@ -443,7 +443,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			cachePolicyCompatibilityFailure := compatibilityBodyComplete && cacheCreationOptimization.Applied &&
 				isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 			if cachePolicyCompatibilityFailure {
-				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			}
 			if compatibilityBodyComplete {
 				s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
@@ -485,7 +485,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return s.ForwardAsChatCompletions(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if compatibilityBodyComplete && cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			logger.L().Info("openai chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),
@@ -557,6 +557,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 9. Handle normal response
+	attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, responsesReq.ServiceTier)
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
@@ -711,7 +712,8 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 			usageForDownstream,
 			openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel),
-			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel),
+			finalResponse.UpstreamServiceTier,
 		) {
 			finalResponse.Usage = usageForDownstream
 		}
@@ -767,7 +769,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
 	requestFirstTokenPlaceholder := openAIRequestFirstTokenPlaceholderState{}
 	if len(requestFirstTokenPlaceholderOpt) > 0 {
 		requestFirstTokenPlaceholder = requestFirstTokenPlaceholderOpt[0]

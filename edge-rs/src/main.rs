@@ -1064,6 +1064,7 @@ struct EdgeConfig {
 
 #[derive(Debug, Serialize)]
 struct PrepareRequest {
+    cache_creation_policy_version: u32,
     edge_request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     edge_node_id: Option<String>,
@@ -1158,7 +1159,65 @@ struct EdgePlan {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+struct CacheCreationRates {
+    input: i64,
+    read: i64,
+    creation: i64,
+    output: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CacheCreationPricingInterval {
+    min_tokens: i64,
+    max_tokens: Option<i64>,
+    pricing: Option<Box<CacheCreationPricingPolicy>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct CacheCreationPricingPolicy {
+    #[serde(default)]
+    intervals: Vec<CacheCreationPricingInterval>,
+    rates: CacheCreationRates,
+    priority: CacheCreationRates,
+    #[serde(default)]
+    long_context_threshold: i64,
+    #[serde(default)]
+    long_context_inclusive: bool,
+    #[serde(default)]
+    long_context_input_multiplier: i64,
+    #[serde(default)]
+    long_context_output_multiplier: i64,
+}
+
+impl CacheCreationPricingPolicy {
+    fn for_input(&self, input: i64) -> (Option<&Self>, Option<usize>) {
+        for (index, interval) in self.intervals.iter().enumerate() {
+            if input > interval.min_tokens && interval.max_tokens.is_none_or(|max| input <= max) {
+                return (interval.pricing.as_deref(), Some(index));
+            }
+        }
+        (Some(self), None)
+    }
+
+    fn long_context(&self, input: i64) -> bool {
+        self.long_context_threshold > 0
+            && (input > self.long_context_threshold
+                || (self.long_context_inclusive && input == self.long_context_threshold))
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 struct DownstreamCacheMarkupPolicy {
+    #[serde(default)]
+    creation_service_tier: String,
+    #[serde(default)]
+    creation_pricing_required: bool,
+    #[serde(default)]
+    creation_pricing: Option<CacheCreationPricingPolicy>,
+    #[serde(default)]
+    creation_pricing_model: String,
+    #[serde(default)]
+    creation_pricing_models: HashMap<String, CacheCreationPricingPolicy>,
     #[serde(default)]
     threshold_tokens: i64,
     #[serde(default)]
@@ -1180,6 +1239,39 @@ struct DownstreamCacheMarkupPolicy {
 }
 
 impl DownstreamCacheMarkupPolicy {
+    fn active(&self) -> bool {
+        self.enabled() || self.creation_pricing_required
+    }
+    fn for_model(&self, model: Option<&str>, configured: Option<&str>) -> Self {
+        // Never clone the session-wide model catalog for every output frame.
+        let mut policy = Self {
+            creation_service_tier: self.creation_service_tier.clone(),
+            creation_pricing_required: self.creation_pricing_required,
+            creation_pricing: self.creation_pricing.clone(),
+            creation_pricing_model: self.creation_pricing_model.clone(),
+            threshold_tokens: self.threshold_tokens,
+            percent_bps: self.percent_bps,
+            input_price_units: self.input_price_units,
+            cache_read_price_units: self.cache_read_price_units,
+            output_price_units: self.output_price_units,
+            long_context_threshold: self.long_context_threshold,
+            long_context_inclusive: self.long_context_inclusive,
+            long_context_input_multiplier: self.long_context_input_multiplier,
+            long_context_output_multiplier: self.long_context_output_multiplier,
+            ..Default::default()
+        };
+        let current = model.unwrap_or_default().trim().to_ascii_lowercase();
+        if !configured.is_some_and(|m| m.trim().eq_ignore_ascii_case(&current)) {
+            policy.percent_bps = 0;
+        }
+        if self.creation_pricing_required
+            && !self.creation_pricing_model.eq_ignore_ascii_case(&current)
+        {
+            policy.creation_pricing = self.creation_pricing_models.get(&current).cloned();
+        }
+        policy
+    }
+
     fn enabled(&self) -> bool {
         self.threshold_tokens >= 0
             && self.percent_bps > 0
@@ -1195,7 +1287,7 @@ fn downstream_usage_policy_for_plan(
     let cache_usage_mode = if plan
         .downstream_cache_usage_model
         .as_deref()
-        .is_some_and(is_openai_gpt56_model)
+        .is_some_and(is_openai_cache_creation_text_model)
     {
         plan.downstream_cache_usage_mode
             .as_deref()
@@ -1208,11 +1300,15 @@ fn downstream_usage_policy_for_plan(
     let cache_markup = plan
         .downstream_cache_markup
         .clone()
-        .filter(DownstreamCacheMarkupPolicy::enabled)
-        .filter(|_| {
+        .filter(DownstreamCacheMarkupPolicy::active)
+        .filter(|policy| {
             plan.downstream_cache_markup_model
                 .as_deref()
-                .is_some_and(is_openai_gpt_text_model)
+                .is_some_and(|model| {
+                    (policy.enabled() && is_openai_gpt_text_model(model))
+                        || (policy.creation_pricing_required
+                            && is_openai_cache_creation_text_model(model))
+                })
         });
     (cache_usage_mode, cache_markup)
 }
@@ -3733,6 +3829,7 @@ async fn handle_openai_edge(
     };
 
     let prepare = PrepareRequest {
+        cache_creation_policy_version: 1,
         edge_request_id: edge_request_id.clone(),
         edge_node_id: state.cfg.edge_node_id.clone(),
         edge_instance_id: state.edge_instance_id.as_ref().clone(),
@@ -4299,6 +4396,7 @@ async fn relay_ws_session(
     };
     let first_json: Value = serde_json::from_str(&first_text)?;
     let prepare = PrepareRequest {
+        cache_creation_policy_version: 1,
         edge_request_id: edge_request_id.clone(),
         edge_node_id: state.cfg.edge_node_id.clone(),
         edge_instance_id: state.edge_instance_id.as_ref().clone(),
@@ -4522,7 +4620,7 @@ async fn relay_ws_session(
     let mut downstream_cache_markup = plan
         .downstream_cache_markup
         .clone()
-        .filter(DownstreamCacheMarkupPolicy::enabled);
+        .filter(DownstreamCacheMarkupPolicy::active);
     let mut downstream_cache_markup_model = plan.downstream_cache_markup_model.clone();
     let mut downstream_cache_markup_turn_model = downstream_cache_markup_model.clone();
     let mut failure_state = OpenAIWSFailureState::default();
@@ -4606,7 +4704,7 @@ async fn relay_ws_session(
                             downstream_cache_markup.as_ref(),
                             &mut downstream_cache_markup_turn_model,
                             turn_usage_eligible,
-                            markup_turn_model,
+                            markup_turn_model.clone(),
                         );
                         let starts_response = tungstenite_message_is_response_create(&upstream_msg);
                         if starts_response {
@@ -4640,7 +4738,13 @@ async fn relay_ws_session(
                             if success {
                                 error_message = None;
                             }
-                            last_request_body = tungstenite_message_json(&upstream_msg);
+                            last_request_body = openai_ws_request_body_for_retry(&upstream_msg, markup_turn_model.as_deref());
+                            if let Some(policy) = downstream_cache_markup.as_mut() {
+                                policy.creation_service_tier = last_request_body.as_ref()
+                                    .and_then(|body| body.get("service_tier"))
+                                    .and_then(Value::as_str).filter(|tier| !tier.trim().is_empty())
+                                    .unwrap_or("default").to_string();
+                            }
                             commit_state_for_turn = RETRY_COMMIT_NONE;
                         }
                         if let Err(err) = upstream_write.send(upstream_msg).await {
@@ -4786,7 +4890,7 @@ async fn relay_ws_session(
                                                             downstream_cache_markup = next_plan
                                                                 .downstream_cache_markup
                                                                 .clone()
-                                                                .filter(DownstreamCacheMarkupPolicy::enabled);
+                                                                .filter(DownstreamCacheMarkupPolicy::active);
                                                             downstream_cache_markup_model = next_plan.downstream_cache_markup_model.clone();
                                                             downstream_cache_markup_turn_model = downstream_cache_markup_model.clone();
                                                             failure_state = OpenAIWSFailureState::default();
@@ -4841,25 +4945,26 @@ async fn relay_ws_session(
                         }
                         let downstream_cache_usage_mode_for_turn = if downstream_cache_usage_model
                             .as_deref()
-                            .is_some_and(is_openai_gpt56_model)
+                            .is_some_and(is_openai_cache_creation_text_model)
                         {
                             downstream_cache_usage_mode.as_deref()
                         } else {
                             None
                         };
-                        let downstream_cache_markup_for_turn = downstream_cache_markup.as_ref().filter(|_| {
-                            downstream_cache_markup_model.as_deref().is_some_and(|configured| {
-                                downstream_cache_markup_turn_model.as_deref().is_some_and(|current| {
-                                    configured.trim().eq_ignore_ascii_case(current.trim())
-                                        && is_openai_gpt_text_model(current)
-                                })
-                            })
-                        });
+                        // Snapshot per-model pricing only for usage-bearing
+                        // terminal events, never for every generated token.
+                        let downstream_cache_markup_for_turn = downstream_cache_markup.as_ref()
+                            .filter(|_| upstream_json.as_ref().is_some_and(|value| {
+                                openai_downstream_usage_event_candidate(value, json_event_type(value).unwrap_or_default())
+                            }))
+                            .map(|policy| {
+                                policy.for_model(downstream_cache_usage_model.as_deref().or(downstream_cache_markup_turn_model.as_deref()), downstream_cache_markup_model.as_deref())
+                            });
                         let client_msg = match tungstenite_to_axum_message(
                             sanitize_openai_ws_message_with_downstream_usage(
                                 msg,
                                 downstream_cache_usage_mode_for_turn,
-                                downstream_cache_markup_for_turn,
+                                downstream_cache_markup_for_turn.as_ref(),
                             ),
                         ) {
                             Ok(msg) => msg,
@@ -5348,8 +5453,8 @@ fn apply_openai_ws_request_policies_tracked(
         .unwrap_or_default()
         .to_string();
     let turn_model = (!model.is_empty()).then(|| model.clone());
-    let turn_usage_eligible =
-        is_openai_gpt56_model(&model) && !is_openai_ws_image_generation_intent(&value);
+    let turn_usage_eligible = is_openai_cache_creation_text_model(&model)
+        && !is_openai_ws_image_generation_intent(&value);
     // A reasoning-only policy still needs to clear the previous turn's cache
     // flag; otherwise a later settlement can inherit stale cache billing state.
     let mut cache_policy_applied = if cache_policy_enabled {
@@ -5395,7 +5500,7 @@ fn update_downstream_cache_usage_model_for_ws_turn(
     turn_usage_eligible: Option<bool>,
     turn_model: Option<String>,
 ) {
-    if downstream_mode.is_none() {
+    if downstream_mode.is_none() || turn_usage_eligible.is_none() {
         return;
     }
     if turn_usage_eligible == Some(false) {
@@ -5413,7 +5518,9 @@ fn update_downstream_cache_markup_model_for_ws_turn(
     turn_usage_eligible: Option<bool>,
     turn_model: Option<String>,
 ) {
-    if markup.is_none() {
+    // session.update changes the next request's default model, never the
+    // pricing or eligibility of a response that is still being streamed.
+    if markup.is_none() || turn_usage_eligible.is_none() {
         return;
     }
     if turn_usage_eligible == Some(false) {
@@ -5913,6 +6020,33 @@ fn openai_json_tool_choice_selects_image_generation(value: Option<&Value>) -> bo
         })
 }
 
+fn is_openai_cache_creation_text_model(model: &str) -> bool {
+    let normalized = model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    !normalized.is_empty()
+        && ![
+            "image",
+            "video",
+            "embedding",
+            "moderation",
+            "realtime",
+            "audio",
+            "transcribe",
+            "tts",
+            "whisper",
+            "dall-e",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+#[cfg(test)]
 fn is_openai_gpt56_model(model: &str) -> bool {
     let mut normalized = model
         .trim()
@@ -5987,6 +6121,7 @@ fn is_openai_gpt_text_model(model: &str) -> bool {
         .any(|marker| normalized.contains(marker))
 }
 
+#[cfg(test)]
 fn is_openai_codex_date_suffix(suffix: &str) -> bool {
     let parts = suffix.split('-').collect::<Vec<_>>();
     parts.len() == 3
@@ -6088,6 +6223,28 @@ fn tungstenite_message_json(message: &TungsteniteMessage) -> Option<Value> {
         TungsteniteMessage::Binary(bytes) => serde_json::from_slice::<Value>(bytes).ok(),
         _ => None,
     }
+}
+
+fn openai_ws_request_body_for_retry(
+    message: &TungsteniteMessage,
+    effective_model: Option<&str>,
+) -> Option<Value> {
+    let mut body = tungstenite_message_json(message)?;
+    // Capture the effective model when this turn starts. A later session.update
+    // must not change the rejection scope or retry body of the active request.
+    if body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_none_or(|model| model.trim().is_empty())
+    {
+        if let (Some(object), Some(model)) = (
+            body.as_object_mut(),
+            effective_model.filter(|model| !model.trim().is_empty()),
+        ) {
+            object.insert("model".to_string(), Value::String(model.to_string()));
+        }
+    }
+    Some(body)
 }
 
 fn tungstenite_message_is_response_create(message: &TungsteniteMessage) -> bool {
@@ -10022,11 +10179,20 @@ fn normalize_openai_downstream_usage(
     let Some(root) = value.as_object_mut() else {
         return false;
     };
+    let tier = root
+        .get("response")
+        .and_then(|r| r.get("service_tier"))
+        .and_then(Value::as_str)
+        .or_else(|| root.get("service_tier").and_then(Value::as_str))
+        .filter(|tier| !tier.is_empty())
+        .or_else(|| markup.map(|policy| policy.creation_service_tier.as_str()))
+        .unwrap_or_default()
+        .to_string();
     let mut changed = root
         .get_mut("usage")
         .and_then(Value::as_object_mut)
         .is_some_and(|usage| {
-            normalize_openai_downstream_usage_object_with_markup(usage, mode, markup)
+            normalize_openai_downstream_usage_object_with_markup(usage, mode, markup, &tier)
         });
     if let Some(usage) = root
         .get_mut("response")
@@ -10034,7 +10200,7 @@ fn normalize_openai_downstream_usage(
         .and_then(|nested| nested.get_mut("usage"))
         .and_then(Value::as_object_mut)
     {
-        changed |= normalize_openai_downstream_usage_object_with_markup(usage, mode, markup);
+        changed |= normalize_openai_downstream_usage_object_with_markup(usage, mode, markup, &tier);
     }
     changed
 }
@@ -10219,6 +10385,7 @@ fn normalize_openai_downstream_usage_object_with_markup(
     usage: &mut serde_json::Map<String, Value>,
     mode: &str,
     markup: Option<&DownstreamCacheMarkupPolicy>,
+    tier: &str,
 ) -> bool {
     let raw_input = usage
         .get("input_tokens")
@@ -10230,14 +10397,18 @@ fn normalize_openai_downstream_usage_object_with_markup(
     let cache_creation_enabled = matches!(mode, "free" | "input_125");
     let mut changed = false;
     if cache_creation_enabled {
-        changed = normalize_openai_downstream_cache_creation_usage_object(usage, mode);
+        changed = normalize_openai_downstream_cache_creation_usage_object_priced(
+            usage, mode, markup, tier,
+        );
     }
     changed | apply_openai_downstream_cache_markup(usage, raw_input, raw_cache_read, markup)
 }
 
-fn normalize_openai_downstream_cache_creation_usage_object(
+fn normalize_openai_downstream_cache_creation_usage_object_priced(
     usage: &mut serde_json::Map<String, Value>,
     mode: &str,
+    policy: Option<&DownstreamCacheMarkupPolicy>,
+    tier: &str,
 ) -> bool {
     let creation = first_positive_usage_i64(
         usage,
@@ -10305,13 +10476,35 @@ fn normalize_openai_downstream_cache_creation_usage_object(
         .unwrap_or(0)
         .max(0);
     let allocation = if mode == "input_125" {
-        allocate_openai_input_125_display_usage(
-            ordinary,
-            cache_read,
-            creation,
-            output,
-            output_key.is_some(),
-        )
+        if let Some(policy) = policy.filter(|p| p.creation_pricing_required) {
+            // Settlement keeps the request tier; an upstream's reported tier
+            // must not change the price used for presentation conversion.
+            let tier = if policy.creation_service_tier.trim().is_empty() {
+                tier
+            } else {
+                &policy.creation_service_tier
+            };
+            let Some(allocation) = allocate_openai_cache_creation_priced_usage(
+                ordinary,
+                cache_read,
+                creation,
+                output,
+                output_key.is_some(),
+                tier,
+                policy.creation_pricing.as_ref(),
+            ) else {
+                return false;
+            };
+            allocation
+        } else {
+            allocate_openai_input_125_display_usage(
+                ordinary,
+                cache_read,
+                creation,
+                output,
+                output_key.is_some(),
+            )
+        }
     } else {
         OpenAiDownstreamDisplayUsage {
             ordinary,
@@ -10534,6 +10727,120 @@ struct OpenAiDownstreamDisplayUsage {
 }
 
 const OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD: i64 = 272_000;
+
+// Same integer arithmetic and fallback conditions as the Go allocator.
+fn allocate_openai_cache_creation_priced_usage(
+    ordinary: i64,
+    read: i64,
+    creation: i64,
+    output: i64,
+    allow_output: bool,
+    tier: &str,
+    policy: Option<&CacheCreationPricingPolicy>,
+) -> Option<OpenAiDownstreamDisplayUsage> {
+    let root_policy = policy?;
+    if ordinary < 0 || read < 0 || creation <= 0 || output < 0 {
+        return None;
+    }
+    let original_input = ordinary.checked_add(read)?.checked_add(creation)?;
+    let (policy, interval_index) = root_policy.for_input(original_input);
+    let policy = policy?;
+    let mut rates = if tier.trim().eq_ignore_ascii_case("priority") {
+        policy.priority.clone()
+    } else {
+        policy.rates.clone()
+    };
+    if rates.input <= 0
+        || rates.output <= 0
+        || rates.read < 0
+        || rates.creation < 0
+        || ordinary < 0
+        || read < 0
+        || creation <= 0
+        || output < 0
+    {
+        return None;
+    }
+    let long = policy.long_context(original_input);
+    if long {
+        let scale = |price: i64, multiplier: i64| -> Option<i64> {
+            if multiplier <= 0 {
+                return Some(price);
+            }
+            i64::try_from((price as u128 * multiplier as u128 + 500_000) / 1_000_000).ok()
+        };
+        rates.input = scale(rates.input, policy.long_context_input_multiplier)?;
+        rates.read = scale(rates.read, policy.long_context_input_multiplier)?;
+        rates.creation = scale(rates.creation, policy.long_context_input_multiplier)?;
+        rates.output = scale(rates.output, policy.long_context_output_multiplier)?;
+        if rates.input <= 0 || rates.output <= 0 {
+            return None;
+        }
+    }
+    let legacy_context = (policy.long_context_threshold
+        == OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD
+        && !policy.long_context_inclusive
+        && policy.long_context_input_multiplier == 2_000_000
+        && policy.long_context_output_multiplier == 1_500_000)
+        || (policy.long_context_threshold == 0
+            && original_input <= OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD);
+    let legacy = rates.read > 0
+        && rates.input % 10 == 0
+        && rates.read == rates.input / 10
+        && rates.input % 4 == 0
+        && rates.creation as i128 == rates.input as i128 * 5 / 4
+        && ((!long && rates.output as i128 == rates.input as i128 * 6)
+            || (long
+                && rates.input % 2 == 0
+                && rates.output as i128 == rates.input as i128 * 9 / 2))
+        && legacy_context;
+    if legacy {
+        if original_input > i64::MAX / 2 || output > i64::MAX - creation {
+            return None;
+        }
+        let result =
+            allocate_openai_input_125_display_usage(ordinary, read, creation, output, allow_output);
+        let new_input = result.ordinary.checked_add(result.cache_read)?;
+        new_input.checked_add(result.output)?;
+        if root_policy.for_input(new_input).1 != interval_index
+            || policy.long_context(new_input) != long
+        {
+            return None;
+        }
+        return Some(result);
+    }
+    let mut budget = creation as u128 * rates.creation as u128;
+    let mut output_add = if allow_output {
+        (creation / 100).min(output / 10)
+    } else {
+        0
+    };
+    let mut read_add = if rates.read > 0 { creation / 20 } else { 0 };
+    output_add = (output_add as u128).min(budget / rates.output as u128) as i64;
+    budget -= output_add as u128 * rates.output as u128;
+    if rates.read > 0 {
+        read_add = (read_add as u128).min(budget / rates.read as u128) as i64;
+        budget -= read_add as u128 * rates.read as u128;
+    }
+    let ordinary_add = (budget + (rates.input / 2) as u128) / rates.input as u128;
+    if ordinary_add > i64::MAX as u128 {
+        return None;
+    }
+    let result = OpenAiDownstreamDisplayUsage {
+        ordinary: ordinary.checked_add(ordinary_add as i64)?,
+        cache_read: read.checked_add(read_add)?,
+        creation: 0,
+        output: output.checked_add(output_add)?,
+    };
+    let new_input = result.ordinary.checked_add(result.cache_read)?;
+    new_input.checked_add(result.output)?;
+    if root_policy.for_input(new_input).1 != interval_index
+        || policy.long_context(new_input) != long
+    {
+        return None;
+    }
+    Some(result)
+}
 
 fn allocate_openai_input_125_display_usage(
     ordinary: i64,
@@ -13426,6 +13733,7 @@ mod tests {
 
     fn test_prepare_request() -> PrepareRequest {
         PrepareRequest {
+            cache_creation_policy_version: 1,
             edge_request_id: "edge-local-1".to_string(),
             edge_node_id: Some("node-1".to_string()),
             edge_instance_id: "instance-1".to_string(),
@@ -15434,7 +15742,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
-    fn ws_cache_creation_disabled_and_other_models_are_exact_noops() {
+    fn ws_cache_creation_disabled_is_exact_noop_and_other_text_models_apply() {
         let input =
             r#"{"type":"response.create","model":"gpt-5.5","prompt_cache_retention":"24h"}"#;
         let mut disabled_session_model = Some("gpt-5.6-sol".to_string());
@@ -15451,7 +15759,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             Some("suppress"),
             &mut other_session_model,
         );
-        assert!(matches!(other_model, TungsteniteMessage::Text(text) if text == input));
+        let TungsteniteMessage::Text(text) = other_model else {
+            panic!("text frame");
+        };
+        let payload: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            payload
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
 
         let image = r#"{"type":"response.create","model":"gpt-5.6-sol","tool_choice":{"type":"namespace","name":"image_gen"},"input":[{"type":"additional_tools","tools":[{"type":"image_generation"}]}]}"#;
         let mut image_session_model = Some("gpt-5.6-sol".to_string());
@@ -15630,7 +15947,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             Some("suppress"),
             &mut session_model,
         );
-        assert!(matches!(non_target_output, TungsteniteMessage::Text(text) if text == non_target));
+        let TungsteniteMessage::Text(text) = non_target_output else {
+            panic!("text frame");
+        };
+        let payload: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            payload
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
     }
 
     #[test]
@@ -16080,7 +16406,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             Some("suppress"),
             &mut session_model,
         );
-        assert_eq!(applied, Some(false));
+        assert_eq!(applied, Some(true));
 
         let (_, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
             TungsteniteMessage::Text(
@@ -16979,6 +17305,122 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn cache_creation_pricing_matches_shared_go_cases() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../backend/internal/service/testdata/openai_cache_creation_pricing_cases.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let policy: Option<CacheCreationPricingPolicy> =
+                serde_json::from_value(case["policy"].clone()).unwrap();
+            let allocation = allocate_openai_cache_creation_priced_usage(
+                case["ordinary"].as_i64().unwrap(),
+                case["read"].as_i64().unwrap(),
+                case["creation"].as_i64().unwrap(),
+                case["output"].as_i64().unwrap(),
+                case["allow_output"].as_bool().unwrap(),
+                case["tier"].as_str().unwrap(),
+                policy.as_ref(),
+            );
+            assert_eq!(
+                allocation.is_some(),
+                case["applied"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+            if let Some(allocation) = allocation {
+                assert_eq!(
+                    serde_json::json!([
+                        allocation.ordinary,
+                        allocation.cache_read,
+                        allocation.creation,
+                        allocation.output
+                    ]),
+                    case["want"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ws_cache_creation_price_changes_with_turn_model_and_unknown_keeps_raw() {
+        let policy: DownstreamCacheMarkupPolicy = serde_json::from_value(serde_json::json!({
+                "creation_pricing_required":true,"creation_pricing_model":"first-model",
+                "creation_pricing":{"rates":{"input":200,"read":20,"creation":300,"output":1000},"priority":{"input":200,"read":20,"creation":300,"output":1000}},
+                "creation_pricing_models":{"second-model":{"rates":{"input":400,"read":40,"creation":700,"output":2500},"priority":{"input":400,"read":40,"creation":700,"output":2500}}}
+            })).unwrap();
+        for (model, expected_input) in [
+            ("first-model", 1795),
+            ("second-model", 2033),
+            ("unknown-model", 1300),
+        ] {
+            let turn = policy.for_model(Some(model), Some("first-model"));
+            assert!(turn.creation_pricing_models.is_empty());
+            let mut response = serde_json::json!({"usage":{"input_tokens":1300,"output_tokens":200,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}});
+            let changed =
+                normalize_openai_downstream_usage(&mut response, Some("input_125"), Some(&turn));
+            assert_eq!(changed, model != "unknown-model");
+            assert_eq!(
+                response
+                    .pointer("/usage/input_tokens")
+                    .and_then(Value::as_i64),
+                Some(expected_input)
+            );
+        }
+    }
+
+    #[test]
+    fn ws_non_text_initial_model_keeps_price_guard_for_later_text_turns() {
+        let policy: DownstreamCacheMarkupPolicy = serde_json::from_value(serde_json::json!({
+            "creation_pricing_required":true,"creation_pricing_model":"gpt-4o-realtime-preview",
+            "creation_pricing_models":{"custom-text":{"rates":{"input":200,"read":20,"creation":300,"output":1000},"priority":{"input":400,"read":40,"creation":700,"output":2500}}}
+        })).unwrap();
+        for (model, expected_input, expected_changed) in
+            [("custom-text", 1795, true), ("unpriced-alias", 1300, false)]
+        {
+            let turn = policy.for_model(Some(model), Some("gpt-4o-realtime-preview"));
+            assert!(turn.creation_pricing_required);
+            let mut response = serde_json::json!({"usage":{"input_tokens":1300,"output_tokens":200,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}});
+            assert_eq!(
+                normalize_openai_downstream_usage(&mut response, Some("input_125"), Some(&turn)),
+                expected_changed
+            );
+            assert_eq!(
+                response
+                    .pointer("/usage/input_tokens")
+                    .and_then(Value::as_i64),
+                Some(expected_input)
+            );
+        }
+    }
+
+    #[test]
+    fn cache_creation_response_tier_cannot_change_settlement_price() {
+        for (request, response, expected) in
+            [("priority", "default", 2033), ("default", "priority", 1795)]
+        {
+            let policy: DownstreamCacheMarkupPolicy = serde_json::from_value(serde_json::json!({
+                "creation_pricing_required":true,"creation_service_tier":request,
+                "creation_pricing":{"rates":{"input":200,"read":20,"creation":300,"output":1000},"priority":{"input":400,"read":40,"creation":700,"output":2500}}
+            })).unwrap();
+            let mut value = serde_json::json!({"response":{"service_tier":response,"usage":{"input_tokens":1300,"output_tokens":200,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}}});
+            assert!(normalize_openai_downstream_usage(
+                &mut value,
+                Some("input_125"),
+                Some(&policy)
+            ));
+            assert_eq!(
+                value
+                    .pointer("/response/usage/input_tokens")
+                    .and_then(Value::as_i64),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn downstream_cache_markup_matches_go_fixed_point_allocation() {
         let policy = DownstreamCacheMarkupPolicy {
             threshold_tokens: 100_000,
@@ -17350,9 +17792,9 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 false,
                 false,
             );
-        assert_eq!(applied, Some(false));
+        assert_eq!(applied, Some(true));
         assert_eq!(turn_model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(turn_usage_eligible, Some(false));
+        assert_eq!(turn_usage_eligible, Some(true));
         assert_eq!(session_model.as_deref(), Some("gpt-5.6-terra"));
 
         let payload = TungsteniteMessage::Text(
@@ -17401,8 +17843,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         );
         assert_eq!(
             model.as_deref(),
-            Some("gpt-5.6-sol"),
-            "same-account compatibility fallback keeps the selected C/D presentation"
+            Some("gpt-5.6-terra"),
+            "session updates must not change the in-flight turn's C/D presentation"
         );
 
         model = Some("gpt-5.6-terra".to_string());
@@ -17416,6 +17858,101 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             model.as_deref(),
             Some("gpt-5.6-terra"),
             "accounts without C/D must not enter the presentation state machine"
+        );
+    }
+
+    #[test]
+    fn ws_session_update_preserves_active_turn_pricing_until_response_create() {
+        let policy = DownstreamCacheMarkupPolicy {
+            creation_pricing_required: true,
+            ..Default::default()
+        };
+        let mut session_model = Some("first-text".to_string());
+        let mut usage_model = session_model.clone();
+        let mut markup_model = session_model.clone();
+        for (frame, expected) in [
+            (
+                r#"{"type":"session.update","session":{"model":"gpt-image-2"}}"#,
+                Some("first-text"),
+            ),
+            (r#"{"type":"response.create","input":"hello"}"#, None),
+            (
+                r#"{"type":"session.update","session":{"model":"second-text"}}"#,
+                None,
+            ),
+            (
+                r#"{"type":"response.create","input":"hello"}"#,
+                Some("second-text"),
+            ),
+        ] {
+            let (_, _, model, eligible) = apply_openai_ws_request_policies_tracked(
+                TungsteniteMessage::Text(frame.to_string()),
+                Some("input_125"),
+                &mut session_model,
+                None,
+                &[],
+                true,
+                false,
+            );
+            update_downstream_cache_usage_model_for_ws_turn(
+                Some("input_125"),
+                &mut usage_model,
+                eligible,
+                model.clone(),
+            );
+            update_downstream_cache_markup_model_for_ws_turn(
+                Some(&policy),
+                &mut markup_model,
+                eligible,
+                model,
+            );
+            assert_eq!(usage_model.as_deref(), expected, "{frame}");
+            assert_eq!(markup_model.as_deref(), expected, "{frame}");
+        }
+    }
+
+    #[test]
+    fn ws_model_less_retry_keeps_model_captured_before_session_update() {
+        let mut session_model = Some("first-text".to_string());
+        let (message, _, model, _) = apply_openai_ws_request_policies_tracked(
+            TungsteniteMessage::Text(r#"{"type":"response.create","input":"hello"}"#.to_string()),
+            Some("suppress"),
+            &mut session_model,
+            None,
+            &[],
+            true,
+            false,
+        );
+        let retry_body = openai_ws_request_body_for_retry(&message, model.as_deref()).unwrap();
+        assert!(
+            tungstenite_message_json(&message)
+                .unwrap()
+                .get("model")
+                .is_none(),
+            "capture must not mutate the forwarded frame"
+        );
+        let _ = apply_openai_ws_request_policies_tracked(
+            TungsteniteMessage::Text(
+                r#"{"type":"session.update","session":{"model":"second-text"}}"#.to_string(),
+            ),
+            Some("suppress"),
+            &mut session_model,
+            None,
+            &[],
+            true,
+            false,
+        );
+        assert_eq!(session_model.as_deref(), Some("second-text"));
+        assert_eq!(
+            retry_body.get("model").and_then(Value::as_str),
+            Some("first-text")
+        );
+        let explicit = TungsteniteMessage::Binary(
+            br#"{"type":"response.create","model":"explicit-text"}"#.to_vec(),
+        );
+        assert_eq!(
+            openai_ws_request_body_for_retry(&explicit, Some("fallback-text")).unwrap()["model"],
+            "explicit-text"
         );
     }
 

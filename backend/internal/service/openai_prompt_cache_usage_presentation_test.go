@@ -23,7 +23,7 @@ func TestOpenAIDownstreamCacheUsageMode_IsAccountScopedAndExplicit(t *testing.T)
 		{"B", promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress), "gpt-5.6-terra", ""},
 		{"C", promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree), "gpt-5.6-terra", OpenAIPromptCacheCreationOptimizationModeFree},
 		{"D", promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeInput125), "gpt-5.6-sol", OpenAIPromptCacheCreationOptimizationModeInput125},
-		{"other model", promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree), "gpt-5.5", ""},
+		{"other model", promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree), "gpt-5.5", OpenAIPromptCacheCreationOptimizationModeFree},
 		{"image pool", func() *Account {
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeInput125)
 			account.Credentials["pool_mode"] = true
@@ -101,7 +101,7 @@ func TestOpenAIDownstreamCacheUsageMode_CompatibilityFallbackPreservesOnlySelect
 	fallback := openAIPromptCacheCreationOptimizationFallbackAccount(selected)
 	require.False(t, fallback.IsOpenAIPromptCacheCreationOptimizationEnabled(), "fallback must disable unsupported request fields")
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree, openAIDownstreamCacheUsageMode(fallback, "gpt-5.6-terra"))
-	require.Empty(t, openAIDownstreamCacheUsageMode(fallback, "gpt-5.5"))
+	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree, openAIDownstreamCacheUsageMode(fallback, "gpt-5.5"))
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree, openAIDownstreamCacheUsageMode(selected, "gpt-5.6-terra"))
 
 	for _, mode := range []string{OpenAIPromptCacheCreationOptimizationModeReduce, OpenAIPromptCacheCreationOptimizationModeSuppress} {
@@ -205,7 +205,7 @@ func TestOpenAIEdgePlan_DownstreamModeIsOmittedForUnselectedAccounts(t *testing.
 
 func TestOpenAIWSEdgePlan_CarriesSelectedModeAcrossInitiallyIneligibleModel(t *testing.T) {
 	body := []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)
-	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeInput125)
+	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeFree)
 	account.Credentials["access_token"] = "test-token"
 	account.Concurrency = 1
 	account.Extra = map[string]any{
@@ -220,9 +220,9 @@ func TestOpenAIWSEdgePlan_CarriesSelectedModeAcrossInitiallyIneligibleModel(t *t
 
 	plan, err := svc.BuildResponsesWSEdgePlan(context.Background(), nil, account, body, "test-token")
 	require.NoError(t, err)
-	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeInput125, plan.Plan.DownstreamCacheUsageMode)
-	require.Empty(t, plan.Plan.DownstreamCacheUsageModel,
-		"the first non-GPT-5.6 turn stays ineligible while edge-rs retains the account mode for later turns")
+	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree, plan.Plan.DownstreamCacheUsageMode)
+	require.Equal(t, "gpt-5.5", plan.Plan.DownstreamCacheUsageModel,
+		"C remains available on Edge for every eligible text model")
 }
 
 func TestNormalizeOpenAIDownstreamUsageJSON_CFree(t *testing.T) {

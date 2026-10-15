@@ -23,9 +23,10 @@ func TestOpenAIPromptCacheCreationUnsupportedStateIsSharedAcrossServices(t *test
 	}
 	first := &OpenAIGatewayService{openaiAccountHealthRedis: client}
 	second := &OpenAIGatewayService{openaiAccountHealthRedis: client}
-	first.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+	scope := OpenAIPromptCacheCreationOptimizationScope("gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`))
+	first.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, scope)
 
-	require.False(t, second.IsOpenAIPromptCacheCreationOptimizationRuntimeEnabled(account))
+	require.False(t, second.IsOpenAIPromptCacheCreationOptimizationRuntimeEnabled(account, scope))
 	updated, result, err := second.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`))
 	require.NoError(t, err)
 	require.False(t, result.Applied)
@@ -68,15 +69,40 @@ func TestOpenAIPromptCacheCreationRuntimeSkipsRedisForInapplicableRequests(t *te
 	}
 	svc := &OpenAIGatewayService{openaiAccountHealthRedis: client}
 
-	_, result, err := svc.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-5.5", []byte(`{"model":"gpt-5.5"}`))
+	_, result, err := svc.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-image-1", []byte(`{"model":"gpt-image-1"}`))
 	require.NoError(t, err)
 	require.False(t, result.Applied)
-	_, checked := svc.openaiPromptCacheCreationRemoteCheckedAt.Load(account.ID)
-	require.False(t, checked)
+	require.Empty(t, svc.openaiPromptCacheCreationRuntime)
 
 	_, result, err = svc.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`), true)
 	require.NoError(t, err)
 	require.False(t, result.Applied)
-	_, checked = svc.openaiPromptCacheCreationRemoteCheckedAt.Load(account.ID)
-	require.False(t, checked)
+	require.Empty(t, svc.openaiPromptCacheCreationRuntime)
+}
+
+func TestOpenAIPromptCacheCreationRuntimeBackoffIsModelAndProtocolScoped(t *testing.T) {
+	mini := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
+	account.ID = 45
+	first := &OpenAIGatewayService{openaiAccountHealthRedis: client}
+	second := &OpenAIGatewayService{openaiAccountHealthRedis: client}
+	responses := []byte(`{"model":"provider-text-alias","input":"hello"}`)
+	chat := []byte(`{"model":"provider-text-alias","messages":[{"role":"user","content":"hello"}]}`)
+	first.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, OpenAIPromptCacheCreationOptimizationScope("provider-text-alias", responses))
+	_, result, err := second.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "provider-text-alias", responses)
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	_, result, err = second.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "provider-text-alias", chat)
+	require.NoError(t, err)
+	require.True(t, result.Applied, "a rejection on Responses must not disable Chat Completions")
+	_, result, err = second.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "another-text-alias", responses)
+	require.NoError(t, err)
+	require.True(t, result.Applied, "a rejection for one model must not disable its peers")
+	mini.FastForward(openAIPromptCacheCreationUnsupportedDisableTTL)
+	third := &OpenAIGatewayService{openaiAccountHealthRedis: client}
+	_, result, err = third.ApplyOpenAIPromptCacheCreationOptimizationBody(account, "provider-text-alias", responses)
+	require.NoError(t, err)
+	require.True(t, result.Applied)
 }

@@ -13,7 +13,7 @@ func TestGPT6AstraAliasesAndFallbackPricing(t *testing.T) {
 		require.Equal(t, "gpt-6-astra", normalizeKnownOpenAICodexModel(model))
 		require.True(t, isOpenAIGPT6AstraModel(model))
 	}
-	require.False(t, isOpenAIGPT56Model("gpt-6-astra"), "A/B/C/D cache creation remains GPT-5.6-only")
+	require.False(t, isOpenAIGPT56Model("gpt-6-astra"), "GPT-6 is not a member of the GPT-5.6 model family")
 
 	billing := NewBillingService(&config.Config{}, nil)
 	pricing, err := billing.GetModelPricing("gpt-6")
@@ -29,7 +29,7 @@ func TestGPT6AstraAliasesAndFallbackPricing(t *testing.T) {
 	require.True(t, remoteFallback.SupportsServiceTier)
 }
 
-func TestGPT6AstraUsesExistingDownstreamCacheMarkupButNotCacheCreationPresentation(t *testing.T) {
+func TestGPT6AstraUsesDownstreamCacheMarkupAndCacheCreationPresentation(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
 		"openai_downstream_cache_markup_enabled":            true,
 		"openai_downstream_cache_markup_threshold_tokens":   100000,
@@ -40,7 +40,7 @@ func TestGPT6AstraUsesExistingDownstreamCacheMarkupButNotCacheCreationPresentati
 	svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil)}
 
 	require.True(t, isOpenAIGPTTextModel("gpt-6-astra"))
-	require.Empty(t, openAIDownstreamCacheUsageMode(account, "gpt-6-astra"))
+	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree, openAIDownstreamCacheUsageMode(account, "gpt-6-astra"))
 
 	policy := svc.openAIDownstreamCacheMarkupPolicyForContext(context.Background(), account, "gpt-6-astra")
 	require.True(t, policy.enabled())

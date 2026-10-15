@@ -342,7 +342,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 		}
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			logger.L().Info("openai raw chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),
@@ -391,6 +391,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// 8. Forward response
+	attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, openAICacheCreationServiceTier(serviceTier))
 	var result *OpenAIForwardResult
 	var forwardErr error
 	if clientStream {
@@ -428,7 +429,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	ensureOpenAIPlaceholderCoordinator(c, startTime)
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
+	downstreamCacheMarkup.CreationServiceTier = openAICacheCreationServiceTier(serviceTier)
 
 	headersWritten := requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent
 	writeStreamHeaders := func() {
@@ -881,7 +883,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		usage = parsedUsage
 	}
 	downstreamBody := respBody
-	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(respBody, ctx, account, upstreamModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(respBody, ctx, account, upstreamModel, originalModel); normalized {
 		downstreamBody = normalizedBody
 	}
 

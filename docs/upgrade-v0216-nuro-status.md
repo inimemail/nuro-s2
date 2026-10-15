@@ -144,3 +144,87 @@ Ent 使用项目原有版本重新生成，并在隔离目录对照。Go 1.27 �
 ## 尚未验证
 
 真实 AI Studio / Vertex / 第三方账号调用及供应商账单、生产多副本故障演练、真实 Redis Cluster、差分压力测试和 Shadow / Canary 尚未执行，不能据此宣称零风险或生产验收完成。新增页面已通过组件测试、类型检查和构建，但没有完成浏览器截图及手机/桌面视觉验收。`golangci-lint` 未安装，没有将其记为通过。
+
+## OpenAI 全文本模型缓存创建优化（2026-10-15）
+
+本节是独立于上述历史升级验收的新增改动记录；上文全量后端、数据库及冻结文件校验结果不能作为本轮新代码的验收证据。
+
+### 实施范围
+
+- 保留账号级开关及 A/B/C/D 存储值，将 OpenAI OAuth / API Key 文本账号的创建优化扩展到全部文本模型和自定义别名；继续排除媒体模型、图片意图、图片池及 shadow。关闭时沿用原请求和响应分支。
+- D 前端名称为“创建成本分摊”，按当前模型、分组/渠道、生效计费模型、服务档位、价格区间和长上下文开关分摊创建费用。下游分摊至普通输入、少量输出和缓存读取，内部账务及审计保留原始 usage；既有缓存加成仍以原始输入/缓存读取为基础继续执行。
+- 无可靠创建价、独立 5m/1h 价格无法确定、非法价格/数值溢出或转换会跨价格档位时，D 保留原始 usage。普通分摊最多有半个普通输入 token 的金额舍入差异；不承诺下游使用不同价卡时账单仍完全一致。
+- 同步 HTTP Responses、raw Chat、协议转换/fallback、Go WS 与 Rust Edge 路径。WS 按轮次识别模型、服务档位和图片意图；最终扩大审查后，D 的 WebSocket 固定回退现有 Go 逐轮结算通道，HTTP D 仍可使用 Edge，详见末节。
+- 上游不支持策略时按“账号 + 上游模型 + 协议”退避 10 分钟，避免某模型拒绝影响其他模型；本地状态最多 4096 条并合并并发 Redis 轮询。
+- 新 Edge 声明创建策略能力版本 1；Go 遇到不具备能力的旧 Edge，开启优化的账号在转发前回退 Go，关闭优化的账号保留原 Edge 分支。Go / Rust 应同步更新以使用新版 Edge 能力，全局控制协议版本未变。
+- 前端中英文说明、D 定价回退说明、A/B/C/D 标识及卡片行距同步更新，保留现有双列布局和暗色样式。
+
+### 本轮检查
+
+| 检查 | 结果 |
+| --- | --- |
+| 相关 Go 扩大回归 | 138 个顶层测试、含子测试共 271 项通过；`/private/tmp/nuro-cache-creation-go-tests.jsonl` |
+| Go 新增缓存创建逻辑 race | `go test -race ./internal/service -run '^TestOpenAICacheCreation' -count=1` 通过 |
+| Go 协议兼容与 WS 核心包 | `go test ./internal/pkg/apicompat ./internal/service/openai_ws_v2 -count=1` 通过 |
+| Go vet / 服务构建 | service、handler、apicompat 的 vet 通过，服务构建通过 |
+| 最终发布构建 / 编译 | 最新共享夹具 Go 回归、service / handler 的 unit 标签编译及 `CGO_ENABLED=0 go build -tags embed -trimpath` 通过，已嵌入本轮前端生产构建 |
+| Rust | 修正共享区间测试夹具缺失的零值 rates / priority 字段后，229 项测试及 `cargo check --offline` 通过；没有放宽断言 |
+| 前端类型 / 相关文件 lint | vue-tsc 及本轮相关文件 ESLint 通过 |
+| 前端完整 Vitest | 188 个文件、1164 项测试通过；`/private/tmp/nuro-cache-creation-frontend-tests.log` |
+| 前端生产构建 | 通过；`/private/tmp/nuro-cache-creation-frontend-build.log` |
+| Go / Rust 同源定价夹具 | 涵盖标准/priority、长上下文开关、区间跨档与溢出回退 |
+| 差异与范围 | `git diff --check` 通过；下述账务/部署/依赖/版本路径已与 HEAD 对照确认未改 |
+
+本轮未改账务服务、模型价格解析器、账号设置实现、部署脚本、依赖锁、数据库结构或版本号；部分缓存与 Edge 文件属于本轮授权修改范围，不沿用历史“20 个冻结文件全未改”的结论。调度、强隔离、TPS 永久显示、Cell / tenant escrow / lease / WAL 及首次部署凭据未纳入功能改写范围。
+
+本轮沙箱禁止监听本机端口，Redis / 本机网络集成测试未完成；提权请求因自动审批流连接断开未执行，没有绕过审批，也没有将这类测试记为通过。未完成真实供应商账单、生产多副本/负载及浏览器截图视觉验收，不能承诺零风险。没有提交、推送或部署，版本仍为 `v0.2.16-nuro.1` / `0.2.16-nuro.1`。
+
+### 全文件续审与修复（2026-10-15）
+
+本轮重新核对上述 34 个改动/新增文件，重点审查 D 定价与真实账务的一致性、关闭开关的旁路、模型映射、协议转换、并发退避和混合版本 Edge。发现并修复以下边界：
+
+1. Go HTTP / 协议桥接上游省略 `service_tier` 时，D 可能退回普通价格。现在仅 D 在响应处理上下文中携带本次请求的规范化服务档位；空的响应档位不会抹掉该回退值，后续无档位请求会显式清空旧值。开启原缓存加成时也保留这份元数据。补充 raw Chat、Responses→Chat 的流式/非流式完整转发处理链回归，使用内存上游替身，不监听端口；核验 priority 分摊和内部真实 usage。
+2. 渠道指定按请求别名计价时，OAuth GPT-6.1 的长上下文豁免必须由实际上游模型决定。现在复用真实账务使用的模型识别函数，分别传递计价模型与上游模型；回归同时核验 OAuth 豁免和 API Key 保持长上下文计价。
+3. `channel_mapped` 在未发生映射或仅映射为原名称时，真实账务继续使用上游模型。D 已同步这一条件，避免账号还有后续模型映射时错误选择请求别名的价卡；新增无映射、同名映射用例。
+4. DeepSeek / Gemini 3.6 目录价格可能在实际账务阶段按时段/优惠调整，不能把会话开始时的价格当成整个 WS 会话的固定价格。此类未完整覆盖的目录价格下 D 保留原始 usage；明确的分组/渠道价格或完整显式价格仍可分摊。A/B/C 不受这一价格回退影响，中英文说明同步提示动态时段定价边界。
+
+最终补丁后的核验结果：
+
+| 检查 | 结果 / 证据 |
+| --- | --- |
+| 后端相关回归及二开保护回归（unit 标签） | 179 个顶层测试、含子测试 343 项全部通过，无缺失；`/private/tmp/nuro-cache-creation-review-final-unit-tests.jsonl` |
+| 保护项专门回归 | 37 个顶层测试、含子测试 60 项通过，涵盖调度快照/取消守卫、compact/WS 调度、强隔离、会话隔离、原缓存加成及 GPT-6；`/private/tmp/nuro-cache-creation-review-protected-unit-tests.jsonl` |
+| 新增缓存创建逻辑 race | 最新补丁后 `go test -race ./internal/service -run '^TestOpenAICacheCreation' -count=1` 通过 |
+| 协议与 WS 核心包 | apicompat、openai_ws_v2 整包测试通过 |
+| vet / 发布构建 | service、handler、apicompat 的 vet，以及嵌入最新前端产物的 `CGO_ENABLED=0 go build -tags embed -trimpath` 通过 |
+| 前端 | 全量 188 文件、1164 测试通过，vue-tsc、本轮相关文件 ESLint、生产构建通过；`/private/tmp/nuro-cache-creation-review-frontend-tests.log`、`/private/tmp/nuro-cache-creation-review-frontend-build.log` |
+| Rust | 229 项测试及 `cargo check --offline` 再次通过 |
+| 范围核对 | `git diff --check` 通过；账务服务、模型价格解析器、账号设置实现、部署脚本、依赖及版本与 HEAD 对照无改动 |
+
+本节保护项测试包含在最终 179 项中，不能重复相加。仍未执行真实 Redis/本机端口集成、真实供应商账单与生产负载验证，也未完成浏览器截图视觉验收；前述沙箱及审批流限制未解除。本轮没有提交、推送或部署。
+
+### 最后一次扩大审查（2026-10-15）
+
+继续审查服务档位、WebSocket 换模型/重试、Edge 会话汇总结算与前端说明，修复以下边界。本节描述最终实现，优先于前面各阶段的审查快照。
+
+1. D 分摊现在优先采用实际本地结算使用的请求服务档位，上游响应不能通过返回其他档位改变分摊价。没有请求档位时显式记录 `default`，不再将“已知普通档”与“缺少请求元数据”混用。raw Chat / Responses 的 fast-mode 过滤即使移除上游请求字段，也继续与现有结算档位一致；OAuth 使用其现有结算路径采用的最终请求档位。JSON 与 typed usage 均已覆盖，内部原始 usage 不变。
+2. Rust 的 `session.update` 只更新后续请求的默认模型，不再污染仍在输出的当前轮模型及缓存加成策略。`response.create` 开始时快照内部重试请求的有效模型，避免随后的 `session.update` 将退避范围错误记入另一模型；真实转发帧不受快照补字段影响。
+3. Edge WebSocket 以初始 lease 的模型/档位汇总整个会话，D 逐轮转换在换模型、换档位或跨上下文区间时无法保证与该汇总结算口径一致。最终选择在创建上游前将开启 D 的 WebSocket 路由到既有 Go 逐轮结算通道，保留原账务、lease 与 WAL；A/B/C、关闭优化的 WebSocket 及 HTTP D 继续沿用原 Edge 能力。新增 OAuth / API Key、文本/别名/非文本首轮及开关模式组合回归，前端中英文同步说明此路由行为。移除不再使用的 WS 全价卡目录扫描。
+
+最终代码补丁后的核验：
+
+| 检查 | 结果 / 证据 |
+| --- | --- |
+| 扩大后端 unit 回归 | 220 个顶层测试、含子测试 419 项全部通过，无缺失或失败；包含前轮二开保护用例，不能重复相加；`/private/tmp/nuro-cache-creation-last-review-unit-tests.jsonl` |
+| 新增缓存创建逻辑 race | `go test -race ./internal/service -run '^TestOpenAICacheCreation' -count=1` 通过 |
+| 协议 / WS 核心包与 vet | apicompat、openai_ws_v2 整包测试通过；service、handler、apicompat 的 vet 通过 |
+| Rust | 233 项测试与 `cargo check --offline --quiet` 通过；`/private/tmp/nuro-cache-creation-last-review-rust-tests.log`。部分端口用例受沙箱限制在用例内跳过，不能视作真实网络集成通过 |
+| 前端 | 本轮控件 1 文件 2 测试、vue-tsc、相关文件 ESLint 及生产构建通过；`/private/tmp/nuro-cache-creation-last-review-frontend-build.log`。完整 188 文件 / 1164 项通过是前一轮记录，本轮没有重跑全量 |
+| 发布构建 | 嵌入本轮最新前端产物的 `CGO_ENABLED=0 go build -tags embed -trimpath` 通过，产物位于 `/private/tmp/nuro-s2-cache-creation-review-final-embed` |
+| 范围 | 账务服务、模型价格解析器、账号设置实现、部署脚本 / Dockerfile、Go / 前端依赖及版本与 HEAD 对照未改；`git diff --check` 通过 |
+
+补充整包执行 `go test ./internal/service ./internal/handler ./internal/pkg/apicompat ./internal/service/openai_ws_v2 -count=1` 时，service 的 `TestQueryOpenAIWhamUsagePassesThroughInvites` 与 handler 的 `TestDingTalkClient_ExchangeCodeForUserToken_Success` 因沙箱 `bind: operation not permitted` 中止，因此未将 service / handler 整包记为通过；后两个协议包实际通过。未申请绕过端口限制。
+
+`cargo fmt --check` 对 HEAD 已存在 130 处格式差异；本轮新增的 22 处差异已按 rustfmt 整理，重新比较后，与本次修改行重叠的格式差异为 0，剩余 130 处旧差异保留，未将全仓格式检查记为通过。整理后重新执行 Rust 233 项测试及编译检查。
+
+真实供应商调用/账单、Redis / 端口集成、生产负载及浏览器截图仍未完成，本轮结果不能替代生产验收。没有提交、推送或部署，前后端版本保持 `v0.2.16-nuro.1` / `0.2.16-nuro.1`。

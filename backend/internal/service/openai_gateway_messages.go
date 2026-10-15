@@ -499,7 +499,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return s.ForwardAsAnthropic(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			logger.L().Info("openai messages: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),
@@ -592,6 +592,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 9. Handle normal response
+	attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, responsesReq.ServiceTier)
 	// Upstream is always streaming; choose response format based on client preference.
 	var result *OpenAIForwardResult
 	var handleErr error
@@ -729,7 +730,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 		finalResponse.Usage,
 		downstreamCacheUsageMode,
-		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel),
+		finalResponse.UpstreamServiceTier,
 	)
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
@@ -1002,7 +1004,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	state := apicompat.NewResponsesEventToAnthropicState()
 	state.Model = originalModel
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
 	var usage OpenAIUsage
 	responseID := ""
 	var firstTokenMs *int
@@ -1138,10 +1140,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			// The local usage snapshot above remains the unmodified upstream
 			// value. Only the event copy consumed by the downstream converter is
 			// normalized for the explicitly selected account mode.
-			if event.Response != nil {
-				normalizeOpenAIResponsesUsageForDownstreamWithMarkup(event.Response.Usage, downstreamCacheUsageMode, downstreamCacheMarkup)
-			}
-			normalizeOpenAIResponsesUsageForDownstreamWithMarkup(event.Usage, downstreamCacheUsageMode, downstreamCacheMarkup)
+			normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(&event, downstreamCacheUsageMode, downstreamCacheMarkup)
 		}
 
 		// Convert to Anthropic events

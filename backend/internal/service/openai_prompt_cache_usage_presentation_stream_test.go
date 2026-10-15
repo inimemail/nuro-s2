@@ -15,6 +15,64 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAICacheCreationPricing_ForwardingWithoutUpstreamTier(t *testing.T) {
+	setGinTestMode()
+	for _, viaResponses := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			t.Run(map[bool]string{false: "raw_chat", true: "responses_bridge"}[viaResponses]+map[bool]string{false: "_json", true: "_stream"}[stream], func(t *testing.T) {
+				streamValue := "false"
+				if stream {
+					streamValue = "true"
+				}
+				body := []byte(`{"model":"gpt-pricing-alias","messages":[{"role":"user","content":"hello"}],"service_tier":"priority","stream":` + streamValue + `}`)
+				upstreamJSON := `{"id":"chatcmpl_tier","object":"chat.completion","model":"gpt-pricing-alias","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1300,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}}`
+				contentType := "application/json"
+				if viaResponses {
+					contentType = "text/event-stream"
+					upstreamJSON = "data: " + `{"type":"response.completed","response":{"id":"resp_tier","object":"response","model":"gpt-pricing-alias","status":"completed","output":[{"type":"message","id":"msg_tier","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1300,"output_tokens":200,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}}}` + "\n\n"
+				} else if stream {
+					contentType = "text/event-stream"
+					upstreamJSON = "data: " + `{"id":"chatcmpl_tier","object":"chat.completion.chunk","model":"gpt-pricing-alias","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1300,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":200,"cache_write_tokens":1000}}}` + "\n\ndata: [DONE]\n\n"
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(upstreamJSON))}}
+				svc := &OpenAIGatewayService{cfg: promptCacheBoostTestConfig(), httpUpstream: upstream, toolCorrector: NewCodexToolCorrector(), billingService: NewBillingService(&config.Config{}, &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+					"gpt-pricing-alias": {InputCostPerToken: 2e-6, OutputCostPerToken: 10e-6, CacheReadInputTokenCost: .2e-6, CacheCreationInputTokenCost: 3e-6,
+						InputCostPerTokenPriority: 4e-6, OutputCostPerTokenPriority: 25e-6, CacheReadInputTokenCostPriority: .4e-6, CacheCreationInputTokenCostPriority: 7e-6},
+				}})}
+				account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeInput125)
+				account.ID, account.Concurrency = 903, 1
+				account.Credentials["api_key"] = "sk-test"
+				account.Credentials["base_url"] = "https://api.openai.com/v1"
+				account.Extra = map[string]any{"openai_responses_supported": viaResponses}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+				result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.ServiceTier)
+				require.Equal(t, "priority", *result.ServiceTier)
+				require.Equal(t, 1300, result.Usage.InputTokens)
+				require.Equal(t, 1000, result.Usage.CacheCreationInputTokens)
+				var downstream OpenAIUsage
+				if stream {
+					forEachOpenAISSEDataPayload(recorder.Body.String(), func(data []byte) {
+						if parsed, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+							downstream = parsed
+						}
+					})
+				} else {
+					var ok bool
+					downstream, ok = extractOpenAIUsageFromJSONBytes(recorder.Body.Bytes())
+					require.True(t, ok)
+				}
+				require.Equal(t, 2033, downstream.InputTokens, "omitted response tier must retain priority request pricing")
+				require.Zero(t, downstream.CacheCreationInputTokens)
+			})
+		}
+	}
+}
+
 func TestGoStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
 	setGinTestMode()
 	for _, passthrough := range []bool{false, true} {
@@ -45,7 +103,7 @@ func TestGoStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)
 				account.ID = 395
-				svc := &OpenAIGatewayService{
+				svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil),
 					cfg:           &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
 					toolCorrector: NewCodexToolCorrector(),
 				}
@@ -106,7 +164,7 @@ func TestGoNonStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testin
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)
 			account.ID = 395
-			svc := &OpenAIGatewayService{cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil), cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
 
 			result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, account, "gpt-5.6-terra", "gpt-5.6-terra")
 			require.NoError(t, err)
@@ -132,7 +190,7 @@ func TestCFreeNonStreamingPassthroughAndSSEBridge_ZeroDownstreamCreation(t *test
 	setGinTestMode()
 	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree)
 	account.ID = 395
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
+	svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil), cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
 
 	for _, tc := range []struct {
 		name        string
@@ -214,7 +272,7 @@ func TestResponsesToChatBufferedDownstreamCacheUsageModes_PreserveInternalTruth(
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, tc.mode)
-			svc := &OpenAIGatewayService{}
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil)}
 
 			result, err := svc.handleChatBufferedStreamingResponse(
 				context.Background(), resp, c, account,
@@ -253,7 +311,7 @@ func TestMessagesBufferedCFree_ZeroesDownstreamCreationAndPreservesInternalTruth
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeFree)
-	svc := &OpenAIGatewayService{}
+	svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil)}
 
 	result, err := svc.handleAnthropicBufferedStreamingResponse(
 		context.Background(), resp, c, account,
@@ -285,7 +343,7 @@ func TestResponsesToChatBufferedDownstreamCacheUsage_ExplicitImageIsNoOp(t *test
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeFree)
-	svc := &OpenAIGatewayService{}
+	svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil)}
 
 	result, err := svc.handleChatBufferedStreamingResponse(
 		WithOpenAIImageGenerationIntent(context.Background()), resp, c, account,
@@ -329,7 +387,7 @@ func TestResponsesToChatStreamingDownstreamCacheUsageModes_PreserveInternalTruth
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, tc.mode)
-			svc := &OpenAIGatewayService{}
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil)}
 
 			result, err := svc.handleChatStreamingResponse(
 				context.Background(), resp, c, account,
@@ -367,7 +425,7 @@ func TestGoNonStreamingDownstreamCacheUsageMode_ExplicitImageRequestIsUnchanged(
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeInput125)
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
+	svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil), cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
 
 	ctx := WithOpenAIImageGenerationIntent(context.Background())
 	result, err := svc.handleNonStreamingResponse(ctx, resp, c, account, "gpt-5.6-terra", "gpt-5.6-terra")
@@ -389,7 +447,7 @@ func TestRawChatDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)
-			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil), cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
 
 			t.Run("stream", func(t *testing.T) {
 				recorder := httptest.NewRecorder()
@@ -454,7 +512,7 @@ func TestChatFallbackDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)
-			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil), cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
 
 			t.Run("responses_non_stream", func(t *testing.T) {
 				recorder := httptest.NewRecorder()
@@ -531,7 +589,7 @@ func TestChatFallbackUnsupportedOptimization_RetriesSameAccountWithoutPolicy(t *
 				{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Unknown parameter: prompt_cache_options"}}`))},
 				cacheUsageChatCompletionResponse(),
 			}}
-			svc := &OpenAIGatewayService{
+			svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, nil),
 				cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
 					Enabled: false, AllowInsecureHTTP: true,
 				}}},

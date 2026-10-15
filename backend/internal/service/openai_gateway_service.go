@@ -499,12 +499,13 @@ type OpenAIGatewayService struct {
 	codexSnapshotThrottle                        *accountWriteThrottle
 	openaiPromptCacheBoostDisabledUntil          sync.Map // key: int64(accountID), value: time.Time
 	openaiPromptCacheBoostRemoteCheckedAt        sync.Map // key: int64(accountID), value: time.Time
-	openaiPromptCacheCreationDisabledUntil       sync.Map // key: int64(accountID), value: time.Time
-	openaiPromptCacheCreationRemoteCheckedAt     sync.Map // key: int64(accountID), value: time.Time
-	openaiResponsesRejectedFieldUntil            sync.Map // key: capability hash + field, value: time.Time
-	openaiResponsesRejectedFieldRemoteCheckedAt  sync.Map // key: capability hash, value: time.Time
-	openaiResponsesRejectedFieldCleanupScheduled sync.Map // key: capability hash + field, value: struct{}
-	openaiPromptCacheBoostGroupAvailabilityCache sync.Map // key: string(group:model), value: promptCacheBoostGroupAvailability
+	openaiPromptCacheCreationRuntimeMu           sync.Mutex
+	openaiPromptCacheCreationRuntime             map[any]openAIPromptCacheCreationRuntimeState
+	openaiPromptCacheCreationRuntimeCleanupAt    time.Time // guarded by runtimeMu
+	openaiResponsesRejectedFieldUntil            sync.Map  // key: capability hash + field, value: time.Time
+	openaiResponsesRejectedFieldRemoteCheckedAt  sync.Map  // key: capability hash, value: time.Time
+	openaiResponsesRejectedFieldCleanupScheduled sync.Map  // key: capability hash + field, value: struct{}
+	openaiPromptCacheBoostGroupAvailabilityCache sync.Map  // key: string(group:model), value: promptCacheBoostGroupAvailability
 	openaiCompatSessionResponses                 sync.Map
 	openaiCompatAnthropicDigestSessions          sync.Map
 	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
@@ -5195,7 +5196,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// round large integer seed/metadata values that the normal one-field patch
 	// fast path would otherwise preserve.
 	if !isOpenAIResponsesCompactPath(c) {
-		if !explicitImageIntentKnown && account != nil && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(upstreamModel) {
+		if !explicitImageIntentKnown && account != nil && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAICacheCreationTextModel(upstreamModel) {
 			explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, originalBody)
 		}
 		optimizedBody, optimizationResult, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, body, explicitImageIntent)
@@ -5600,7 +5601,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				if cachePolicyCompatibilityFailure {
-					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 				}
 				s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
 				if resp.StatusCode == http.StatusTooManyRequests {
@@ -5643,7 +5644,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				continue
 			}
 			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 				releaseOpenAIParsedRequestBody(c)
 				logger.L().Info("openai responses: cache creation optimization unsupported, retrying with the account default request policy",
 					zap.Int64("account_id", account.ID),
@@ -5760,6 +5761,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffort := extractOpenAIReasoningEffort(reqBody, upstreamModel, billingModel, originalModel)
 		setOpenAIStreamProgressPolicy(c, reasoningEffort, IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, originalModel, reqBody))
 		serviceTier := extractOpenAIServiceTier(reqBody)
+		attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, openAICacheCreationServiceTier(serviceTier))
 		releaseOpenAIParsedRequestBody(c)
 
 		// Handle normal response
@@ -6147,7 +6149,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				if cachePolicyCompatibilityFailure {
-					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 				}
 				if resp.StatusCode == http.StatusTooManyRequests {
 					_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
@@ -6185,7 +6187,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				}, fmt.Errorf("passthrough upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
 			}
 			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 				logger.L().Info("openai passthrough: cache creation optimization unsupported, retrying with the account default request policy",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", resp.StatusCode),
@@ -6228,6 +6230,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		defer func() { _ = resp.Body.Close() }()
 
 		serviceTier := extractOpenAIServiceTierFromBody(body)
+		ctx = withOpenAICacheCreationServiceTier(ctx, account, openAICacheCreationServiceTier(serviceTier))
 		setOpenAIStreamProgressPolicy(c, reasoningEffort, IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body))
 
 		var usage *OpenAIUsage
@@ -7833,7 +7836,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
 	searchCounter := 0
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
@@ -8311,7 +8314,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -8500,7 +8503,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -9306,7 +9309,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	usage := &OpenAIUsage{}
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	downstreamTTFTObserved := false
@@ -10540,7 +10543,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
 
@@ -10668,7 +10671,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

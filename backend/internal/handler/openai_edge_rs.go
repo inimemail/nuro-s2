@@ -59,6 +59,8 @@ type openAIEdgeLease struct {
 	account                  *service.Account
 	cachePolicyEnabled       bool
 	cachePolicyApplied       bool
+	cachePolicyScope         string
+	cachePolicyVersion       int
 	forwardBody              []byte
 	passthroughSeen          bool
 	crossModeBodyReady       bool
@@ -1432,6 +1434,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 			accountReleaseFunc()
 		}
 	}()
+	if !openAIEdgeCacheCreationPolicyCompatible(account, req.CacheCreationPolicyVersion) {
+		return fallback("cache_creation_policy_upgrade_required")
+	}
 	prepared, err := h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, forwardBody, "")
 	if err != nil {
 		reqLog.Warn("openai_edge.build_raw_chat_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -1481,6 +1486,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		account:                  account,
 		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		cachePolicyScope:         prepared.Plan.PromptCacheCreationOptimizationScope,
+		cachePolicyVersion:       req.CacheCreationPolicyVersion,
 		forwardBody:              append([]byte(nil), forwardBody...),
 		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
 		lastPlan:                 plan,
@@ -1664,6 +1671,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if reason := openAIEdgeResponsesHTTPAccountFallbackReason(account); reason != "" {
 		return fallback(reason)
 	}
+	if !openAIEdgeCacheCreationPolicyCompatible(account, req.CacheCreationPolicyVersion) {
+		return fallback("cache_creation_policy_upgrade_required")
+	}
 	prepared, err := h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
 	if err != nil {
 		reqLog.Warn("openai_edge.build_responses_plan_failed", zap.Int64("account_id", account.ID), zap.String("account_type", string(account.Type)), zap.Error(err))
@@ -1713,6 +1723,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		account:                  account,
 		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		cachePolicyScope:         prepared.Plan.PromptCacheCreationOptimizationScope,
+		cachePolicyVersion:       req.CacheCreationPolicyVersion,
 		forwardBody:              append([]byte(nil), forwardBody...),
 		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
 		lastPlan:                 plan,
@@ -1883,6 +1895,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		reqLog.Warn("openai_edge.responses_ws_get_access_token_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		return fallback("get_access_token_failed")
 	}
+	if !openAIEdgeCacheCreationPolicyCompatible(account, req.CacheCreationPolicyVersion) {
+		return fallback("cache_creation_policy_upgrade_required")
+	}
 	prepared, err := h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, forwardBody, token)
 	if err != nil {
 		reqLog.Warn("openai_edge.build_responses_ws_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -1932,6 +1947,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		account:                  account,
 		cachePolicyEnabled:       prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied:       prepared.Plan.PromptCacheCreationOptimizationApplied,
+		cachePolicyScope:         prepared.Plan.PromptCacheCreationOptimizationScope,
+		cachePolicyVersion:       req.CacheCreationPolicyVersion,
 		forwardBody:              append([]byte(nil), forwardBody...),
 		passthroughSeen:          account.IsOpenAIPassthroughEnabled(),
 		lastPlan:                 plan,
@@ -1974,6 +1991,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 func openAIEdgeResponsesWSAccountFallbackReason(account *service.Account) string {
 	if account != nil && account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		return "edge_ws_strong_isolation_requires_go"
+	}
+	if account != nil && account.IsOpenAIPromptCacheCreationOptimizationEnabled() &&
+		account.OpenAIPromptCacheCreationOptimizationMode() == service.OpenAIPromptCacheCreationOptimizationModeInput125 {
+		return "cache_creation_pricing_requires_go_ws"
 	}
 	return ""
 }
@@ -2213,6 +2234,17 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	}
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
+	cachePolicyScope := lease.cachePolicyScope
+	cachePolicyApplied := lease.cachePolicyApplied
+	if gjson.GetBytes(req.RequestBody, "type").String() == "response.create" {
+		if lease.cachePolicyEnabled && gjson.GetBytes(req.RequestBody, "prompt_cache_options.mode").String() == "explicit" {
+			cachePolicyApplied = true
+		}
+		model := strings.TrimSpace(gjson.GetBytes(req.RequestBody, "model").String())
+		if model != "" {
+			cachePolicyScope = service.OpenAIPromptCacheCreationOptimizationScope(model, req.RequestBody)
+		}
+	}
 	lease.lastFailureDiagnostic = edgeOpsDiagnosticFromPayload(responseBody)
 	lease.lastFailureStatus = status
 	lease.lastFailureRequestID = req.UpstreamRequestID
@@ -2225,10 +2257,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout" || edgeSemanticProgressTimeout)
 	commitState := req.EffectiveCommitState()
 	if commitState == service.OpenAIEdgeCommitStateRealOutput || commitState == service.OpenAIEdgeCommitStateTerminal {
-		if lease.cachePolicyApplied &&
+		if cachePolicyApplied &&
 			service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) &&
 			h != nil && h.gatewayService != nil {
-			h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account)
+			h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account, cachePolicyScope)
 		}
 		return fallback("client_response_already_written")
 	}
@@ -2316,12 +2348,12 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			}
 		}
 	}
-	if lease.cachePolicyApplied &&
+	if cachePolicyApplied &&
 		service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) {
 		if h == nil || h.gatewayService == nil {
 			return fallback("cache_creation_optimization_retry_dependencies_missing")
 		}
-		h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account)
+		h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account, cachePolicyScope)
 		fallbackAccount := service.OpenAIPromptCacheCreationOptimizationFallbackAccount(lease.account)
 		plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, fallbackAccount, lease.accountReleaseFunc)
 		if err != nil {
@@ -2816,7 +2848,14 @@ func openAIEdgeResponsesHTTPAccountFallbackReason(account *service.Account) stri
 	return ""
 }
 
+func openAIEdgeCacheCreationPolicyCompatible(account *service.Account, version int) bool {
+	return account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || version >= 1
+}
+
 func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (*openAIEdgePreparedRetryPlan, error) {
+	if !openAIEdgeCacheCreationPolicyCompatible(account, lease.cachePolicyVersion) {
+		return nil, errors.New("cache_creation_policy_upgrade_required")
+	}
 	if lease.inboundEndpoint == "/v1/responses" {
 		if reason := openAIEdgeResponsesHTTPAccountFallbackReason(account); reason != "" {
 			return nil, errors.New(reason)
@@ -2931,6 +2970,7 @@ func applyOpenAIEdgePreparedRetryPlan(lease *openAIEdgeLease, prepared *openAIEd
 	lease.upstreamEndpoint = prepared.upstreamEndpoint
 	lease.cachePolicyEnabled = prepared.cachePolicyEnabled
 	lease.cachePolicyApplied = prepared.cachePolicyApplied
+	lease.cachePolicyScope = prepared.plan.PromptCacheCreationOptimizationScope
 	lease.lastPlan = prepared.plan
 	lease.currentAttemptID = uuid.NewString()
 }

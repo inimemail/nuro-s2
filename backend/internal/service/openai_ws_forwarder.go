@@ -2429,7 +2429,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	usage := &OpenAIUsage{}
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
+	downstreamCacheMarkup.CreationServiceTier = openAICacheCreationServiceTier(extractOpenAIServiceTier(payload))
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	var firstTokenTimeoutGuardSampleMS *int
@@ -3306,7 +3307,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		downstreamCacheMarkup := OpenAIDownstreamCacheMarkupPolicy{}
 		if !imageIntent {
 			downstreamCacheUsageMode = openAIDownstreamCacheUsageMode(account, upstreamModel)
-			downstreamCacheMarkup = s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+			downstreamCacheMarkup = s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
+			downstreamCacheMarkup.CreationServiceTier = openAICacheCreationServiceTier(extractOpenAIServiceTierFromBody(normalized))
 		}
 
 		return openAIWSClientPayload{
@@ -3961,7 +3963,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				cachePolicyCompatibilityFailure = cacheCreationOptimizationApplied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", originalUpstreamMessage)
 				if cachePolicyCompatibilityFailure {
-					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, OpenAIPromptCacheCreationOptimizationScope(mappedModel, payload))
 				}
 			}
 

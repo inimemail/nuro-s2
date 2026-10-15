@@ -17,20 +17,30 @@ const openAIDownstreamCacheMarkupPriceScale = 1_000_000_000_000_000
 // OpenAIDownstreamCacheMarkupPolicy is copied into Edge plans. Prices use
 // fixed-point units so Go and Rust produce the same terminal usage values.
 type OpenAIDownstreamCacheMarkupPolicy struct {
-	ThresholdTokens             int64 `json:"threshold_tokens,omitempty"`
-	PercentBPS                  int64 `json:"percent_bps,omitempty"`
-	InputPriceUnits             int64 `json:"input_price_units,omitempty"`
-	CacheReadPriceUnits         int64 `json:"cache_read_price_units,omitempty"`
-	OutputPriceUnits            int64 `json:"output_price_units,omitempty"`
-	LongContextThreshold        int64 `json:"long_context_threshold,omitempty"`
-	LongContextInclusive        bool  `json:"long_context_inclusive,omitempty"`
-	LongContextInputMultiplier  int64 `json:"long_context_input_multiplier,omitempty"`
-	LongContextOutputMultiplier int64 `json:"long_context_output_multiplier,omitempty"`
+	// Creation pricing travels alongside markup, but its activation is independent.
+	CreationPricingModel        string                                       `json:"creation_pricing_model,omitempty"`
+	CreationServiceTier         string                                       `json:"creation_service_tier,omitempty"`
+	CreationPricingRequired     bool                                         `json:"creation_pricing_required,omitempty"`
+	CreationPricing             *OpenAICacheCreationPricingPolicy            `json:"creation_pricing,omitempty"`
+	CreationPricingModels       map[string]*OpenAICacheCreationPricingPolicy `json:"creation_pricing_models,omitempty"`
+	ThresholdTokens             int64                                        `json:"threshold_tokens,omitempty"`
+	PercentBPS                  int64                                        `json:"percent_bps,omitempty"`
+	InputPriceUnits             int64                                        `json:"input_price_units,omitempty"`
+	CacheReadPriceUnits         int64                                        `json:"cache_read_price_units,omitempty"`
+	OutputPriceUnits            int64                                        `json:"output_price_units,omitempty"`
+	LongContextThreshold        int64                                        `json:"long_context_threshold,omitempty"`
+	LongContextInclusive        bool                                         `json:"long_context_inclusive,omitempty"`
+	LongContextInputMultiplier  int64                                        `json:"long_context_input_multiplier,omitempty"`
+	LongContextOutputMultiplier int64                                        `json:"long_context_output_multiplier,omitempty"`
 }
 
 func (p OpenAIDownstreamCacheMarkupPolicy) enabled() bool {
 	return p.ThresholdTokens >= 0 && p.PercentBPS > 0 && p.InputPriceUnits > 0 &&
 		p.CacheReadPriceUnits > 0 && p.OutputPriceUnits > 0
+}
+
+func (p OpenAIDownstreamCacheMarkupPolicy) active() bool {
+	return p.enabled() || p.CreationPricingRequired
 }
 
 func openAIDownstreamCacheMarkupPriceUnits(price float64) int64 {
@@ -48,16 +58,32 @@ func (s *OpenAIGatewayService) openAIDownstreamCacheMarkupPolicyForContext(
 	ctx context.Context,
 	account *Account,
 	model string,
+	requestedModels ...string,
 ) OpenAIDownstreamCacheMarkupPolicy {
-	if OpenAIImageGenerationIntentFromContext(ctx) || account == nil ||
-		!account.IsOpenAIDownstreamCacheMarkupEnabled() || !isOpenAIGPTTextModel(model) || s == nil || s.billingService == nil {
-		return OpenAIDownstreamCacheMarkupPolicy{}
+	policy := OpenAIDownstreamCacheMarkupPolicy{}
+	if OpenAIImageGenerationIntentFromContext(ctx) || account == nil {
+		return policy
+	}
+	if openAIDownstreamCacheUsageMode(account, model) == OpenAIPromptCacheCreationOptimizationModeInput125 {
+		policy.CreationPricingRequired = true
+		pricingModel := model
+		if len(requestedModels) > 0 {
+			pricingModel = s.openAICacheCreationPresentationModel(ctx, model, requestedModels[0])
+		}
+		policy.CreationPricing = s.openAICacheCreationPricingForContext(ctx, account, pricingModel, model)
+		policy.CreationPricingModel = strings.ToLower(strings.TrimSpace(model))
+		if ctx != nil {
+			policy.CreationServiceTier, _ = ctx.Value(openAICacheCreationServiceTierContextKey{}).(string)
+		}
+	}
+	if !account.IsOpenAIDownstreamCacheMarkupEnabled() || !isOpenAIGPTTextModel(model) || s == nil || s.billingService == nil {
+		return policy
 	}
 	pricing, err := s.billingService.GetModelPricing(model)
 	if err != nil || pricing == nil {
-		return OpenAIDownstreamCacheMarkupPolicy{}
+		return policy
 	}
-	policy := OpenAIDownstreamCacheMarkupPolicy{
+	markup := OpenAIDownstreamCacheMarkupPolicy{
 		ThresholdTokens:             account.OpenAIDownstreamCacheMarkupThresholdTokens(),
 		PercentBPS:                  account.OpenAIDownstreamCacheMarkupPercentBPS(),
 		InputPriceUnits:             openAIDownstreamCacheMarkupPriceUnits(pricing.InputPricePerToken),
@@ -68,10 +94,14 @@ func (s *OpenAIGatewayService) openAIDownstreamCacheMarkupPolicyForContext(
 		LongContextInputMultiplier:  int64(math.Round(pricing.LongContextInputMultiplier * 1_000_000)),
 		LongContextOutputMultiplier: int64(math.Round(pricing.LongContextOutputMultiplier * 1_000_000)),
 	}
-	if !policy.enabled() {
-		return OpenAIDownstreamCacheMarkupPolicy{}
+	if !markup.enabled() {
+		return policy
 	}
-	return policy
+	markup.CreationPricingRequired = policy.CreationPricingRequired
+	markup.CreationPricing = policy.CreationPricing
+	markup.CreationPricingModel = policy.CreationPricingModel
+	markup.CreationServiceTier = policy.CreationServiceTier
+	return markup
 }
 
 // openAIDownstreamCacheUsageMode is intentionally narrower than the request
@@ -99,7 +129,7 @@ func openAIDownstreamCacheUsageAccountMode(account *Account) string {
 }
 
 func openAIDownstreamCacheUsageMode(account *Account, model string) string {
-	if !isOpenAIGPT56Model(model) {
+	if !isOpenAICacheCreationTextModel(model) {
 		return ""
 	}
 	return openAIDownstreamCacheUsageAccountMode(account)
@@ -151,7 +181,11 @@ func normalizeOpenAIDownstreamUsageJSONWithMarkup(
 		rawCacheRead := openAIUsageCacheReadTokens(usage)
 		rawInput, _ := firstJSONIntWithKey(usage, "input_tokens", "prompt_tokens")
 		if cacheCreationEnabled {
-			changed = normalizeOpenAIUsageObjectForDownstream(usage, mode) || changed
+			tier := openAIUsageServiceTier(object, usage)
+			if tier == "" {
+				tier = markup.CreationServiceTier
+			}
+			changed = normalizeOpenAIUsageObjectForDownstreamWithPricing(usage, mode, markup, tier) || changed
 		}
 		changed = applyOpenAIDownstreamCacheMarkupObject(usage, rawInput, rawCacheRead, markup) || changed
 	}
@@ -188,7 +222,8 @@ func shouldNormalizeOpenAIStreamUsageForDownstream(body []byte, eventType string
 }
 
 func normalizeOpenAIDownstreamUsageForRequest(body []byte, ctx context.Context, account *Account, model string) ([]byte, bool) {
-	return normalizeOpenAIDownstreamUsageJSON(body, openAIDownstreamCacheUsageModeForContext(ctx, account, model))
+	svc := &OpenAIGatewayService{billingService: NewBillingService(nil, nil)}
+	return svc.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, model)
 }
 
 func (s *OpenAIGatewayService) normalizeOpenAIDownstreamUsageForRequest(
@@ -196,11 +231,12 @@ func (s *OpenAIGatewayService) normalizeOpenAIDownstreamUsageForRequest(
 	ctx context.Context,
 	account *Account,
 	model string,
+	requestedModels ...string,
 ) ([]byte, bool) {
 	return normalizeOpenAIDownstreamUsageJSONWithMarkup(
 		body,
 		openAIDownstreamCacheUsageModeForContext(ctx, account, model),
-		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, model),
+		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, model, requestedModels...),
 	)
 }
 
@@ -261,6 +297,19 @@ func openAIKnownUsageObjects(root map[string]any) []map[string]any {
 }
 
 func normalizeOpenAIUsageObjectForDownstream(usage map[string]any, mode string) bool {
+	return normalizeOpenAIUsageObjectForDownstreamWithPricing(usage, mode, OpenAIDownstreamCacheMarkupPolicy{}, "")
+}
+
+func openAIUsageServiceTier(root, usage map[string]any) string {
+	if nested, ok := root["response"].(map[string]any); ok {
+		if tier, ok := nested["service_tier"].(string); ok && tier != "" {
+			return tier
+		}
+	}
+	return firstNonEmptyString(root["service_tier"], usage["service_tier"])
+}
+
+func normalizeOpenAIUsageObjectForDownstreamWithPricing(usage map[string]any, mode string, policy OpenAIDownstreamCacheMarkupPolicy, tier string) bool {
 	creation := firstPositiveJSONInt(usage,
 		[]string{"input_tokens_details", "cache_creation_input_tokens"},
 		[]string{"prompt_tokens_details", "cache_creation_input_tokens"},
@@ -294,6 +343,15 @@ func normalizeOpenAIUsageObjectForDownstream(usage map[string]any, mode string) 
 	output, outputKey := firstJSONIntWithKey(usage, "output_tokens", "completion_tokens")
 	if mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
 		allocation := allocateOpenAIInput125DisplayUsage(ordinary, cacheRead, creation, output, outputKey != "")
+		if policy.CreationPricingRequired {
+			var ok bool
+			// RecordUsage settles using the forwarded request's tier. An
+			// upstream response must not silently select a different price card.
+			allocation, ok = allocateOpenAICacheCreationPricedUsage(ordinary, cacheRead, creation, maxInt64(output, 0), outputKey != "", firstNonEmpty(policy.CreationServiceTier, tier), policy.CreationPricing)
+			if !ok {
+				return false
+			}
+		}
 		ordinary = allocation.ordinary
 		cacheRead = allocation.cacheRead
 		creation = allocation.creation
@@ -717,6 +775,10 @@ func setOpenAICacheReadAliases(usage map[string]any, value int64, ensureCanonica
 }
 
 func normalizeOpenAIResponsesUsageForDownstream(usage *apicompat.ResponsesUsage, mode string) bool {
+	return normalizeOpenAIResponsesUsageForDownstreamWithPricing(usage, mode, OpenAIDownstreamCacheMarkupPolicy{}, "")
+}
+
+func normalizeOpenAIResponsesUsageForDownstreamWithPricing(usage *apicompat.ResponsesUsage, mode string, policy OpenAIDownstreamCacheMarkupPolicy, tier string) bool {
 	if usage == nil || usage.CacheCreationInputTokens <= 0 ||
 		(mode != OpenAIPromptCacheCreationOptimizationModeFree && mode != OpenAIPromptCacheCreationOptimizationModeInput125) {
 		return false
@@ -731,6 +793,13 @@ func normalizeOpenAIResponsesUsageForDownstream(usage *apicompat.ResponsesUsage,
 	ordinary := int(minInt64(ordinary64, math.MaxInt))
 	if mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
 		allocation := allocateOpenAIInput125DisplayUsage(int64(ordinary), int64(cacheRead), int64(creation), int64(usage.OutputTokens), true)
+		if policy.CreationPricingRequired {
+			var ok bool
+			allocation, ok = allocateOpenAICacheCreationPricedUsage(int64(ordinary), int64(cacheRead), int64(creation), int64(max(usage.OutputTokens, 0)), true, firstNonEmpty(policy.CreationServiceTier, tier), policy.CreationPricing)
+			if !ok {
+				return false
+			}
+		}
 		ordinary = int(minInt64(allocation.ordinary, math.MaxInt))
 		cacheRead = int(minInt64(allocation.cacheRead, math.MaxInt))
 		creation = int(minInt64(allocation.creation, math.MaxInt))
@@ -758,6 +827,7 @@ func normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 	usage *apicompat.ResponsesUsage,
 	mode string,
 	markup OpenAIDownstreamCacheMarkupPolicy,
+	serviceTier ...string,
 ) bool {
 	if usage == nil {
 		return false
@@ -767,7 +837,11 @@ func normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 	if usage.InputTokensDetails != nil {
 		rawCacheRead = int64(max(usage.InputTokensDetails.CachedTokens, 0))
 	}
-	changed := normalizeOpenAIResponsesUsageForDownstream(usage, mode)
+	tier := markup.CreationServiceTier
+	if len(serviceTier) > 0 && strings.TrimSpace(serviceTier[0]) != "" {
+		tier = serviceTier[0]
+	}
+	changed := normalizeOpenAIResponsesUsageForDownstreamWithPricing(usage, mode, markup, tier)
 	if !markup.enabled() || rawCacheRead <= 0 || rawCacheRead < markup.ThresholdTokens {
 		return changed
 	}
@@ -838,14 +912,22 @@ func normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(
 	event *apicompat.ResponsesStreamEvent,
 	mode string,
 	markup OpenAIDownstreamCacheMarkupPolicy,
+	serviceTier ...string,
 ) bool {
 	if event == nil {
 		return false
 	}
+	tier := markup.CreationServiceTier
+	if len(serviceTier) > 0 && strings.TrimSpace(serviceTier[0]) != "" {
+		tier = serviceTier[0]
+	}
+	if event.Response != nil && event.Response.UpstreamServiceTier != "" {
+		tier = event.Response.UpstreamServiceTier
+	}
 	changed := false
 	if event.Usage != nil {
 		usage := cloneOpenAIResponsesUsage(event.Usage)
-		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup) {
+		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup, tier) {
 			event.Usage = usage
 			changed = true
 		}
@@ -853,7 +935,7 @@ func normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(
 	if event.Response != nil && event.Response.Usage != nil {
 		response := *event.Response
 		usage := cloneOpenAIResponsesUsage(event.Response.Usage)
-		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup) {
+		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup, tier) {
 			response.Usage = usage
 			event.Response = &response
 			changed = true

@@ -984,6 +984,7 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 	if len(out.Output) == 0 {
 		out.Output = []ResponsesOutput{emptyResponsesMessageOutput()}
 	}
+	out.UpstreamServiceTier = resp.ServiceTier
 	if resp.Usage != nil {
 		out.Usage = ChatUsageToResponsesUsage(resp.Usage)
 	}
@@ -1135,12 +1136,13 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 // ChatCompletionsToResponsesStreamState tracks state while converting Chat
 // Completions SSE chunks into Responses SSE events.
 type ChatCompletionsToResponsesStreamState struct {
-	ResponseID     string
-	Model          string
-	Created        int64
-	SequenceNumber int
-	CreatedSent    bool
-	CompletedSent  bool
+	UpstreamServiceTier string
+	ResponseID          string
+	Model               string
+	Created             int64
+	SequenceNumber      int
+	CreatedSent         bool
+	CompletedSent       bool
 
 	nextOutputIndex int
 
@@ -1226,6 +1228,9 @@ func ChatCompletionsChunkToResponsesEvents(
 	}
 	if state.Model == "" && chunk.Model != "" {
 		state.Model = chunk.Model
+	}
+	if chunk.ServiceTier != "" {
+		state.UpstreamServiceTier = chunk.ServiceTier
 	}
 	if chunk.Usage != nil {
 		state.Usage = ChatUsageToResponsesUsage(chunk.Usage)
@@ -1370,14 +1375,15 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 	}
 	events = append(events, chatToResponsesEvent(state, terminalEventType, &ResponsesStreamEvent{
 		Response: &ResponsesResponse{
-			CreatedAt:         state.Created,
-			ID:                state.ResponseID,
-			Object:            "response",
-			Model:             state.Model,
-			Status:            status,
-			Output:            output,
-			Usage:             state.Usage,
-			IncompleteDetails: incompleteDetails,
+			UpstreamServiceTier: state.UpstreamServiceTier,
+			CreatedAt:           state.Created,
+			ID:                  state.ResponseID,
+			Object:              "response",
+			Model:               state.Model,
+			Status:              status,
+			Output:              output,
+			Usage:               state.Usage,
+			IncompleteDetails:   incompleteDetails,
 		},
 	}))
 	return events

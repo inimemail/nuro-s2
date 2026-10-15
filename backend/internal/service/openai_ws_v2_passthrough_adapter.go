@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
@@ -22,6 +23,7 @@ type openAIWSPassthroughInitialHooksDoneContextKey struct{}
 
 type openAIWSClientFrameConn struct {
 	conn                 *coderws.Conn
+	transformUsage       func([]byte) []byte
 	restoreResponseModel func([]byte) []byte
 }
 
@@ -143,10 +145,11 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 }
 
 type openAIWSPassthroughUsageMeta struct {
-	serviceTier     atomic.Pointer[string]
-	reasoningEffort atomic.Pointer[string]
-	requestModel    atomic.Pointer[string]
-	upstreamModel   atomic.Pointer[string]
+	serviceTier         atomic.Pointer[string]
+	reasoningEffort     atomic.Pointer[string]
+	requestModel        atomic.Pointer[string]
+	upstreamModel       atomic.Pointer[string]
+	explicitImageIntent atomic.Bool
 
 	// 仅在 client->upstream filter goroutine 中读写；Load 侧通过上方原子指针同步。
 	sessionRequestModel string
@@ -273,6 +276,32 @@ func openAIWSPassthroughRequestModelFromSessionFrame(payload []byte) string {
 
 const openaiWSV2PassthroughModeFields = "ws_mode=passthrough ws_router=v2"
 
+// The relay observes upstream usage before WriteFrame. Only the client-bound
+// copy is rewritten, and pricing is resolved for usage-bearing terminal events.
+func (s *OpenAIGatewayService) normalizeOpenAIWSPassthroughDownstreamUsage(ctx context.Context, account *Account, meta *openAIWSPassthroughUsageMeta, payload []byte) []byte {
+	if meta == nil || meta.explicitImageIntent.Load() {
+		return payload
+	}
+	mode := openAIDownstreamCacheUsageAccountMode(account)
+	eventType := gjson.GetBytes(payload, "type").String()
+	if mode == "" || !shouldNormalizeOpenAIStreamUsageForDownstream(payload, eventType) {
+		return payload
+	}
+	requested, upstream := meta.turnModels("")
+	if !isOpenAICacheCreationTextModel(upstream) {
+		return payload
+	}
+	// Intent belongs to this turn, whereas the ingress context belongs to the
+	// first turn. Preserve its group/pricing context while clearing stale intent.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	turnCtx := context.WithValue(ctx, ctxkey.OpenAIImageGenerationIntent, false)
+	policy := s.openAIDownstreamCacheMarkupPolicyForContext(turnCtx, account, upstream, requested)
+	policy.CreationServiceTier = openAICacheCreationServiceTier(meta.serviceTier.Load())
+	return normalizeOpenAIWSDownstreamUsage(payload, eventType, mode, policy)
+}
+
 var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
 
 func (c *openAIWSClientFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
@@ -295,6 +324,9 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 	if msgType == coderws.MessageText || msgType == coderws.MessageBinary {
 		if normalized, changed := normalizeCompletedImageGenerationStatus(payload); changed {
 			payload = normalized
+		}
+		if c.transformUsage != nil {
+			payload = c.transformUsage(payload)
 		}
 		if c.restoreResponseModel != nil {
 			payload = c.restoreResponseModel(payload)
@@ -400,10 +432,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 	}
 	firstExplicitImageIntent, firstExplicitImageIntentKnown := OpenAIExplicitImageGenerationIntentFromContext(ctx)
-	if !firstExplicitImageIntentKnown && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(capturedSessionModel) {
+	if !firstExplicitImageIntentKnown && (account.IsOpenAIPromptCacheCreationOptimizationEnabled() || openAIDownstreamCacheUsageAccountMode(account) != "") && isOpenAICacheCreationTextModel(capturedSessionModel) {
 		firstExplicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, capturedSessionModel, firstClientMessage)
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
+	usageMeta.explicitImageIntent.Store(firstExplicitImageIntent)
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
 		return fmt.Errorf("apply openai fast policy on first ws frame: %w", policyErr)
@@ -565,6 +598,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			return replaceOpenAIWSMessageModel(payload, upstreamModel, requestModel)
 		},
 	}
+	if openAIDownstreamCacheUsageAccountMode(account) != "" {
+		clientFrameConn.transformUsage = func(payload []byte) []byte {
+			return s.normalizeOpenAIWSPassthroughDownstreamUsage(ctx, account, usageMeta, payload)
+		}
+	}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
 		inner: clientFrameConn,
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
@@ -628,7 +666,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// and written exactly once to the upstream frame.
 			payload, model := applyOpenAIWSPassthroughUpstreamModel(account, payload, capturedSessionModel)
 			explicitImageIntent := false
-			if account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(model) {
+			if (account.IsOpenAIPromptCacheCreationOptimizationEnabled() || openAIDownstreamCacheUsageAccountMode(account) != "") && isOpenAICacheCreationTextModel(model) {
 				explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, payload)
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
@@ -668,6 +706,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if policyErr == nil && blocked == nil &&
 				strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
 				usageMeta.updateFromResponseCreate(out, requestModelForThisFrame)
+				usageMeta.explicitImageIntent.Store(explicitImageIntent)
 				lastUpstreamRequest.Store(append([]byte(nil), out...))
 			}
 			return out, blocked, policyErr
@@ -793,7 +832,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload)
 					cachePolicyCompatibilityFailure.Store(unsupported)
 					if unsupported {
-						s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+						currentBody, _ := lastUpstreamRequest.Load().([]byte)
+						_, upstreamModel := usageMeta.turnModels("")
+						s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, OpenAIPromptCacheCreationOptimizationScope(upstreamModel, currentBody))
 					}
 				}
 				if !wroteDownstream && (eventType == "error" || eventType == "response.failed") {

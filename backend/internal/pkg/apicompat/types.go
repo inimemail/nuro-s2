@@ -356,19 +356,36 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesResponse is the non-streaming response from POST /v1/responses.
 type ResponsesResponse struct {
-	CreatedAt int64             `json:"created_at"`
-	ID        string            `json:"id"`
-	Object    string            `json:"object"` // "response"
-	Model     string            `json:"model"`
-	Status    string            `json:"status"` // "completed" | "incomplete" | "failed"
-	Output    []ResponsesOutput `json:"output"`
-	Usage     *ResponsesUsage   `json:"usage,omitempty"`
+	// UpstreamServiceTier is pricing metadata only; retaining it must not add
+	// a field to the existing downstream response format.
+	UpstreamServiceTier string            `json:"-"`
+	CreatedAt           int64             `json:"created_at"`
+	ID                  string            `json:"id"`
+	Object              string            `json:"object"` // "response"
+	Model               string            `json:"model"`
+	Status              string            `json:"status"` // "completed" | "incomplete" | "failed"
+	Output              []ResponsesOutput `json:"output"`
+	Usage               *ResponsesUsage   `json:"usage,omitempty"`
 
 	// incomplete_details is present when status="incomplete"
 	IncompleteDetails *ResponsesIncompleteDetails `json:"incomplete_details,omitempty"`
 
 	// Error is present when status="failed"
 	Error *ResponsesError `json:"error,omitempty"`
+}
+
+func (r *ResponsesResponse) UnmarshalJSON(data []byte) error {
+	type responseAlias ResponsesResponse
+	decoded := struct {
+		*responseAlias
+		Tier json.RawMessage `json:"service_tier"`
+	}{responseAlias: (*responseAlias)(r)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.UpstreamServiceTier = ""
+	_ = json.Unmarshal(decoded.Tier, &r.UpstreamServiceTier)
+	return nil
 }
 
 // ResponsesError describes an error in a failed response.

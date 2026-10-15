@@ -13,13 +13,14 @@ const openAIPromptCacheCreationOptimizationTTL = "24h"
 
 type openAIPromptCacheCreationOptimizationResult struct {
 	Applied                     bool
+	CompatibilityScope          string
 	BreakpointInserted          bool
 	RemovedPromptCacheRetention bool
 }
 
 // applyOpenAIPromptCacheCreationOptimizationBody is deliberately a byte-exact
 // no-op unless the account enabled the policy and the final upstream model
-// belongs to GPT-5.6.
+// is a text model (including provider aliases).
 func applyOpenAIPromptCacheCreationOptimizationBody(
 	account *Account,
 	upstreamModel string,
@@ -44,7 +45,7 @@ func applyOpenAIPromptCacheCreationOptimizationBodyWithIntent(
 	explicitImageIntent *bool,
 ) ([]byte, openAIPromptCacheCreationOptimizationResult, error) {
 	var result openAIPromptCacheCreationOptimizationResult
-	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAIGPT56Model(upstreamModel) {
+	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAICacheCreationTextModel(upstreamModel) {
 		return body, result, nil
 	}
 
@@ -108,13 +109,14 @@ func applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(
 	explicitImageIntent bool,
 ) openAIPromptCacheCreationOptimizationResult {
 	var result openAIPromptCacheCreationOptimizationResult
-	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAIGPT56Model(upstreamModel) || request == nil {
+	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAICacheCreationTextModel(upstreamModel) || request == nil {
 		return result
 	}
 	if explicitImageIntent || isOpenAIImageGenerationModel(upstreamModel) || isOpenAIImageGenerationModel(firstNonEmptyString(request["model"])) {
 		return result
 	}
 	result.Applied = true
+	result.CompatibilityScope = openAIPromptCacheCreationOptimizationMapScope(upstreamModel, request)
 	result.RemovedPromptCacheRetention = removeOpenAIPromptCacheRetention(request)
 	removeOpenAIPromptCacheBreakpoints(request)
 	mode := account.OpenAIPromptCacheCreationOptimizationMode()
@@ -137,7 +139,7 @@ func openAIPromptCacheCreationOptimizationFallbackAccount(account *Account) *Acc
 		return nil
 	}
 	fallback := *account
-	if mode := openAIDownstreamCacheUsageMode(account, "gpt-5.6"); mode != "" {
+	if mode := openAIDownstreamCacheUsageAccountMode(account); mode != "" {
 		fallback.openAIDownstreamCacheUsageModeOverride = mode
 	}
 	if account.Credentials == nil {

@@ -146,6 +146,22 @@ func isOpenAIGPT56Model(model string) bool {
 	return false
 }
 
+// isOpenAICacheCreationTextModel accepts provider-defined text aliases too.
+// Account and request-intent checks remain mandatory at each policy entry point.
+func isOpenAICacheCreationTextModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(lastOpenAIModelSegment(model)))
+	if normalized == "" {
+		return false
+	}
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	for _, marker := range []string{"image", "video", "embedding", "moderation", "realtime", "audio", "transcribe", "tts", "whisper", "dall-e"} {
+		if strings.Contains(normalized, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 // isOpenAIGPTTextModel identifies GPT-family text usage envelopes. Media and
 // realtime models use different billing units and must not receive text-token
 // presentation adjustments.

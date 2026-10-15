@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between gap-4">
       <div class="min-w-0">
         <label class="input-label mb-0">{{ t('admin.accounts.promptCacheCreationOptimization') }}</label>
-        <p class="mt-1 text-xs text-sky-700 dark:text-sky-300">
+        <p class="mt-1 text-xs leading-relaxed text-sky-700 dark:text-sky-300">
           {{ t('admin.accounts.promptCacheCreationOptimizationHint') }}
         </p>
       </div>
@@ -37,16 +37,17 @@
           :aria-pressed="mode === option.value"
           @click="emit('update:mode', option.value)"
           :class="[
-            'min-w-0 rounded-md px-2 py-2 text-center text-xs font-medium transition-colors',
+            'flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-center text-xs font-medium transition-colors',
             mode === option.value
               ? 'bg-white text-sky-800 shadow-sm dark:bg-dark-700 dark:text-sky-200'
               : 'text-gray-600 hover:text-sky-800 dark:text-gray-400 dark:hover:text-sky-200'
           ]"
         >
-          {{ t(option.label) }}
+          <span aria-hidden="true" class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-sky-200/60 text-[10px] font-semibold text-sky-800 dark:bg-sky-900/40 dark:text-sky-200">{{ option.code }}</span>
+          <span>{{ t(option.label) }}</span>
         </button>
       </div>
-      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+      <p class="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
         {{ t(modeHintKey) }}
       </p>
     </div>
@@ -73,22 +74,27 @@ const { t } = useI18n()
 
 const modeOptions: Array<{
   value: PromptCacheCreationOptimizationMode
+  code: string
   label: string
 }> = [
   {
     value: 'reduce',
+    code: 'A',
     label: 'admin.accounts.promptCacheCreationOptimizationReduce'
   },
   {
     value: 'suppress',
+    code: 'B',
     label: 'admin.accounts.promptCacheCreationOptimizationSuppress'
   },
   {
     value: 'free',
+    code: 'C',
     label: 'admin.accounts.promptCacheCreationOptimizationFree'
   },
   {
     value: 'input_125',
+    code: 'D',
     label: 'admin.accounts.promptCacheCreationOptimizationInput125'
   }
 ]

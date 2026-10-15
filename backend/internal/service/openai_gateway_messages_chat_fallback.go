@@ -201,7 +201,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			logger.L().Info("openai messages chat fallback: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),
@@ -243,6 +243,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		return s.handleAnthropicErrorResponse(resp, c, account, billingModel)
 	}
 
+	attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, openAICacheCreationServiceTier(serviceTier))
 	if clientStream {
 		result, forwardErr := s.streamChatCompletionsAsAnthropic(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 		if result != nil && trackAttempt {
@@ -310,7 +311,8 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 		normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 			responsesResp.Usage,
 			openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel),
-			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel),
+			ccResp.ServiceTier,
 		)
 	}
 	anthropicResp := apicompat.ResponsesToAnthropic(responsesResp, originalModel)
@@ -352,7 +354,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 ) (result *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
 	headersWritten := false
 	writeStreamHeaders := func() {
 		if headersWritten {
@@ -531,7 +533,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 		if rEvent.Response != nil && rEvent.Response.Usage != nil {
 			usage = copyOpenAIUsageFromResponsesUsage(rEvent.Response.Usage)
 		}
-		normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(rEvent, downstreamCacheUsageMode, downstreamCacheMarkup)
+		normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(rEvent, downstreamCacheUsageMode, downstreamCacheMarkup, openAICacheCreationServiceTier(serviceTier))
 		if clientDisconnected {
 			continue
 		}

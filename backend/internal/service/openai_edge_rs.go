@@ -32,17 +32,19 @@ const (
 // auth, billing, scheduling, soft cooling, pool mode, sticky routing, and
 // request transformation.
 type OpenAIEdgePrepareRequest struct {
-	EdgeRequestID  string            `json:"edge_request_id"`
-	EdgeNodeID     string            `json:"edge_node_id,omitempty"`
-	EdgeInstanceID string            `json:"edge_instance_id,omitempty"`
-	Method         string            `json:"method"`
-	Path           string            `json:"path"`
-	RawQuery       string            `json:"raw_query,omitempty"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Body           json.RawMessage   `json:"body,omitempty"`
-	BodyRawBase64  string            `json:"body_raw_base64,omitempty"`
-	ClientIP       string            `json:"client_ip,omitempty"`
-	Stream         *bool             `json:"stream,omitempty"`
+	// Version 1 supports all-text-model cache policies and model-priced D usage.
+	CacheCreationPolicyVersion int               `json:"cache_creation_policy_version,omitempty"`
+	EdgeRequestID              string            `json:"edge_request_id"`
+	EdgeNodeID                 string            `json:"edge_node_id,omitempty"`
+	EdgeInstanceID             string            `json:"edge_instance_id,omitempty"`
+	Method                     string            `json:"method"`
+	Path                       string            `json:"path"`
+	RawQuery                   string            `json:"raw_query,omitempty"`
+	Headers                    map[string]string `json:"headers,omitempty"`
+	Body                       json.RawMessage   `json:"body,omitempty"`
+	BodyRawBase64              string            `json:"body_raw_base64,omitempty"`
+	ClientIP                   string            `json:"client_ip,omitempty"`
+	Stream                     *bool             `json:"stream,omitempty"`
 	// PreferredAccountID is an untrusted Rust route-cache hint. Go must fully
 	// revalidate it and may ignore it before issuing any lease.
 	PreferredAccountID int64 `json:"preferred_account_id,omitempty"`
@@ -127,6 +129,7 @@ type OpenAIEdgePlan struct {
 	PreambleFlush bool `json:"preamble_flush"`
 	// PromptCacheCreationOptimizationMode carries the account policy for edge-rs
 	// WS turns. Applied reports whether the current outgoing body was rewritten.
+	PromptCacheCreationOptimizationScope   string                             `json:"prompt_cache_creation_optimization_scope,omitempty"`
 	PromptCacheCreationOptimizationMode    string                             `json:"prompt_cache_creation_optimization_mode,omitempty"`
 	PromptCacheCreationOptimizationModel   string                             `json:"prompt_cache_creation_optimization_model,omitempty"`
 	PromptCacheCreationOptimizationApplied bool                               `json:"prompt_cache_creation_optimization_applied,omitempty"`

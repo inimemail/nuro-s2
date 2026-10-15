@@ -248,7 +248,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
-			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, cacheCreationOptimization.CompatibilityScope)
 			logger.L().Info("openai responses chat fallback: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),
@@ -290,6 +290,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
 	}
 
+	attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, openAICacheCreationServiceTier(serviceTier))
 	var result *OpenAIForwardResult
 	var forwardErr error
 	if clientStream {
@@ -380,7 +381,8 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
 			responsesResp.Usage,
 			openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel),
-			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel),
+			ccResp.ServiceTier,
 		)
 	}
 
@@ -421,7 +423,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 ) (result *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
 	headersWritten := false
 	writeStreamHeaders := func() {
 		if headersWritten {
@@ -590,7 +592,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		if isOpenAICompatResponsesTerminalEvent(event.Type) {
 			terminalEventType = event.Type
 		}
-		normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(event, downstreamCacheUsageMode, downstreamCacheMarkup)
+		normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(event, downstreamCacheUsageMode, downstreamCacheMarkup, openAICacheCreationServiceTier(serviceTier))
 	}
 	writeEvents(finalEvents)
 	if !clientDisconnected {
