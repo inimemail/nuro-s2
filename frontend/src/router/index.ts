@@ -274,12 +274,6 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/gemini-cache',
-    name: 'GeminiCache',
-    component: () => import('@/views/user/GeminiCacheView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Gemini Cache', titleKey: 'geminiCache.title' }
-  },
-  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),

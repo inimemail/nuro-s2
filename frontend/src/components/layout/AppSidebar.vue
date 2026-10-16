@@ -708,7 +708,6 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/model-plaza?embedded=1', label: t('nav.modelPlaza'), icon: GlobeIcon, hideInSimpleMode: true, featureFlag: flagModelPlaza },
-    { path: '/gemini-cache', label: t('geminiCache.title'), icon: ChannelIcon, hideInSimpleMode: true },
     { path: '/batch-images', label: t('nav.batchImages'), icon: ImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImage },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
