@@ -50,6 +50,52 @@ func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payme
 	return s.confirmPayment(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata)
 }
 
+// ConfirmNotificationUpstream asks providers that implement
+// payment.NotificationConfirmer to confirm a verified success notification
+// against the upstream order, using the same instance that verified it.
+// Failures are recorded on the order's audit trail and returned so the webhook
+// answers non-success and the gateway retries.
+func (s *PaymentService) ConfirmNotificationUpstream(ctx context.Context, prov payment.Provider, n *payment.PaymentNotification) error {
+	confirmer, ok := prov.(payment.NotificationConfirmer)
+	if !ok || n == nil || n.Status != payment.NotificationStatusSuccess {
+		return nil
+	}
+	// Unknown orders must keep the webhook handler's terminal 2xx behavior.
+	// Confirming against the provider first can turn a foreign/misrouted
+	// notification into a retryable 502. Production services resolve the local
+	// order before querying upstream; nil entClient keeps lightweight callers
+	// and tests compatible with the capability pass-through contract.
+	var order *dbent.PaymentOrder
+	if s != nil && s.entClient != nil {
+		var err error
+		order, err = s.entClient.PaymentOrder.Query().Where(paymentorder.OutTradeNo(n.OrderID)).Only(ctx)
+		if err != nil {
+			if oid, legacy := parseLegacyPaymentOrderID(n.OrderID, err); legacy {
+				order, err = s.entClient.PaymentOrder.Get(ctx, oid)
+			}
+			if dbent.IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("lookup webhook order for upstream confirmation: %w", err)
+			}
+		}
+	}
+	notifiedTradeNo := n.TradeNo
+	err := confirmer.ConfirmNotification(ctx, n)
+	if err == nil {
+		return nil
+	}
+	if order != nil {
+		s.writeAuditLog(ctx, order.ID, "PAYMENT_UPSTREAM_UNCONFIRMED", prov.ProviderKey(), map[string]any{
+			"detail":  err.Error(),
+			"tradeNo": notifiedTradeNo,
+			"amount":  n.Amount,
+		})
+	}
+	return err
+}
+
 func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 	if !dbent.IsNotFound(lookupErr) {
 		return 0, false
@@ -216,16 +262,47 @@ func (s *PaymentService) executeFulfillment(ctx context.Context, oid int64) erro
 	if err != nil {
 		return fmt.Errorf("get order: %w", err)
 	}
-	if o.OrderType == payment.OrderTypeSubscription {
+	switch o.OrderType {
+	case payment.OrderTypeSubscription:
 		return s.ExecuteSubscriptionFulfillment(ctx, oid)
+	case payment.OrderTypeBalance:
+		return s.ExecuteBalanceFulfillment(ctx, oid)
+	default:
+		// 不支持的订单类型不履约：标记 FAILED 后正常返回，避免支付回调持续 500 重试。
+		s.rejectUnsupportedOrderType(ctx, o)
+		return nil
 	}
-	return s.ExecuteBalanceFulfillment(ctx, oid)
+}
+
+func isSupportedPaymentOrderType(orderType string) bool {
+	return orderType == payment.OrderTypeBalance || orderType == payment.OrderTypeSubscription
+}
+
+func (s *PaymentService) rejectUnsupportedOrderType(ctx context.Context, o *dbent.PaymentOrder) {
+	reason := "unsupported order type: " + o.OrderType
+	c, err := s.entClient.PaymentOrder.Update().
+		Where(
+			paymentorder.IDEQ(o.ID),
+			paymentorder.StatusIn(OrderStatusPaid, OrderStatusRecharging),
+		).
+		SetStatus(OrderStatusFailed).SetFailedAt(time.Now()).SetFailedReason(reason).Save(ctx)
+	if err != nil {
+		slog.Error("mark unsupported order type FAILED", "orderID", o.ID, "error", err)
+		return
+	}
+	if c > 0 {
+		slog.Warn("payment order with unsupported order type not fulfilled", "orderID", o.ID, "orderType", o.OrderType)
+		s.writeAuditLog(ctx, o.ID, "FULFILLMENT_FAILED", "system", map[string]any{"reason": reason})
+	}
 }
 
 func (s *PaymentService) ExecuteBalanceFulfillment(ctx context.Context, oid int64) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		return infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if o.OrderType != payment.OrderTypeBalance {
+		return infraerrors.BadRequest("INVALID_ORDER_TYPE", "order is not a balance order")
 	}
 	if o.Status == OrderStatusCompleted {
 		return nil
@@ -665,6 +742,9 @@ func (s *PaymentService) RetryFulfillment(ctx context.Context, oid int64) error 
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		return infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if !isSupportedPaymentOrderType(o.OrderType) {
+		return infraerrors.BadRequest("INVALID_ORDER_TYPE", "unsupported order type")
 	}
 	if o.PaidAt == nil {
 		return infraerrors.BadRequest("INVALID_STATUS", "order is not paid")

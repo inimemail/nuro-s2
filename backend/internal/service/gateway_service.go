@@ -7452,8 +7452,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	if err := checkAnthropicMessagesCredential(account); err != nil {
+		return nil, err
+	}
 	targetURL := claudeAPIURL
-	baseURL := account.GetBaseURL()
+	baseURL := getAnthropicGatewayBaseURL(account)
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
@@ -8410,6 +8413,9 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 }
 
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool) (*http.Request, error) {
+	if err := checkAnthropicMessagesCredential(account); err != nil {
+		return nil, err
+	}
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		return s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
 	}
@@ -8417,7 +8423,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 确定目标URL
 	targetURL := claudeAPIURL
 	if account.Type == AccountTypeAPIKey {
-		baseURL := account.GetBaseURL()
+		baseURL := getAnthropicGatewayBaseURL(account)
 		if baseURL != "" {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
@@ -12291,8 +12297,11 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	if err := checkAnthropicMessagesCredential(account); err != nil {
+		return nil, err
+	}
 	targetURL := claudeAPICountTokensURL
-	baseURL := account.GetBaseURL()
+	baseURL := getAnthropicGatewayBaseURL(account)
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
@@ -12372,10 +12381,13 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 
 // buildCountTokensRequest 构建 count_tokens 上游请求
 func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, mimicClaudeCode bool) (*http.Request, error) {
+	if err := checkAnthropicMessagesCredential(account); err != nil {
+		return nil, err
+	}
 	// 确定目标 URL
 	targetURL := claudeAPICountTokensURL
 	if account.Type == AccountTypeAPIKey {
-		baseURL := account.GetBaseURL()
+		baseURL := getAnthropicGatewayBaseURL(account)
 		if baseURL != "" {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
@@ -12665,6 +12677,16 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 	// If no account has model_mapping, return nil (use default)
 	if !hasAnyMapping {
+		if platform == PlatformOpenAI {
+			defaults := openai.DefaultModelIDs()
+			filtered := filterRetiredOpenAIModelIDs(accounts, defaults)
+			if len(filtered) != len(defaults) {
+				if s.modelsListCache != nil {
+					s.modelsListCache.Set(cacheKey, cloneStringSlice(filtered), s.modelsListCacheTTL)
+				}
+				return filtered
+			}
+		}
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
@@ -12677,6 +12699,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	for model := range modelSet {
 		models = append(models, model)
 	}
+	models = filterRetiredOpenAIModelIDs(accounts, models)
 	sort.Strings(models)
 
 	if s.modelsListCache != nil {

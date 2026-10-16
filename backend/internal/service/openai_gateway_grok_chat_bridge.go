@@ -245,7 +245,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 	if !grokChatResponsesRuntimeEligible(upstreamModel, cacheIdentity) && !(hasImageInput && strings.TrimSpace(upstreamModel) == "grok-4.5") {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
-	responsesReq, err := apicompat.ChatCompletionsToResponses(&chatReq)
+	responsesReq, err := chatCompletionsToResponses(s.cfg, &chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert grok chat completions to responses: %w", err)
 	}

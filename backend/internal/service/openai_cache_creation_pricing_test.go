@@ -263,7 +263,7 @@ func TestOpenAICacheCreationPricing_OAuthLongContextUsesUpstreamNotBillingAlias(
 
 func TestOpenAICacheCreationPricing_TimeDependentCatalogKeepsRawUnlessFixed(t *testing.T) {
 	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeInput125)
-	for _, model := range []string{"deepseek-v4-pro", "gemini-3.6-flash"} {
+	for _, model := range []string{"deepseek-v4-pro", "gemini-3.6-flash", "gemini-4-argon", "gemini-4-argon-high"} {
 		t.Run(model, func(t *testing.T) {
 			for _, fixed := range []bool{false, true} {
 				svc := &OpenAIGatewayService{billingService: NewBillingService(&config.Config{}, &PricingService{pricingData: map[string]*LiteLLMModelPricing{

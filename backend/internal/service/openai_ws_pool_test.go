@@ -187,7 +187,9 @@ func TestOpenAIWSConnPool_ClearAccountRejectsInFlightPrewarmGeneration(t *testin
 	require.Eventually(t, func() bool {
 		ap.mu.Lock()
 		defer ap.mu.Unlock()
-		return ap.creating == 0 && len(ap.conns) == 0 && !ap.prewarmActive
+		// Pool bookkeeping is released before the stale connection is closed.
+		// Wait for both asynchronous steps instead of racing the final assertion.
+		return ap.creating == 0 && len(ap.conns) == 0 && !ap.prewarmActive && dialer.conn.closed.Load()
 	}, time.Second, 10*time.Millisecond)
 	require.True(t, dialer.conn.closed.Load())
 }

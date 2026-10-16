@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestParseOpenAIWSEventEnvelope(t *testing.T) {
@@ -85,7 +86,9 @@ func TestSanitizeOpenAIWSErrorEventForClient(t *testing.T) {
 	t.Run("error event removes endpoint and unknown diagnostics", func(t *testing.T) {
 		payload := []byte(`{"type":"error","error":{"type":"server_error","message":"<!DOCTYPE html><title>xiaobaishu.org | 502</title>","upstream_host":"xiaobaishu.org"},"debug_url":"https://www.cloudflare.com/5xx"}`)
 		sanitized := sanitizeOpenAIWSErrorEventForClient(payload, "error", false)
-		require.JSONEq(t, `{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"server_error","message":"Upstream request failed"}}}`, string(sanitized))
+		require.Positive(t, gjson.GetBytes(sanitized, "response.created_at").Int())
+		withoutCreated, _ := sjson.DeleteBytes(sanitized, "response.created_at")
+		require.JSONEq(t, `{"type":"response.failed","sequence_number":0,"response":{"object":"response","status":"failed","output":[],"error":{"type":"server_error","message":"Upstream request failed"}}}`, string(withoutCreated))
 		require.NotContains(t, string(sanitized), "xiaobaishu.org")
 		require.NotContains(t, string(sanitized), "cloudflare.com")
 		require.NotContains(t, string(sanitized), "DOCTYPE")

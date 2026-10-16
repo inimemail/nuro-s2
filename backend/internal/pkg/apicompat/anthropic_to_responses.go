@@ -13,17 +13,28 @@ import (
 // Chat Completions intermediary round-trip (e.g. thinking, cache_control,
 // structured system prompts).
 func AnthropicToResponses(req *AnthropicRequest) (*ResponsesRequest, error) {
-	return anthropicToResponses(req, false)
+	return AnthropicToResponsesWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
 }
 
 // AnthropicToResponsesForChatCompletions preserves plaintext tool-turn thinking
 // for the Chat Completions bridge's reasoning_content replay. Native Responses
 // upstreams retain their original encrypted-reasoning replay policy.
 func AnthropicToResponsesForChatCompletions(req *AnthropicRequest) (*ResponsesRequest, error) {
-	return anthropicToResponses(req, true)
+	return AnthropicToResponsesForChatCompletionsWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
 }
 
-func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool) (*ResponsesRequest, error) {
+func AnthropicToResponsesForChatCompletionsWithMinOutputTokens(req *AnthropicRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return anthropicToResponses(req, true, minOutputTokens)
+}
+
+func AnthropicToResponsesWithMinOutputTokens(req *AnthropicRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return anthropicToResponses(req, false, minOutputTokens)
+}
+
+func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool, minOutputTokens int) (*ResponsesRequest, error) {
+	if minOutputTokens < 16 {
+		minOutputTokens = DefaultMinMaxOutputTokens
+	}
 	input, err := convertAnthropicToResponsesInput(req.System, req.Messages, replayToolThinking)
 	if err != nil {
 		return nil, err
@@ -64,8 +75,8 @@ func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool) (*Resp
 
 	if req.MaxTokens > 0 {
 		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < minOutputTokens {
+			v = minOutputTokens
 		}
 		out.MaxOutputTokens = &v
 	}

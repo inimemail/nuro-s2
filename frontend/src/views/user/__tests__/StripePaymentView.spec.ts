@@ -64,6 +64,10 @@ vi.mock('@stripe/stripe-js/pure', () => ({
 
 import StripePaymentView from '../StripePaymentView.vue'
 import { formatPaymentAmount } from '@/components/payment/currency'
+import {
+  PAYMENT_RECOVERY_STORAGE_KEY,
+  type PaymentRecoverySnapshot,
+} from '@/components/payment/paymentFlow'
 import type { PaymentOrder } from '@/types/payment'
 
 function orderFactory(overrides: Partial<PaymentOrder> = {}): PaymentOrder {
@@ -85,6 +89,33 @@ function orderFactory(overrides: Partial<PaymentOrder> = {}): PaymentOrder {
   }
 }
 
+function stripeSnapshot(overrides: Partial<PaymentRecoverySnapshot> = {}): PaymentRecoverySnapshot {
+  return {
+    orderId: 42,
+    amount: 100,
+    qrCode: '',
+    expiresAt: '2099-01-01T00:30:00.000Z',
+    paymentType: 'stripe',
+    payUrl: '/payment/stripe?order_id=42',
+    outTradeNo: 'sub2_stripe_42',
+    clientSecret: 'pi_secret_42',
+    intentId: '',
+    currency: 'CNY',
+    countryCode: '',
+    paymentEnv: '',
+    payAmount: 103,
+    orderType: 'balance',
+    paymentMode: '',
+    resumeToken: '',
+    createdAt: Date.UTC(2099, 0, 1, 0, 0, 0),
+    ...overrides,
+  }
+}
+
+function writeSnapshot(overrides: Partial<PaymentRecoverySnapshot> = {}) {
+  window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify(stripeSnapshot(overrides)))
+}
+
 function mountView() {
   return shallowMount(StripePaymentView, {
     global: {
@@ -102,6 +133,8 @@ describe('StripePaymentView', () => {
       order_id: '42',
       client_secret: 'pi_secret_42',
     }
+    window.localStorage.clear()
+    writeSnapshot()
     routerPush.mockReset()
     getOrder.mockReset()
     paymentStore.config = { stripe_publishable_key: 'pk_test' }
@@ -119,10 +152,9 @@ describe('StripePaymentView', () => {
     stripeInstance.confirmPayment.mockReset()
     stripeInstance.confirmAlipayPayment.mockReset()
     stripeInstance.confirmWechatPayPayment.mockReset()
-    window.localStorage.clear()
   })
 
-  it('本地恢复快照缺失时使用订单接口返回的 Stripe 币种展示金额', async () => {
+  it('使用订单接口返回的 Stripe 币种展示金额', async () => {
     getOrder.mockResolvedValue({
       data: orderFactory({ currency: 'HKD', pay_amount: 103 }),
     })
@@ -161,4 +193,30 @@ describe('StripePaymentView', () => {
     expect(stripeElements.create).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+  it('rejects a URL secret without a matching browser snapshot', async () => {
+    window.localStorage.clear()
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('payment.stripeMissingParams')
+    expect(getOrder).not.toHaveBeenCalled()
+    expect(loadStripe).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('ignores a spoofed URL secret and binds to the matching snapshot', async () => {
+    routeState.query.client_secret = 'pi_attacker_secret'
+    getOrder.mockResolvedValue({ data: orderFactory() })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(stripeInstance.elements).toHaveBeenCalledWith(expect.objectContaining({ clientSecret: 'pi_secret_42' }))
+    wrapper.unmount()
+  })
+  it('rejects a snapshot belonging to another order', async () => {
+    writeSnapshot({ orderId: 43 })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(getOrder).not.toHaveBeenCalled()
+    expect(loadStripe).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
 })

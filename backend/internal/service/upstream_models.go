@@ -70,6 +70,24 @@ func newUpstreamModelSyncUpstreamError(message string, err error) error {
 	return &UpstreamModelSyncError{Kind: UpstreamModelSyncErrorUpstream, Message: message, Err: err}
 }
 
+// UpstreamModelCatalog exposes fetched capabilities as advisory metadata. It
+// never replaces explicit mappings or introduces scheduler eligibility rules.
+type UpstreamModelCatalog struct {
+	Models   []string                          `json:"models"`
+	Metadata map[string]AntigravityModelDetail `json:"metadata,omitempty"`
+}
+
+func (s *AccountTestService) FetchUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	if s != nil && account != nil && account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
+		return s.fetchAntigravityOAuthModelCatalog(ctx, account)
+	}
+	models, err := s.FetchUpstreamSupportedModels(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	return &UpstreamModelCatalog{Models: models}, nil
+}
+
 // FetchUpstreamSupportedModels fetches the live model list from the account's upstream API format.
 func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, account *Account) ([]string, error) {
 	if s == nil {
@@ -452,6 +470,14 @@ func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Contex
 }
 
 func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Context, account *Account) ([]string, error) {
+	catalog, err := s.fetchAntigravityOAuthModelCatalog(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Models, nil
+}
+
+func (s *AccountTestService) fetchAntigravityOAuthModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
 	if s.antigravityGatewayService == nil || s.antigravityGatewayService.GetTokenProvider() == nil {
 		return nil, newUpstreamModelSyncConfigError("Antigravity token provider is not configured", nil)
 	}
@@ -469,7 +495,7 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 	if err != nil {
 		return nil, newUpstreamModelSyncConfigError("Failed to configure Antigravity client", err)
 	}
-	modelsResp, _, err := client.FetchAvailableModels(ctx, accessToken, strings.TrimSpace(account.GetCredential("project_id")), resolveModelsListReadLimit(s.cfg))
+	modelsResp, _, err := client.FetchAvailableModelsFromURL(ctx, resolveAntigravityForwardBaseURL(), accessToken, strings.TrimSpace(account.GetCredential("project_id")), resolveModelsListReadLimit(s.cfg))
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Failed to fetch Antigravity available models", err)
 	}
@@ -478,10 +504,21 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 	}
 
 	models := make([]string, 0, len(modelsResp.Models))
-	for modelID := range modelsResp.Models {
-		models = append(models, strings.TrimSpace(modelID))
+	metadata := make(map[string]AntigravityModelDetail, len(modelsResp.Models))
+	for modelID, info := range modelsResp.Models {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		models = append(models, modelID)
+		metadata[modelID] = AntigravityModelDetail{
+			DisplayName: info.DisplayName, SupportsImages: info.SupportsImages,
+			SupportsThinking: info.SupportsThinking, ThinkingBudget: info.ThinkingBudget,
+			Recommended: info.Recommended, MaxTokens: info.MaxTokens,
+			MaxOutputTokens: info.MaxOutputTokens, SupportedMimeTypes: info.SupportedMimeTypes,
+		}
 	}
-	return dedupeAndSortModelIDs(models), nil
+	return &UpstreamModelCatalog{Models: dedupeAndSortModelIDs(models), Metadata: metadata}, nil
 }
 
 func (s *AccountTestService) doUpstreamModelsRequest(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
@@ -545,38 +582,36 @@ func extractGrokUpstreamModelIDs(body []byte) ([]string, error) {
 func extractUpstreamModelIDsWithSelector(body []byte, selector func(upstreamModelEntry) string) ([]string, error) {
 	var response struct {
 		Data   []upstreamModelEntry `json:"data"`
-		Models []upstreamModelEntry `json:"models"`
+		Models json.RawMessage      `json:"models"`
 	}
+	var entries []upstreamModelEntry
 	if err := json.Unmarshal(body, &response); err != nil {
-		var arrayResponse []upstreamModelEntry
-		if arrayErr := json.Unmarshal(body, &arrayResponse); arrayErr != nil {
+		if err := json.Unmarshal(body, &entries); err != nil {
 			return nil, fmt.Errorf("parse upstream model list: %w", err)
 		}
-
-		models := make([]string, 0, len(arrayResponse))
-		for _, entry := range arrayResponse {
-			models = append(models, selector(entry))
-		}
-		return dedupeAndSortModelIDs(models), nil
-	}
-
-	models := make([]string, 0, len(response.Data)+len(response.Models))
-	for _, entry := range response.Data {
-		models = append(models, selector(entry))
-	}
-	for _, entry := range response.Models {
-		models = append(models, selector(entry))
-	}
-
-	if len(models) == 0 {
-		var arrayResponse []upstreamModelEntry
-		if err := json.Unmarshal(body, &arrayResponse); err == nil {
-			for _, entry := range arrayResponse {
-				models = append(models, selector(entry))
+	} else {
+		entries = append(entries, response.Data...)
+		if len(response.Models) > 0 && string(response.Models) != "null" {
+			var list []upstreamModelEntry
+			if err := json.Unmarshal(response.Models, &list); err == nil {
+				entries = append(entries, list...)
+			} else {
+				var keyed map[string]json.RawMessage
+				if err := json.Unmarshal(response.Models, &keyed); err != nil {
+					return nil, fmt.Errorf("parse upstream keyed model list: %w", err)
+				}
+				// Keyed Cloud Code catalogs use the key as the exact generation ID;
+				// displayName and nested IDs must never replace it.
+				for id := range keyed {
+					entries = append(entries, upstreamModelEntry{ID: id})
+				}
 			}
 		}
 	}
-
+	models := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, selector(entry))
+	}
 	return dedupeAndSortModelIDs(models), nil
 }
 

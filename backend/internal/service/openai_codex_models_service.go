@@ -295,6 +295,9 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifestForGroup(ctx context.Cont
 	if err != nil {
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_INVALID", "invalid Codex models manifest")
 	}
+	if body, _, err = filterRetiredOpenAIPublicModelsBody(body, []Account{*account}, true); err != nil {
+		return nil, err
+	}
 	projected := *manifest
 	if !bytes.Equal(body, manifest.Body) {
 		projected.Body = body

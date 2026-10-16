@@ -2470,13 +2470,13 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.IsOpenAI() {
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, service.FilterRetiredOpenAIAccountModels(account, openai.DefaultModels))
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, service.FilterRetiredOpenAIAccountModels(account, openai.DefaultModels))
 			return
 		}
 
@@ -2500,7 +2500,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, mappedOpenAITestModels(models, mapping))
+		response.Success(c, mappedOpenAITestModels(service.FilterRetiredOpenAIAccountModels(account, models), mapping))
 		return
 	}
 
@@ -2561,7 +2561,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			for _, modelID := range service.DefaultCNModelIDs(account.Platform) {
 				models = append(models, openai.Model{ID: modelID, Object: "model", Type: "model", DisplayName: modelID})
 			}
-			response.Success(c, mappedOpenAITestModels(models, mapping))
+			response.Success(c, mappedOpenAITestModels(service.FilterRetiredOpenAIAccountModels(account, models), mapping))
 			return
 		}
 		models := make([]openai.Model, 0, len(mapping))
@@ -2569,7 +2569,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			models = append(models, openai.Model{ID: requestedModel, Object: "model", Type: "model", DisplayName: requestedModel})
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-		response.Success(c, mappedOpenAITestModels(models, mapping))
+		response.Success(c, mappedOpenAITestModels(service.FilterRetiredOpenAIAccountModels(account, models), mapping))
 		return
 	}
 
@@ -2640,7 +2640,7 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	models, err := h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
+	catalog, err := h.accountTestService.FetchUpstreamModelCatalog(c.Request.Context(), account)
 	if err != nil {
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {
@@ -2659,7 +2659,7 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, gin.H{"models": models})
+	response.Success(c, catalog)
 }
 
 // SyncUpstreamModelsPreview handles syncing live supported models using provided credentials (no account ID needed).
@@ -2717,13 +2717,13 @@ func antigravityAccountTestModels(rawMapping any) []antigravity.ClaudeModel {
 	switch mapping := rawMapping.(type) {
 	case map[string]any:
 		for id := range mapping {
-			if strings.TrimSpace(id) != "" {
+			if strings.TrimSpace(id) != "" && !strings.Contains(id, "*") {
 				ids = append(ids, id)
 			}
 		}
 	case map[string]string:
 		for id := range mapping {
-			if strings.TrimSpace(id) != "" {
+			if strings.TrimSpace(id) != "" && !strings.Contains(id, "*") {
 				ids = append(ids, id)
 			}
 		}

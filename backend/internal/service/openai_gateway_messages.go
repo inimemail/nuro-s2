@@ -41,6 +41,18 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		body = sanitized
 	}
 	beginUpstreamResponseModelObservation(c)
+	if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {
+		groupID := getOpenAIGroupIDFromContext(c)
+		if shouldEmulateWebSearchFor(ctx, s.settingService, s.channelService, account, &groupID, body) {
+			stream := gjson.GetBytes(body, "stream").Bool()
+			res, err := writeEmulatedWebSearch(ctx, c, account, body, gjson.GetBytes(body, "model").String(), stream)
+			if err != nil {
+				return nil, err
+			}
+			return &OpenAIForwardResult{Model: res.Model, Stream: stream, Duration: res.Duration}, nil
+		}
+	}
+
 	if account.IsOpenCodeGo() {
 		model := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), defaultMappedModel)
 		if err := validateStandardOpenCodeZenModel(account, model); err != nil {
@@ -138,7 +150,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
 	anthropicReq.Model = upstreamModel
-	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
+	responsesReq, err := anthropicToResponses(s.cfg, &anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
 	}

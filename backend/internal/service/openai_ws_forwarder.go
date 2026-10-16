@@ -2454,6 +2454,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			safeTokenPlaceholderSent = state.SafeSent || state.Sent
 		}
 	}
+	var createdAtStamper responsesCreatedAtStamper
 	responseID := ""
 	var finalResponse []byte
 	wroteDownstream := false
@@ -2650,7 +2651,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("read_error")
-				emitStreamMessage(safeOpenAIResponsesFailedPayload(nil, false), true)
+				emitStreamMessage(createdAtStamper.Failed(nil, false), true)
 			}
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
@@ -2660,6 +2661,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		originalMessage := message
 		originalEventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(originalMessage)
+		createdAtStamper.Observe(originalMessage, originalEventType)
 		message, eventType, normalizedUnsafe := normalizeOpenAIWSUpstreamEventForSafety(originalMessage, originalEventType)
 		if normalizedUnsafe {
 			_, _, responseField = parseOpenAIWSEventEnvelope(message)
@@ -2808,7 +2810,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			setOpsUpstreamError(c, statusCode, clientErrMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
-				emitStreamMessage(safeOpenAIResponsesFailedPayload(message, wroteDownstream), true)
+				emitStreamMessage(createdAtStamper.Failed(message, wroteDownstream), true)
 			}
 			if !reqStream {
 				c.JSON(statusCode, gin.H{
@@ -2822,6 +2824,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		clientMessage := sanitizeOpenAIWSErrorEventForClient(message, eventType, wroteDownstream)
+		clientMessage = createdAtStamper.StampForClient(clientMessage, eventType, originalEventType, originalMessage)
 		if reqStream {
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
@@ -3785,6 +3788,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
+		var createdAtStamper responsesCreatedAtStamper
 		responseID := ""
 		usage := OpenAIUsage{}
 		imageCounter := newOpenAIImageOutputCounter()
@@ -3831,6 +3835,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			originalUpstreamMessage := upstreamMessage
 			originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
+			createdAtStamper.Observe(originalUpstreamMessage, originalEventType)
 			upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
@@ -3978,6 +3983,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				replayCollector.AddEvent(eventType, upstreamMessage)
 				clientMessage := sanitizeOpenAIWSErrorEventForClient(upstreamMessage, eventType, wroteDownstream)
+				clientMessage = createdAtStamper.StampForClient(clientMessage, eventType, originalEventType, originalUpstreamMessage)
 				if err := writeClientMessage(clientMessage); err != nil {
 					if isOpenAIWSClientDisconnectError(err) {
 						clientDisconnected = true

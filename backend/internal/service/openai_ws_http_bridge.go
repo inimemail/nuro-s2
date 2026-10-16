@@ -307,6 +307,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	}
 
+	var createdAtStamper responsesCreatedAtStamper
 	responseID := ""
 	usage := OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
@@ -383,7 +384,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if !wroteDownstream || clientDisconnected {
 			return
 		}
-		if err := writeClientMessage(safeOpenAIResponsesFailedPayload(nil, false)); err != nil {
+		if err := writeClientMessage(createdAtStamper.Failed(nil, false)); err != nil {
 			if isOpenAIWSClientDisconnectError(err) {
 				clientDisconnected = true
 				return
@@ -416,6 +417,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 			observer.ObserveOpenAI(originalUpstreamMessage, originalEventType)
 		}
+		createdAtStamper.Observe(originalUpstreamMessage, originalEventType)
 		upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 		if responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
@@ -453,6 +455,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		replayCollector.AddEvent(eventType, upstreamMessage)
 		clientMessage := sanitizeOpenAIWSErrorEventForClient(upstreamMessage, eventType, wroteDownstream)
+		clientMessage = createdAtStamper.StampForClient(clientMessage, eventType, originalEventType, originalUpstreamMessage)
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(originalUpstreamMessage)

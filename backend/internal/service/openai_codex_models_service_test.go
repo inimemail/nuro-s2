@@ -72,7 +72,7 @@ func newCodexModelsTestAccount() *Account {
 }
 
 func TestFetchCodexModelsManifestPassthrough(t *testing.T) {
-	manifestBody := `{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"}]}`
+	manifestBody := `{"models":[{"slug":"gpt-5.6","display_name":"GPT-5.6"}]}`
 
 	var gotAuth, gotAccountID, gotOriginator, gotClientVersion string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -393,5 +393,29 @@ func TestSelectCodexModelsManifestAccountSupportsCustomAPIKey(t *testing.T) {
 	}
 	if got == nil || got.ID != account.ID {
 		t.Fatalf("selected account = %#v, want custom API key account %d", got, account.ID)
+	}
+}
+
+func TestFetchCodexModelsManifestRetirementFiltersAfterProjectionBeforeETag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"upstream-etag"`)
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"retired"},{"slug":"gpt-5.6","display_name":"current"}]}`))
+	}))
+	defer server.Close()
+	original := chatgptCodexModelsURL
+	chatgptCodexModelsURL = server.URL
+	defer func() { chatgptCodexModelsURL = original }()
+	account := newCodexModelsTestAccount()
+	account.Credentials["model_mapping"] = map[string]any{"retired-public": "gpt-5.5", "safe-public": "gpt-5.6"}
+	svc := &OpenAIGatewayService{}
+	manifest, err := svc.FetchCodexModelsManifest(context.Background(), account, "0.137.0", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest.Body), "retired-public") || !strings.Contains(string(manifest.Body), "safe-public") {
+		t.Fatalf("incorrect projected catalog: %s", manifest.Body)
+	}
+	if manifest.ETag != codexModelsManifestBodyETag(manifest.Body) {
+		t.Fatal("client ETag must cover filtered public catalog")
 	}
 }

@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authStoreMock } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, authStoreMock, syncUpstreamModelsMock, webSearchConfigMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
+  syncUpstreamModelsMock: vi.fn(),
+  webSearchConfigMock: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
   checkMixedChannelRiskMock: vi.fn(),
   authStoreMock: { isSimpleMode: true }
 }))
@@ -24,10 +26,11 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      syncUpstreamModels: syncUpstreamModelsMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
-      getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
+      getWebSearchEmulationConfig: webSearchConfigMock,
       getSettings: vi.fn().mockResolvedValue({})
     },
     tlsFingerprintProfiles: {
@@ -1761,5 +1764,45 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('v0.2.17 account settings', () => {
+  it('saves OpenAI API key Messages search mode and keeps OAuth native', async () => {
+    const account = buildAccount()
+    account.extra = { web_search_emulation: 'disabled', unrelated_local_feature: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    webSearchConfigMock.mockResolvedValueOnce({ enabled: true, providers: [{ type: 'test' }] })
+    const wrapper = mountModal(account)
+    await flushPromises()
+    const search = wrapper.get('select[aria-label="admin.accounts.anthropic.webSearchEmulation"]')
+    expect((search.element as HTMLSelectElement).value).toBe('disabled')
+    await search.setValue('enabled')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ web_search_emulation: 'enabled', unrelated_local_feature: true })
+    wrapper.unmount()
+    const oauth = mountModal(buildOpenAIOAuthAccount())
+    expect(oauth.find('select[aria-label="admin.accounts.anthropic.webSearchEmulation"]').exists()).toBe(false)
+  })
+
+  it('shows fetched capabilities while retaining explicit Antigravity mappings', async () => {
+    const account = buildAccount()
+    account.platform = 'antigravity'
+    account.type = 'oauth'
+    account.credentials = { access_token: 'test-token', model_mapping: { 'gemini-4-argon-high': 'my-explicit-target' } }
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({
+      models: ['gemini-4-argon-high', 'new-model'],
+      metadata: { 'new-model': { display_name: 'New upstream model', supports_images: true, supports_thinking: true, max_tokens: 1000000 } }
+    })
+    const wrapper = mountModal(account)
+    const sync = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
+    await sync.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('input').map(input => (input.element as HTMLInputElement).value)).toContain('my-explicit-target')
+    expect(wrapper.get('[data-testid="antigravity-model-capabilities"]').text()).toContain('New upstream model')
+    expect(wrapper.text()).toContain('admin.accounts.modelCapabilityImages')
   })
 })

@@ -1890,18 +1890,31 @@ impl SseEventParser {
 // public sanitization) receive this same normalized event. Ordinary one-line
 // events retain their bytes and timing; only valid multiline JSON is folded.
 fn normalize_multiline_sse_event(frame: Bytes) -> Bytes {
-    let Ok(text) = std::str::from_utf8(&frame) else { return frame };
+    let Ok(text) = std::str::from_utf8(&frame) else {
+        return frame;
+    };
     let mut parts = text.lines().filter_map(|line| {
-        line.trim_start().strip_prefix("data:").map(|v| v.strip_prefix(' ').unwrap_or(v))
+        line.trim_start()
+            .strip_prefix("data:")
+            .map(|v| v.strip_prefix(' ').unwrap_or(v))
     });
-    let Some(first) = parts.next() else { return frame };
-    let Some(second) = parts.next() else { return frame };
+    let Some(first) = parts.next() else {
+        return frame;
+    };
+    let Some(second) = parts.next() else {
+        return frame;
+    };
     let mut data = String::with_capacity(frame.len());
     data.push_str(first);
     data.push('\n');
     data.push_str(second);
-    for part in parts { data.push('\n'); data.push_str(part); }
-    if serde_json::from_str::<Value>(&data).is_err() { return frame; }
+    for part in parts {
+        data.push('\n');
+        data.push_str(part);
+    }
+    if serde_json::from_str::<Value>(&data).is_err() {
+        return frame;
+    }
     let mut normalized = String::with_capacity(frame.len());
     for line in text.lines() {
         if !line.trim().is_empty() && !line.trim_start().starts_with("data:") {
@@ -1912,7 +1925,10 @@ fn normalize_multiline_sse_event(frame: Bytes) -> Bytes {
     normalized.push_str("data: ");
     // Valid JSON cannot contain literal CR/LF inside a string. Fold only that
     // whitespace, preserving numeric precision, escaped arguments and key order.
-    normalized.extend(data.chars().map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }));
+    normalized.extend(
+        data.chars()
+            .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }),
+    );
     normalized.push_str("\n\n");
     Bytes::from(normalized)
 }
@@ -2199,18 +2215,28 @@ impl SettlementWal {
         Self::from_worker(worker).await
     }
 
-    async fn from_worker(worker: disk_worker::DiskWorker<SettlementWalDisk>) -> anyhow::Result<Self> {
+    async fn from_worker(
+        worker: disk_worker::DiskWorker<SettlementWalDisk>,
+    ) -> anyhow::Result<Self> {
         // Capture once before serving requests. Reloading after admission
         // could replay a live Put concurrently with its original callback.
         let jobs = worker.run(|disk| disk.load()).await??;
-        Ok(Self { worker, startup_replay: Mutex::new(Some(jobs)) })
+        Ok(Self {
+            worker,
+            startup_replay: Mutex::new(Some(jobs)),
+        })
     }
 
     async fn unavailable(cfg: &EdgeConfig) -> anyhow::Result<Self> {
         let cfg = cfg.clone();
-        let worker = disk_worker::DiskWorker::start(4096, SETTLEMENT_RETRY_QUEUE_SIZE,
-            move || Ok(SettlementWalDisk::unavailable(&cfg))).await?;
-        Ok(Self { worker, startup_replay: Mutex::new(None) })
+        let worker = disk_worker::DiskWorker::start(4096, SETTLEMENT_RETRY_QUEUE_SIZE, move || {
+            Ok(SettlementWalDisk::unavailable(&cfg))
+        })
+        .await?;
+        Ok(Self {
+            worker,
+            startup_replay: Mutex::new(None),
+        })
     }
 
     fn key(job: &SettlementRetryJob) -> String {
@@ -2218,19 +2244,27 @@ impl SettlementWal {
     }
 
     async fn append_record(&self, record: SettlementWalRecord) -> anyhow::Result<u64> {
-        self.worker.run(move |disk| disk.append_record(record)).await?
+        self.worker
+            .run(move |disk| disk.append_record(record))
+            .await?
     }
 
     async fn persist(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
-        let sequence = self.append_record(SettlementWalRecord::Put {
-            key: Self::key(job),
-            job: job.clone(),
-        }).await?;
+        let sequence = self
+            .append_record(SettlementWalRecord::Put {
+                key: Self::key(job),
+                job: job.clone(),
+            })
+            .await?;
         self.wait_flushed(sequence).await
     }
 
     async fn acknowledge(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
-        let sequence = self.append_record(SettlementWalRecord::Ack { key: Self::key(job) }).await?;
+        let sequence = self
+            .append_record(SettlementWalRecord::Ack {
+                key: Self::key(job),
+            })
+            .await?;
         self.wait_flushed(sequence).await
     }
 
@@ -2240,8 +2274,11 @@ impl SettlementWal {
     }
 
     fn take_startup_replay(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
-        self.startup_replay.lock().map_err(|_| anyhow::anyhow!("startup WAL snapshot lock poisoned"))?
-            .take().ok_or_else(|| anyhow::anyhow!("startup WAL snapshot unavailable or already consumed"))
+        self.startup_replay
+            .lock()
+            .map_err(|_| anyhow::anyhow!("startup WAL snapshot lock poisoned"))?
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("startup WAL snapshot unavailable or already consumed"))
     }
 
     async fn flush(&self) -> anyhow::Result<()> {
@@ -2249,10 +2286,18 @@ impl SettlementWal {
     }
 
     #[cfg(test)]
-    async fn new_for_test(dir: PathBuf, compact_records: u64, compact_bytes: u64) -> anyhow::Result<Self> {
-        Ok(Self { worker: disk_worker::DiskWorker::start(4, 8, move ||
-            SettlementWalDisk::new_for_test(dir, compact_records, compact_bytes)).await?,
-            startup_replay: Mutex::new(None) })
+    async fn new_for_test(
+        dir: PathBuf,
+        compact_records: u64,
+        compact_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            worker: disk_worker::DiskWorker::start(4, 8, move || {
+                SettlementWalDisk::new_for_test(dir, compact_records, compact_bytes)
+            })
+            .await?,
+            startup_replay: Mutex::new(None),
+        })
     }
 }
 
@@ -2499,7 +2544,8 @@ impl SettlementWalDisk {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         if state.records_since_compaction < self.compact_records
-            && bytes.saturating_sub(state.compacted_bytes) < self.compact_bytes {
+            && bytes.saturating_sub(state.compacted_bytes) < self.compact_bytes
+        {
             return Ok(());
         }
 
@@ -2543,10 +2589,15 @@ impl SettlementWalDisk {
 
     fn defer_retry(&self, mut task: SettlementRetryTask, wait: Duration) -> anyhow::Result<()> {
         let key = Self::key(&task.job);
-        let mut state = self.state.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
         if self.enabled && self.is_healthy() && !state.pending.contains_key(&key) {
             // Another idempotent delivery already acknowledged this job.
-            for done in task.replay_done { let _ = done.send(()); }
+            for done in task.replay_done {
+                let _ = done.send(());
+            }
             return Ok(());
         }
         if let Some(existing) = state.deferred.get_mut(&key) {
@@ -2556,42 +2607,68 @@ impl SettlementWalDisk {
             }
             return Ok(());
         }
-        let fallback_job = (!self.is_healthy() || !self.enabled || !state.pending.contains_key(&key)).then_some(task.job);
+        let fallback_job =
+            (!self.is_healthy() || !self.enabled || !state.pending.contains_key(&key))
+                .then_some(task.job);
         state.deferred_order.push_back(key.clone());
-        state.deferred.insert(key, DeferredSettlementRetry {
-            due: Instant::now() + wait, attempts: task.attempts, delay: task.delay,
-            replay_done: task.replay_done, fallback_job,
-        });
-        self.deferred_count.store(state.deferred.len() as u64, Ordering::Release);
+        state.deferred.insert(
+            key,
+            DeferredSettlementRetry {
+                due: Instant::now() + wait,
+                attempts: task.attempts,
+                delay: task.delay,
+                replay_done: task.replay_done,
+                fallback_job,
+            },
+        );
+        self.deferred_count
+            .store(state.deferred.len() as u64, Ordering::Release);
         Ok(())
     }
 
     fn take_deferred_retries(&self, limit: usize) -> anyhow::Result<Vec<SettlementRetryTask>> {
-        let mut state = self.state.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
         let mut jobs = Vec::new();
         // Rotate a bounded scan, including entries not yet due, so neither a
         // long backoff nor a large WAL monopolizes the disk worker.
         let scan = state.deferred_order.len().min(limit.saturating_mul(4));
         for _ in 0..scan {
-            if jobs.len() >= limit { break; }
-            let Some(key) = state.deferred_order.pop_front() else { break; };
-            let Some(mut deferred) = state.deferred.remove(&key) else { continue; };
+            if jobs.len() >= limit {
+                break;
+            }
+            let Some(key) = state.deferred_order.pop_front() else {
+                break;
+            };
+            let Some(mut deferred) = state.deferred.remove(&key) else {
+                continue;
+            };
             if deferred.due > Instant::now() {
                 state.deferred_order.push_back(key.clone());
                 state.deferred.insert(key, deferred);
                 continue;
             }
-            let job = deferred.fallback_job.take().or_else(|| state.pending.get(&key).cloned());
+            let job = deferred
+                .fallback_job
+                .take()
+                .or_else(|| state.pending.get(&key).cloned());
             if let Some(job) = job {
                 jobs.push(SettlementRetryTask {
-                    job, attempts: deferred.attempts, delay: deferred.delay,
+                    job,
+                    attempts: deferred.attempts,
+                    delay: deferred.delay,
                     replay_done: deferred.replay_done,
                 });
             } else {
-                for done in deferred.replay_done { let _ = done.send(()); }
+                for done in deferred.replay_done {
+                    let _ = done.send(());
+                }
             }
         }
-        self.deferred_count.store(state.deferred.len() as u64, Ordering::Release);
+        self.deferred_count
+            .store(state.deferred.len() as u64, Ordering::Release);
         Ok(jobs)
     }
 
@@ -2866,9 +2943,14 @@ impl ClientDisconnectCompleteGuard {
     ) -> Self {
         let cleanup = state.settlement_wal.worker.reserve_cleanup(2).await;
         Self {
-            cleanup, state, started_at, request: Mutex::new(request),
-            prior_usage: Mutex::new(Usage::default()), lease_identity: Some(lease_identity),
-            definitive_failure: AtomicBool::new(false), done: AtomicBool::new(false),
+            cleanup,
+            state,
+            started_at,
+            request: Mutex::new(request),
+            prior_usage: Mutex::new(Usage::default()),
+            lease_identity: Some(lease_identity),
+            definitive_failure: AtomicBool::new(false),
+            done: AtomicBool::new(false),
         }
     }
 
@@ -3065,7 +3147,9 @@ impl Drop for ClientDisconnectCompleteGuard {
         }
         stamp_complete_guard_sample(&mut request);
         if let Err(err) = enqueue_cleanup_settlement(
-            &self.state, self.cleanup.take(), SettlementRetryJob::Complete(Box::new(request)),
+            &self.state,
+            self.cleanup.take(),
+            SettlementRetryJob::Complete(Box::new(request)),
         ) {
             error!(
                 "dropped-stream complete callback could not be queued: {}",
@@ -3209,7 +3293,11 @@ impl Drop for LeaseAbortGuard {
             self.client_disconnected,
             self.relay_attempted.load(Ordering::SeqCst),
         );
-        if let Err(err) = enqueue_cleanup_settlement(&self.state, self.cleanup.take(), SettlementRetryJob::Abort(req)) {
+        if let Err(err) = enqueue_cleanup_settlement(
+            &self.state,
+            self.cleanup.take(),
+            SettlementRetryJob::Abort(req),
+        ) {
             self.done.store(false, Ordering::SeqCst);
             error!(
                 "dropped-request abort callback could not be queued: {}",
@@ -3230,7 +3318,9 @@ fn mark_lease_abort_transferred(marker: Option<&Arc<AtomicBool>>) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     let mut shutdown_wal = None;
     let result = runtime.block_on(run_edge(&mut shutdown_wal));
     // Runtime shutdown cancels detached stream tasks and runs their Drop
@@ -3328,7 +3418,10 @@ async fn run_edge(shutdown_wal: &mut Option<Arc<SettlementWal>>) -> anyhow::Resu
         // replay look acknowledged while silently skipping usage settlement.
         match replay_settlement_wal(recovery_state.clone()).await {
             Ok(()) => recover_previous_edge_leases(recovery_state).await,
-            Err(error) => error!("settlement replay incomplete; retaining old leases for expiry/reconciliation: {}", safe_edge_error(error)),
+            Err(error) => error!(
+                "settlement replay incomplete; retaining old leases for expiry/reconciliation: {}",
+                safe_edge_error(error)
+            ),
         }
     });
     let warm_client = state.client.clone();
@@ -3850,7 +3943,8 @@ async fn handle_openai_edge(
         request_lease_identity.clone(),
         "http_request_dropped_during_prepare_or_relay",
         true,
-    ).await;
+    )
+    .await;
     let prepare_started_at = Instant::now();
     let (plan, prepare_ms) = match call_prepare(&state, &prepare).await {
         Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
@@ -3876,7 +3970,9 @@ async fn handle_openai_edge(
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
-            ).await {
+            )
+            .await
+            {
                 error!(
                     "prepare cancellation could not be queued: {}",
                     safe_edge_error(&queue_err)
@@ -3973,7 +4069,8 @@ async fn handle_openai_edge(
     {
         Ok(mut resp) => {
             if ops_callback_enabled {
-                resp.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+                resp.headers_mut()
+                    .insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
             }
             let defer_payload_commit = resp
                 .headers_mut()
@@ -4041,7 +4138,9 @@ async fn handle_openai_edge(
             if local_capacity && !relay_attempted {
                 let mut response = overload_response(&state);
                 if ops_callback_owned {
-                    response.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+                    response
+                        .headers_mut()
+                        .insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
                 }
                 return response;
             }
@@ -4062,7 +4161,9 @@ async fn handle_openai_edge(
                     )
                 };
                 if ops_callback_owned {
-                    response.headers_mut().insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
+                    response
+                        .headers_mut()
+                        .insert("x-sub2api-edge-ops-owned", HeaderValue::from_static("1"));
                 }
                 return response;
             }
@@ -4417,7 +4518,8 @@ async fn relay_ws_session(
         ws_lease_identity.clone(),
         "ws_session_dropped_during_prepare_or_relay",
         false,
-    ).await;
+    )
+    .await;
     let mut plan = match call_prepare(&state, &prepare).await {
         Ok(plan) => plan,
         Err(err) => {
@@ -4438,7 +4540,9 @@ async fn relay_ws_session(
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
-            ).await {
+            )
+            .await
+            {
                 error!(
                     "ws prepare cancellation could not be queued: {}",
                     safe_edge_error(&queue_err)
@@ -4634,6 +4738,7 @@ async fn relay_ws_session(
     let mut first_token_timeout_placeholder_sent = false;
     let mut current_turn_real_first_token_ms: Option<i64> = None;
     let mut latest_real_first_token_ms: Option<i64> = None;
+    let mut ws_created_at = ResponsesCreatedAtStamper::default();
     let mut first_token_timeout_timer = ws_response_active
         .then_some(first_token_timeout_placeholder)
         .flatten()
@@ -4961,10 +5066,11 @@ async fn relay_ws_session(
                                 policy.for_model(downstream_cache_usage_model.as_deref().or(downstream_cache_markup_turn_model.as_deref()), downstream_cache_markup_model.as_deref())
                             });
                         let client_msg = match tungstenite_to_axum_message(
-                            sanitize_openai_ws_message_with_downstream_usage(
+                            sanitize_openai_ws_message_with_created_at(
                                 msg,
                                 downstream_cache_usage_mode_for_turn,
                                 downstream_cache_markup_for_turn.as_ref(),
+                                &mut ws_created_at,
                             ),
                         ) {
                             Ok(msg) => msg,
@@ -6497,7 +6603,10 @@ async fn relay_upstream(
         )?;
         let (response_tx, response_rx) = oneshot::channel();
         let enqueued_at = Instant::now();
-        let admission = Arc::new(relay_queue::Admission::new(enqueued_at, state.cfg.queue_wait_budget_ms));
+        let admission = Arc::new(relay_queue::Admission::new(
+            enqueued_at,
+            state.cfg.queue_wait_budget_ms,
+        ));
         let queue_timing = timing_shared.clone();
         let job = RelayJob {
             admission: admission.clone(),
@@ -6525,8 +6634,14 @@ async fn relay_upstream(
             .relay_tx
             .try_send(job)
             .map_err(|err| anyhow::anyhow!("edge relay queue full or closed: {err}"))?;
-        let response = admission.response(response_rx).await.and_then(|result| result);
-        if response.as_ref().is_err_and(|error| error.to_string().contains("edge_queue_wait_timeout")) {
+        let response = admission
+            .response(response_rx)
+            .await
+            .and_then(|result| result);
+        if response
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("edge_queue_wait_timeout"))
+        {
             update_edge_timing(queue_timing.as_ref(), |timing| {
                 timing.queue_wait_ms = Some(enqueued_at.elapsed().as_millis() as i64);
             });
@@ -6568,7 +6683,11 @@ fn try_reserve_relay_queue_bytes(
 
 async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJob>) {
     while let Some(mut job) = receiver.recv().await {
-        let permit = match job.admission.acquire(state.relay_header_permits.clone(), &mut job.response_tx).await {
+        let permit = match job
+            .admission
+            .acquire(state.relay_header_permits.clone(), &mut job.response_tx)
+            .await
+        {
             Ok(permit) => permit,
             Err(error) => {
                 let _ = job.response_tx.send(Err(error));
@@ -7288,7 +7407,8 @@ async fn relay_upstream_direct(
             timing.retry_count,
         ),
         commit_lease_identity.clone(),
-    ).await;
+    )
+    .await;
     let inner = Box::pin(relay_upstream_direct_core_with_early_placeholder(
         state,
         inner_plan,
@@ -8110,7 +8230,8 @@ async fn relay_upstream_direct_core_impl(
             edge_fallback_reason.clone(),
             edge_retry_count,
         ),
-    ).await;
+    )
+    .await;
     complete_guard.update_lease_identity(&initial_plan);
     let body_stream = stream! {
         let mut current_plan = initial_plan;
@@ -9660,6 +9781,8 @@ fn openai_responses_safe_token_placeholder_json(response_id: Option<&str>) -> St
 fn safe_ws_response_failed_event(response_id: Option<&str>) -> String {
     let response_id = response_id.map(str::trim).filter(|value| !value.is_empty());
     let mut response = serde_json::json!({
+        "created_at": responses_unix_timestamp(),
+        "object": "response",
         "status": "failed",
         "output": [],
         "error": {
@@ -9672,6 +9795,7 @@ fn safe_ws_response_failed_event(response_id: Option<&str>) -> String {
     }
     serde_json::json!({
         "type": "response.failed",
+        "sequence_number": 0,
         "response": response,
     })
     .to_string()
@@ -9710,7 +9834,73 @@ fn openai_stream_timeout_placeholder_frame(
 }
 
 #[derive(Default)]
+struct ResponsesCreatedAtStamper {
+    created_at: Option<u64>,
+    response_id: Option<String>,
+    last_sequence: Option<u64>,
+}
+
+impl ResponsesCreatedAtStamper {
+    fn stamp(&mut self, value: &mut Value) -> bool {
+        let event_type = json_event_type(value).unwrap_or_default().to_string();
+        let id = value
+            .pointer("/response/id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        if event_type == "response.created" && id.is_some() && id != self.response_id {
+            self.created_at = None;
+            self.last_sequence = None;
+            self.response_id = id;
+        }
+        if let Some(seq) = value.get("sequence_number").and_then(Value::as_u64) {
+            self.last_sequence = Some(self.last_sequence.map_or(seq, |last| last.max(seq)));
+        }
+        if !event_type.starts_with("response.") {
+            return false;
+        }
+        let Some(response) = value.get_mut("response").and_then(Value::as_object_mut) else {
+            return false;
+        };
+        if let Some(created) = response.get("created_at").filter(|v| !v.is_null()) {
+            if self.created_at.is_none() {
+                self.created_at = created.as_u64().filter(|v| *v > 0);
+            }
+            return false;
+        }
+        let created = *self.created_at.get_or_insert_with(responses_unix_timestamp);
+        response.insert("created_at".into(), Value::from(created));
+        true
+    }
+
+    fn failed(&mut self, source: Option<&Value>) -> Value {
+        let id = source
+            .and_then(|v| v.pointer("/response/id").or_else(|| v.get("response_id")))
+            .and_then(Value::as_str);
+        let mut failed: Value =
+            serde_json::from_str(&safe_ws_response_failed_event(id)).expect("gateway failure JSON");
+        let created = *self.created_at.get_or_insert_with(responses_unix_timestamp);
+        failed["response"]["created_at"] = Value::from(created);
+        let sequence = source
+            .and_then(|v| v.get("sequence_number"))
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| self.last_sequence.map_or(0, |seq| seq.saturating_add(1)));
+        failed["sequence_number"] = Value::from(sequence);
+        // Retain only the public category, never an upstream diagnostic string.
+        failed["response"]["error"] = safe_public_error(source, None);
+        failed
+    }
+}
+
+fn responses_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[derive(Default)]
 struct OpenAIStreamSanitizer {
+    created_at: ResponsesCreatedAtStamper,
     pending: Vec<u8>,
     chat_dialect: bool,
     event_type: Option<String>,
@@ -9740,6 +9930,7 @@ impl OpenAIStreamSanitizer {
         downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
     ) -> Self {
         Self {
+            created_at: ResponsesCreatedAtStamper::default(),
             pending: Vec::with_capacity(1024),
             chat_dialect: dialect == Some("chat_completions"),
             event_type: None,
@@ -9807,13 +9998,14 @@ impl OpenAIStreamSanitizer {
         };
         let mut output = Vec::with_capacity(complete.len());
         for line in complete.split_inclusive(|byte| *byte == b'\n') {
-            output.extend_from_slice(&sanitize_openai_sse_line_with_usage(
+            output.extend_from_slice(&sanitize_openai_sse_line_with_created_at(
                 line,
                 self.chat_dialect,
                 &mut self.event_type,
                 self.downstream_cache_usage_mode.as_deref(),
                 self.downstream_cache_markup.as_ref(),
                 self.downstream_usage_override.as_ref(),
+                &mut self.created_at,
             ));
         }
         Bytes::from(output)
@@ -9901,6 +10093,7 @@ impl SsePreambleGate {
 
 // Keep the original helper signature for in-crate callers while routing all
 // new work through the usage-aware implementation.
+#[cfg(test)]
 #[allow(dead_code)]
 fn sanitize_openai_sse_line(
     line: &[u8],
@@ -9919,6 +10112,7 @@ fn sanitize_openai_sse_line(
     )
 }
 
+#[cfg(test)]
 fn sanitize_openai_sse_line_with_usage(
     line: &[u8],
     chat_dialect: bool,
@@ -9926,6 +10120,26 @@ fn sanitize_openai_sse_line_with_usage(
     downstream_cache_usage_mode: Option<&str>,
     downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
     downstream_usage_override: Option<&Usage>,
+) -> Vec<u8> {
+    sanitize_openai_sse_line_with_created_at(
+        line,
+        chat_dialect,
+        current_event_type,
+        downstream_cache_usage_mode,
+        downstream_cache_markup,
+        downstream_usage_override,
+        &mut ResponsesCreatedAtStamper::default(),
+    )
+}
+
+fn sanitize_openai_sse_line_with_created_at(
+    line: &[u8],
+    chat_dialect: bool,
+    current_event_type: &mut Option<String>,
+    downstream_cache_usage_mode: Option<&str>,
+    downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+    downstream_usage_override: Option<&Usage>,
+    created_at: &mut ResponsesCreatedAtStamper,
 ) -> Vec<u8> {
     let text = String::from_utf8_lossy(line);
     let without_newline = text.trim_end_matches(['\r', '\n']);
@@ -9944,12 +10158,19 @@ fn sanitize_openai_sse_line_with_usage(
             return line.to_vec();
         }
         let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
-            let output = safe_sse_error_line(chat_dialect, current_event_type.as_deref());
+            let failed = (!chat_dialect).then(|| created_at.failed(None));
+            let output = safe_sse_error_from_payload(
+                chat_dialect,
+                current_event_type.as_deref(),
+                failed.as_ref(),
+                None,
+            );
             if !chat_dialect {
                 *current_event_type = Some("response.failed".to_string());
             }
             return output;
         };
+        let created_at_normalized = created_at.stamp(&mut value);
         let event_type = json_event_type(&value)
             .or(current_event_type.as_deref())
             .unwrap_or_default();
@@ -9958,7 +10179,13 @@ fn sanitize_openai_sse_line_with_usage(
             || json_is_unsafe_upstream_diagnostic(&value)
             || (chat_dialect && !value.get("choices").is_some_and(Value::is_array));
         if has_error {
-            let output = safe_sse_error_from_payload(chat_dialect, current_event_type.as_deref(), Some(&value), None);
+            let failed = (!chat_dialect).then(|| created_at.failed(Some(&value)));
+            let output = safe_sse_error_from_payload(
+                chat_dialect,
+                current_event_type.as_deref(),
+                failed.as_ref().or(Some(&value)),
+                None,
+            );
             if !chat_dialect {
                 *current_event_type = Some("response.failed".to_string());
             }
@@ -9970,7 +10197,8 @@ fn sanitize_openai_sse_line_with_usage(
         let replaced_usage = downstream_usage_override.is_some()
             && openai_downstream_usage_event_candidate(&value, event_type)
             && replace_openai_downstream_usage(&mut value, downstream_usage_override.unwrap());
-        let normalized = normalize_completed_image_generation_status(&mut value)
+        let normalized = created_at_normalized
+            | normalize_completed_image_generation_status(&mut value)
             | replaced_usage
             | (normalize_usage
                 && normalize_openai_downstream_usage(
@@ -10005,39 +10233,60 @@ fn sanitize_openai_sse_line_with_usage(
     Vec::new()
 }
 
-fn safe_sse_error_line(chat_dialect: bool, current_event_type: Option<&str>) -> Vec<u8> {
-    safe_sse_error_from_payload(chat_dialect, current_event_type, None, None)
-}
-
-// Only protocol-owned categories leave the gateway. Never expose provider
-// messages, URLs or arbitrary codes while preserving actionable error meaning.
 fn safe_public_error(payload: Option<&Value>, status: Option<u16>) -> Value {
     let error = payload.and_then(|v| v.pointer("/response/error").or_else(|| v.get("error")));
-    let kind = error.and_then(|v| v.get("type")).and_then(Value::as_str).unwrap_or("");
-    let code = error.and_then(|v| v.get("code")).and_then(Value::as_str).unwrap_or("");
+    let kind = error
+        .and_then(|v| v.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let code = error
+        .and_then(|v| v.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let (kind, default_code) = if kind == "safety_error" || code == "cyber_policy" {
         ("safety_error", "cyber_policy")
-    } else if kind == "rate_limit_error" || matches!(code, "rate_limit_exceeded" | "insufficient_quota") || status == Some(429) {
+    } else if kind == "rate_limit_error"
+        || matches!(code, "rate_limit_exceeded" | "insufficient_quota")
+        || status == Some(429)
+    {
         ("rate_limit_error", "rate_limit_exceeded")
     } else if kind == "authentication_error" || code == "invalid_api_key" || status == Some(401) {
         ("authentication_error", "invalid_api_key")
     } else if kind == "permission_error" || code == "permission_denied" || status == Some(403) {
         ("permission_error", "permission_denied")
-    } else if kind == "invalid_request_error" || matches!(code, "model_not_found" | "context_length_exceeded" | "invalid_request_error") || matches!(status, Some(400 | 404 | 413 | 422)) {
+    } else if kind == "invalid_request_error"
+        || matches!(
+            code,
+            "model_not_found" | "context_length_exceeded" | "invalid_request_error"
+        )
+        || matches!(status, Some(400 | 404 | 413 | 422))
+    {
         ("invalid_request_error", "invalid_request_error")
     } else {
         ("upstream_error", "server_error")
     };
     let code = match code {
-        "rate_limit_exceeded" | "insufficient_quota" | "model_not_found" |
-        "context_length_exceeded" | "invalid_request_error" | "invalid_api_key" |
-        "permission_denied" | "server_error" | "server_is_overloaded" | "cyber_policy" => code,
+        "rate_limit_exceeded"
+        | "insufficient_quota"
+        | "model_not_found"
+        | "context_length_exceeded"
+        | "invalid_request_error"
+        | "invalid_api_key"
+        | "permission_denied"
+        | "server_error"
+        | "server_is_overloaded"
+        | "cyber_policy" => code,
         _ => default_code,
     };
     serde_json::json!({"type":kind,"code":code,"message":"Upstream request failed"})
 }
 
-fn safe_sse_error_from_payload(chat_dialect: bool, current_event_type: Option<&str>, payload: Option<&Value>, status: Option<u16>) -> Vec<u8> {
+fn safe_sse_error_from_payload(
+    chat_dialect: bool,
+    current_event_type: Option<&str>,
+    payload: Option<&Value>,
+    status: Option<u16>,
+) -> Vec<u8> {
     let error = safe_public_error(payload, status);
     if chat_dialect {
         format!("data: {}\n\n", serde_json::json!({"error":error})).into_bytes()
@@ -10047,34 +10296,69 @@ fn safe_sse_error_from_payload(chat_dialect: bool, current_event_type: Option<&s
         } else {
             ""
         };
-        let id = payload.and_then(|v| v.pointer("/response/id").or_else(|| v.get("response_id")))
+        let id = payload
+            .and_then(|v| v.pointer("/response/id").or_else(|| v.get("response_id")))
             .and_then(Value::as_str)
-            .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')));
-        let mut event: Value = serde_json::from_str(&responses_failed_payload(id, None)).expect("gateway failure JSON");
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 256
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            });
+        let mut event: Value = serde_json::from_str(&responses_failed_payload(id, None))
+            .expect("gateway failure JSON");
         event["response"]["error"] = error;
-        if let Some(sequence) = payload.and_then(|v| v.get("sequence_number")).and_then(Value::as_u64) {
+        if let Some(created) = payload.and_then(|v| v.pointer("/response/created_at")) {
+            if !created.is_null() {
+                event["response"]["created_at"] = created.clone();
+            }
+        }
+        if let Some(sequence) = payload
+            .and_then(|v| v.get("sequence_number"))
+            .and_then(Value::as_u64)
+        {
             event["sequence_number"] = Value::from(sequence);
         }
         format!("{event_prefix}data: {event}\n\n").into_bytes()
     }
 }
 
-async fn early_placeholder_error_frame(response: Response, dialect: Option<&str>, summary: &ChatStreamSummary) -> String {
+async fn early_placeholder_error_frame(
+    response: Response,
+    dialect: Option<&str>,
+    summary: &ChatStreamSummary,
+) -> String {
     let status = response.status().as_u16();
     // Error bodies are bounded and timed; a provider cannot stall an already
     // committed placeholder stream while we extract a safe category.
-    let bytes = tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 8192)).await;
+    let bytes =
+        tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 8192)).await;
     let mut payload = match bytes {
         Ok(Ok(bytes)) => serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
         _ => Value::Null,
     };
-    if let Some(id) = summary.response_id.as_deref().or(summary.request_id.as_deref()) {
-        if !payload.is_object() { payload = serde_json::json!({}); }
+    if let Some(id) = summary
+        .response_id
+        .as_deref()
+        .or(summary.request_id.as_deref())
+    {
+        if !payload.is_object() {
+            payload = serde_json::json!({});
+        }
         payload["response_id"] = Value::String(id.to_string());
     }
     let chat = dialect == Some("chat_completions");
-    let mut frame = String::from_utf8(safe_sse_error_from_payload(chat, None, Some(&payload), Some(status))).expect("gateway UTF-8");
-    if chat { frame.push_str("data: [DONE]\n\n"); }
+    let mut frame = String::from_utf8(safe_sse_error_from_payload(
+        chat,
+        None,
+        Some(&payload),
+        Some(status),
+    ))
+    .expect("gateway UTF-8");
+    if chat {
+        frame.push_str("data: [DONE]\n\n");
+    }
     frame
 }
 
@@ -10142,6 +10426,7 @@ fn responses_failed_payload_with_message(
     let mut response = serde_json::json!({
         "id": response_id,
         "object": "response",
+        "created_at": responses_unix_timestamp(),
         "status": "failed",
         "output": [],
         "error": {
@@ -10155,6 +10440,7 @@ fn responses_failed_payload_with_message(
     }
     serde_json::json!({
         "type": "response.failed",
+        "sequence_number": 0,
         "response": response,
     })
     .to_string()
@@ -11074,17 +11360,33 @@ fn sanitize_openai_ws_message_with_downstream_cache_usage_mode(
     sanitize_openai_ws_message_with_downstream_usage(msg, downstream_cache_usage_mode, None)
 }
 
+#[cfg(test)]
 fn sanitize_openai_ws_message_with_downstream_usage(
     msg: TungsteniteMessage,
     downstream_cache_usage_mode: Option<&str>,
     downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
 ) -> TungsteniteMessage {
+    sanitize_openai_ws_message_with_created_at(
+        msg,
+        downstream_cache_usage_mode,
+        downstream_cache_markup,
+        &mut ResponsesCreatedAtStamper::default(),
+    )
+}
+
+fn sanitize_openai_ws_message_with_created_at(
+    msg: TungsteniteMessage,
+    downstream_cache_usage_mode: Option<&str>,
+    downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+    created_at: &mut ResponsesCreatedAtStamper,
+) -> TungsteniteMessage {
     match msg {
         TungsteniteMessage::Text(text) => {
             let mut value = match serde_json::from_str::<Value>(&text) {
                 Ok(value) => value,
-                Err(_) => return TungsteniteMessage::Text(safe_ws_response_failed_event(None)),
+                Err(_) => return TungsteniteMessage::Text(created_at.failed(None).to_string()),
             };
+            let created_at_normalized = created_at.stamp(&mut value);
             let event_type = json_event_type(&value).unwrap_or_default().to_string();
             let normalize_usage = (downstream_cache_usage_mode.is_some()
                 || downstream_cache_markup.is_some_and(DownstreamCacheMarkupPolicy::enabled))
@@ -11100,19 +11402,16 @@ fn sanitize_openai_ws_message_with_downstream_usage(
                 || event_type == "response.failed"
                 || json_is_unsafe_upstream_diagnostic(&value);
             if has_error {
-                let response_id = value
-                    .pointer("/response/id")
-                    .and_then(Value::as_str)
-                    .or_else(|| value.get("response_id").and_then(Value::as_str));
-                TungsteniteMessage::Text(safe_ws_response_failed_event(response_id))
-            } else if image_status_normalized || usage_normalized {
+                let failed = created_at.failed(Some(&value));
+                TungsteniteMessage::Text(failed.to_string())
+            } else if created_at_normalized || image_status_normalized || usage_normalized {
                 TungsteniteMessage::Text(value.to_string())
             } else {
                 TungsteniteMessage::Text(text)
             }
         }
         TungsteniteMessage::Binary(_) => {
-            TungsteniteMessage::Text(safe_ws_response_failed_event(None))
+            TungsteniteMessage::Text(created_at.failed(None).to_string())
         }
         other => other,
     }
@@ -11790,7 +12089,11 @@ fn enqueue_cleanup_settlement(
     job: SettlementRetryJob,
 ) -> anyhow::Result<()> {
     let Some(reservation) = reservation else {
-        handle_settlement_wal_failure(state, "reserving cleanup", &anyhow::anyhow!("WAL worker unavailable"));
+        handle_settlement_wal_failure(
+            state,
+            "reserving cleanup",
+            &anyhow::anyhow!("WAL worker unavailable"),
+        );
         return try_enqueue_persisted_settlement_retry(state, SettlementRetryTask::new(job))
             .map_err(|_| anyhow::anyhow!("settlement retry queue unavailable"));
     };
@@ -11801,9 +12104,14 @@ fn enqueue_cleanup_settlement(
         if let Err(error) = disk.persist_sync(&job) {
             handle_settlement_wal_failure(&state, "persisting cleanup", &error);
         }
-        if let Err(task) = try_enqueue_persisted_settlement_retry(&state, SettlementRetryTask::new(job)) {
+        if let Err(task) =
+            try_enqueue_persisted_settlement_retry(&state, SettlementRetryTask::new(job))
+        {
             if let Err(error) = disk.defer_retry(*task, SETTLEMENT_RETRY_INITIAL_DELAY) {
-                error!("cleanup retry could not be scheduled; check WAL health: {}", safe_edge_error(error));
+                error!(
+                    "cleanup retry could not be scheduled; check WAL health: {}",
+                    safe_edge_error(error)
+                );
             }
         }
     });
@@ -11830,8 +12138,13 @@ async fn enqueue_persisted_settlement_retry(
     state: &AppState,
     job: SettlementRetryJob,
 ) -> anyhow::Result<()> {
-    if let Err(task) = try_enqueue_persisted_settlement_retry(state, SettlementRetryTask::new(job)) {
-        state.settlement_wal.worker.run(move |disk| disk.defer_retry(*task, SETTLEMENT_RETRY_INITIAL_DELAY)).await??;
+    if let Err(task) = try_enqueue_persisted_settlement_retry(state, SettlementRetryTask::new(job))
+    {
+        state
+            .settlement_wal
+            .worker
+            .run(move |disk| disk.defer_retry(*task, SETTLEMENT_RETRY_INITIAL_DELAY))
+            .await??;
     }
     Ok(())
 }
@@ -11863,21 +12176,30 @@ async fn run_settlement_retry_attempt(
     mut task: SettlementRetryTask,
 ) -> Option<(Duration, SettlementRetryTask)> {
     let _worker = state.metrics.begin_callback_work(false);
-    state.metrics.settlement_retry_queue_depth.fetch_sub(1, Ordering::AcqRel);
+    state
+        .metrics
+        .settlement_retry_queue_depth
+        .fetch_sub(1, Ordering::AcqRel);
     task.attempts = task.attempts.saturating_add(1);
     let job = &task.job;
     let kind = job.kind();
     let edge_request_id = job.edge_request_id();
     match send_settlement_job_once(&state, job).await {
         Ok(()) => {
-            debug!("{kind} callback delivered attempts={} edge_request_id={edge_request_id}", task.attempts);
+            debug!(
+                "{kind} callback delivered attempts={} edge_request_id={edge_request_id}",
+                task.attempts
+            );
             acknowledge_settlement(&state, job).await;
         }
         Err(err) if settlement_error_is_permanent(&err) => {
             if matches!(job, SettlementRetryJob::Complete(_)) {
                 error!("complete callback needs reconciliation; retained in WAL edge_request_id={edge_request_id}: {}", safe_edge_error(err));
             } else {
-                error!("{kind} callback rejected permanently edge_request_id={edge_request_id}: {}", safe_edge_error(err));
+                error!(
+                    "{kind} callback rejected permanently edge_request_id={edge_request_id}: {}",
+                    safe_edge_error(err)
+                );
                 acknowledge_settlement(&state, job).await;
             }
         }
@@ -11887,7 +12209,10 @@ async fn run_settlement_retry_attempt(
             }
             let delay = task.delay;
             task.delay = delay.saturating_mul(2).min(SETTLEMENT_RETRY_MAX_DELAY);
-            state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+            state
+                .metrics
+                .settlement_retry_queue_depth
+                .fetch_add(1, Ordering::Release);
             return Some((delay, task));
         }
     }
@@ -11911,7 +12236,10 @@ async fn replay_settlement_wal(state: AppState) -> anyhow::Result<()> {
                 let (tx, rx) = oneshot::channel();
                 let mut task = SettlementRetryTask::new(job);
                 task.replay_done.push(tx);
-                state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+                state
+                    .metrics
+                    .settlement_retry_queue_depth
+                    .fetch_add(1, Ordering::Release);
                 permit.send(task);
                 completions.push(rx);
             }
@@ -11930,7 +12258,9 @@ async fn replay_settlement_wal(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn run_settlement_wal_flusher(state: AppState) {
-    if !state.settlement_wal.enabled { return; }
+    if !state.settlement_wal.enabled {
+        return;
+    }
     let mut interval = tokio::time::interval(Duration::from_millis(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -11947,17 +12277,29 @@ async fn run_settlement_retry_queue(
     receiver: mpsc::Receiver<SettlementRetryTask>,
 ) {
     let attempt_state = state.clone();
-    retry_queue::run(receiver, SETTLEMENT_RETRY_CONCURRENCY, SETTLEMENT_RETRY_QUEUE_SIZE,
+    retry_queue::run(
+        receiver,
+        SETTLEMENT_RETRY_CONCURRENCY,
+        SETTLEMENT_RETRY_QUEUE_SIZE,
         move |task| run_settlement_retry_attempt(attempt_state.clone(), task),
-        move |delay, task| defer_settlement_retry(state.clone(), task, delay)).await;
+        move |delay, task| defer_settlement_retry(state.clone(), task, delay),
+    )
+    .await;
 }
 
 async fn defer_settlement_retry(state: AppState, task: SettlementRetryTask, delay: Duration) {
     let _worker = state.metrics.begin_callback_work(false);
     // Transfer queued accounting to the deferred WAL index. Payload remains in
     // the existing WAL pending map; no retry-limit acknowledgment is written.
-    let result = state.settlement_wal.worker.run(move |disk| disk.defer_retry(task, delay)).await;
-    state.metrics.settlement_retry_queue_depth.fetch_sub(1, Ordering::AcqRel);
+    let result = state
+        .settlement_wal
+        .worker
+        .run(move |disk| disk.defer_retry(task, delay))
+        .await;
+    state
+        .metrics
+        .settlement_retry_queue_depth
+        .fetch_sub(1, Ordering::AcqRel);
     if let Err(error) = result.and_then(|result| result) {
         handle_settlement_wal_failure(&state, "deferring settlement retry", &error);
     }
@@ -11968,9 +12310,17 @@ async fn run_deferred_settlement_retries(state: AppState) {
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
-        if state.settlement_wal.deferred_count.load(Ordering::Acquire) == 0 { continue; }
+        if state.settlement_wal.deferred_count.load(Ordering::Acquire) == 0 {
+            continue;
+        }
         let _worker = state.metrics.begin_callback_work(false);
-        let jobs = match state.settlement_wal.worker.run(|disk| disk.take_deferred_retries(32)).await.and_then(|result| result) {
+        let jobs = match state
+            .settlement_wal
+            .worker
+            .run(|disk| disk.take_deferred_retries(32))
+            .await
+            .and_then(|result| result)
+        {
             Ok(jobs) => jobs,
             Err(error) => {
                 handle_settlement_wal_failure(&state, "dispatching deferred settlements", &error);
@@ -11978,8 +12328,13 @@ async fn run_deferred_settlement_retries(state: AppState) {
             }
         };
         for task in jobs {
-            let Ok(permit) = state.settlement_retry_tx.reserve().await else { return; };
-            state.metrics.settlement_retry_queue_depth.fetch_add(1, Ordering::Release);
+            let Ok(permit) = state.settlement_retry_tx.reserve().await else {
+                return;
+            };
+            state
+                .metrics
+                .settlement_retry_queue_depth
+                .fetch_add(1, Ordering::Release);
             permit.send(task);
         }
     }
@@ -12619,7 +12974,10 @@ impl ChatStreamSummary {
         }
         let Ok(value) = serde_json::from_str::<Value>(payload) else {
             self.failed = true;
-            self.failure_diagnostic.get_or_insert_with(|| "{\"event_type\":\"edge.invalid_sse_json\",\"code\":\"invalid_sse_json\"}".to_string());
+            self.failure_diagnostic.get_or_insert_with(|| {
+                "{\"event_type\":\"edge.invalid_sse_json\",\"code\":\"invalid_sse_json\"}"
+                    .to_string()
+            });
             if self.failed_terminal_event_type.is_none() {
                 self.failed_terminal_event_type = Some("error".to_string());
             }
@@ -12693,7 +13051,8 @@ impl ChatStreamSummary {
             && !value.get("choices").is_some_and(Value::is_array);
         if json_is_unsafe_upstream_diagnostic(value) || invalid_chat_payload {
             if self.failure_diagnostic.is_none() {
-                self.failure_diagnostic = serde_json::to_string(&upstream_failure_diagnostic(value)).ok();
+                self.failure_diagnostic =
+                    serde_json::to_string(&upstream_failure_diagnostic(value)).ok();
             }
             self.failed = true;
             if self.failed_terminal_event_type.is_none() {
@@ -13872,22 +14231,28 @@ mod tests {
     async fn settlement_wal_deduplicates_replays_and_acknowledges() {
         let dir = TestDirectory::new("wal-replay");
         let job = test_abort_job("edge-1");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&job),
             job: job.clone(),
         })
-        .await.unwrap();
+        .await
+        .unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&job),
             job: job.clone(),
         })
-        .await.unwrap();
+        .await
+        .unwrap();
         wal.flush().await.unwrap();
         assert_eq!(wal.pending.load(Ordering::Acquire), 1);
         drop(wal);
 
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         let jobs = replay.load().await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].edge_request_id(), "edge-1");
@@ -13899,7 +14264,9 @@ mod tests {
         flush_result.unwrap();
         drop(replay);
 
-        let empty = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let empty = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         assert!(empty.load().await.unwrap().is_empty());
         assert_eq!(empty.pending.load(Ordering::Acquire), 0);
     }
@@ -13908,12 +14275,15 @@ mod tests {
     async fn settlement_wal_repairs_incomplete_tail_before_appending() {
         let dir = TestDirectory::new("wal-tail");
         let first = test_abort_job("edge-first");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         wal.append_record(SettlementWalRecord::Put {
             key: SettlementWal::key(&first),
             job: first,
         })
-        .await.unwrap();
+        .await
+        .unwrap();
         wal.flush().await.unwrap();
         drop(wal);
         let log_path = dir.0.join("settlements.log");
@@ -13925,7 +14295,9 @@ mod tests {
         file.sync_data().unwrap();
         drop(file);
 
-        let repaired = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let repaired = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         assert_eq!(repaired.load().await.unwrap().len(), 1);
         let second = test_abort_job("edge-second");
         repaired
@@ -13933,11 +14305,14 @@ mod tests {
                 key: SettlementWal::key(&second),
                 job: second,
             })
-            .await.unwrap();
+            .await
+            .unwrap();
         repaired.flush().await.unwrap();
         drop(repaired);
 
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         assert_eq!(replay.load().await.unwrap().len(), 2);
     }
 
@@ -13946,7 +14321,9 @@ mod tests {
         let dir = TestDirectory::new("wal-corrupt-record");
         let log_path = dir.0.join("settlements.log");
         std::fs::write(&log_path, b"not-json\n").unwrap();
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
 
         assert!(wal.load().await.is_err());
     }
@@ -13967,18 +14344,22 @@ mod tests {
         let dir = TestDirectory::new("wal-compact");
         let first = test_abort_job("edge-first");
         let second = test_abort_job("edge-second");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX)
+            .await
+            .unwrap();
         for job in [&first, &second] {
             wal.append_record(SettlementWalRecord::Put {
                 key: SettlementWal::key(job),
                 job: job.clone(),
             })
-            .await.unwrap();
+            .await
+            .unwrap();
         }
         wal.append_record(SettlementWalRecord::Ack {
             key: SettlementWal::key(&first),
         })
-        .await.unwrap();
+        .await
+        .unwrap();
         wal.flush().await.unwrap();
 
         let records = std::fs::read_to_string(dir.0.join("settlements.log")).unwrap();
@@ -13990,41 +14371,83 @@ mod tests {
     #[tokio::test]
     async fn settlement_wal_large_live_snapshot_does_not_recompact_every_flush() {
         let dir = TestDirectory::new("wal-compaction-growth");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 2, u64::MAX).await.unwrap();
-        wal.worker.run(|disk| {
-            disk.persist_sync(&test_abort_job("first"))?;
-            disk.persist_sync(&test_abort_job("second"))?;
-            disk.persist_sync(&test_abort_job("first"))?;
-            assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
-        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 3);
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 2, u64::MAX)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                disk.persist_sync(&test_abort_job("first"))?;
+                disk.persist_sync(&test_abort_job("second"))?;
+                disk.persist_sync(&test_abort_job("first"))?;
+                assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("settlements.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
 
         let dir = TestDirectory::new("wal-compaction-byte-growth");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 1000, 600).await.unwrap();
-        wal.worker.run(|disk| {
-            let mut job = test_abort_job("large-live-job");
-            if let SettlementRetryJob::Abort(request) = &mut job { request.reason = "x".repeat(1000); }
-            disk.persist_sync(&job)?;
-            assert!(disk.state.lock().unwrap().compacted_bytes > 600);
-            disk.append_record(SettlementWalRecord::Ack { key: "abort:unrelated".to_string() })?;
-            disk.flush()?;
-            assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
-        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 2);
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 1000, 600)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                let mut job = test_abort_job("large-live-job");
+                if let SettlementRetryJob::Abort(request) = &mut job {
+                    request.reason = "x".repeat(1000);
+                }
+                disk.persist_sync(&job)?;
+                assert!(disk.state.lock().unwrap().compacted_bytes > 600);
+                disk.append_record(SettlementWalRecord::Ack {
+                    key: "abort:unrelated".to_string(),
+                })?;
+                disk.flush()?;
+                assert_eq!(disk.state.lock().unwrap().records_since_compaction, 1);
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("settlements.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
     async fn settlement_wal_startup_snapshot_excludes_live_callbacks() {
         let dir = TestDirectory::new("wal-startup-snapshot");
-        let old = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        old.worker.run(|disk| disk.persist_sync(&test_abort_job("history"))).await.unwrap().unwrap();
+        let old = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        old.worker
+            .run(|disk| disk.persist_sync(&test_abort_job("history")))
+            .await
+            .unwrap()
+            .unwrap();
         drop(old);
         let path = dir.0.clone();
-        let worker = disk_worker::DiskWorker::start(4, 4, move || SettlementWalDisk::new_for_test(path, 100, u64::MAX)).await.unwrap();
+        let worker = disk_worker::DiskWorker::start(4, 4, move || {
+            SettlementWalDisk::new_for_test(path, 100, u64::MAX)
+        })
+        .await
+        .unwrap();
         let wal = SettlementWal::from_worker(worker).await.unwrap();
-        wal.worker.run(|disk| disk.persist_sync(&test_abort_job("live"))).await.unwrap().unwrap();
+        wal.worker
+            .run(|disk| disk.persist_sync(&test_abort_job("live")))
+            .await
+            .unwrap()
+            .unwrap();
         let replay = wal.take_startup_replay().unwrap();
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].edge_request_id(), "history");
@@ -14035,50 +14458,76 @@ mod tests {
     #[tokio::test]
     async fn settlement_wal_deferred_retries_rotate_retain_payload_and_survive_restart() {
         let dir = TestDirectory::new("wal-deferred-retries");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        wal.worker.run(|disk| {
-            for id in ["waiting", "ready-first", "ready-second"] {
-                let job = test_abort_job(id);
-                disk.persist_sync(&job)?;
-                let wait = if id == "waiting" { Duration::from_secs(30) } else { Duration::ZERO };
-                disk.defer_retry(SettlementRetryTask::new(job), wait)?;
-            }
-            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 3);
-            assert!(disk.state.lock().unwrap().deferred.values().all(|value| value.fallback_job.is_none()));
-            let first = disk.take_deferred_retries(1)?;
-            assert_eq!(first[0].job.edge_request_id(), "ready-first");
-            let second = disk.take_deferred_retries(1)?;
-            assert_eq!(second[0].job.edge_request_id(), "ready-second");
-            assert!(disk.take_deferred_retries(1)?.is_empty());
-            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                for id in ["waiting", "ready-first", "ready-second"] {
+                    let job = test_abort_job(id);
+                    disk.persist_sync(&job)?;
+                    let wait = if id == "waiting" {
+                        Duration::from_secs(30)
+                    } else {
+                        Duration::ZERO
+                    };
+                    disk.defer_retry(SettlementRetryTask::new(job), wait)?;
+                }
+                assert_eq!(disk.deferred_count.load(Ordering::Acquire), 3);
+                assert!(disk
+                    .state
+                    .lock()
+                    .unwrap()
+                    .deferred
+                    .values()
+                    .all(|value| value.fallback_job.is_none()));
+                let first = disk.take_deferred_retries(1)?;
+                assert_eq!(first[0].job.edge_request_id(), "ready-first");
+                let second = disk.take_deferred_retries(1)?;
+                assert_eq!(second[0].job.edge_request_id(), "ready-second");
+                assert!(disk.take_deferred_retries(1)?.is_empty());
+                assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
         drop(wal);
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         assert_eq!(replay.load().await.unwrap().len(), 3);
     }
 
     #[tokio::test]
     async fn settlement_wal_deferred_duplicate_ack_wakes_all_replay_waiters() {
         let dir = TestDirectory::new("wal-deferred-ack");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         let (first_tx, first_rx) = oneshot::channel();
         let (second_tx, second_rx) = oneshot::channel();
-        wal.worker.run(move |disk| {
-            let job = test_abort_job("same-job");
-            disk.persist_sync(&job)?;
-            for done in [first_tx, second_tx] {
-                let mut task = SettlementRetryTask::new(job.clone());
-                task.replay_done.push(done);
-                disk.defer_retry(task, Duration::ZERO)?;
-            }
-            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
-            disk.append_record(SettlementWalRecord::Ack { key: SettlementWal::key(&job) })?;
-            disk.flush()?;
-            assert!(disk.take_deferred_retries(1)?.is_empty());
-            assert_eq!(disk.deferred_count.load(Ordering::Acquire), 0);
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
+        wal.worker
+            .run(move |disk| {
+                let job = test_abort_job("same-job");
+                disk.persist_sync(&job)?;
+                for done in [first_tx, second_tx] {
+                    let mut task = SettlementRetryTask::new(job.clone());
+                    task.replay_done.push(done);
+                    disk.defer_retry(task, Duration::ZERO)?;
+                }
+                assert_eq!(disk.deferred_count.load(Ordering::Acquire), 1);
+                disk.append_record(SettlementWalRecord::Ack {
+                    key: SettlementWal::key(&job),
+                })?;
+                disk.flush()?;
+                assert!(disk.take_deferred_retries(1)?.is_empty());
+                assert_eq!(disk.deferred_count.load(Ordering::Acquire), 0);
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
         first_rx.await.unwrap();
         second_rx.await.unwrap();
     }
@@ -14086,41 +14535,64 @@ mod tests {
     #[tokio::test]
     async fn settlement_wal_failed_disk_deferred_callback_keeps_memory_payload() {
         let dir = TestDirectory::new("wal-deferred-no-disk");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        wal.worker.run(|disk| {
-            disk.mark_unhealthy();
-            disk.defer_retry(SettlementRetryTask::new(test_abort_job("memory-only")), Duration::ZERO)?;
-            let tasks = disk.take_deferred_retries(1)?;
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0].job.edge_request_id(), "memory-only");
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                disk.mark_unhealthy();
+                disk.defer_retry(
+                    SettlementRetryTask::new(test_abort_job("memory-only")),
+                    Duration::ZERO,
+                )?;
+                let tasks = disk.take_deferred_retries(1)?;
+                assert_eq!(tasks.len(), 1);
+                assert_eq!(tasks[0].job.edge_request_id(), "memory-only");
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
     async fn settlement_wal_failed_update_does_not_replay_older_payload() {
         let dir = TestDirectory::new("wal-deferred-latest-payload");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        wal.worker.run(|disk| {
-            let mut job = test_abort_job("updated-job");
-            disk.persist_sync(&job)?;
-            disk.defer_retry(SettlementRetryTask::new(job.clone()), Duration::ZERO)?;
-            disk.mark_unhealthy();
-            if let SettlementRetryJob::Abort(request) = &mut job { request.reason = "latest-update".to_string(); }
-            disk.defer_retry(SettlementRetryTask::new(job), Duration::ZERO)?;
-            let tasks = disk.take_deferred_retries(1)?;
-            match &tasks[0].job {
-                SettlementRetryJob::Abort(request) => assert_eq!(request.reason, "latest-update"),
-                _ => panic!("unexpected callback"),
-            }
-            anyhow::Ok(())
-        }).await.unwrap().unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                let mut job = test_abort_job("updated-job");
+                disk.persist_sync(&job)?;
+                disk.defer_retry(SettlementRetryTask::new(job.clone()), Duration::ZERO)?;
+                disk.mark_unhealthy();
+                if let SettlementRetryJob::Abort(request) = &mut job {
+                    request.reason = "latest-update".to_string();
+                }
+                disk.defer_retry(SettlementRetryTask::new(job), Duration::ZERO)?;
+                let tasks = disk.take_deferred_retries(1)?;
+                match &tasks[0].job {
+                    SettlementRetryJob::Abort(request) => {
+                        assert_eq!(request.reason, "latest-update")
+                    }
+                    _ => panic!("unexpected callback"),
+                }
+                anyhow::Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
     async fn settlement_overflow_recovers_without_losing_wal_jobs() {
         let dir = TestDirectory::new("wal-overflow-recovery");
-        let wal = Arc::new(SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap());
+        let wal = Arc::new(
+            SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX)
+                .await
+                .unwrap(),
+        );
         let recovered = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel(2);
         let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
@@ -14128,7 +14600,9 @@ mod tests {
         let defer_wal = wal.clone();
         let recovery = recovered.clone();
         let scheduler = tokio::spawn(retry_queue::run(
-            receiver, 2, 2,
+            receiver,
+            2,
+            2,
             move |task: SettlementRetryTask| {
                 let wal = attempt_wal.clone();
                 let recovered = recovery.clone();
@@ -14137,11 +14611,17 @@ mod tests {
                         return Some((Duration::from_millis(10), task));
                     }
                     let key = SettlementWal::key(&task.job);
-                    wal.worker.run(move |disk| {
-                        disk.append_record(SettlementWalRecord::Ack { key })?;
-                        disk.flush()
-                    }).await.unwrap().unwrap();
-                    for done in task.replay_done { let _ = done.send(()); }
+                    wal.worker
+                        .run(move |disk| {
+                            disk.append_record(SettlementWalRecord::Ack { key })?;
+                            disk.flush()
+                        })
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    for done in task.replay_done {
+                        let _ = done.send(());
+                    }
                     None
                 }
             },
@@ -14149,7 +14629,11 @@ mod tests {
                 let wal = defer_wal.clone();
                 let deferred = deferred_tx.clone();
                 async move {
-                    wal.worker.run(move |disk| disk.defer_retry(task, delay)).await.unwrap().unwrap();
+                    wal.worker
+                        .run(move |disk| disk.defer_retry(task, delay))
+                        .await
+                        .unwrap()
+                        .unwrap();
                     let _ = deferred.send(());
                 }
             },
@@ -14158,45 +14642,82 @@ mod tests {
         let refill_sender = sender.clone();
         let dispatcher = tokio::spawn(async move {
             loop {
-                let tasks = refill_wal.worker.run(|disk| disk.take_deferred_retries(2)).await.unwrap().unwrap();
-                for task in tasks { refill_sender.send(task).await.unwrap(); }
+                let tasks = refill_wal
+                    .worker
+                    .run(|disk| disk.take_deferred_retries(2))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                for task in tasks {
+                    refill_sender.send(task).await.unwrap();
+                }
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         });
         let mut completions = futures_util::stream::FuturesUnordered::new();
-        for id in ["history-1", "history-2", "history-3", "history-4", "history-5", "history-6"] {
+        for id in [
+            "history-1",
+            "history-2",
+            "history-3",
+            "history-4",
+            "history-5",
+            "history-6",
+        ] {
             let job = test_abort_job(id);
             let durable_job = job.clone();
-            wal.worker.run(move |disk| disk.persist_sync(&durable_job)).await.unwrap().unwrap();
+            wal.worker
+                .run(move |disk| disk.persist_sync(&durable_job))
+                .await
+                .unwrap()
+                .unwrap();
             let (done, completed) = oneshot::channel();
             let mut task = SettlementRetryTask::new(job);
             task.replay_done.push(done);
             sender.send(task).await.unwrap();
             completions.push(completed);
         }
-        tokio::time::timeout(Duration::from_secs(2), deferred_rx.recv()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), deferred_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         let live = test_abort_job("live");
         let durable_live = live.clone();
-        wal.worker.run(move |disk| disk.persist_sync(&durable_live)).await.unwrap().unwrap();
+        wal.worker
+            .run(move |disk| disk.persist_sync(&durable_live))
+            .await
+            .unwrap()
+            .unwrap();
         let (live_done, live_completed) = oneshot::channel();
         let mut task = SettlementRetryTask::new(live);
         task.replay_done.push(live_done);
         sender.send(task).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(2), live_completed).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), live_completed)
+            .await
+            .unwrap()
+            .unwrap();
         // Fresh work succeeds even though every historical callback is failing.
         assert_eq!(wal.pending.load(Ordering::Acquire), 6);
         recovered.store(true, Ordering::Release);
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(done) = completions.next().await { done.unwrap(); }
-        }).await.unwrap();
+            while let Some(done) = completions.next().await {
+                done.unwrap();
+            }
+        })
+        .await
+        .unwrap();
         dispatcher.abort();
         let _ = dispatcher.await;
         drop(sender);
-        tokio::time::timeout(Duration::from_secs(2), scheduler).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), scheduler)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(wal.pending.load(Ordering::Acquire), 0);
         assert_eq!(wal.deferred_count.load(Ordering::Acquire), 0);
         drop(wal);
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX)
+            .await
+            .unwrap();
         assert!(replay.load().await.unwrap().is_empty());
     }
 
@@ -14204,13 +14725,16 @@ mod tests {
     async fn settlement_wal_unhealthy_state_releases_flush_waiters() {
         let dir = TestDirectory::new("wal-unhealthy");
         let job = test_abort_job("edge-waiting");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         let sequence = wal
             .append_record(SettlementWalRecord::Put {
                 key: SettlementWal::key(&job),
                 job,
             })
-            .await.unwrap();
+            .await
+            .unwrap();
         wal.mark_unhealthy();
 
         let result = tokio::time::timeout(Duration::from_millis(100), wal.wait_flushed(sequence))
@@ -14232,21 +14756,34 @@ mod tests {
     #[tokio::test]
     async fn settlement_wal_persist_waits_for_flush_and_survives_restart() {
         let dir = TestDirectory::new("wal-flush-barrier");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         let job = test_abort_job("durable-before-callback");
         let persist = wal.persist(&job);
         tokio::pin!(persist);
-        assert!(tokio::time::timeout(Duration::from_millis(20), &mut persist).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut persist)
+                .await
+                .is_err()
+        );
         wal.flush().await.unwrap();
         persist.await.unwrap();
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        assert_eq!(replay.load().await.unwrap()[0].edge_request_id(), "durable-before-callback");
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.load().await.unwrap()[0].edge_request_id(),
+            "durable-before-callback"
+        );
     }
 
     #[tokio::test]
     async fn settlement_wal_cleanup_is_durable_after_owner_is_dropped() {
         let dir = TestDirectory::new("wal-cleanup-owner-drop");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX).await.unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX)
+            .await
+            .unwrap();
         let cleanup = wal.worker.reserve_cleanup(0).await.unwrap();
         let (done, completed) = oneshot::channel();
         cleanup.send(move |disk| {
@@ -14255,30 +14792,47 @@ mod tests {
         });
         drop(wal);
         completed.await.unwrap().unwrap();
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX)
+            .await
+            .unwrap();
         let jobs = replay.load().await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].edge_request_id(), "cancelled-request");
-        assert_eq!(std::fs::read_to_string(dir.0.join("settlements.log")).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("settlements.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn settlement_wal_cancelled_waiter_does_not_cancel_accepted_disk_write() {
         let dir = TestDirectory::new("wal-cancelled-write");
-        let wal = Arc::new(SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap());
+        let wal = Arc::new(
+            SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+                .await
+                .unwrap(),
+        );
         let (release, blocked) = std::sync::mpsc::channel();
         let (entered, started) = oneshot::channel();
         let disk = wal.clone();
         let blocker = tokio::spawn(async move {
-            disk.worker.run(move |_| {
-                let _ = entered.send(());
-                let _ = blocked.recv_timeout(Duration::from_secs(2));
-            }).await.unwrap();
+            disk.worker
+                .run(move |_| {
+                    let _ = entered.send(());
+                    let _ = blocked.recv_timeout(Duration::from_secs(2));
+                })
+                .await
+                .unwrap();
         });
         started.await.unwrap();
         let writer = wal.clone();
         let pending = tokio::spawn(async move {
-            writer.persist(&test_abort_job("cancelled-after-enqueue")).await
+            writer
+                .persist(&test_abort_job("cancelled-after-enqueue"))
+                .await
         });
         while wal.worker.pending.load(Ordering::Acquire) < 2 {
             tokio::task::yield_now().await;
@@ -14288,19 +14842,43 @@ mod tests {
         release.send(()).unwrap();
         blocker.await.unwrap();
         wal.flush().await.unwrap();
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        assert_eq!(replay.load().await.unwrap()[0].edge_request_id(), "cancelled-after-enqueue");
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.load().await.unwrap()[0].edge_request_id(),
+            "cancelled-after-enqueue"
+        );
     }
 
     #[tokio::test]
     async fn settlement_wal_disk_failure_unblocks_waiters_and_preserves_previous_log() {
         let dir = TestDirectory::new("wal-disk-failure");
-        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
-        wal.worker.run(|disk| disk.persist_sync(&test_abort_job("previous-durable-job"))).await.unwrap().unwrap();
-        wal.worker.run(|disk| { disk.state.lock().unwrap().file.take(); }).await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_secs(1), wal.persist(&test_abort_job("failed-write"))).await.unwrap().is_err());
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        wal.worker
+            .run(|disk| disk.persist_sync(&test_abort_job("previous-durable-job")))
+            .await
+            .unwrap()
+            .unwrap();
+        wal.worker
+            .run(|disk| {
+                disk.state.lock().unwrap().file.take();
+            })
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_secs(1),
+            wal.persist(&test_abort_job("failed-write"))
+        )
+        .await
+        .unwrap()
+        .is_err());
         assert!(!wal.is_healthy());
-        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).await.unwrap();
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
         let jobs = replay.load().await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].edge_request_id(), "previous-durable-job");
@@ -14312,13 +14890,20 @@ mod tests {
         impl Drop for PendingStream {
             fn drop(&mut self) {
                 self.0.take().unwrap().send(|disk| {
-                    disk.persist_sync(&test_abort_job("runtime-shutdown-usage")).unwrap();
+                    disk.persist_sync(&test_abort_job("runtime-shutdown-usage"))
+                        .unwrap();
                 });
             }
         }
         let dir = TestDirectory::new("wal-runtime-shutdown");
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
-        let wal = runtime.block_on(SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX)).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let wal = runtime
+            .block_on(SettlementWal::new_for_test(dir.0.clone(), 1, u64::MAX))
+            .unwrap();
         let reservation = runtime.block_on(wal.worker.reserve_cleanup(3)).unwrap();
         let (started, ready) = oneshot::channel();
         runtime.spawn(async move {
@@ -14838,7 +15423,10 @@ mod tests {
             let output = String::from_utf8(output).unwrap();
             assert!(!output.contains("response.failed"));
             assert!(output.contains("允许\\nread-only"));
-            assert!(created, "created boundary for safe placeholder must survive");
+            assert!(
+                created,
+                "created boundary for safe placeholder must survive"
+            );
             assert!(summary.completed_successfully(Some("responses")));
             assert_eq!(summary.usage.input_tokens, 12);
             assert_eq!(summary.usage.output_tokens, 3);
@@ -15381,7 +15969,11 @@ mod tests {
 
     #[test]
     fn sanitized_error_keeps_category_and_id_without_provider_details() {
-        for (kind, code) in [("rate_limit_error", "rate_limit_exceeded"), ("invalid_request_error", "model_not_found"), ("authentication_error", "invalid_api_key")] {
+        for (kind, code) in [
+            ("rate_limit_error", "rate_limit_exceeded"),
+            ("invalid_request_error", "model_not_found"),
+            ("authentication_error", "invalid_api_key"),
+        ] {
             let payload = serde_json::json!({"type":"response.failed","response":{"id":"resp_correlation","error":{"type":kind,"code":code,"message":"secret at https://private.example"}}});
             let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
             let frame = format!("event: response.failed\ndata: {payload}\n\n");
@@ -15398,11 +15990,22 @@ mod tests {
     #[tokio::test]
     async fn early_placeholder_failure_preserves_rate_limit_and_chat_terminal() {
         for dialect in ["responses", "chat_completions"] {
-            let response = Response::builder().status(429).body(Body::from("private upstream error")).unwrap();
-            let frame = early_placeholder_error_frame(response, Some(dialect), &ChatStreamSummary::default()).await;
+            let response = Response::builder()
+                .status(429)
+                .body(Body::from("private upstream error"))
+                .unwrap();
+            let frame = early_placeholder_error_frame(
+                response,
+                Some(dialect),
+                &ChatStreamSummary::default(),
+            )
+            .await;
             assert!(frame.contains("rate_limit_error"));
             assert!(!frame.contains("private upstream"));
-            assert_eq!(frame.contains("data: [DONE]"), dialect == "chat_completions");
+            assert_eq!(
+                frame.contains("data: [DONE]"),
+                dialect == "chat_completions"
+            );
         }
     }
 
@@ -15446,9 +16049,51 @@ mod tests {
     }
 
     #[test]
+    fn responses_protocol_stream_metadata_and_failure_sequence() {
+        let mut sanitizer = OpenAIStreamSanitizer::new(None);
+        let first = sanitizer.push(b"data: {\"type\":\"response.created\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"created_at\":1700000000}}\n\n");
+        assert!(String::from_utf8_lossy(&first).contains("1700000000"));
+        let second = sanitizer.push(b"data: {\"type\":\"response.in_progress\",\"sequence_number\":3,\"response\":{\"id\":\"resp_1\"}}\n\n");
+        assert!(String::from_utf8_lossy(&second).contains("1700000000"));
+        let failed = sanitizer.push(b"data: {\"type\":\"error\",\"sequence_number\":4,\"error\":{\"message\":\"secret diagnostic\"}}\n\n");
+        let text = String::from_utf8_lossy(&failed);
+        assert!(text.contains("\"created_at\":1700000000"));
+        assert!(text.contains("\"sequence_number\":4"));
+        assert!(!text.contains("secret diagnostic"));
+    }
+
+    #[test]
+    fn responses_ws_metadata_resets_between_turns_and_preserves_valid_bytes() {
+        let mut tracker = ResponsesCreatedAtStamper::default();
+        let original = r#"{ "type":"response.created", "sequence_number":0, "response":{"id":"resp_a","created_at":1700000000} }"#;
+        let unchanged = sanitize_openai_ws_message_with_created_at(
+            TungsteniteMessage::Text(original.into()),
+            None,
+            None,
+            &mut tracker,
+        );
+        assert_eq!(unchanged.into_text().unwrap(), original);
+        let missing =
+            r#"{"type":"response.completed","sequence_number":2,"response":{"id":"resp_a"}}"#;
+        let output = sanitize_openai_ws_message_with_created_at(
+            TungsteniteMessage::Text(missing.into()),
+            None,
+            None,
+            &mut tracker,
+        );
+        let value: Value = serde_json::from_str(&output.into_text().unwrap()).unwrap();
+        assert_eq!(value["response"]["created_at"], 1700000000);
+        let mut next = serde_json::json!({"type":"response.created","sequence_number":0,"response":{"id":"resp_b","created_at":1800000000}});
+        assert!(!tracker.stamp(&mut next));
+        let failed = tracker.failed(None);
+        assert_eq!(failed["response"]["created_at"], 1800000000);
+        assert_eq!(failed["sequence_number"], 1);
+    }
+
+    #[test]
     fn sse_error_null_and_normal_delta_remain_unchanged() {
         let mut sanitizer = OpenAIStreamSanitizer::new(None);
-        let input = br#"data: {"type":"response.in_progress","response":{"error":null}}
+        let input = br#"data: {"type":"response.in_progress","response":{"created_at":1700000000,"error":null}}
 data: {"type":"response.output_text.delta","delta":"ok"}
 
 "#;
@@ -17249,7 +17894,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     fn downstream_retried_usage_disabled_preserves_provider_payload() {
         let mut event_type = None;
         let output = sanitize_openai_sse_line_with_usage(
-            br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
+            br#"data: {"type":"response.completed","response":{"created_at":1700000000,"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
 "#,
             false,
             &mut event_type,
@@ -17257,7 +17902,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             None,
             None,
         );
-        assert_eq!(output, br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
+        assert_eq!(output, br#"data: {"type":"response.completed","response":{"created_at":1700000000,"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
 "#);
     }
 

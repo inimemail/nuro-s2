@@ -1223,12 +1223,12 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	// Get available models from account configurations for the selected group platform.
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
-		availableModels = filterModelsByCustomList(availableModels, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
+		availableModels = filterModelsByCustomList(availableModels, modelListingFallback(platform, availableModels), apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)
 		return
 	}
 
-	if len(availableModels) > 0 {
+	if len(availableModels) > 0 || (platform == service.PlatformOpenAI && availableModels != nil) {
 		writeModelsList(c, platform, availableModels)
 		return
 	}
@@ -1283,8 +1283,8 @@ func (h *GatewayHandler) Model(c *gin.Context) {
 	}
 	models := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
-		models = filterModelsByCustomList(models, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
-	} else if len(models) == 0 {
+		models = filterModelsByCustomList(models, modelListingFallback(platform, models), apiKey.Group.ModelsListConfig.Models)
+	} else if len(models) == 0 && (platform != service.PlatformOpenAI || models == nil) {
 		models = defaultModelIDsForPlatform(platform)
 	}
 	found := false
@@ -2519,4 +2519,11 @@ func (h *GatewayHandler) getUserMsgQueueMode(account *service.Account, parsed *s
 		mode = h.cfg.Gateway.UserMessageQueue.GetEffectiveMode()
 	}
 	return mode
+}
+
+func modelListingFallback(platform string, models []string) []string {
+	if platform == service.PlatformOpenAI && models != nil {
+		return models
+	}
+	return defaultModelIDsForPlatform(platform)
 }

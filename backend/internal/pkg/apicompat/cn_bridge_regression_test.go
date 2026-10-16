@@ -10,9 +10,13 @@ func TestCNBridgeMessagesThinkingReplay(t *testing.T) {
 		{Role: "assistant", Content: json.RawMessage(`[{"type":"thinking","thinking":"inspect workspace"},{"type":"tool_use","id":"toolu_a","name":"exec","input":{"cmd":"pwd"}}]`)},
 		{Role: "user", Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_a","content":"/workspace"}]`)},
 	}}
-	res, err := AnthropicToResponsesForChatCompletions(req)
+	req.MaxTokens = 16
+	res, err := AnthropicToResponsesForChatCompletionsWithMinOutputTokens(req, 256)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if res.MaxOutputTokens == nil || *res.MaxOutputTokens != 256 {
+		t.Fatalf("configured token floor lost: %v", res.MaxOutputTokens)
 	}
 	chat, err := ResponsesToChatCompletionsRequest(res)
 	if err != nil {

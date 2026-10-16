@@ -104,6 +104,21 @@ const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 // 当账号未配置 model_mapping 时使用此默认值
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
+	// Gemini 4 Argon tiered models
+	"gemini-4-argon":        "gemini-4-argon-high",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+
+	"claude-opus-5-5":          "claude-opus-5-5-high",     // 简称映射
+	"claude-opus-5-5-high":     "claude-opus-5-5-high",     // 官方模型
+	"claude-opus-5-5-medium":   "claude-opus-5-5-medium",   // 官方模型
+	"claude-opus-5-5-low":      "claude-opus-5-5-low",      // 官方模型
+	"claude-sonnet-5-5":        "claude-sonnet-5-5-high",   // 简称映射
+	"claude-sonnet-5-5-high":   "claude-sonnet-5-5-high",   // 官方模型
+	"claude-sonnet-5-5-medium": "claude-sonnet-5-5-medium", // 官方模型
+	"claude-sonnet-5-5-low":    "claude-sonnet-5-5-low",    // 官方模型
+
 	// Claude 白名单
 	"claude-fable-5":             "claude-fable-5",           // 官方模型
 	"claude-opus-4-8":            "claude-opus-4-8",          // 官方模型

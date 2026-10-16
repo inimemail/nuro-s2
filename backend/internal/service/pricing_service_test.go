@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,11 +17,11 @@ func TestCanonicalModelPricingSnapshotMatchesV028(t *testing.T) {
 	require.NoError(t, err)
 
 	digest := sha256.Sum256(data)
-	require.Equal(t, "ab91b9ec0bee62627e3b77af43d923bc50538bf39c6ade8310e254a5a4311f79", hex.EncodeToString(digest[:]))
+	require.Equal(t, "a7ba8b99e4f50b8da211a2d9693e4fe932b6c355e3e441351efdf79873a09572", hex.EncodeToString(digest[:]))
 
 	var entries map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &entries))
-	require.Len(t, entries, 207)
+	require.Len(t, entries, 209)
 }
 
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
@@ -454,4 +455,91 @@ func TestListModelNamesByProvider_EmptyCatalog(t *testing.T) {
 	got := svc.ListModelNamesByProvider("openai")
 	require.NotNil(t, got)
 	require.Empty(t, got)
+}
+
+func TestPricingService_Gemini4ArgonThinkingTiersUseBasePricing(t *testing.T) {
+	basePricing := &LiteLLMModelPricing{InputCostPerToken: 2e-6, OutputCostPerToken: 10e-6, CacheReadInputTokenCost: 0.1e-6}
+	cyberPricing := &LiteLLMModelPricing{InputCostPerToken: 4e-6, OutputCostPerToken: 20e-6, CacheReadInputTokenCost: 0.2e-6}
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"gemini-4-argon":                  basePricing,
+		"gemini-4-argon-cyber-permissive": cyberPricing,
+	}}
+
+	for _, model := range []string{
+		"gemini-4-argon",
+		"gemini-4-argon-high",
+		"gemini-4-argon-low",
+		"gemini-4-argon-medium",
+		"models/gemini-4-argon-high",
+		"projects/p/locations/global/publishers/google/models/gemini-4-argon",
+	} {
+		t.Run(model, func(t *testing.T) {
+			require.Same(t, basePricing, svc.GetModelPricing(model))
+		})
+	}
+	require.Same(t, cyberPricing, svc.GetModelPricing("gemini-4-argon-cyber-permissive"))
+}
+
+func TestBillingService_Gemini4ArgonFallbacksAreBillable(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, nil)
+	tokens := UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000}
+
+	for _, tc := range []struct {
+		model               string
+		input, output, read float64
+	}{
+		{"gemini-4-argon", 2, 10, 0.1},
+		{"gemini-4-argon-high", 2, 10, 0.1},
+		{"gemini-4-argon-low", 2, 10, 0.1},
+		{"gemini-4-argon-medium", 2, 10, 0.1},
+		{"models/gemini-4-argon", 2, 10, 0.1},
+		{"gemini-4-argon-cyber-permissive", 4, 20, 0.2},
+		{"gemini-4-argon-cyber", 4, 20, 0.2},
+		{"publishers/google/models/gemini-4-argon-cyber-permissive", 4, 20, 0.2},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			cost, err := svc.CalculateCost(tc.model, tokens, 1)
+			require.NoError(t, err)
+			require.InDelta(t, tc.input, cost.InputCost, 1e-12)
+			require.InDelta(t, tc.output, cost.OutputCost, 1e-12)
+			require.InDelta(t, tc.read, cost.CacheReadCost, 1e-12)
+			require.InDelta(t, tc.input+tc.output+tc.read, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
+func TestDefaultPricingIncludesGemini4ArgonRates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+
+	for _, tc := range []struct {
+		model               string
+		provider            string
+		input, output, read float64
+	}{
+		{"gemini-4-argon", "gemini", 2e-6, 10e-6, 0.1e-6},
+		{"gemini-4-argon-high", "gemini", 2e-6, 10e-6, 0.1e-6},
+		{"gemini-4-argon-cyber-permissive", "vertex_ai-language-models", 4e-6, 20e-6, 0.2e-6},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			pricing := pricingSvc.GetModelPricing(tc.model)
+			require.NotNil(t, pricing)
+			require.Equal(t, tc.provider, pricing.LiteLLMProvider)
+			require.InDelta(t, tc.input, pricing.InputCostPerToken, 1e-15)
+			require.InDelta(t, tc.output, pricing.OutputCostPerToken, 1e-15)
+			require.InDelta(t, tc.read, pricing.CacheReadInputTokenCost, 1e-15)
+			// Priority 档为标准价的 1.8 倍；单一价档不分提示词长度，显式缓存不可用故无存储价。
+			require.InDelta(t, tc.input*1.8, pricing.InputCostPerTokenPriority, 1e-15)
+			require.InDelta(t, tc.output*1.8, pricing.OutputCostPerTokenPriority, 1e-15)
+			require.InDelta(t, tc.read*1.8, pricing.CacheReadInputTokenCostPriority, 1e-15)
+			require.Zero(t, pricing.LongContextInputTokenThreshold)
+			require.Zero(t, pricing.CacheStorageCostPerTokenPerHour)
+		})
+	}
+	require.Contains(t, pricingSvc.ListModelNamesByProvider("gemini"), "gemini-4-argon")
 }

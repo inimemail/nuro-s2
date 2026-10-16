@@ -354,3 +354,18 @@ func buildCodexImportTestJWT(t *testing.T, exp time.Time, extraClaims map[string
 	}
 	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(claimBytes) + "."
 }
+
+func TestCodexUpgradeCompositeIdentityDoesNotCrossWorkspaces(t *testing.T) {
+	a := buildCodexImportIdentityKeys("workspace-a", "user-1", "same@example.com", "access-a", "refresh-a")
+	b := buildCodexImportIdentityKeys("workspace-b", "user-1", "same@example.com", "access-b", "refresh-b")
+	for _, left := range a {
+		for _, right := range b {
+			if left == right {
+				t.Fatalf("different workspace identities share key %q", left)
+			}
+		}
+	}
+	if codexCompositeIdentityKey("ab", "c") == codexCompositeIdentityKey("a", "bc") {
+		t.Fatal("composite identity must be unambiguous")
+	}
+}

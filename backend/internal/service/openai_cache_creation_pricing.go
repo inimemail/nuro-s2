@@ -59,7 +59,7 @@ func (s *OpenAIGatewayService) openAICacheCreationPricingForContext(ctx context.
 	// billing. A WS session snapshot cannot lock a future billing window, so
 	// retain raw usage unless a group/channel or complete explicit price applies.
 	if resolved.Source != PricingSourceGroup && resolved.Source != PricingSourceChannel &&
-		(isDeepSeekModel(model) || isGemini36FlashPricingModel(model)) {
+		(isDeepSeekModel(model) || isGemini36FlashPricingModel(model) || isGeminiArgonPricingModel(model)) {
 		p := resolved.BasePricing
 		if p == nil || !p.PricingOverrideInput || !p.PricingOverrideOutput || !p.PricingOverrideCacheRead {
 			return nil

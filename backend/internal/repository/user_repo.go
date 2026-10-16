@@ -824,6 +824,22 @@ func (r *userRepository) UpdateBalance(ctx context.Context, id int64, amount flo
 	return nil
 }
 
+// RestoreRefundBalance compensates a refund deduction without recording a new
+// recharge. It reuses the caller's transaction during pending-refund settlement.
+func (r *userRepository) RestoreRefundBalance(ctx context.Context, id int64, amount float64) error {
+	if amount < 0 {
+		return fmt.Errorf("refund restoration amount must be nonnegative")
+	}
+	n, err := clientFromContext(ctx, r.client).User.Update().Where(dbuser.IDEQ(id)).AddBalance(amount).Save(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrUserNotFound, nil)
+	}
+	if n == 0 {
+		return service.ErrUserNotFound
+	}
+	return nil
+}
+
 // DeductBalance 扣除用户余额
 // 透支策略：允许余额变为负数，确保当前请求能够完成
 // 中间件会阻止余额 <= 0 的用户发起后续请求

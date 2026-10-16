@@ -415,7 +415,7 @@ func TestResponsesToChatStreamingDownstreamCacheUsageModes_PreserveInternalTruth
 
 func TestGoNonStreamingDownstreamCacheUsageMode_ExplicitImageRequestIsUnchanged(t *testing.T) {
 	setGinTestMode()
-	body := `{"id":"resp_image","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`
+	body := `{"id":"resp_image","created_at":1700000000,"object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},

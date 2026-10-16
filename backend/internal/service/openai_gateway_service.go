@@ -1701,7 +1701,7 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx co
 	if err == nil {
 		for i := range accounts {
 			account := &accounts[i]
-			if !isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") ||
+			if !s.isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") ||
 				s.isOpenAIPoolAccountSoftCooling(account) ||
 				s.isOpenAIAccountRuntimeBlocked(account) {
 				continue
@@ -1952,6 +1952,7 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	}
 	if !openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
 		RequestedModel:          requestedModel,
+		RequireCompact:          requireCompact,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
 		RequestPlatform:         platform,
@@ -2544,7 +2545,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+	if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(account) {
@@ -2941,7 +2942,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					clearSticky = true
 				}
 				if !clearSticky && openAIAccountMatchesLockedPriority(account, lockedPriority) &&
-					isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+					s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
 					stickyAccount := account
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 					if account == nil {
@@ -3032,7 +3033,7 @@ openAIGroupGuardFallback:
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
-		if !isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+		if !s.isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
 			continue
 		}
 		if s.isNonOpenAIPoolCandidateBlocked(ctx, acc) {
@@ -3801,7 +3802,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+	if !s.isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
 	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
@@ -3833,7 +3834,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	if s.schedulerSnapshot == nil {
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+		if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
 			return nil
 		}
 		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -3871,7 +3872,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 			}
 		}
 	}
-	if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+	if !s.isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
 	copyNonOpenAIPoolProbeToken(account, latest)
@@ -5882,6 +5883,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			upstreamPassthroughModel = compactMappedModel
 		}
 	}
+	// Passthrough intentionally does not apply ordinary account model mappings.
+	// Check the final payload as well as scheduler eligibility so an old local
+	// mapping cannot accidentally let a retired subscription target reach OpenAI.
+	if isRetiredOpenAISubscriptionModel(account, gjson.GetBytes(body, "model").String()) {
+		return nil, &UpstreamFailoverError{
+			StatusCode:           http.StatusBadRequest,
+			ResponseBody:         []byte(`{"error":{"type":"invalid_request_error","code":"model_not_found","message":"Model is unavailable for this upstream account"}}`),
+			SkipPoolSoftCooldown: true, SkipSchedulePenalty: true, SkipStickySessionEviction: true,
+		}
+	}
 
 	if account != nil && account.IsOpenAIOAuthLike() {
 		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
@@ -7300,13 +7311,15 @@ func writeOpenAIRequestPlaceholderErrorSSE(
 		_, _ = fmt.Fprint(c.Writer, "event: error\ndata: "+`{"error":{"type":`+strconv.Quote(errType)+`,"message":`+strconv.Quote(message)+`}}`+"\n\ndata: [DONE]\n\n")
 	default:
 		payload, err := json.Marshal(map[string]any{
-			"type": "response.failed",
+			"type":            "response.failed",
+			"sequence_number": 0,
 			"response": map[string]any{
-				"id":     "resp_placeholder_failed",
-				"object": "response",
-				"model":  strings.TrimSpace(model),
-				"status": "failed",
-				"output": []any{},
+				"id":         "resp_placeholder_failed",
+				"created_at": time.Now().Unix(),
+				"object":     "response",
+				"model":      strings.TrimSpace(model),
+				"status":     "failed",
+				"output":     []any{},
 				"error": map[string]any{
 					"code":    errType,
 					"message": message,
@@ -7834,6 +7847,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	passthroughDocumentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 	defer putSSEScannerBuf64K(scanBuf)
 
+	var createdAtStamper responsesCreatedAtStamper
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
@@ -7907,8 +7921,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
 			}
+			createdAtStamper.Observe(dataBytes, eventType)
 			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForRequest(c, dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
 			if sanitizedError {
+				sanitizedData = createdAtStamper.StampForClient(sanitizedData, "response.failed", eventType, dataBytes)
 				dataBytes = sanitizedData
 				trimmedData = string(sanitizedData)
 				line = "data: " + trimmedData
@@ -7925,6 +7941,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes); restoreErr == nil && !bytes.Equal(restoredData, dataBytes) {
 				dataBytes = restoredData
 				trimmedData = string(restoredData)
+				line = "data: " + trimmedData
+			}
+			if stamped, changed := createdAtStamper.Stamp(dataBytes, eventType); changed {
+				dataBytes = stamped
+				trimmedData = string(stamped)
 				line = "data: " + trimmedData
 			}
 			if terminalType := openAIResponsesTerminalEventType(eventType); terminalType != "" {
@@ -8317,6 +8338,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
+	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -9407,12 +9429,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		defer semanticStallTimer.Stop()
 	}
 	atSSEEventBoundary := true
+	var createdAtStamper responsesCreatedAtStamper
 	sendErrorEvent := func(reason string) {
 		if errorEventSent || clientDisconnected {
 			return
 		}
 		errorEventSent = true
-		payload := `{"type":"response.failed","response":{"status":"failed","error":{"type":"upstream_error","message":"Upstream request failed","code":` + strconv.Quote(reason) + `}}}`
+		payload := string(createdAtStamper.Failed(nil, true))
+		payload, _ = sjson.Set(payload, "response.error.code", reason)
 		if err := flushBuffered(); err != nil {
 			clientDisconnected = true
 			return
@@ -9620,6 +9644,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				observer.ObserveOpenAI(dataBytes, strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String()))
 			}
 
+			stampType := upstreamSSEState.dataEventType([]byte(data))
+			if stamped, changed := createdAtStamper.Stamp([]byte(data), stampType); changed {
+				data = string(stamped)
+				line = "data: " + data
+			}
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(data, `"model"`) {
@@ -9709,10 +9738,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForRequest(c, dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
 			if sanitizedError {
+				sanitizedData = createdAtStamper.StampForClient(sanitizedData, "response.failed", eventType, dataBytes)
 				dataBytes = sanitizedData
 				data = string(sanitizedData)
 				line = "data: " + data
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+				terminalEventType = openAIResponsesTerminalEventType(eventType)
 				failedMessage = safeUpstreamErrorMessage
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
@@ -10554,6 +10585,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		contentType = responseheaders.SafeContentType(resp.Header.Get("Content-Type"), contentType)
 	}
 
+	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -10677,6 +10709,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
+	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -10821,9 +10854,11 @@ func safeOpenAIStreamErrorPayloadForDialect(eventType string, payload []byte, re
 
 func safeOpenAIResponsesFailedPayload(payload []byte, clientOutputStarted bool) []byte {
 	response := map[string]any{
-		"status": "failed",
-		"output": []any{},
-		"error":  buildSafeOpenAIErrorObject(payload, clientOutputStarted),
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"status":     "failed",
+		"output":     []any{},
+		"error":      buildSafeOpenAIErrorObject(payload, clientOutputStarted),
 	}
 	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
 	if responseID == "" {
@@ -10832,12 +10867,16 @@ func safeOpenAIResponsesFailedPayload(payload []byte, clientOutputStarted bool) 
 	if openAIErrorIDIsSafe(responseID) {
 		response["id"] = responseID
 	}
+	if created := gjson.GetBytes(payload, "response.created_at"); created.Type == gjson.Number && created.Int() > 0 {
+		response["created_at"] = created.Int()
+	}
 	event, err := json.Marshal(map[string]any{
-		"type":     "response.failed",
-		"response": response,
+		"type":            "response.failed",
+		"sequence_number": openAIResponsesFailedSequenceNumber(payload),
+		"response":        response,
 	})
 	if err != nil {
-		return []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
+		return []byte(`{"type":"response.failed","sequence_number":0,"response":{"object":"response","created_at":0,"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
 	}
 	return event
 }
@@ -10919,15 +10958,17 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 		return payload, false
 	}
 
-	event := map[string]any{"type": "response.failed"}
+	event := map[string]any{"type": "response.failed", "sequence_number": openAIResponsesFailedSequenceNumber(payload)}
 	if sequenceNumber := gjson.GetBytes(payload, "sequence_number"); sequenceNumber.Exists() && sequenceNumber.Type == gjson.Number {
 		event["sequence_number"] = sequenceNumber.Value()
 	}
 	errorObject := buildSafeOpenAIErrorObject(payload, clientOutputStarted)
 	if responseResult := gjson.GetBytes(payload, "response"); responseResult.Exists() && responseResult.IsObject() {
 		response := map[string]any{
-			"status": "failed",
-			"error":  errorObject,
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "failed",
+			"error":      errorObject,
 		}
 		if value := gjson.Get(responseResult.Raw, "id"); value.Type == gjson.String && openAIErrorIDIsSafe(value.String()) {
 			response["id"] = value.String()

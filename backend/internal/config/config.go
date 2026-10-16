@@ -954,6 +954,8 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// MinOutputTokens is the floor when translating compatible requests to Responses.
+	MinOutputTokens                  int  `mapstructure:"min_output_tokens"`
 	GeminiExplicitCacheEnabled       bool `mapstructure:"gemini_explicit_cache_enabled"`
 	GeminiExplicitCacheMaxResources  int  `mapstructure:"gemini_explicit_cache_max_resources"`
 	GeminiExplicitCacheMaxTTLSeconds int  `mapstructure:"gemini_explicit_cache_max_ttl_seconds"`
@@ -2249,6 +2251,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 }
 
 func setDefaults() {
+	viper.SetDefault("gateway.min_output_tokens", 128)
 	viper.SetDefault("run_mode", RunModeStandard)
 	// Existing installs without this field keep their startup behavior.
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
@@ -2911,6 +2914,13 @@ func setDefaults() {
 }
 
 func (c *Config) Validate() error {
+	// Zero preserves the default for older programmatic config construction.
+	if c.Gateway.MinOutputTokens == 0 {
+		c.Gateway.MinOutputTokens = 128
+	}
+	if c.Gateway.MinOutputTokens < 16 {
+		return fmt.Errorf("gateway.min_output_tokens must be at least 16")
+	}
 	if c.Gateway.GeminiExplicitCacheMaxResources < 0 || c.Gateway.GeminiExplicitCacheMaxResources > 100000 {
 		return fmt.Errorf("gateway.gemini_explicit_cache_max_resources must be between 1 and 100000 (0 uses the default)")
 	}

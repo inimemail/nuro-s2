@@ -450,6 +450,8 @@ func paymentOrderFallbackProviderKey(registry *payment.Registry, order *dbent.Pa
 	return strings.TrimSpace(payment.GetBasePaymentType(strings.TrimSpace(order.PaymentType)))
 }
 
+var createPaymentProviderFromInstance = provider.CreateProvider
+
 func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {
 	if inst == nil {
 		return nil, fmt.Errorf("payment provider instance is missing")
@@ -464,7 +466,7 @@ func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *d
 	}
 
 	instID := strconv.FormatInt(int64(inst.ID), 10)
-	prov, err := provider.CreateProvider(inst.ProviderKey, instID, cfg)
+	prov, err := createPaymentProviderFromInstance(inst.ProviderKey, instID, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create provider from instance: %w", err)
 	}

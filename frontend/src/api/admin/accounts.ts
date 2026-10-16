@@ -670,7 +670,17 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
   return data
 }
 
+export interface UpstreamModelMetadata {
+  display_name?: string
+  supports_images?: boolean
+  supports_thinking?: boolean
+  thinking_budget?: number
+  max_tokens?: number
+  max_output_tokens?: number
+}
+
 export interface SyncUpstreamModelsResult {
+  metadata?: Record<string, UpstreamModelMetadata>
   models: string[]
 }
 

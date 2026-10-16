@@ -254,9 +254,9 @@ func TestVerifyNotificationWithProvidersReturnsMatchedProvider(t *testing.T) {
 		},
 	}
 
-	providerKey, notification, err := verifyNotificationWithProviders(context.Background(), providers, "{}", map[string]string{"wechatpay-signature": "sig"})
+	provider, notification, err := verifyNotificationWithProviders(context.Background(), providers, "{}", map[string]string{"wechatpay-signature": "sig"})
 	require.NoError(t, err)
-	require.Equal(t, payment.TypeWxpay, providerKey)
+	require.Equal(t, payment.TypeWxpay, provider.ProviderKey())
 	require.NotNil(t, notification)
 	require.Equal(t, "sub2_42", notification.OrderID)
 }
@@ -349,4 +349,8 @@ func (p webhookHandlerProviderStub) VerifyNotification(context.Context, string, 
 }
 func (p webhookHandlerProviderStub) Refund(context.Context, payment.RefundRequest) (*payment.RefundResponse, error) {
 	panic("unexpected call")
+}
+
+func (s *webhookHandlerServiceStub) ConfirmNotificationUpstream(context.Context, payment.Provider, *payment.PaymentNotification) error {
+	return nil
 }

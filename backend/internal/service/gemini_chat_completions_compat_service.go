@@ -46,7 +46,14 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
-	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
+	for i := range ccReq.Messages {
+		ccReq.Messages[i].ReasoningContent = ""
+		ccReq.Messages[i].Reasoning = ""
+		if ccReq.Messages[i].Role == "assistant" {
+			ccReq.Messages[i].Content = dropChatReasoningContentParts(ccReq.Messages[i].Content)
+		}
+	}
+	responsesReq, err := chatCompletionsToResponses(s.cfg, &ccReq)
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -100,6 +107,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
 	geminiReq = ensureGeminiFunctionCallThoughtSignatures(geminiReq)
+	geminiReq = applyGeminiCompatThinkingConfig(geminiReq, claudeBody, mappedModel, clientStream)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -120,11 +128,16 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	)
 
 	var resp *http.Response
+	var checkedPolicy *ErrorPolicyResult
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
+		checkedPolicy = nil
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
+			}
+			if failoverErr := s.handleVertexServiceAccountNotFound(ctx, c, account, err); failoverErr != nil {
+				return nil, failoverErr
 			}
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
 		}
@@ -152,11 +165,9 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
 		}
 
-		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp); matched {
-			resp = rebuilt
+		checkedPolicy, resp = s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel)
+		if checkedPolicy != nil && *checkedPolicy != ErrorPolicyNone {
 			break
-		} else {
-			resp = rebuilt
 		}
 
 		if resp.StatusCode >= 400 && s.shouldRetryGeminiUpstreamError(account, resp.StatusCode) {
@@ -215,11 +226,20 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		c.Header("x-request-id", publicID)
 	}
 
-	reasoningEffort := extractCCReasoningEffortFromBody(originalChatBody)
+	reasoningEffort := geminiForwardedReasoningEffort(geminiReq)
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if isGeminiCachedContentNotFound(resp.StatusCode, respBody) {
+			return nil, s.writeChatCompletionsError(c, http.StatusForbidden, "permission_error", "CachedContent not found (or permission denied)")
+		}
+		policy := ErrorPolicyNone
+		if s.rateLimitService != nil {
+			policy = s.finalErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel, checkedPolicy)
+		}
+		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched {
+			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+		}
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
 
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
@@ -641,6 +661,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	openBlockIndex := -1
 	openBlockType := ""
 	seenText := ""
+	seenThought := ""
 	openToolIndex := -1
 	openToolName := ""
 	seenToolJSON := ""
@@ -717,6 +738,41 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 						}
 
 						for _, part := range extractGeminiParts(geminiResp) {
+							if text, ok := part["text"].(string); ok && isGeminiThoughtPart(part) {
+								delta, newSeen := computeGeminiTextDelta(seenThought, text)
+								seenThought = newSeen
+								if delta == "" {
+									continue
+								}
+								if openToolIndex >= 0 {
+									if closeOpenTool() {
+										return disconnectedResult(), nil
+									}
+								}
+								if openBlockType != "thinking" {
+									if closeOpenBlock() {
+										return disconnectedResult(), nil
+									}
+									idx := nextBlockIndex
+									nextBlockIndex++
+									openBlockIndex = idx
+									openBlockType = "thinking"
+									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
+										Type:         "content_block_start",
+										Index:        &idx,
+										ContentBlock: &apicompat.AnthropicContentBlock{Type: "thinking"},
+									}) {
+										return disconnectedResult(), nil
+									}
+								}
+								if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
+									Type:  "content_block_delta",
+									Delta: &apicompat.AnthropicDelta{Type: "thinking_delta", Thinking: delta},
+								}) {
+									return disconnectedResult(), nil
+								}
+								continue
+							}
 							if text, ok := part["text"].(string); ok && text != "" {
 								if openToolIndex >= 0 {
 									if closeOpenTool() {

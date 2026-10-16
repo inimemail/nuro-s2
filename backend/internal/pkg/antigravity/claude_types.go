@@ -165,6 +165,13 @@ type modelDef struct {
 
 // Antigravity 支持的 Claude 模型
 var claudeModels = []modelDef{
+	{ID: "claude-opus-5-5-high", DisplayName: "Claude Opus 5.5 (High)", CreatedAt: "2026-09-22T00:00:00Z"},
+	{ID: "claude-opus-5-5-medium", DisplayName: "Claude Opus 5.5 (Medium)", CreatedAt: "2026-09-22T00:00:00Z"},
+	{ID: "claude-opus-5-5-low", DisplayName: "Claude Opus 5.5 (Low)", CreatedAt: "2026-09-22T00:00:00Z"},
+	{ID: "claude-sonnet-5-5-high", DisplayName: "Claude Sonnet 5.5 (High)", CreatedAt: "2026-09-28T00:00:00Z"},
+	{ID: "claude-sonnet-5-5-medium", DisplayName: "Claude Sonnet 5.5 (Medium)", CreatedAt: "2026-09-28T00:00:00Z"},
+	{ID: "claude-sonnet-5-5-low", DisplayName: "Claude Sonnet 5.5 (Low)", CreatedAt: "2026-09-28T00:00:00Z"},
+
 	{ID: "claude-opus-4-5-thinking", DisplayName: "Claude Opus 4.5 Thinking", CreatedAt: "2025-11-01T00:00:00Z"},
 	{ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5", CreatedAt: "2025-09-29T00:00:00Z"},
 	{ID: "claude-sonnet-4-5-thinking", DisplayName: "Claude Sonnet 4.5 Thinking", CreatedAt: "2025-09-29T00:00:00Z"},
@@ -204,6 +211,9 @@ var geminiModels = []modelDef{
 	{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash Low", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash Medium", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3.8-flash-tiered", DisplayName: "Gemini 3.8 Flash", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon-high", DisplayName: "Gemini 4 Argon (High)", CreatedAt: "2026-10-13T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon-low", DisplayName: "Gemini 4 Argon (Low)", CreatedAt: "2026-10-13T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon-medium", DisplayName: "Gemini 4 Argon (Medium)", CreatedAt: "2026-10-13T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro Preview", CreatedAt: "2025-06-01T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-image", DisplayName: "Gemini 3 Pro Image", CreatedAt: "2025-06-01T00:00:00Z"},
 }
@@ -273,6 +283,9 @@ func FallbackGeminiModel(model string) GeminiModel {
 // IsGeminiReasoningModel 判断是否为不支持部分采样参数和强制 ToolConfig 的 Gemini 推理模型。
 func IsGeminiReasoningModel(modelID string) bool {
 	lowerID := strings.ToLower(modelID)
+	if strings.Contains(lowerID, "gemini-pro-agent") || strings.Contains(lowerID, "gemini-4-argon") {
+		return true
+	}
 	for _, m := range geminiModels {
 		if strings.Contains(lowerID, m.ID) && m.IsReasoning {
 			return true

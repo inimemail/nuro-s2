@@ -2617,9 +2617,16 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 // openAITextRequestModelSupported narrows passthrough's mapping override to
 // ordinary OpenAI text traffic. The shared Account.IsModelSupported contract
 // remains unchanged for image pools, shadow accounts and compatibility paths.
-func openAITextRequestModelSupported(account *Account, req OpenAIAccountScheduleRequest) bool {
+func openAITextRequestModelSupported(account *Account, req OpenAIAccountScheduleRequest, compactFallback ...string) bool {
 	if account == nil || req.RequestedModel == "" {
 		return true
+	}
+	fallback := ""
+	if len(compactFallback) > 0 {
+		fallback = compactFallback[0]
+	}
+	if isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, req.RequireCompact, fallback)) {
+		return false
 	}
 	requestPlatform := strings.TrimSpace(req.RequestPlatform)
 	openAITextPlatform := requestPlatform == "" || requestPlatform == PlatformOpenAI
@@ -2666,7 +2673,11 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 		}
 		return false, reason
 	}
-	if !openAITextRequestModelSupported(account, req) {
+	compactFallback := ""
+	if s != nil && s.service != nil {
+		compactFallback = s.service.openAICompactModelFallback()
+	}
+	if !openAITextRequestModelSupported(account, req, compactFallback) {
 		return false, "model_not_supported"
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&

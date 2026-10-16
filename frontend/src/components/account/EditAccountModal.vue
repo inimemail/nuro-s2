@@ -2088,6 +2088,17 @@
                   </svg>
                 </button>
               </div>
+              <div
+                v-if="antigravityModelMetadata[mapping.to]"
+                class="flex flex-wrap items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-2 text-[11px] text-slate-600 dark:bg-dark-800 dark:text-slate-300"
+                data-testid="antigravity-model-capabilities"
+              >
+                <span v-if="antigravityModelMetadata[mapping.to]?.display_name" class="mr-1 min-w-0 max-w-full break-words font-medium">{{ antigravityModelMetadata[mapping.to]?.display_name }}</span>
+                <span v-if="antigravityModelMetadata[mapping.to]?.supports_images" class="rounded-md bg-sky-100 px-2 py-0.5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{{ t('admin.accounts.modelCapabilityImages') }}</span>
+                <span v-if="antigravityModelMetadata[mapping.to]?.supports_thinking" class="rounded-md bg-violet-100 px-2 py-0.5 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">{{ t('admin.accounts.modelCapabilityThinking') }}</span>
+                <span v-if="(antigravityModelMetadata[mapping.to]?.max_tokens ?? 0) > 0" class="rounded-md bg-white px-2 py-0.5 dark:bg-dark-700">{{ t('admin.accounts.modelCapabilityContext', { count: antigravityModelMetadata[mapping.to]?.max_tokens?.toLocaleString() }) }}</span>
+                <span v-if="(antigravityModelMetadata[mapping.to]?.max_output_tokens ?? 0) > 0" class="rounded-md bg-white px-2 py-0.5 dark:bg-dark-700">{{ t('admin.accounts.modelCapabilityOutput', { count: antigravityModelMetadata[mapping.to]?.max_output_tokens?.toLocaleString() }) }}</span>
+              </div>
               <!-- 校验错误提示 -->
               <p v-if="!isValidWildcardPattern(mapping.from)" class="text-xs text-red-500">
                 {{ t('admin.accounts.wildcardOnlyAtEnd') }}
@@ -2998,19 +3009,20 @@
         </div>
       </div>
 
-      <!-- Anthropic API Key: Web Search Emulation (hidden when global disabled) -->
+      <!-- API Key Messages web search emulation -->
       <div
-        v-if="account?.platform === 'anthropic' && account?.type === 'apikey' && webSearchGlobalEnabled"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        v-if="(account?.platform === 'anthropic' || account?.platform === 'openai') && account?.type === 'apikey' && webSearchGlobalEnabled"
+        class="rounded-xl border border-primary-100 bg-primary-50/40 p-4 dark:border-primary-900/50 dark:bg-primary-950/20"
       >
-        <div class="flex items-center justify-between">
-          <div>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0 flex-1">
             <label class="input-label mb-0">{{ t('admin.accounts.anthropic.webSearchEmulation') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.anthropic.webSearchEmulationDesc') }}
             </p>
           </div>
-          <select v-model="webSearchEmulationMode" class="input w-24 text-sm">
+          <select v-model="webSearchEmulationMode" class="input w-full shrink-0 text-sm sm:w-28"
+            :aria-label="t('admin.accounts.anthropic.webSearchEmulation')">
             <option value="default">{{ t('admin.accounts.anthropic.webSearchDefault') }}</option>
             <option value="enabled">{{ t('admin.accounts.anthropic.webSearchEnabled') }}</option>
             <option value="disabled">{{ t('admin.accounts.anthropic.webSearchDisabled') }}</option>
@@ -3760,7 +3772,7 @@
         </div>
 
         <!-- Mixed Scheduling (only for antigravity accounts, read-only in edit mode) -->
-        <div v-if="account?.platform === 'antigravity'" class="flex items-center gap-2">
+        <div v-if="account?.platform === 'antigravity'" class="relative flex items-center gap-2">
           <label class="flex cursor-not-allowed items-center gap-2 opacity-60">
             <input
               type="checkbox"
@@ -3772,7 +3784,7 @@
               {{ t('admin.accounts.mixedScheduling') }}
             </span>
           </label>
-          <div class="group relative">
+          <div class="group sm:relative">
             <span
               class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500 hover:bg-gray-300 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
             >
@@ -3780,16 +3792,16 @@
             </span>
             <!-- Tooltip（向下显示避免被弹窗裁剪） -->
             <div
-              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 max-w-full rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700 sm:max-w-none"
             >
               {{ t('admin.accounts.mixedSchedulingTooltip') }}
               <div
-                class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
+                class="absolute bottom-full left-3 hidden border-4 border-transparent border-b-gray-900 dark:border-b-gray-700 sm:block"
               ></div>
             </div>
           </div>
         </div>
-        <div v-if="account?.platform === 'antigravity'" class="mt-3 flex items-center gap-2">
+        <div v-if="account?.platform === 'antigravity'" class="relative mt-3 flex items-center gap-2">
           <label class="flex cursor-pointer items-center gap-2">
             <input
               type="checkbox"
@@ -3800,18 +3812,18 @@
               {{ t('admin.accounts.allowOverages') }}
             </span>
           </label>
-          <div class="group relative">
+          <div class="group sm:relative">
             <span
               class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500 hover:bg-gray-300 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
             >
               ?
             </span>
             <div
-              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 max-w-full rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700 sm:max-w-none"
             >
               {{ t('admin.accounts.allowOveragesTooltip') }}
               <div
-                class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
+                class="absolute bottom-full left-3 hidden border-4 border-transparent border-b-gray-900 dark:border-b-gray-700 sm:block"
               ></div>
             </div>
           </div>
@@ -3884,6 +3896,7 @@
 </template>
 
 <script setup lang="ts">
+import type { UpstreamModelMetadata } from '@/api/admin/accounts'
 import VertexAuthFields from './VertexAuthFields.vue'
 import GeminiCacheCapabilityFields from './GeminiCacheCapabilityFields.vue'
 import SeedanceControl from './SeedanceControl.vue'
@@ -4436,6 +4449,7 @@ const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist'
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
 const isSyncingAntigravityUpstream = ref(false)
+const antigravityModelMetadata = ref<Record<string, UpstreamModelMetadata>>({})
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
@@ -5505,6 +5519,7 @@ const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
 const syncFormFromAccount = (newAccount: Account | null) => {
+  antigravityModelMetadata.value = {}
   if (!newAccount) {
     return
   }
@@ -5762,6 +5777,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     anthropicPassthroughEnabled.value = extra?.anthropic_passthrough === true
     anthropicKiroEnabled.value = extra?.anthropic_kiro === true
     anthropicAPIKeyAuthScheme.value = extra?.anthropic_apikey_auth_scheme === 'authorization_bearer' ? 'authorization_bearer' : 'x_api_key'
+  }
+  if ((newAccount.platform === 'anthropic' || newAccount.platform === 'openai') && newAccount.type === 'apikey') {
     // 三态：string "default"/"enabled"/"disabled"，向后兼容旧 bool
     const wsVal = extra?.web_search_emulation
     if (wsVal === 'enabled' || wsVal === 'disabled') {
@@ -5816,6 +5833,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     if (rawAgMapping && typeof rawAgMapping === 'object') {
       const entries = Object.entries(rawAgMapping)
       // 无论是白名单样式(key===value)还是真正的映射，都统一转换为映射列表
+      antigravityModelMetadata.value = {}
       antigravityModelMappings.value = entries.map(([from, to]) => ({ from, to }))
     } else {
       // 兼容旧数据：从 model_whitelist 读取，转换为映射格式
@@ -6242,9 +6260,12 @@ const addAntigravityPresetMapping = (from: string, to: string) => {
 const syncAntigravityUpstreamModels = async () => {
   if (!props.account?.id || isSyncingAntigravityUpstream.value) return
 
+  const syncingAccount = props.account
   isSyncingAntigravityUpstream.value = true
   try {
     const result = await adminAPI.accounts.syncUpstreamModels(props.account.id)
+    if (!props.show || props.account !== syncingAccount) return
+    antigravityModelMetadata.value = result.metadata ?? {}
     const upstreamModels = result.models.map((model) => model.trim()).filter(Boolean)
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
@@ -7281,6 +7302,11 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.anthropic_apikey_auth_scheme
       }
+      updatePayload.extra = newExtra
+    }
+
+    if ((props.account.platform === 'anthropic' || props.account.platform === 'openai') && props.account.type === 'apikey') {
+      const newExtra: Record<string, unknown> = { ...((updatePayload.extra || props.account.extra || {}) as Record<string, unknown>) }
       if (webSearchEmulationMode.value === 'default') {
         delete newExtra.web_search_emulation
       } else {

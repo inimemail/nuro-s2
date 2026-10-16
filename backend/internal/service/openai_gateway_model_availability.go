@@ -32,7 +32,7 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	diag := ModelAvailabilityDiagnosis{}
 	for i := range accounts {
 		diag.HasAccountsInPool = true
-		if accounts[i].IsModelSupported(requestedModel) {
+		if supportsOpenAIRequestModel(&accounts[i], requestedModel, false) {
 			diag.HasModelSupport = true
 			return diag
 		}

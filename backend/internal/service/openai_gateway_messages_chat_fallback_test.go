@@ -38,6 +38,7 @@ func TestForwardAsAnthropic_ForceChatCompletionsRoutesToChatCompletions(t *testi
 		cfg:          rawChatCompletionsTestConfig(),
 		httpUpstream: upstream,
 	}
+	svc.cfg.Gateway.MinOutputTokens = 256
 	account := rawChatCompletionsTestAccount()
 	account.Extra = map[string]any{
 		openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions),
@@ -50,6 +51,7 @@ func TestForwardAsAnthropic_ForceChatCompletionsRoutesToChatCompletions(t *testi
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Equal(t, "hello", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.Equal(t, int64(256), gjson.GetBytes(upstream.lastBody, "max_completion_tokens").Int())
 	require.Equal(t, "message", gjson.Get(rec.Body.String(), "type").String())
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
 	require.Equal(t, "response.completed", result.TerminalEventType)

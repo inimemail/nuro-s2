@@ -134,6 +134,11 @@ type RefundPlan struct {
 	BalanceToDeduct float64
 	SubDaysToDeduct int
 	SubscriptionID  int64
+	// deductionHeld 表示扣减已在进入 REFUND_PENDING 前执行并保留，终态收敛时不再重复扣减。
+	deductionHeld bool
+	// subscriptionRevoked distinguishes a full revocation from an expiry reduction:
+	// revocation leaves the original expiry intact and must not add days on return.
+	subscriptionRevoked bool
 }
 
 type RefundResult struct {

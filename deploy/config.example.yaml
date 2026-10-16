@@ -171,6 +171,8 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Compatibility conversion max_output_tokens floor (minimum 16); default keeps existing behavior.
+  min_output_tokens: 128
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600

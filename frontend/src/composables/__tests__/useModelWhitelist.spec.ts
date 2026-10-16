@@ -155,3 +155,10 @@ describe('useModelWhitelist', () => {
     })
   })
 })
+
+
+it('uses native Argon ID for Gemini and explicit tier IDs for Antigravity', () => {
+  expect(getModelsByPlatform('gemini')).toContain('gemini-4-argon')
+  expect(getModelsByPlatform('antigravity')).toEqual(expect.arrayContaining(['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low']))
+  expect(getModelsByPlatform('antigravity')).not.toContain('gemini-4-argon')
+})

@@ -154,7 +154,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.Contains(t, ids, "gpt-5.6-luna")
 	require.Contains(t, ids, "gpt-6-astra")
 	require.Contains(t, ids, "gpt-6")
-	require.Contains(t, ids, "gpt-5.5")
+	require.NotContains(t, ids, "gpt-5.5")
 }
 
 func TestAccountHandlerGetAvailableModels_GrokOAuthUsesNativeCatalog(t *testing.T) {
