@@ -24,16 +24,57 @@ func isRetiredOpenAISubscriptionModel(account *Account, upstreamModel string) bo
 // retain their existing listing policy. An explicitly mapped replacement is
 // allowed, but a public alias targeting retired GPT-5.5 is not.
 func openAIModelRetiredForAccounts(accounts []Account, modelID string) bool {
-	retired := false
+	views := make([]openAIModelRetirementAccountView, 0, len(accounts))
 	for i := range accounts {
-		account := &accounts[i]
-		if !account.IsOpenAI() {
+		if accounts[i].IsOpenAI() {
+			views = append(views, openAIModelRetirementAccountView{account: &accounts[i], mapping: accounts[i].GetModelMapping()})
+		}
+	}
+	return openAIModelRetiredForAccountViews(views, modelID)
+}
+
+type openAIModelRetirementAccountView struct {
+	account *Account
+	mapping map[string]string
+}
+
+func openAIModelRetirementAccountSupportsModel(view openAIModelRetirementAccountView, modelID string) bool {
+	if view.account == nil {
+		return false
+	}
+	if len(view.mapping) == 0 {
+		if view.account.IsOpenAIOAuthLike() && !view.account.IsOpenAIPassthroughEnabled() {
+			return isOpenAIOAuthServableModel(modelID)
+		}
+		return true
+	}
+	if mappingSupportsRequestedModel(view.mapping, modelID) {
+		return true
+	}
+	normalized := normalizeRequestedModelForLookup(view.account.Platform, modelID)
+	return normalized != modelID && mappingSupportsRequestedModel(view.mapping, normalized)
+}
+
+func openAIModelRetiredForAccountViews(views []openAIModelRetirementAccountView, modelID string) bool {
+	retired := false
+	for _, view := range views {
+		if view.account == nil {
 			continue
 		}
-		target := resolveOpenAIAccountUpstreamModelForRequest(account, modelID, false, "")
-		if isRetiredOpenAISubscriptionModel(account, target) {
+		target, matched := resolveRequestedModelInMapping(view.mapping, modelID)
+		if !matched {
+			target = modelID
+			normalized := normalizeRequestedModelForLookup(view.account.Platform, modelID)
+			if normalized != modelID {
+				target, matched = resolveRequestedModelInMapping(view.mapping, normalized)
+				if !matched {
+					target = modelID
+				}
+			}
+		}
+		if isRetiredOpenAISubscriptionModel(view.account, target) {
 			retired = true
-		} else if account.IsModelSupported(modelID) {
+		} else if openAIModelRetirementAccountSupportsModel(view, modelID) {
 			return false
 		}
 	}
@@ -41,9 +82,15 @@ func openAIModelRetiredForAccounts(accounts []Account, modelID string) bool {
 }
 
 func filterRetiredOpenAIModelIDs(accounts []Account, models []string) []string {
+	views := make([]openAIModelRetirementAccountView, 0, len(accounts))
+	for i := range accounts {
+		if accounts[i].IsOpenAI() {
+			views = append(views, openAIModelRetirementAccountView{account: &accounts[i], mapping: accounts[i].GetModelMapping()})
+		}
+	}
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if !openAIModelRetiredForAccounts(accounts, model) {
+		if !openAIModelRetiredForAccountViews(views, model) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -67,6 +114,12 @@ func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex 
 	if err != nil {
 		return nil, false, err
 	}
+	views := make([]openAIModelRetirementAccountView, 0, len(accounts))
+	for i := range accounts {
+		if accounts[i].IsOpenAI() {
+			views = append(views, openAIModelRetirementAccountView{account: &accounts[i], mapping: accounts[i].GetModelMapping()})
+		}
+	}
 	filtered := make([]json.RawMessage, 0, len(entries))
 	for _, raw := range entries {
 		var entry map[string]json.RawMessage
@@ -74,7 +127,7 @@ func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex 
 		if json.Unmarshal(raw, &entry) == nil {
 			_ = json.Unmarshal(entry[idField], &id)
 		}
-		if !openAIModelRetiredForAccounts(accounts, id) {
+		if !openAIModelRetiredForAccountViews(views, id) {
 			filtered = append(filtered, raw)
 		}
 	}
@@ -89,13 +142,18 @@ func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex 
 	return encoded, true, err
 }
 
-// Compact-only administrator mappings are evaluated against their actual
-// target, without treating an old client-visible name as a retired target.
+// Availability diagnostics follow the request model check, including ordinary
+// passthrough ignoring account mappings that are not sent upstream.
 func supportsOpenAIRequestModel(account *Account, requestedModel string, requireCompact bool) bool {
-	if isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact, "")) {
+	if account == nil {
 		return false
 	}
-	return account.IsModelSupported(requestedModel)
+	return openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
+		RequestedModel:     requestedModel,
+		RequireCompact:     requireCompact,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    account.Platform,
+	})
 }
 
 // FilterRetiredOpenAIAccountModels keeps the admin test list aligned with routing.
@@ -103,9 +161,11 @@ func FilterRetiredOpenAIAccountModels(account *Account, models []openai.Model) [
 	if account == nil {
 		return models
 	}
+	accountView := *account
+	views := []openAIModelRetirementAccountView{{account: &accountView, mapping: accountView.GetModelMapping()}}
 	out := make([]openai.Model, 0, len(models))
 	for _, model := range models {
-		if !openAIModelRetiredForAccounts([]Account{*account}, model.ID) {
+		if !openAIModelRetiredForAccountViews(views, model.ID) {
 			out = append(out, model)
 		}
 	}
@@ -115,8 +175,5 @@ func FilterRetiredOpenAIAccountModels(account *Account, models []openai.Model) [
 // Keep legacy selection and fresh-account rechecks aligned with the advanced
 // scheduler when a server-wide compact fallback supplies the upstream model.
 func (s *OpenAIGatewayService) isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, model string, compact bool, capability OpenAIEndpointCapability, images OpenAIImagesCapability, platform ...string) bool {
-	if !isOpenAIAccountEligibleForRequest(ctx, account, model, compact, capability, images, platform...) {
-		return false
-	}
-	return !isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, model, compact, s.openAICompactModelFallback()))
+	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, model, compact, capability, images, s.openAICompactModelFallback(), platform...)
 }

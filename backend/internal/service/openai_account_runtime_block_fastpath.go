@@ -1057,7 +1057,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 			loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
 			continue
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
+		if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) || s.isNonOpenAIPoolCandidateBlocked(ctx, account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
@@ -1124,7 +1124,7 @@ func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
 		if account.ID == current.ID || account.Priority != current.Priority || account.IsPoolMode() {
 			continue
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
+		if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) || s.isNonOpenAIPoolCandidateBlocked(ctx, account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {

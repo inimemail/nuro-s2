@@ -2625,9 +2625,6 @@ func openAITextRequestModelSupported(account *Account, req OpenAIAccountSchedule
 	if len(compactFallback) > 0 {
 		fallback = compactFallback[0]
 	}
-	if isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, req.RequireCompact, fallback)) {
-		return false
-	}
 	requestPlatform := strings.TrimSpace(req.RequestPlatform)
 	openAITextPlatform := requestPlatform == "" || requestPlatform == PlatformOpenAI
 	textPassthrough := account.IsOpenAI() &&
@@ -2638,7 +2635,19 @@ func openAITextRequestModelSupported(account *Account, req OpenAIAccountSchedule
 		req.RequiredImageCapability == "" &&
 		req.RequiredCapability == OpenAIEndpointCapabilityChatCompletions
 	if textPassthrough {
+		// Ordinary Responses passthrough sends the client model unchanged and
+		// intentionally ignores ordinary account mappings. Retirement is checked
+		// again against the final payload immediately before upstream I/O.
+		if !req.RequireCompact {
+			return !isRetiredOpenAISubscriptionModel(account, req.RequestedModel)
+		}
+		if isRetiredOpenAISubscriptionModel(account, resolveOpenAICompactForwardModelWithFallback(account, req.RequestedModel, fallback)) {
+			return false
+		}
 		return true
+	}
+	if isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, req.RequireCompact, fallback)) {
+		return false
 	}
 	return account.IsModelSupported(req.RequestedModel)
 }

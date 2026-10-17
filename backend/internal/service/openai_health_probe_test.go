@@ -723,6 +723,35 @@ func healthProbeAlternativeAccount(id int64, priority int, groupID int64) Accoun
 	}
 }
 
+func TestOpenAIAlternativeLookupsHonorCompactFallback(t *testing.T) {
+	groupID := int64(906)
+	current := healthProbeAlternativeAccount(251, 2, groupID)
+	current.Credentials = map[string]any{"pool_mode": true}
+	peer := healthProbeAlternativeAccount(252, 2, groupID)
+	peer.Type = AccountTypeOAuth
+	peer.Extra = map[string]any{"openai_passthrough": true, "openai_compact_supported": true}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICompactModel = "gpt-5.6"
+	svc := healthProbeAlternativeService([]Account{current, peer}, nil)
+	svc.cfg = cfg
+	req := OpenAIAccountScheduleRequest{
+		GroupID: &groupID, RequestedModel: "gpt-5.5", RequireCompact: true,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions, RequestPlatform: PlatformOpenAI,
+	}
+	for _, retired := range []bool{false, true} {
+		if retired {
+			cfg.Gateway.OpenAICompactModel = "gpt-5.5"
+		}
+		hasPeer, known := svc.HasOpenAIHealthProbePeerAccount(context.Background(), &current, req)
+		require.True(t, known)
+		require.Equal(t, !retired, hasPeer)
+		require.Equal(t, !retired, svc.hasSamePriorityNonPoolOpenAIAccountAvailable(context.Background(), &groupID, &current, req.RequestedModel, true, req.RequiredCapability, "", OpenAIUpstreamTransportAny))
+		higherCurrent := current
+		higherCurrent.Priority++
+		require.Equal(t, !retired, svc.hasHigherPriorityOpenAIAccountAvailable(context.Background(), &groupID, &higherCurrent, req.RequestedModel, true, req.RequiredCapability, "", OpenAIUpstreamTransportAny))
+	}
+}
+
 func healthProbeAlternativeService(accounts []Account, concurrencyCache ConcurrencyCache) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{accountRepo: stubOpenAIAccountRepo{accounts: accounts}}
 	if concurrencyCache != nil {

@@ -1926,6 +1926,10 @@ func isOpenAICompatibleRequestPlatformAccount(account *Account, requestPlatform 
 }
 
 func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) bool {
+	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, "", requestPlatform...)
+}
+
+func isOpenAIAccountEligibleForRequestWithCompactFallback(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, compactFallback string, requestPlatform ...string) bool {
 	platform := PlatformOpenAI
 	if len(requestPlatform) > 0 {
 		platform = requestPlatform[0]
@@ -1956,7 +1960,7 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
 		RequestPlatform:         platform,
-	}) {
+	}, compactFallback) {
 		return false
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {

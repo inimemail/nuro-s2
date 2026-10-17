@@ -249,7 +249,7 @@ func (s *OpenAIGatewayService) openAIHealthProbePeerCandidates(ctx context.Conte
 				continue
 			}
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, platform) {
+		if !s.isOpenAIAccountEligibleForRequest(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, platform) {
 			continue
 		}
 		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) ||

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -26,8 +27,8 @@ func TestUpgradeRetirementHonorsUpstreamTypeAndActualTarget(t *testing.T) {
 		{name: "setup retired", kind: AccountTypeSetupToken, requested: "gpt-5.5-high"},
 		{name: "key retained", kind: AccountTypeAPIKey, requested: "gpt-5.5", want: true},
 		{name: "shadow retired", kind: AccountTypeOAuth, requested: "gpt-5.5", shadow: true},
-		{name: "public alias blocked", kind: AccountTypeOAuth, requested: "public", target: "gpt-5.5"},
-		{name: "explicit replacement retained", kind: AccountTypeOAuth, requested: "gpt-5.5", target: "gpt-5.6", want: true},
+		{name: "passthrough alias ignores ordinary mapping", kind: AccountTypeOAuth, requested: "public", target: "gpt-5.5", want: true},
+		{name: "passthrough retired request remains blocked", kind: AccountTypeOAuth, requested: "gpt-5.5", target: "gpt-5.6"},
 		{name: "compact mapped retired", kind: AccountTypeOAuth, requested: "gpt-5.6", compact: "gpt-5.5"},
 		{name: "compact key retained", kind: AccountTypeAPIKey, requested: "gpt-5.6", compact: "gpt-5.5", want: true},
 	} {
@@ -51,6 +52,74 @@ func TestUpgradeRetirementHonorsUpstreamTypeAndActualTarget(t *testing.T) {
 	require.False(t, openAITextRequestModelSupported(a, OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.6", RequireCompact: true}, "gpt-5.5"))
 }
 
+func TestUpgradeRetirementPassthroughIgnoresOrdinaryMappingForLiveModels(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"*": "gpt-5.5"},
+		},
+		Extra: map[string]any{"openai_passthrough": true},
+	}
+	svc := &OpenAIGatewayService{}
+	for _, model := range []string{"gpt-5.6", "gpt-4.1", "gpt-5.4"} {
+		require.True(t, openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
+			RequestedModel:     model,
+			RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		}), model)
+		require.True(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, model, false, OpenAIEndpointCapabilityChatCompletions, ""), model)
+	}
+	require.False(t, openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
+		RequestedModel:     "gpt-5.5",
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+	}))
+	require.False(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.5", false, OpenAIEndpointCapabilityChatCompletions, ""))
+	require.True(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.6", true, OpenAIEndpointCapabilityChatCompletions, ""), "compact passthrough also ignores ordinary mappings")
+	account.Credentials["compact_model_mapping"] = map[string]any{"gpt-5.6": "gpt-5.5"}
+	require.False(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.6", true, OpenAIEndpointCapabilityChatCompletions, ""), "compact passthrough checks its actual compact target")
+	account.Extra["openai_passthrough"] = false
+	require.False(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.6", false, OpenAIEndpointCapabilityChatCompletions, ""), "mapped non-passthrough traffic still targets the retired model")
+}
+
+func TestUpgradeRetirementAvailabilityDiagnosisUsesPassthroughPayload(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"model_mapping": map[string]any{"*": "gpt-5.5"}},
+		Extra:       map[string]any{"openai_passthrough": true},
+	}
+	require.True(t, supportsOpenAIRequestModel(account, "gpt-5.6", false), "availability diagnosis must follow ordinary passthrough payload")
+	require.False(t, supportsOpenAIRequestModel(account, "gpt-5.5", false), "retired passthrough payload must remain blocked")
+}
+
+func TestUpgradeRetirementLegacyEligibilityUsesCompactFallback(t *testing.T) {
+	rateMultiplier := 1.0
+	account := &Account{
+		Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, RateMultiplier: &rateMultiplier,
+		Credentials: map[string]any{"access_token": "token"},
+		Extra:       map[string]any{"openai_passthrough": true, "openai_compact_supported": true},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICompactModel = "gpt-5.6"
+	svc := &OpenAIGatewayService{cfg: cfg}
+	// The legacy helper without service context has no server-wide fallback;
+	// the service wrapper below is the production path and supplies it.
+	require.False(t, isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.5", true, OpenAIEndpointCapabilityChatCompletions, ""))
+	require.True(t, openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
+		RequestedModel: "gpt-5.5", RequireCompact: true, RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+	}, cfg.Gateway.OpenAICompactModel))
+	require.True(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.5", true, OpenAIEndpointCapabilityChatCompletions, ""))
+	account.Credentials["compact_model_mapping"] = map[string]any{"gpt-5.5": "gpt-5.5"}
+	require.False(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.5", true, OpenAIEndpointCapabilityChatCompletions, ""), "explicit compact mapping takes precedence over the global fallback")
+	account.Credentials["compact_model_mapping"] = map[string]any{"gpt-5.5": "gpt-5.6"}
+	cfg.Gateway.OpenAICompactModel = "gpt-5.5"
+	require.True(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.5", true, OpenAIEndpointCapabilityChatCompletions, ""), "a valid explicit compact target overrides a retired fallback")
+	delete(account.Credentials, "compact_model_mapping")
+	require.False(t, svc.isOpenAIAccountEligibleForRequest(context.Background(), account, "gpt-5.6", true, OpenAIEndpointCapabilityChatCompletions, ""), "retired actual fallback remains blocked")
+}
+
 func TestUpgradeRetirementCatalogProjectionAndMixedPool(t *testing.T) {
 	oauth := Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"model_mapping": map[string]any{"public": "gpt-5.5", "gpt-5.5": "gpt-5.6"}}}
 	body := []byte(`{"models":[{"slug":"public","extra":true},{"slug":"gpt-5.5","extra":"kept"}],"meta":7}`)
@@ -65,6 +134,37 @@ func TestUpgradeRetirementCatalogProjectionAndMixedPool(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.Equal(t, body, filtered)
+}
+
+func TestUpgradeRetirementCatalogMappingPrecedence(t *testing.T) {
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{"model_mapping": map[string]any{
+			"*":                   "gpt-5.5",
+			"public-*":            "gpt-5.6",
+			"public-retired-*":    "gpt-5.5",
+			"public-retired-live": "gpt-5.6",
+			"gpt-5.5":             "gpt-5.6",
+		}},
+	}
+	models := []string{"public-live", "public-retired-test", "public-retired-live", "other", "gpt-5.5"}
+	want := []string{"public-live", "public-retired-live", "gpt-5.5"}
+	require.Equal(t, want, filterRetiredOpenAIModelIDs([]Account{account}, models))
+	adminModels := make([]openai.Model, 0, len(models))
+	for _, model := range models {
+		adminModels = append(adminModels, openai.Model{ID: model})
+	}
+	filtered := FilterRetiredOpenAIAccountModels(&account, adminModels)
+	got := make([]string, 0, len(filtered))
+	for _, model := range filtered {
+		got = append(got, model.ID)
+	}
+	require.Equal(t, want, got)
+	key := Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	require.Equal(t, models, filterRetiredOpenAIModelIDs([]Account{account, key}, models), "mixed pools retain models supported by an API-key upstream")
+	account.Credentials["model_mapping"].(map[string]any)["public-*"] = "gpt-5.5"
+	require.Equal(t, []string{"public-retired-live", "gpt-5.5"}, filterRetiredOpenAIModelIDs([]Account{account}, models), "mapping snapshots refresh between filtering calls")
 }
 
 func TestUpgradeRetirementPassthroughChecksFinalPayloadBeforeCredentials(t *testing.T) {
