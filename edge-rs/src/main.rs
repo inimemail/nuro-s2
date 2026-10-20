@@ -1096,6 +1096,8 @@ struct StreamOnlyRequest {
 #[derive(Clone, Debug, Deserialize)]
 struct EdgePlan {
     #[serde(default)]
+    turn_health_enabled: bool,
+    #[serde(default)]
     ops_callback_enabled: bool,
     settlement_context: Option<String>,
     action: String,
@@ -1767,6 +1769,12 @@ struct RenewRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CompleteRequest {
+    #[serde(default)]
+    health_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    health_event_id: Option<String>,
+    #[serde(default)]
+    turn_health_reported: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failure_diagnostic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1830,6 +1838,9 @@ impl Usage {
 
 #[derive(Clone, Debug, Default)]
 struct ChatStreamSummary {
+    health_failure_class: Option<&'static str>,
+    health_failure_status: Option<u16>,
+    health_failure_message: Option<String>,
     failure_diagnostic: Option<String>,
     usage: Usage,
     request_id: Option<String>,
@@ -2405,7 +2416,14 @@ impl SettlementWalDisk {
     }
 
     fn key(job: &SettlementRetryJob) -> String {
-        format!("{}:{}", job.kind(), job.edge_request_id())
+        match job {
+            SettlementRetryJob::Complete(request) if request.health_only => format!(
+                "health:{}:{}",
+                request.edge_request_id,
+                request.health_event_id.as_deref().unwrap_or_default()
+            ),
+            _ => format!("{}:{}", job.kind(), job.edge_request_id()),
+        }
     }
 
     fn append_record(&self, record: SettlementWalRecord) -> anyhow::Result<u64> {
@@ -3025,9 +3043,9 @@ impl ClientDisconnectCompleteGuard {
         } else if request.error_type.is_none() {
             request.error_type = Some("stream_error".to_string());
         }
-        request.error_message = error_message;
+        request.error_message = summary.health_failure_message.clone().or(error_message);
         request.failure_diagnostic = summary.failure_diagnostic.clone();
-        request.upstream_status_code = upstream_status_code;
+        request.upstream_status_code = summary.health_failure_status.or(upstream_status_code);
         request.terminal_event_type = summary.terminal_event_type(None);
         request.cyber_blocked = summary.cyber_blocked;
         if let Some(class) = request
@@ -3107,6 +3125,9 @@ fn pending_stream_complete_request(
     edge_retry_count: i64,
 ) -> CompleteRequest {
     CompleteRequest {
+        health_only: false,
+        health_event_id: None,
+        turn_health_reported: false,
         failure_diagnostic: None,
         settlement_context: None,
         edge_request_id,
@@ -3141,6 +3162,154 @@ fn pending_stream_complete_request(
     }
 }
 
+fn openai_stream_health_error(value: &Value) -> &Value {
+    value
+        .pointer("/response/error")
+        .or_else(|| value.get("error"))
+        .unwrap_or(value)
+}
+
+fn openai_stream_health_failure_status(value: &Value) -> Option<u16> {
+    let error = openai_stream_health_error(value);
+    let status = error
+        .get("status")
+        .or_else(|| error.get("status_code"))
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
+        .and_then(|status| u16::try_from(status).ok())
+        .filter(|status| (400..600).contains(status));
+    if status.is_some() {
+        return status;
+    }
+    let kind = error
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let message = extract_edge_stream_failure_message(value)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let combined = format!("{kind} {code} {message}");
+    if combined.contains("rate_limit") {
+        Some(429)
+    } else if combined.contains("authentication")
+        || combined.contains("unauthorized")
+        || combined.contains("invalid_api_key")
+    {
+        Some(401)
+    } else if combined.contains("permission")
+        || combined.contains("forbidden")
+        || combined.contains("access denied")
+    {
+        Some(403)
+    } else if code == "model_not_found" || code == "model_not_supported" {
+        Some(404)
+    } else if matches!(
+        code.as_str(),
+        "previous_response_not_found"
+            | "invalid_encrypted_content"
+            | "unsupported_parameter"
+            | "unknown_parameter"
+    ) || kind.contains("invalid_request")
+        || code.contains("context_length")
+        || code.contains("content_policy")
+        || openai_cache_creation_policy_error_text(&value.to_string())
+    {
+        Some(400)
+    } else if matches!(code.as_str(), "server_is_overloaded" | "slow_down") {
+        Some(503)
+    } else {
+        Some(502)
+    }
+}
+
+fn openai_stream_health_failure_class(value: &Value) -> &'static str {
+    // Compatible providers sometimes wrap a request/model refusal in a 502
+    // or omit its status entirely. That must not quarantine the whole account.
+    let error = openai_stream_health_error(value);
+    let combined = format!(
+        "{} {} {}",
+        error
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        extract_edge_stream_failure_message(value).unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let model_refusal = combined.contains("model")
+        && [
+            "model_not_found",
+            "model_not_supported",
+            "model not found",
+            "model does not exist",
+            "model doesn't exist",
+            "unknown model",
+            "unsupported model",
+            "not supported by any configured account",
+            "not supported by configured account",
+            "not supported by this group",
+            "not routable",
+            "no configured account",
+            "no account supports",
+            "no account support",
+            "model is not available for this account",
+            "model is not available to this account",
+            "model not available for this account",
+            "model is unavailable for this account",
+            "model is unavailable on this account",
+            "model unavailable for this account",
+            "model is not enabled for this account",
+            "model is not supported for this account",
+            "model is not supported by this account",
+            "model unsupported for this account",
+            "account does not support this model",
+            "account doesn't support this model",
+            "account does not have access to this model",
+            "account doesn't have access to this model",
+            "cannot serve requested model",
+        ]
+        .iter()
+        .any(|marker| combined.contains(marker));
+    if model_refusal
+        || [
+            "previous_response_not_found",
+            "invalid_encrypted_content",
+            "unsupported_parameter",
+            "unknown_parameter",
+            "unsupported parameter",
+            "unknown parameter",
+            "unrecognized parameter",
+            "upgrade_required",
+            "ws_unsupported",
+            "ws_connection_limit_reached",
+        ]
+        .iter()
+        .any(|marker| combined.contains(marker))
+        || openai_cache_creation_policy_error_text(&value.to_string())
+    {
+        return "request_rejected";
+    }
+    match openai_stream_health_failure_status(value) {
+        Some(401 | 403 | 429) => "upstream_rejected",
+        Some(400..=499) => "request_rejected",
+        _ => "upstream_error",
+    }
+}
+
 fn classify_stream_failure(
     success: bool,
     client_disconnected: bool,
@@ -3149,11 +3318,16 @@ fn classify_stream_failure(
     if success {
         return None;
     }
-    if client_disconnected {
+    if client_disconnected && !summary.failed {
         return Some("client_cancelled".to_string());
     }
     if summary.failed {
-        return Some("upstream_error".to_string());
+        return Some(
+            summary
+                .health_failure_class
+                .unwrap_or("upstream_error")
+                .to_string(),
+        );
     }
     Some("upstream_disconnect".to_string())
 }
@@ -3164,9 +3338,25 @@ fn classify_stream_failure_with_status(
     summary: &ChatStreamSummary,
     upstream_status_code: Option<u16>,
 ) -> Option<String> {
+    if !success
+        && summary.failed
+        && summary.health_failure_class == Some("request_rejected")
+        && upstream_status_code.is_some_and(|status| status >= 500)
+    {
+        // Some compatible providers wrap model/parameter refusals in HTTP
+        // 5xx. Keep the semantic exclusion in cancellation snapshots too.
+        return Some("request_rejected".to_string());
+    }
     if !success && !client_disconnected && upstream_status_code.is_some_and(|status| status >= 400)
     {
-        return Some("upstream_error".to_string());
+        return Some(
+            match upstream_status_code {
+                Some(401 | 403 | 429) => "upstream_rejected",
+                Some(400..=499) => "request_rejected",
+                _ => "upstream_error",
+            }
+            .to_string(),
+        );
     }
     classify_stream_failure(success, client_disconnected, summary)
 }
@@ -3190,6 +3380,25 @@ struct EffectiveProgressWatchdog {
     timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
 }
 
+// The relay may await a slow downstream write (or control-plane callback)
+// between upstream reads. That time is not evidence of an upstream stall.
+// A timer refreshed during local work only excludes time since its refresh.
+fn exclude_local_time_from_upstream_budget(
+    timer: &mut Option<Pin<Box<tokio::time::Sleep>>>,
+    timeout: Option<Duration>,
+    paused_since: tokio::time::Instant,
+) {
+    if let (Some(timer), Some(timeout)) = (timer.as_mut(), timeout) {
+        let deadline = timer.deadline();
+        let armed_at = deadline.checked_sub(timeout).unwrap_or(paused_since);
+        let local_since = paused_since.max(armed_at);
+        let now = tokio::time::Instant::now();
+        if now > local_since {
+            timer.as_mut().reset(deadline + (now - local_since));
+        }
+    }
+}
+
 impl EffectiveProgressWatchdog {
     fn new(timeout: Option<Duration>) -> Self {
         Self {
@@ -3204,6 +3413,10 @@ impl EffectiveProgressWatchdog {
                 timer.as_mut().reset(tokio::time::Instant::now() + timeout);
             }
         }
+    }
+
+    fn exclude_local_time(&mut self, paused_since: tokio::time::Instant) {
+        exclude_local_time_from_upstream_budget(&mut self.timer, self.timeout, paused_since);
     }
 
     async fn wait(&mut self) {
@@ -4777,6 +4990,17 @@ async fn relay_ws_session(
     Ok::<_, anyhow::Error>((upstream_write,upstream_read,upstream_request_id,ws_response_active,last_request_body))
         } => result?,
     };
+    let mut health_turn: u64 = 1;
+    let mut turn_health_reported = false;
+    let mut health_session_model = last_request_body
+        .as_ref()
+        .and_then(|body| body.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned);
+    let mut health_turn_model =
+        openai_ws_health_request_model(last_request_body.as_ref(), &mut health_session_model);
     let mut commit_state_for_turn = RETRY_COMMIT_NONE;
     drop(first_message_permit);
     guard.mark_relay_attempted();
@@ -4855,14 +5079,20 @@ async fn relay_ws_session(
     let mut ws_progress_watchdog = EffectiveProgressWatchdog::new(
         ws_response_active.then_some(ws_body_idle_timeout).flatten(),
     );
+    let mut upstream_wait_finished_at = tokio::time::Instant::now();
 
     let lease_lost = tokio::select! {
         biased;
         _ = LeaseRenewalGuard::wait_lost(&lease_renewal_guard) => true,
         _ = async {
     loop {
+        exclude_local_time_from_upstream_budget(
+            &mut ws_body_idle_timer, ws_body_idle_timeout, upstream_wait_finished_at,
+        );
+        ws_progress_watchdog.exclude_local_time(upstream_wait_finished_at);
         tokio::select! {
             next = client_socket.recv() => {
+                upstream_wait_finished_at = tokio::time::Instant::now();
                 match next {
                     Some(Ok(msg)) => {
                         if matches!(msg, AxumWsMessage::Close(_)) {
@@ -4910,7 +5140,16 @@ async fn relay_ws_session(
                             markup_turn_model.clone(),
                         );
                         let starts_response = tungstenite_message_is_response_create(&upstream_msg);
+                        if plan.turn_health_enabled {
+                            let body = tungstenite_message_json(&upstream_msg);
+                            let model = openai_ws_health_request_model(body.as_ref(), &mut health_session_model);
+                            if starts_response {
+                                health_turn_model = model;
+                            }
+                        }
                         if starts_response {
+                            health_turn = health_turn.saturating_add(1);
+                            turn_health_reported = false;
                             turn_started_at = Instant::now();
                             downstream_ttft_observed = false;
                             first_token_timeout_placeholder_sent = false;
@@ -4982,6 +5221,7 @@ async fn relay_ws_session(
                 }
             }
             next = upstream_read.next() => {
+                upstream_wait_finished_at = tokio::time::Instant::now();
                 match next {
                     Some(Ok(msg)) => {
                         let upstream_json = tungstenite_message_json(&msg);
@@ -5196,6 +5436,34 @@ async fn relay_ws_session(
                                 summary.terminal_event_type(Some("responses")).is_some(),
                             );
                         }
+                        if summary.terminal_event_type(Some("responses")).is_some()
+                            && plan.turn_health_enabled
+                            && !turn_health_reported
+                        {
+                            let class = if summary.failed && !failure_state.is_cache_policy_only() {
+                                Some(summary.health_failure_class.unwrap_or("upstream_error"))
+                            } else if summary.failed {
+                                Some("prepare_failed")
+                            } else {
+                                None
+                            };
+                            if let Err(err) = report_ws_turn_health(
+                                &state,
+                                &plan,
+                                health_turn,
+                                &summary,
+                                health_turn_model.as_deref(),
+                                class,
+                                current_turn_real_first_token_ms,
+                                turn_started_at.elapsed().as_millis() as i64,
+                            )
+                            .await
+                            {
+                                error!("turn health callback could not be queued: {}", safe_edge_error(&err));
+                            } else {
+                                turn_health_reported = true;
+                            }
+                        }
                         if safe_token_placeholder
                             && response_created
                             && !first_token_timeout_placeholder_sent
@@ -5240,6 +5508,7 @@ async fn relay_ws_session(
                 }
             }
             _ = wait_optional_sleep(&mut first_token_timeout_timer), if ws_response_active && !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
+                upstream_wait_finished_at = tokio::time::Instant::now();
                 let placeholder = AxumWsMessage::Text(
                     openai_responses_safe_token_placeholder_json(summary.response_id.as_deref()),
                 );
@@ -5340,10 +5609,47 @@ async fn relay_ws_session(
         }
     }
 
-    guard.set_client_disconnected(client_disconnected);
+    let confirmed_upstream_failure = upstream_failure_cause.is_some() || session_failed;
+    if plan.turn_health_enabled
+        && !turn_health_reported
+        && (upstream_failure_cause.is_some()
+            || summary.terminal_event_type(Some("responses")).is_some())
+        && !lease_lost
+    {
+        let class = upstream_failure_cause
+            .and_then(stream_failure_cause_class)
+            .or(if summary.failed {
+                Some(summary.health_failure_class.unwrap_or("upstream_error"))
+            } else {
+                None
+            });
+        if let Err(err) = report_ws_turn_health(
+            &state,
+            &plan,
+            health_turn,
+            &summary,
+            health_turn_model.as_deref(),
+            class,
+            current_turn_real_first_token_ms,
+            turn_started_at.elapsed().as_millis() as i64,
+        )
+        .await
+        {
+            error!(
+                "turn health callback could not be queued: {}",
+                safe_edge_error(&err)
+            );
+        } else {
+            turn_health_reported = true;
+        }
+    }
+    guard.set_client_disconnected(client_disconnected && !confirmed_upstream_failure);
     call_complete(
         &state,
         CompleteRequest {
+            health_only: false,
+            health_event_id: None,
+            turn_health_reported,
             failure_diagnostic: summary.failure_diagnostic.clone(),
             settlement_context: plan.settlement_context.clone(),
             edge_request_id: edge_request_id_complete,
@@ -5352,12 +5658,17 @@ async fn relay_ws_session(
             success,
             failure_class: if error_message.as_deref() == Some("edge lease lost") {
                 Some("lease_lost".to_string())
-            } else if !success && !client_disconnected && upstream_failure_cause.is_some() {
+            } else if !success && upstream_failure_cause.is_some() {
                 upstream_failure_cause
                     .and_then(stream_failure_cause_class)
                     .map(str::to_string)
-            } else if !success && !client_disconnected && session_failed {
-                Some("upstream_error".to_string())
+            } else if !success && session_failed {
+                Some(
+                    summary
+                        .health_failure_class
+                        .unwrap_or("upstream_error")
+                        .to_string(),
+                )
             } else {
                 classify_stream_failure(success, client_disconnected, &summary)
             },
@@ -5576,6 +5887,34 @@ fn edge_plan_ws_first_message(
 
 const OPENAI_PROMPT_CACHE_EXPLICIT_MIN_STATIC_BYTES: usize = 4 * 1024;
 const OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL: &str = "24h";
+
+fn openai_ws_health_request_model(
+    body: Option<&Value>,
+    session_model: &mut Option<String>,
+) -> Option<String> {
+    let body = body?;
+    match body.get("type").and_then(Value::as_str) {
+        Some("session.update") => {
+            if let Some(model) = body
+                .pointer("/session/model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+            {
+                *session_model = Some(model.to_string());
+            }
+            None
+        }
+        Some("response.create") => body
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| session_model.clone()),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 fn apply_openai_prompt_cache_creation_optimization_ws_message(
@@ -8163,6 +8502,9 @@ async fn relay_upstream_direct_core_impl(
             if let Err(callback_err) = call_complete(
                 &state,
                 CompleteRequest {
+                    health_only: false,
+                    health_event_id: None,
+                    turn_health_reported: false,
                     failure_diagnostic: None,
                     settlement_context: plan.settlement_context.clone(),
                     edge_request_id: plan.edge_request_id.clone(),
@@ -8486,6 +8828,7 @@ async fn relay_upstream_direct_core_impl(
         let mut body_idle_timer = edge_body_idle_timeout.map(tokio::time::sleep).map(Box::pin);
         let mut progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
         let mut semantic_stall_failover_used = false;
+        let mut upstream_wait_finished_at = tokio::time::Instant::now();
 
         enum RelaySelectEvent {
             LeaseLost,
@@ -8499,6 +8842,10 @@ async fn relay_upstream_direct_core_impl(
         }
 
         'relay: loop {
+            exclude_local_time_from_upstream_budget(
+                &mut body_idle_timer, edge_body_idle_timeout, upstream_wait_finished_at,
+            );
+            progress_watchdog.exclude_local_time(upstream_wait_finished_at);
             let event = if bootstrap_timer.is_some()
                 || first_token_timeout_timer.is_some()
                 || semantic_progress_timer.is_some()
@@ -8532,6 +8879,7 @@ async fn relay_upstream_direct_core_impl(
             } else {
                 RelaySelectEvent::Upstream(bytes_stream.next().await)
             };
+            upstream_wait_finished_at = tokio::time::Instant::now();
             let next = match event {
                 RelaySelectEvent::LeaseLost => {
                     success = false;
@@ -9499,6 +9847,9 @@ async fn relay_upstream_direct_core_impl(
         complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
 
         if call_complete(&complete_state, CompleteRequest {
+            health_only: false,
+            health_event_id: None,
+            turn_health_reported: false,
             failure_diagnostic: summary.failure_diagnostic.clone(),
             settlement_context: current_plan.settlement_context.clone(),
             edge_request_id,
@@ -9533,8 +9884,8 @@ async fn relay_upstream_direct_core_impl(
             } else {
                 completion_error_type.or_else(|| Some("stream_error".to_string()))
             },
-            error_message,
-            upstream_status_code: Some(status.as_u16()),
+            error_message: summary.health_failure_message.clone().or(error_message),
+            upstream_status_code: summary.health_failure_status.or(Some(status.as_u16())),
             terminal_event_type,
             cyber_blocked,
         }).await.is_ok() {
@@ -12560,6 +12911,51 @@ async fn recover_previous_edge_leases(state: AppState) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn report_ws_turn_health(
+    state: &AppState,
+    plan: &EdgePlan,
+    turn: u64,
+    summary: &ChatStreamSummary,
+    requested_model: Option<&str>,
+    class: Option<&str>,
+    real_first_token_ms: Option<i64>,
+    duration_ms: i64,
+) -> anyhow::Result<()> {
+    if !plan.turn_health_enabled {
+        return Ok(());
+    }
+    let mut request = pending_stream_complete_request(
+        plan.edge_request_id.clone(),
+        plan.lease_id.clone(),
+        plan.account_id,
+        None,
+        None,
+        None,
+        None,
+        0,
+    );
+    request.health_only = true;
+    request.health_event_id = Some(format!("{}:{}", plan.edge_request_id, turn));
+    request.settlement_context = plan.settlement_context.clone();
+    request.success = summary.completed_successfully(Some("responses"));
+    request.failure_class = class.map(str::to_string);
+    request.upstream_status_code = summary.health_failure_status;
+    request.error_message = summary.health_failure_message.clone();
+    // Health follows the requested route. The provider's returned model stays
+    // on the independent billing summary and may be a versioned alias.
+    request.model = requested_model.map(ToOwned::to_owned);
+    request.real_first_token_ms = request.success.then_some(real_first_token_ms).flatten();
+    request.duration_ms = duration_ms;
+    request.terminal_event_type = summary.terminal_event_type(Some("responses"));
+    request.cyber_blocked = summary.cyber_blocked;
+    request.failure_diagnostic = summary.failure_diagnostic.clone();
+    // Persist and deliver on the existing bounded callback workers. A slow
+    // control plane must not hold the live WS relay for the billing timeout.
+    stamp_complete_guard_sample(&mut request);
+    enqueue_settlement_retry(state, SettlementRetryJob::Complete(Box::new(request))).await
+}
+
 async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Result<()> {
     stamp_complete_guard_sample(&mut req);
     let job = SettlementRetryJob::Complete(Box::new(req.clone()));
@@ -13220,6 +13616,9 @@ impl ChatStreamSummary {
                 self.terminal_event_type = Some(event_type.to_string());
             }
             "response.failed" | "error" => {
+                self.health_failure_class = Some(openai_stream_health_failure_class(value));
+                self.health_failure_status = openai_stream_health_failure_status(value);
+                self.health_failure_message = extract_edge_stream_failure_message(value);
                 self.failed = true;
                 self.terminal_event_type = Some(event_type.to_string());
                 if self.failed_terminal_event_type.is_none() {
@@ -13237,6 +13636,11 @@ impl ChatStreamSummary {
         let invalid_chat_payload = self.response_dialect.as_deref() == Some("chat_completions")
             && !value.get("choices").is_some_and(Value::is_array);
         if json_is_unsafe_upstream_diagnostic(value) || invalid_chat_payload {
+            if value.get("error").is_some() || value.pointer("/response/error").is_some() {
+                self.health_failure_class = Some(openai_stream_health_failure_class(value));
+                self.health_failure_status = openai_stream_health_failure_status(value);
+                self.health_failure_message = extract_edge_stream_failure_message(value);
+            }
             if self.failure_diagnostic.is_none() {
                 self.failure_diagnostic =
                     serde_json::to_string(&upstream_failure_diagnostic(value)).ok();
@@ -14459,6 +14863,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settlement_wal_keeps_each_ws_health_turn_separate_from_billing() {
+        let dir = TestDirectory::new("wal-health-turns");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        let complete = pending_stream_complete_request(
+            "edge-health".to_string(),
+            Some("lease-health".to_string()),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            0,
+        );
+        let mut first = complete.clone();
+        first.health_only = true;
+        first.health_event_id = Some("edge-health:1".to_string());
+        let mut second = first.clone();
+        second.health_event_id = Some("edge-health:2".to_string());
+        let jobs = [complete, first, second]
+            .map(|request| SettlementRetryJob::Complete(Box::new(request)));
+        for job in &jobs {
+            wal.append_record(SettlementWalRecord::Put {
+                key: SettlementWal::key(job),
+                job: job.clone(),
+            })
+            .await
+            .unwrap();
+        }
+        wal.flush().await.unwrap();
+        assert_eq!(wal.pending.load(Ordering::Acquire), 3);
+        drop(wal);
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(replay.load().await.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn ws_health_uses_request_models_and_session_inheritance() {
+        let mut session_model = Some("mapped-model".to_string());
+        let inherited = serde_json::json!({"type":"response.create","input":"hi"});
+        assert_eq!(
+            openai_ws_health_request_model(Some(&inherited), &mut session_model).as_deref(),
+            Some("mapped-model")
+        );
+        let explicit = serde_json::json!({"type":"response.create","model":"other-model"});
+        assert_eq!(
+            openai_ws_health_request_model(Some(&explicit), &mut session_model).as_deref(),
+            Some("other-model")
+        );
+        assert_eq!(session_model.as_deref(), Some("mapped-model"));
+        let update =
+            serde_json::json!({"type":"session.update","session":{"model":"session-model"}});
+        assert!(openai_ws_health_request_model(Some(&update), &mut session_model).is_none());
+        assert_eq!(
+            openai_ws_health_request_model(Some(&inherited), &mut session_model).as_deref(),
+            Some("session-model")
+        );
+        let response = serde_json::json!({"type":"response.completed","response":{"model":"provider-version"}});
+        assert!(openai_ws_health_request_model(Some(&response), &mut session_model).is_none());
+        assert_eq!(session_model.as_deref(), Some("session-model"));
+    }
+
+    #[test]
+    fn stream_health_distinguishes_semantic_provider_and_request_errors() {
+        for (error, expected_status, expected_class) in [
+            (
+                serde_json::json!({"type":"rate_limit_error","code":"rate_limit_exceeded"}),
+                Some(429),
+                "upstream_rejected",
+            ),
+            (
+                serde_json::json!({"type":"authentication_error","code":"invalid_api_key"}),
+                Some(401),
+                "upstream_rejected",
+            ),
+            (
+                serde_json::json!({"type":"permission_error"}),
+                Some(403),
+                "upstream_rejected",
+            ),
+            (
+                serde_json::json!({"code":"model_not_found"}),
+                Some(404),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"type":"invalid_request_error"}),
+                Some(400),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"code":"server_is_overloaded"}),
+                Some(503),
+                "upstream_error",
+            ),
+            (
+                serde_json::json!({"status":"502","code":"server_error"}),
+                Some(502),
+                "upstream_error",
+            ),
+            (
+                serde_json::json!({"status":200,"type":"rate_limit_error"}),
+                Some(429),
+                "upstream_rejected",
+            ),
+            (
+                serde_json::json!({"status":502,"message":"this account does not support this model"}),
+                Some(502),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"message":"Upstream account cannot serve requested model; check model mapping or upstream group config"}),
+                Some(502),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"status":502,"message":"unsupported parameter: reasoning"}),
+                Some(502),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"status":502,"code":"ws_connection_limit_reached"}),
+                Some(502),
+                "request_rejected",
+            ),
+            (
+                serde_json::json!({"message":"The model worker crashed"}),
+                Some(502),
+                "upstream_error",
+            ),
+        ] {
+            let value = serde_json::json!({"type":"response.failed","response":{"error":error}});
+            assert_eq!(
+                openai_stream_health_failure_status(&value),
+                expected_status,
+                "{value}"
+            );
+            assert_eq!(
+                openai_stream_health_failure_class(&value),
+                expected_class,
+                "{value}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn settlement_wal_repairs_incomplete_tail_before_appending() {
         let dir = TestDirectory::new("wal-tail");
         let first = test_abort_job("edge-first");
@@ -15353,6 +15906,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_progress_budget_excludes_local_backpressure() {
+        let timeout = Duration::from_millis(150);
+        let mut guard = EffectiveProgressWatchdog::new(Some(timeout));
+        let initial_deadline = guard.timer.as_ref().unwrap().deadline();
+        let paused_since = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        guard.exclude_local_time(paused_since);
+        assert!(guard.timer.as_ref().unwrap().deadline() > initial_deadline);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), guard.wait())
+                .await
+                .is_err(),
+            "slow downstream must not expire the upstream budget"
+        );
+        tokio::time::timeout(Duration::from_secs(1), guard.wait())
+            .await
+            .expect("actual upstream silence must still expire");
+
+        // Refreshing during local processing must grant only one window.
+        // Excluding the entire local interval would grant an extra window.
+        let paused_since = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        guard.observe(true);
+        let refreshed_at = guard.timer.as_ref().unwrap().deadline() - timeout;
+        guard.exclude_local_time(paused_since);
+        let resumed_at = tokio::time::Instant::now();
+        let deadline = guard.timer.as_ref().unwrap().deadline();
+        assert!(refreshed_at > paused_since);
+        assert!(deadline <= resumed_at + timeout);
+        assert!(deadline > resumed_at);
+    }
+
+    #[tokio::test]
     async fn effective_progress_watchdog_ignores_heartbeats_and_structural_events() {
         let mut guard = EffectiveProgressWatchdog::new(Some(Duration::from_millis(30)));
         let deadline = guard.timer.as_ref().unwrap().deadline();
@@ -15440,9 +16026,11 @@ mod tests {
 
     #[test]
     fn synthetic_terminal_cannot_erase_transport_failure_cause() {
-        let mut summary = ChatStreamSummary::default();
-        summary.failed = true;
-        summary.terminal_event_type = Some("response.failed".to_string());
+        let summary = ChatStreamSummary {
+            failed: true,
+            terminal_event_type: Some("response.failed".to_string()),
+            ..Default::default()
+        };
         assert_eq!(
             classify_stream_failure(false, false, &summary).as_deref(),
             Some("upstream_error")
@@ -15478,6 +16066,15 @@ mod tests {
         let summary = ChatStreamSummary::default();
 
         assert_eq!(
+            classify_stream_failure_with_status(false, false, &summary, Some(400)).as_deref(),
+            Some("request_rejected")
+        );
+        assert_eq!(
+            classify_stream_failure_with_status(false, false, &summary, Some(429)).as_deref(),
+            Some("upstream_rejected")
+        );
+
+        assert_eq!(
             classify_stream_failure_with_status(false, false, &summary, Some(502)).as_deref(),
             Some("upstream_error")
         );
@@ -15489,6 +16086,26 @@ mod tests {
             classify_stream_failure_with_status(false, true, &summary, Some(502)).as_deref(),
             Some("client_cancelled")
         );
+
+        let mut refusal = ChatStreamSummary::default();
+        refusal.observe_json(&serde_json::json!({
+            "type":"response.failed", "response":{"error":{
+                "status":502, "message":"unsupported parameter: reasoning"
+            }}
+        }));
+        for client_disconnected in [false, true] {
+            assert_eq!(
+                classify_stream_failure_with_status(
+                    false,
+                    client_disconnected,
+                    &refusal,
+                    Some(502)
+                )
+                .as_deref(),
+                Some("request_rejected"),
+                "HTTP 5xx wrapper must not erase the compatibility exclusion"
+            );
+        }
     }
 
     #[test]
@@ -17081,6 +17698,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn early_placeholder_retry_plan_preserves_body_and_disables_duplicate_timer() {
         let mut plan = EdgePlan {
+            turn_health_enabled: false,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
@@ -17686,6 +18304,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn take_request_body_prefers_raw_base64_and_clears_plan_body() {
         let mut plan = EdgePlan {
+            turn_health_enabled: false,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
@@ -17843,6 +18462,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn relay_queue_key_uses_account_proxy_and_host() {
         let plan = EdgePlan {
+            turn_health_enabled: false,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),

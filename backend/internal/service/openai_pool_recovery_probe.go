@@ -109,7 +109,7 @@ func (s *OpenAIGatewayService) clearOpenAIPoolSoftCooldownIfRecoveryProbeDisable
 		return false
 	}
 	if !account.IsPoolSoftCooldownEnabled() {
-		s.ClearAccountSchedulingBlock(account.ID)
+		s.clearOpenAIPoolAccountSchedulingBlock(account.ID)
 		loggerLegacyOpenAIPoolRecovery("account_soft_cooldown_disabled_recover account_id=%d", account.ID)
 		return true
 	}

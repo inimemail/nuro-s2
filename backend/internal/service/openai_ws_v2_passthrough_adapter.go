@@ -585,6 +585,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if !ok {
 		return errors.New("openai ws passthrough upstream connection does not support frame relay")
 	}
+	progressConn := newOpenAIWSPassthroughProgressConn(upstreamFrameConn, s.newOpenAIWSProgressGuard(c).timeout)
+	defer progressConn.stopProgress()
+	upstreamFrameConn = progressConn
 
 	completedTurns := atomic.Int32{}
 	clientFrameConn := &openAIWSClientFrameConn{
@@ -825,9 +828,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					observer.ObserveOpenAI(payload, eventType)
 				}
 				if eventType == "error" || eventType == "response.failed" {
-					if msgType == coderws.MessageText {
-						s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
-					}
+					decision := s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
 					unsupported := cacheCreationOptimizationApplied.Load() &&
 						isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload)
 					cachePolicyCompatibilityFailure.Store(unsupported)
@@ -835,6 +836,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						currentBody, _ := lastUpstreamRequest.Load().([]byte)
 						_, upstreamModel := usageMeta.turnModels("")
 						s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, OpenAIPromptCacheCreationOptimizationScope(upstreamModel, currentBody))
+					}
+					if !decision.Matched && !unsupported && OpenAIStreamFailureCountsForAccount(payload, "") && progressConn.claimFailure() {
+						s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, wroteDownstream, false, nil)
 					}
 				}
 				if !wroteDownstream && (eventType == "error" || eventType == "response.failed") {
@@ -989,7 +993,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	} else {
 		turnErr = wrapOpenAIWSIngressTurnError(relayExit.Stage, relayErr, relayExit.WroteDownstream)
 	}
-	if result.AccountHealthNeutral {
+	if result.AccountHealthNeutral || !progressConn.turnActive() || result.ClientDisconnect {
 		turnErr = MarkOpenAIWSAccountHealthNeutralError(turnErr)
 	}
 	if hooks != nil && hooks.AfterTurn != nil {

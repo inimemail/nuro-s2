@@ -142,7 +142,7 @@ func TestOpenAIAccountStreamDisconnectUsesExistingRuntimeBlockAfterRepeat(t *tes
 		"repeated failures must not escalate into a separate long cooldown")
 }
 
-func TestOpenAIAccountStreamDisconnectIgnoresNeutralAndClearsAfterSuccess(t *testing.T) {
+func TestOpenAIAccountStreamDisconnectIgnoresNeutralAndPreservesFixedWindowAfterSuccess(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 5002, Platform: PlatformOpenAI}
 
@@ -153,7 +153,7 @@ func TestOpenAIAccountStreamDisconnectIgnoresNeutralAndClearsAfterSuccess(t *tes
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "a single disconnect should not block the account")
 	svc.clearOpenAIAccountStreamFailures(account.ID)
 	_, countExists := svc.openaiAccountStreamDisconnectCount.Load(account.ID)
-	require.False(t, countExists)
+	require.True(t, countExists, "local fallback must match the shared fixed window")
 }
 
 func TestOpenAIAccountStreamDisconnectCounterIsSharedAcrossServices(t *testing.T) {

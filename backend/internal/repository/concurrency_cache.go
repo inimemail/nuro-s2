@@ -71,6 +71,50 @@ var (
 		end
 		return 0
 	`)
+	// New replicas retain independent runtime and pool keys, while mirroring
+	// their union to the legacy admission key for rolling deployments.
+	setOwnedAccountCooldownScript = redis.NewScript(`
+local generation=tonumber(ARGV[1]); local ttl=tonumber(ARGV[2])
+local current=redis.call('GET',KEYS[1]); local oldGeneration=0
+if current and string.sub(current,1,2)=='g:' then oldGeneration=tonumber(string.sub(current,3)) or 0 end
+if generation==0 and current and oldGeneration>0 then
+ local oldTTL=redis.call('PTTL',KEYS[1])
+ if oldTTL>=0 and oldTTL<ttl then redis.call('PEXPIRE',KEYS[1],ttl) end
+elseif not current or oldGeneration<=generation then
+ local oldTTL=redis.call('PTTL',KEYS[1])
+ if current and oldTTL>ttl then ttl=oldTTL end
+ redis.call('SET',KEYS[1],'g:'..generation,'PX',ttl)
+end
+local candidateTTL=redis.call('PTTL',KEYS[1]); local legacyTTL=redis.call('PTTL',KEYS[2])
+if candidateTTL>0 and legacyTTL~=-1 and candidateTTL>=legacyTTL then
+ redis.call('SET',KEYS[2],ARGV[3]..(redis.call('GET',KEYS[1]) or ''),'PX',candidateTTL)
+end
+return 1
+`)
+	clearOwnedAccountCooldownScript = redis.NewScript(`
+local generation=tonumber(ARGV[1]); local current=redis.call('GET',KEYS[1]); local oldGeneration=0
+if current and string.sub(current,1,2)=='g:' then oldGeneration=tonumber(string.sub(current,3)) or 0 end
+if generation>0 and current and oldGeneration>=generation then return 0 end
+redis.call('DEL',KEYS[1])
+local legacy=redis.call('GET',KEYS[2]); local owned=false
+if legacy then
+ if ARGV[2]=='p:' then owned=string.sub(legacy,1,2)=='p:'
+ else owned=string.sub(legacy,1,2)~='p:' end
+end
+if owned then
+ local legacyGeneration=0
+ local value=legacy
+ if string.sub(value,1,2)=='p:' or string.sub(value,1,2)=='r:' then value=string.sub(value,3) end
+ if string.sub(value,1,2)=='g:' then legacyGeneration=tonumber(string.sub(value,3)) or 0 end
+ if generation==0 or legacyGeneration<generation then redis.call('DEL',KEYS[2]) end
+end
+local otherTTL=redis.call('PTTL',KEYS[3]); local legacyTTL=redis.call('PTTL',KEYS[2])
+if otherTTL>0 and legacyTTL~=-1 and otherTTL>=legacyTTL then
+ redis.call('SET',KEYS[2],ARGV[3]..(redis.call('GET',KEYS[3]) or ''),'PX',otherTTL)
+end
+return 1
+`)
+
 	clearAccountCooldownBeforeGenerationScript = redis.NewScript(`
 		local generation = tonumber(ARGV[1])
 		local current = redis.call('GET', KEYS[1])
@@ -129,7 +173,7 @@ var (
 
 	// acquireFirstAvailableAccountSlotScript 按调度器给出的候选顺序，在一次
 	// Redis 往返里抢占第一个有可用容量的账号槽位。
-	// KEYS triples = regular account, Live account, cooldown.
+	// KEYS groups = regular account, Live account, legacy cooldown, pool cooldown, runtime cooldown.
 	// ARGV[1] = TTL（秒）
 	// ARGV[2] = requestID
 	// ARGV[3...] = 每个 KEYS 对应的 maxConcurrency
@@ -141,13 +185,13 @@ var (
 		local now = tonumber(timeResult[1])
 		local expireBefore = now - ttl
 
-		for i = 1, #KEYS, 3 do
+		for i = 1, #KEYS, 5 do
 			local key = KEYS[i]
 			local liveKey = KEYS[i + 1]
 			local cooldownKey = KEYS[i + 2]
-			local candidateIndex = ((i - 1) / 3) + 1
+			local candidateIndex = ((i - 1) / 5) + 1
 			local maxConcurrency = tonumber(ARGV[candidateIndex + 2])
-			if maxConcurrency ~= nil and redis.call('EXISTS', cooldownKey) == 0 then
+			if maxConcurrency ~= nil and redis.call('EXISTS', cooldownKey, KEYS[i + 3], KEYS[i + 4]) == 0 then
 				if maxConcurrency <= 0 then return candidateIndex end
 				local exists = redis.call('ZSCORE', key, requestID)
 				if exists ~= false and tonumber(exists) > expireBefore then
@@ -207,13 +251,13 @@ var (
 			redis.call('EXPIRE', userKey, ttl)
 		end
 
-		for i = 3, #KEYS, 3 do
+		for i = 3, #KEYS, 5 do
 			local slotKey = KEYS[i]
 			local liveKey = KEYS[i + 1]
 			local cooldownKey = KEYS[i + 2]
-			local candidateIndex = ((i - 3) / 3) + 1
+			local candidateIndex = ((i - 3) / 5) + 1
 			local maxConcurrency = tonumber(ARGV[candidateIndex + 4])
-			if maxConcurrency ~= nil and redis.call('EXISTS', cooldownKey) == 0 then
+			if maxConcurrency ~= nil and redis.call('EXISTS', cooldownKey, KEYS[i + 3], KEYS[i + 4]) == 0 then
 				-- Unlimited accounts still need the atomic user admission and cooldown
 				-- check, but must not create a synthetic account slot.
 				if maxConcurrency <= 0 then return candidateIndex end
@@ -538,6 +582,10 @@ func accountCooldownKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", accountCooldownKeyPrefix, accountID)
 }
 
+func accountRuntimeCooldownKey(accountID int64) string {
+	return fmt.Sprintf("cooldown:account_runtime:%d", accountID)
+}
+
 func openAIPoolCooldownKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", openAIPoolCooldownKeyPrefix, accountID)
 }
@@ -545,7 +593,7 @@ func openAIPoolCooldownKey(accountID int64) string {
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
-	keys := []string{accountSlotKey(accountID), liveAccountSlotKey(accountID), accountCooldownKey(accountID)}
+	keys := []string{accountSlotKey(accountID), liveAccountSlotKey(accountID), accountCooldownKey(accountID), openAIPoolCooldownKey(accountID), accountRuntimeCooldownKey(accountID)}
 	started := time.Now()
 	// The cooldown key is checked in the same atomic claim that adds the slot,
 	// closing the bounded snapshot-staleness window without another round trip.
@@ -562,7 +610,7 @@ func (c *concurrencyCache) AcquireFirstAvailableAccountSlot(ctx context.Context,
 		return 0, false, nil
 	}
 
-	keys := make([]string, 0, len(candidates)*3)
+	keys := make([]string, 0, len(candidates)*5)
 	args := make([]any, 0, len(candidates)+2)
 	args = append(args, c.slotTTLSeconds, requestID)
 
@@ -571,7 +619,7 @@ func (c *concurrencyCache) AcquireFirstAvailableAccountSlot(ctx context.Context,
 		if candidate.AccountID <= 0 {
 			continue
 		}
-		keys = append(keys, accountSlotKey(candidate.AccountID), liveAccountSlotKey(candidate.AccountID), accountCooldownKey(candidate.AccountID))
+		keys = append(keys, accountSlotKey(candidate.AccountID), liveAccountSlotKey(candidate.AccountID), accountCooldownKey(candidate.AccountID), openAIPoolCooldownKey(candidate.AccountID), accountRuntimeCooldownKey(candidate.AccountID))
 		args = append(args, candidate.MaxConcurrency)
 		accountIDs = append(accountIDs, candidate.AccountID)
 	}
@@ -596,7 +644,7 @@ func (c *concurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Con
 		return 0, false, nil
 	}
 
-	keys := make([]string, 0, 2+len(candidates)*3)
+	keys := make([]string, 0, 2+len(candidates)*5)
 	keys = append(keys, userSlotKey(userID), liveUserSlotKey(userID))
 	args := make([]any, 0, len(candidates)+4)
 	args = append(args, c.slotTTLSeconds, userMaxConcurrency, userRequestID, accountRequestID)
@@ -606,7 +654,7 @@ func (c *concurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Con
 		if candidate.AccountID <= 0 {
 			continue
 		}
-		keys = append(keys, accountSlotKey(candidate.AccountID), liveAccountSlotKey(candidate.AccountID), accountCooldownKey(candidate.AccountID))
+		keys = append(keys, accountSlotKey(candidate.AccountID), liveAccountSlotKey(candidate.AccountID), accountCooldownKey(candidate.AccountID), openAIPoolCooldownKey(candidate.AccountID), accountRuntimeCooldownKey(candidate.AccountID))
 		args = append(args, candidate.MaxConcurrency)
 		accountIDs = append(accountIDs, candidate.AccountID)
 	}
@@ -930,14 +978,14 @@ func (c *concurrencyCache) SetAccountCooldown(ctx context.Context, accountID int
 	if accountID <= 0 || ttl <= 0 {
 		return nil
 	}
-	return c.rdb.Set(ctx, accountCooldownKey(accountID), "1", ttl).Err()
+	return c.SetAccountCooldownGeneration(ctx, accountID, ttl, 0)
 }
 
 func (c *concurrencyCache) ClearAccountCooldown(ctx context.Context, accountID int64) error {
 	if accountID <= 0 {
 		return nil
 	}
-	return c.rdb.Del(ctx, accountCooldownKey(accountID)).Err()
+	return clearOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{accountRuntimeCooldownKey(accountID), accountCooldownKey(accountID), openAIPoolCooldownKey(accountID)}, 0, "", "p:").Err()
 }
 
 func (c *concurrencyCache) SetAccountCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error {
@@ -948,14 +996,25 @@ func (c *concurrencyCache) SetAccountCooldownGeneration(ctx context.Context, acc
 	if ttlMillis <= 0 {
 		ttlMillis = 1
 	}
-	return setAccountCooldownGenerationScript.Run(ctx, c.rdb, []string{accountCooldownKey(accountID)}, generation, ttlMillis).Err()
+	return setOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{accountRuntimeCooldownKey(accountID), accountCooldownKey(accountID)}, generation, ttlMillis, "").Err()
 }
 
 func (c *concurrencyCache) ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
 	if accountID <= 0 || generation <= 0 {
 		return nil
 	}
-	return clearAccountCooldownBeforeGenerationScript.Run(ctx, c.rdb, []string{accountCooldownKey(accountID)}, generation).Err()
+	return clearOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{accountRuntimeCooldownKey(accountID), accountCooldownKey(accountID), openAIPoolCooldownKey(accountID)}, generation, "", "p:").Err()
+}
+
+func parseCooldownGeneration(value string) int64 {
+	if len(value) >= 2 && (value[:2] == "r:" || value[:2] == "p:") {
+		value = value[2:]
+	}
+	if len(value) > 2 && value[:2] == "g:" {
+		generation, _ := strconv.ParseInt(value[2:], 10, 64)
+		return generation
+	}
+	return 0
 }
 
 func (c *concurrencyCache) GetAccountCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
@@ -976,10 +1035,7 @@ func (c *concurrencyCache) GetAccountCooldown(ctx context.Context, accountID int
 	if ttl <= 0 {
 		return time.Time{}, 0, false, nil
 	}
-	generation := int64(0)
-	if len(value) > 2 && value[:2] == "g:" {
-		generation, _ = strconv.ParseInt(value[2:], 10, 64)
-	}
+	generation := parseCooldownGeneration(value)
 	return time.Now().Add(ttl), generation, true, nil
 }
 
@@ -991,21 +1047,21 @@ func (c *concurrencyCache) SetOpenAIPoolCooldownGeneration(ctx context.Context, 
 	if ttlMillis <= 0 {
 		ttlMillis = 1
 	}
-	return setAccountCooldownGenerationScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID)}, generation, ttlMillis).Err()
+	return setOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID), accountCooldownKey(accountID)}, generation, ttlMillis, "p:").Err()
 }
 
 func (c *concurrencyCache) ClearOpenAIPoolCooldown(ctx context.Context, accountID int64) error {
 	if accountID <= 0 {
 		return nil
 	}
-	return c.rdb.Del(ctx, openAIPoolCooldownKey(accountID)).Err()
+	return clearOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID), accountCooldownKey(accountID), accountRuntimeCooldownKey(accountID)}, 0, "p:", "").Err()
 }
 
 func (c *concurrencyCache) ClearOpenAIPoolCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
 	if accountID <= 0 || generation <= 0 {
 		return nil
 	}
-	return clearAccountCooldownBeforeGenerationScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID)}, generation).Err()
+	return clearOwnedAccountCooldownScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID), accountCooldownKey(accountID), accountRuntimeCooldownKey(accountID)}, generation, "p:", "").Err()
 }
 
 func (c *concurrencyCache) GetOpenAIPoolCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
@@ -1024,10 +1080,7 @@ func (c *concurrencyCache) GetOpenAIPoolCooldown(ctx context.Context, accountID 
 	if err != nil || ttl <= 0 {
 		return time.Time{}, 0, false, err
 	}
-	generation := int64(0)
-	if len(value) > 2 && value[:2] == "g:" {
-		generation, _ = strconv.ParseInt(value[2:], 10, 64)
-	}
+	generation := parseCooldownGeneration(value)
 	return time.Now().Add(ttl), generation, true, nil
 }
 

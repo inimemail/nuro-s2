@@ -31,6 +31,54 @@ type admissionAccountRoute struct {
 	cache    *concurrencyCache
 }
 
+var readAdmissionCooldownSourcesScript = redis.NewScript(`
+local result = {}
+for _, key in ipairs(KEYS) do
+ table.insert(result, redis.call('GET', key) or '')
+ table.insert(result, redis.call('PTTL', key))
+end
+return result
+`)
+
+var migrateAdmissionCooldownSourcesScript = redis.NewScript(`
+-- Ownership is immutable. Transfer the pre-assignment snapshot once per Cell,
+-- so a new replica cannot resurrect a cooldown already cleared in its owner.
+if redis.call('EXISTS', KEYS[4]) == 1 then return 0 end
+local function generation(value)
+ if string.sub(value,1,2)=='p:' or string.sub(value,1,2)=='r:' then value=string.sub(value,3) end
+ if string.sub(value,1,2)=='g:' then return tonumber(string.sub(value,3)) or 0 end
+ return 0
+end
+for i=1,3 do
+ local value=ARGV[i*2-1]; local ttl=tonumber(ARGV[i*2])-tonumber(ARGV[7])
+ if value~='' and ttl>0 then
+  local target=i
+  if i==1 then
+   if string.sub(value,1,2)=='p:' then target=3 else target=2 end
+  end
+  local current=redis.call('GET',KEYS[target])
+  local incomingGeneration=generation(value)
+  if not current or generation(current)<=incomingGeneration then
+   local currentTTL=redis.call('PTTL',KEYS[target])
+   if currentTTL~=-1 then
+    if currentTTL>ttl then ttl=currentTTL end
+    redis.call('SET',KEYS[target],'g:'..incomingGeneration,'PX',ttl)
+   end
+  end
+ end
+end
+for i=2,3 do
+ local ttl=redis.call('PTTL',KEYS[i]); local legacyTTL=redis.call('PTTL',KEYS[1])
+ if ttl>0 and legacyTTL~=-1 and ttl>=legacyTTL then
+  local prefix=''
+  if i==3 then prefix='p:' end
+  redis.call('SET',KEYS[1],prefix..redis.call('GET',KEYS[i]),'PX',ttl)
+ end
+end
+redis.call('SET',KEYS[4],'1')
+return 1
+`)
+
 // cellAwareConcurrencyCache keeps the legacy implementation as an exact
 // compatibility path. In Cell mode only account-owned state is placed in an
 // append-only owner Cell; tenant state is reserved first and rolled back when
@@ -244,6 +292,9 @@ func (c *cellAwareConcurrencyCache) routeForPlatform(ctx context.Context, platfo
 		return nil, fmt.Errorf("admission Cell %s platform mismatch", cellID)
 	}
 	route = &admissionAccountRoute{cellID: cellID, platform: platform, cache: cell}
+	if err := c.migrateAccountCooldowns(ctx, route.cache, accountID); err != nil {
+		return nil, fmt.Errorf("migrate account %d cooldowns to Cell %s: %w", accountID, cellID, err)
+	}
 	c.mu.Lock()
 	if existing := c.routes[accountID]; existing != nil {
 		route = existing
@@ -252,21 +303,22 @@ func (c *cellAwareConcurrencyCache) routeForPlatform(ctx context.Context, platfo
 	}
 	c.assignments[accountID] = cellID
 	c.mu.Unlock()
-	// Preserve a cooldown that was written through the legacy compatibility
-	// path before this account received its first Cell assignment.
-	if ttl, ttlErr := c.legacy.rdb.PTTL(ctx, accountCooldownKey(accountID)).Result(); ttlErr == nil && ttl > 0 {
-		_ = route.cache.SetAccountCooldown(ctx, accountID, ttl)
-	}
-	if until, generation, active, readErr := c.legacy.GetOpenAIPoolCooldown(ctx, accountID); readErr == nil && active {
-		ttl := time.Until(until)
-		// Preserve the dedicated pool marker when an account is first routed to
-		// a Cell; otherwise the Cell-local admission path could miss an active
-		// recovery cooldown created before assignment.
-		if ttl > 0 {
-			_ = route.cache.SetOpenAIPoolCooldownGeneration(ctx, accountID, ttl, generation)
-		}
-	}
 	return route, nil
+}
+
+func (c *cellAwareConcurrencyCache) migrateAccountCooldowns(ctx context.Context, target *concurrencyCache, accountID int64) error {
+	keys := []string{accountCooldownKey(accountID), accountRuntimeCooldownKey(accountID), openAIPoolCooldownKey(accountID)}
+	started := time.Now()
+	snapshot, err := readAdmissionCooldownSourcesScript.Run(ctx, c.legacy.rdb, keys).Slice()
+	if err != nil {
+		return err
+	}
+	if len(snapshot) != 6 {
+		return fmt.Errorf("invalid cooldown source snapshot")
+	}
+	keys = append(keys, "admission:account-cell:cooldowns-migrated:"+strconv.FormatInt(accountID, 10))
+	args := append(snapshot, time.Since(started).Milliseconds())
+	return migrateAdmissionCooldownSourcesScript.Run(ctx, target.rdb, keys, args...).Err()
 }
 
 func (c *cellAwareConcurrencyCache) routeForAssigned(ctx context.Context, accountID int64) (*admissionAccountRoute, error) {

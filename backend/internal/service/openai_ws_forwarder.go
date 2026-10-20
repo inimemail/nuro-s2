@@ -286,7 +286,8 @@ func IsOpenAIWSUpstreamDisconnectError(err error) bool {
 	if errors.Is(turnErr.cause, context.Canceled) || errors.Is(turnErr.cause, context.DeadlineExceeded) {
 		return false
 	}
-	return isOpenAIWSClientDisconnectError(turnErr.cause)
+	var timeout *openAIWSUpstreamTimeoutError
+	return errors.As(turnErr.cause, &timeout) || isOpenAIWSClientDisconnectError(turnErr.cause)
 }
 
 func isOpenAIWSIngressTurnRetryable(err error) bool {
@@ -2597,6 +2598,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	readTimeout := s.openAIWSReadTimeout()
+	progressGuard := s.newOpenAIWSProgressGuard(c)
 	var pendingJSONDocuments [][]byte
 	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
@@ -2605,6 +2607,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	type openAIWSReadResult struct {
 		message []byte
 		err     error
+		wait    time.Duration
 	}
 	var readResultCh <-chan openAIWSReadResult
 
@@ -2618,14 +2621,18 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if readResultCh == nil {
 				resultCh := make(chan openAIWSReadResult, 1)
 				readResultCh = resultCh
+				turnReadTimeout, noProgress := progressGuard.readTimeout(readTimeout)
 				go func() {
-					message, err := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
-					resultCh <- openAIWSReadResult{message: message, err: err}
+					readStarted := time.Now()
+					message, err := lease.ReadMessageWithContextTimeout(ctx, turnReadTimeout)
+					err = openAIWSReadError(ctx, err, noProgress)
+					resultCh <- openAIWSReadResult{message: message, err: err, wait: time.Since(readStarted)}
 				}()
 			}
 			select {
 			case result := <-readResultCh:
 				readResultCh = nil
+				progressGuard.consumedRead(result.wait)
 				message, readErr = result.message, result.err
 			case <-firstTokenTimeoutCh:
 				firstTokenTimeoutCh = nil
@@ -2668,6 +2675,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if clientDisconnected {
 				break
 			}
+			if ctx.Err() == nil && !s.recordOpenAIWSTimeout(account, readErr) {
+				s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, wroteDownstream, false, readErr)
+			}
 			// A gateway placeholder commits HTTP 200 but does not commit
 			// upstream output. Keep this request failover-capable until real
 			// upstream content has been written.
@@ -2687,6 +2697,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		originalMessage := message
 		originalEventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(originalMessage)
+		progressGuard.observe(originalMessage, originalEventType)
 		createdAtStamper.Observe(originalMessage, originalEventType)
 		message, eventType, normalizedUnsafe := normalizeOpenAIWSUpstreamEventForSafety(originalMessage, originalEventType)
 		if normalizedUnsafe {
@@ -2767,6 +2778,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				payloadAsJSONBytes(payload),
 			)
 			cyberBlocked = decision.Matched
+		}
+		if (eventType == "error" || eventType == "response.failed") && !cyberBlocked &&
+			OpenAIStreamFailureCountsForAccount(originalMessage, "") {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, wroteDownstream, false, nil)
 		}
 		if eventType == "response.failed" && !cyberBlocked && openAIWSShouldFailoverFailedEventForPlaceholderCoordination(c, originalMessage) {
 			lease.MarkBroken()
@@ -3844,8 +3859,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				mappedModelBytes = []byte(mappedModel)
 			}
 		}
+		progressGuard := s.newOpenAIWSProgressGuard(c)
 		for {
-			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
+			readTimeout, noProgress := progressGuard.readTimeout(s.openAIWSReadTimeout())
+			readStarted := time.Now()
+			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
+			progressGuard.consumedRead(time.Since(readStarted))
+			readErr = openAIWSReadError(ctx, readErr, noProgress)
 			if readErr != nil {
 				lease.MarkBroken()
 				return nil, wrapOpenAIWSIngressWrittenTurnError(
@@ -3861,6 +3881,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			originalUpstreamMessage := upstreamMessage
 			originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
+			progressGuard.observe(originalUpstreamMessage, originalEventType)
 			createdAtStamper.Observe(originalUpstreamMessage, originalEventType)
 			upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 			if responseID == "" && eventResponseID != "" {
@@ -3995,6 +4016,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", originalUpstreamMessage)
 				if cachePolicyCompatibilityFailure {
 					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account, OpenAIPromptCacheCreationOptimizationScope(mappedModel, payload))
+				}
+				if !cyberBlocked && !cachePolicyCompatibilityFailure && OpenAIStreamFailureCountsForAccount(originalUpstreamMessage, "") {
+					s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, wroteDownstream, false, nil)
 				}
 			}
 
@@ -4673,10 +4697,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if retryIngressTurn(relayErr, turn, connID) {
 				continue
 			}
+			// Keep the relay stage and request-written evidence for health and
+			// replay accounting. errors.As/Is still expose the underlying cause.
 			finalErr := relayErr
-			if unwrapped := errors.Unwrap(relayErr); unwrapped != nil {
-				finalErr = unwrapped
-			}
 			if hooks != nil && hooks.AfterTurn != nil {
 				var failedResult *OpenAIForwardResult
 				if attemptID, requestWritten := openAIWSIngressAttempt(relayErr); requestWritten && attemptID != "" {

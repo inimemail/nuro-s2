@@ -138,3 +138,32 @@ func TestVersionedAccountCooldownGenerationDoesNotShortenSameGeneration(t *testi
 	require.Greater(t, secondTTL, 8*time.Minute)
 	require.LessOrEqual(t, secondTTL, firstTTL)
 }
+
+func TestLegacyAccountCooldownExtendsVersionedRuntimeWithoutDroppingFence(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	cache := &concurrencyCache{rdb: client}
+	ctx := context.Background()
+	accountID := int64(13)
+
+	// A generation-less caller is still used by compatibility and Cell
+	// migration paths. It may extend an active runtime block, but must retain
+	// the generation that protects it from a late cleanup event.
+	require.NoError(t, cache.SetAccountCooldownGeneration(ctx, accountID, 10*time.Minute, 4))
+	require.NoError(t, cache.SetAccountCooldown(ctx, accountID, 20*time.Minute))
+	value, err := client.Get(ctx, accountRuntimeCooldownKey(accountID)).Result()
+	require.NoError(t, err)
+	require.Equal(t, "g:4", value)
+	ttl, err := client.PTTL(ctx, accountRuntimeCooldownKey(accountID)).Result()
+	require.NoError(t, err)
+	require.Greater(t, ttl, 18*time.Minute)
+
+	// A cleanup for the owning generation cannot remove the still-current
+	// runtime block, while a later generation can remove it.
+	require.NoError(t, cache.ClearAccountCooldownBeforeGeneration(ctx, accountID, 4))
+	require.True(t, server.Exists(accountRuntimeCooldownKey(accountID)))
+	require.NoError(t, cache.ClearAccountCooldownBeforeGeneration(ctx, accountID, 5))
+	require.False(t, server.Exists(accountRuntimeCooldownKey(accountID)))
+	require.False(t, server.Exists(accountCooldownKey(accountID)))
+}

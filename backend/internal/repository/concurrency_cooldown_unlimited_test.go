@@ -48,3 +48,34 @@ func TestUnlimitedAccountAdmissionHonorsOtherReplicaCooldown(t *testing.T) {
 	batch.ReleaseFunc()
 	require.False(t, server.Exists(accountSlotKey(71)), "unlimited admission must not create or renew account leases")
 }
+
+func TestAccountCooldownSourcesRemainIndependentAcrossReplicas(t *testing.T) {
+	mini := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	cache := NewConcurrencyCache(client, 15, 900)
+	concrete := cache.(*concurrencyCache)
+	ctx := context.Background()
+	// New pool generations must not replace a longer transport/runtime block.
+	require.NoError(t, concrete.SetAccountCooldownGeneration(ctx, 81, 2*time.Minute, 1))
+	require.NoError(t, concrete.SetOpenAIPoolCooldownGeneration(ctx, 81, 5*time.Second, 2))
+	require.NoError(t, concrete.ClearOpenAIPoolCooldown(ctx, 81))
+	acquired, err := cache.AcquireAccountSlot(ctx, 81, 0, "after-pool-disable")
+	require.NoError(t, err)
+	require.False(t, acquired)
+	require.Greater(t, mini.TTL(accountCooldownKey(81)), time.Minute)
+	// A legacy replica may delete the compatibility key. Dedicated source keys
+	// still protect admission on upgraded replicas.
+	require.NoError(t, client.Del(ctx, accountCooldownKey(81)).Err())
+	acquired, err = cache.AcquireAccountSlot(ctx, 81, 0, "after-legacy-clear")
+	require.NoError(t, err)
+	require.False(t, acquired)
+	// Clearing runtime state likewise cannot remove a pool marker.
+	require.NoError(t, concrete.SetOpenAIPoolCooldownGeneration(ctx, 82, time.Minute, 2))
+	require.NoError(t, concrete.ClearAccountCooldown(ctx, 82))
+	acquired, err = cache.AcquireAccountSlot(ctx, 82, 0, "after-runtime-clear")
+	require.NoError(t, err)
+	require.False(t, acquired)
+	// Older replicas still see the combined compatibility marker.
+	require.True(t, mini.Exists(accountCooldownKey(82)))
+}

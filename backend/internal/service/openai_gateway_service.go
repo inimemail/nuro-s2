@@ -483,6 +483,8 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil               sync.Map // key: int64(accountID), value: time.Time
+	openaiStreamHealthMu                         sync.Mutex
+	openaiStreamHealthReceipts                   map[string]time.Time
 	openaiAccountStreamDisconnectCount           sync.Map // key: int64(accountID), value: openAIAccountStreamDisconnectState
 	openaiAccountStreamDisconnectCleanupAt       atomic.Int64
 	openaiPoolSoftCooldownUntil                  sync.Map // key: int64(accountID), value: time.Time
@@ -7468,7 +7470,12 @@ func (s *OpenAIGatewayService) ClassifyOpenAIEdgeStreamFailure(
 	if !openAIStreamFailedEventShouldFailover(payload, message) {
 		return nil, false
 	}
-	return s.classifyOpenAIStreamFailover(ctx, account, payload, message), true
+	failure := s.classifyOpenAIStreamFailover(ctx, account, payload, message)
+	semanticStatus := openAIStreamFailedEventSemanticStatus(payload, message)
+	if semanticStatus == http.StatusUnauthorized || semanticStatus == http.StatusForbidden {
+		failure.StatusCode = semanticStatus
+	}
+	return failure, true
 }
 
 func (s *OpenAIGatewayService) classifyOpenAIStreamFailover(
@@ -7706,6 +7713,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	terminalEventType := ""
 	neutralTerminalEventType := ""
 	sawFailedEvent := false
+	serviceFailureRecorded := false
 	sawCyberPolicyEvent := false
 	failedMessage := ""
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -7906,6 +7914,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					failedMessage = firstNonEmptyString(decision.Message, failedMessage)
 					sawCyberPolicyEvent = true
 					cyberPolicyMatched = true
+				}
+				if !cyberPolicyMatched && !serviceFailureRecorded && OpenAIStreamFailureCountsForAccount(dataBytes, failedMessage) {
+					serviceFailureRecorded = true
+					s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, false, false, nil)
 				}
 				if !cyberPolicyMatched && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 					if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
@@ -8181,7 +8193,10 @@ passthroughScanDone:
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
-			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+			// A provider failure terminal still proves the transport completed
+			// normally. Its classified health failure was recorded on the event;
+			// this only breaks a proxy disconnect streak.
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -8214,7 +8229,7 @@ passthroughScanDone:
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
 	if sawFailedEvent && !sawCyberPolicyEvent {
-		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && terminalEventType == "" && ctx.Err() == nil {
@@ -8224,6 +8239,7 @@ passthroughScanDone:
 			zap.String("upstream_request_id", upstreamRequestID),
 		).Info("OpenAI passthrough 上游流在未收到 [DONE] 时结束，疑似断流")
 		if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, false, false, errors.New("stream ended before terminal event"))
 			return resultWithUsage(),
 				s.newOpenAIStreamFailoverErrorWithContext(ctx, c, account, true, upstreamRequestID, nil, "OpenAI stream ended before a terminal event", resp.Header)
 		}
@@ -8234,7 +8250,8 @@ passthroughScanDone:
 	if !clientDisconnected && terminalEventType != "" && !sawFailedEvent && neutralTerminalEventType == "" {
 		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 	} else if !clientDisconnected && neutralTerminalEventType != "" {
-		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+		// Protocol-neutral terminal (incomplete/cancelled) is neither a
+		// health failure nor a circuit success sample.
 	}
 	commitFirstTokenTimeoutGuardSample()
 	if !clientDisconnected && !sawFailedEvent && neutralTerminalEventType == "" {
@@ -9393,6 +9410,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	terminalEventType := ""
 	neutralTerminalEventType := ""
 	sawFailedEvent := false
+	serviceFailureRecorded := false
 	sawCyberPolicyEvent := false
 	failedMessage := ""
 	var upstreamSSEState openAIUpstreamSSEState
@@ -9561,7 +9579,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: missing terminal event")
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
-			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if !clientDisconnected {
@@ -9582,7 +9600,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 		} else if !clientDisconnected && neutralTerminalEventType != "" {
-			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+			// Protocol-neutral terminal is not an account health sample.
 		}
 		return resultWithUsage(), nil
 	}
@@ -9599,7 +9617,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return resultWithUsage(), nil, true
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
-			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage), true
 		}
 		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
@@ -9717,6 +9735,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					failedMessage = firstNonEmptyString(decision.Message, failedMessage)
 					sawCyberPolicyEvent = true
 					cyberPolicyMatched = true
+				}
+				if !cyberPolicyMatched && !serviceFailureRecorded && OpenAIStreamFailureCountsForAccount(dataBytes, failedMessage) {
+					serviceFailureRecorded = true
+					s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, false, false, nil)
 				}
 				if !cyberPolicyMatched && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 					if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {

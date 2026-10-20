@@ -1454,6 +1454,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	}
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
+	plan.TurnHealthEnabled = true
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1691,6 +1692,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	}
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
+	plan.TurnHealthEnabled = true
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1915,6 +1917,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	}
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
+	plan.TurnHealthEnabled = true
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -2366,6 +2369,24 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			Plan:   &plan,
 		}
 	}
+	var streamFailoverErr *service.UpstreamFailoverError
+	if edgeStreamFailure {
+		if h == nil || h.gatewayService == nil {
+			return fallback("edge_dependencies_missing")
+		}
+		var shouldFailover bool
+		streamFailoverErr, shouldFailover = h.gatewayService.ClassifyOpenAIEdgeStreamFailure(
+			c.Request.Context(), lease.account, responseBody, upstreamMsg,
+		)
+		if !shouldFailover || streamFailoverErr == nil {
+			// Classification handled this request error; settlement must stay neutral.
+			lease.terminalFailureRecorded = true
+			return fallback("stream_failed_terminal")
+		}
+		status = streamFailoverErr.StatusCode
+		upstreamMsg = streamFailoverErr.Message
+	}
+	// Semantic provider refusals must be classified before the replay guard.
 	// Only count failures that can represent an already accepted upstream
 	// execution. Explicit Responses compatibility rewrites and local queue/
 	// client setup failures return above and remain retryable as before.
@@ -2414,6 +2435,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				groupID = lease.apiKey.GroupID
 			}
 			routingModel := lease.openAIRoutingModel()
+			if status >= http.StatusInternalServerError && service.OpenAIStreamFailureCountsForAccount(responseBody, upstreamMsg) {
+				h.gatewayService.RecordOpenAIEdgeStreamOutcome(lease.account, "upstream_error", false, false, upstreamMsg)
+			}
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, routingModel, false, nil)
 			h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), groupID, lease.sessionHash, lease.account, failoverErr, routingModel)
 			lease.failedAccountIDs[lease.account.ID] = struct{}{}
@@ -2432,21 +2456,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			ErrorMessage:    "Upstream request failed",
 			FailureRecorded: failureRecorded,
 		}
-	}
-	var streamFailoverErr *service.UpstreamFailoverError
-	if edgeStreamFailure {
-		if h == nil || h.gatewayService == nil {
-			return fallback("edge_dependencies_missing")
-		}
-		var shouldFailover bool
-		streamFailoverErr, shouldFailover = h.gatewayService.ClassifyOpenAIEdgeStreamFailure(
-			c.Request.Context(), lease.account, responseBody, upstreamMsg,
-		)
-		if !shouldFailover || streamFailoverErr == nil {
-			return fallback("stream_failed_terminal")
-		}
-		status = streamFailoverErr.StatusCode
-		upstreamMsg = streamFailoverErr.Message
 	}
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
 	transportRetryable := edgeBodyTransportFailure || edgeStreamFailure ||
@@ -2901,6 +2910,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 	}
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
+	plan.TurnHealthEnabled = true
 	plan.EdgeProtectionGroupEnabled = lease.lastPlan.EdgeProtectionGroupEnabled
 	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
 	if err != nil {
@@ -3097,6 +3107,10 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid complete request"})
 		return
 	}
+	if req.HealthOnly {
+		h.openAIEdgeTurnHealth(c, req)
+		return
+	}
 	lease, mismatchReason := h.takeOpenAIEdgeLeaseForRequest(req.LeaseID, req.EdgeRequestID, req.AccountID, true)
 	if mismatchReason != "" {
 		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: mismatchReason})
@@ -3138,7 +3152,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		if openAIEdgeFailureClassIsAccountTransport(req.FailureClass) {
 			protocolNeutralTerminal = false
 		}
-		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || lease.terminalFailureRecorded || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || protocolNeutralTerminal
+		neutralOutcome := (req.ClientDisconnected && !openAIEdgeConfirmedAccountFailure(req)) || req.CyberBlocked || requestLocalOutcome || lease.terminalFailureRecorded || req.TurnHealthReported || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || protocolNeutralTerminal
 		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
 		// Keep the process-local proxy circuit in sync with the terminal outcome.
 		// A successful terminal response clears prior disconnect observations. An
@@ -3146,7 +3160,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		// protocol-level incomplete terminal event: that event is not a successful
 		// terminal response and represents the same non-terminal upstream break.
 		// Client/local/cache-policy outcomes remain neutral.
-		if !restored && !lease.terminalFailureRecorded && openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
+		if !restored && !req.TurnHealthReported && !lease.terminalFailureRecorded && openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
 			h.gatewayService.RecordOpenAIEdgeStreamOutcome(
 				lease.account,
 				req.FailureClass,
@@ -3218,7 +3232,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		if !restored {
 			switch {
 			case successfulTerminal:
-				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
+				if !req.TurnHealthReported {
+					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
+				}
 				if lease.sessionHash != "" && lease.apiKey != nil && lease.apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(lease.apiKey.Group.AccountSchedulingStrategy) {
 					_ = h.gatewayService.BindStickySession(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account.ID)
 				}
@@ -3329,8 +3345,19 @@ func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) b
 		return false
 	}
 	errorType := strings.ToLower(strings.TrimSpace(req.ErrorType))
-	if errorType == openAIEdgeResponseHeaderTimeoutErrorType || errorType == "edge_lease_lost" {
+	if errorType == "edge_lease_lost" {
 		return true
+	}
+	if errorType == openAIEdgeResponseHeaderTimeoutErrorType {
+		return true
+	}
+	// Legacy shared request-budget expiry was reported as request_error. Only
+	// the explicit hard no-progress cause is account-scoped.
+	if errorType == "request_error" && strings.EqualFold(strings.TrimSpace(req.ErrorMessage), openAIEdgeResponseHeaderTimeoutMessage) && !strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_no_progress") {
+		return true
+	}
+	if openAIEdgeConfirmedAccountFailure(req) {
+		return false
 	}
 	if errorType == "edge_semantic_progress_timeout" {
 		return true
@@ -3343,7 +3370,7 @@ func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) b
 
 func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 	switch strings.ToLower(strings.TrimSpace(failureClass)) {
-	case "lease_lost", "client_cancelled", "local_capacity_rejected", "queue_timeout", "prepare_failed", "complete_failed", "abort_failed":
+	case "request_rejected", "lease_lost", "client_cancelled", "local_capacity_rejected", "queue_timeout", "prepare_failed", "complete_failed", "abort_failed":
 		return true
 	default:
 		return false
@@ -3360,13 +3387,19 @@ func openAIEdgeFailureClassIsAccountTransport(failureClass string) bool {
 }
 
 func openAIEdgeShouldRecordCircuitOutcome(req service.OpenAIEdgeCompleteRequest, successfulTerminal, cachePolicyCompatibilityFailure bool) bool {
-	if req.ClientDisconnected || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeCompletionIsRequestLocal(req) || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
+	if (req.ClientDisconnected && !openAIEdgeConfirmedAccountFailure(req)) || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeCompletionIsRequestLocal(req) || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
 		return false
 	}
 	if successfulTerminal {
 		return true
 	}
-	return openAIEdgeFailureClassIsAccountTransport(req.FailureClass)
+	if openAIEdgeFailureClassIsAccountTransport(req.FailureClass) {
+		return true
+	}
+	terminal := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
+	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_error") &&
+		req.UpstreamStatusCode >= http.StatusInternalServerError &&
+		terminal != "response.incomplete" && terminal != "response.cancelled" && terminal != "response.canceled"
 }
 
 func openAIEdgeAbortShouldRecordCircuitOutcome(req service.OpenAIEdgeAbortRequest) bool {

@@ -3021,7 +3021,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if result == nil {
 					if turnErr != nil && !service.IsOpenAIWSAccountHealthNeutralError(turnErr) &&
 						service.OpenAIWSIngressRequestWasWritten(turnErr) && service.IsOpenAIWSUpstreamDisconnectError(turnErr) {
-						h.gatewayService.RecordOpenAIAccountStreamDisconnect(account, reqModel)
+						h.gatewayService.RecordOpenAIAccountWSFailure(account, reqModel, turnErr)
 					}
 					return
 				}
@@ -3067,7 +3067,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				successfulTerminal, neutralOutcome := classifyOpenAIResponsesForwardResultWithError(result, turnErr)
 				if turnErr != nil && !service.IsOpenAIWSAccountHealthNeutralError(turnErr) &&
 					service.OpenAIWSIngressRequestWasWritten(turnErr) && service.IsOpenAIWSUpstreamDisconnectError(turnErr) {
-					h.gatewayService.RecordOpenAIAccountStreamDisconnect(account, routingModel)
+					h.gatewayService.RecordOpenAIAccountWSFailure(account, routingModel, turnErr)
 				}
 				cyberBlocked := result.CyberBlocked
 				switch {
@@ -3214,6 +3214,7 @@ func shouldReportOpenAIWSProxyFailure(c *gin.Context, err error) bool {
 	return err != nil &&
 		!service.IsOpenAIWSClientDisconnectError(err) &&
 		!service.IsOpenAIWSAccountHealthNeutralError(err) &&
+		!service.IsOpenAIWSUpstreamDisconnectError(err) &&
 		service.GetOpsCyberPolicy(c) == nil
 }
 

@@ -53,6 +53,129 @@ func TestCellAwareConcurrencyCacheIsolatesPlatformsAndReleasesOwnerCell(t *testi
 	require.False(t, acquired)
 }
 
+func TestCellAwareConcurrencyCacheMigratesCooldownSources(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		runtime           bool
+		pool              bool
+		removeLegacy      bool
+		legacyValue       string
+		runtimeGeneration int64
+		poolTTL           time.Duration
+	}{
+		{name: "pool_only", pool: true},
+		{name: "runtime_and_pool", runtime: true, pool: true, runtimeGeneration: 7},
+		{name: "runtime_hidden_by_longer_pool", runtime: true, pool: true, runtimeGeneration: 7, poolTTL: 3 * time.Minute},
+		{name: "runtime_without_legacy_mirror", runtime: true, removeLegacy: true, runtimeGeneration: 7},
+		{name: "legacy_runtime", runtime: true, legacyValue: "1"},
+		{name: "legacy_unprefixed_generation", runtime: true, legacyValue: "g:7", runtimeGeneration: 7},
+		{name: "legacy_runtime_generation", runtime: true, legacyValue: "r:g:7", runtimeGeneration: 7},
+		{name: "legacy_pool_marker", pool: true, legacyValue: "p:g:9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			control := miniredis.RunT(t)
+			openAI := miniredis.RunT(t)
+			anthropic := miniredis.RunT(t)
+			controlClient := redis.NewClient(&redis.Options{Addr: control.Addr()})
+			t.Cleanup(func() { require.NoError(t, controlClient.Close()) })
+			legacy := NewConcurrencyCache(controlClient, 1, 60).(*concurrencyCache)
+			cfg := admissionTestConfig(openAI.Addr(), anthropic.Addr())
+			cfg.Gateway.Admission.EscrowEnabled = false
+			cacheInterface, err := newCellAwareConcurrencyCache(controlClient, cfg, legacy)
+			require.NoError(t, err)
+			cache := cacheInterface.(*cellAwareConcurrencyCache)
+			t.Cleanup(func() { require.NoError(t, cache.Close()) })
+			ctx := context.Background()
+			const accountID int64 = 811
+			if tc.legacyValue != "" {
+				require.NoError(t, controlClient.Set(ctx, accountCooldownKey(accountID), tc.legacyValue, 2*time.Minute).Err())
+			} else if tc.runtime {
+				require.NoError(t, legacy.SetAccountCooldownGeneration(ctx, accountID, 2*time.Minute, tc.runtimeGeneration))
+			}
+			if tc.pool && !strings.HasPrefix(tc.legacyValue, "p:") {
+				ttl := tc.poolTTL
+				if ttl == 0 {
+					ttl = time.Minute
+				}
+				require.NoError(t, legacy.SetOpenAIPoolCooldownGeneration(ctx, accountID, ttl, 9))
+			}
+			if tc.removeLegacy {
+				require.NoError(t, controlClient.Del(ctx, accountCooldownKey(accountID)).Err())
+			}
+
+			acquired, err := cache.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "first-request")
+			require.NoError(t, err)
+			require.False(t, acquired, "an active source must survive the first Cell assignment")
+			require.Equal(t, tc.runtime, openAI.Exists(accountRuntimeCooldownKey(accountID)))
+			if tc.runtime {
+				value, err := openAI.Get(accountRuntimeCooldownKey(accountID))
+				require.NoError(t, err)
+				require.Equal(t, tc.runtimeGeneration, parseCooldownGeneration(value))
+			}
+			require.Equal(t, tc.pool, openAI.Exists(openAIPoolCooldownKey(accountID)))
+			if tc.pool {
+				_, generation, active, err := cache.GetOpenAIPoolCooldown(ctx, accountID)
+				require.NoError(t, err)
+				require.True(t, active)
+				require.Equal(t, int64(9), generation)
+			}
+
+			require.NoError(t, cache.ClearOpenAIPoolCooldown(ctx, accountID))
+			acquired, err = cache.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "after-pool-clear")
+			require.NoError(t, err)
+			require.Equal(t, !tc.runtime, acquired, "clearing the pool must preserve only genuine runtime blocks")
+			if tc.runtime {
+				require.NoError(t, cache.ClearAccountCooldown(ctx, accountID))
+				acquired, err = cache.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "after-runtime-clear")
+				require.NoError(t, err)
+				require.True(t, acquired)
+				require.NoError(t, cache.ReleaseAccountSlot(ctx, accountID, "after-runtime-clear"))
+			} else {
+				require.NoError(t, cache.ReleaseAccountSlot(ctx, accountID, "after-pool-clear"))
+			}
+
+			// A replacement replica must use the Cell's current state, rather
+			// than re-importing a cleared snapshot still present in control Redis.
+			cacheBInterface, err := newCellAwareConcurrencyCache(controlClient, cfg, legacy)
+			require.NoError(t, err)
+			cacheB := cacheBInterface.(*cellAwareConcurrencyCache)
+			t.Cleanup(func() { require.NoError(t, cacheB.Close()) })
+			acquired, err = cacheB.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "new-replica-request")
+			require.NoError(t, err)
+			require.True(t, acquired, "a new replica must not restore an already-cleared cooldown")
+		})
+	}
+}
+
+func TestCellAwareConcurrencyCacheRetriesFailedCooldownMigration(t *testing.T) {
+	control := miniredis.RunT(t)
+	openAI := miniredis.RunT(t)
+	anthropic := miniredis.RunT(t)
+	controlClient := redis.NewClient(&redis.Options{Addr: control.Addr()})
+	t.Cleanup(func() { require.NoError(t, controlClient.Close()) })
+	legacy := NewConcurrencyCache(controlClient, 1, 60).(*concurrencyCache)
+	cfg := admissionTestConfig(openAI.Addr(), anthropic.Addr())
+	cfg.Gateway.Admission.EscrowEnabled = false
+	cacheInterface, err := newCellAwareConcurrencyCache(controlClient, cfg, legacy)
+	require.NoError(t, err)
+	cache := cacheInterface.(*cellAwareConcurrencyCache)
+	t.Cleanup(func() { require.NoError(t, cache.Close()) })
+	ctx := context.Background()
+	const accountID int64 = 812
+	require.NoError(t, legacy.SetAccountCooldownGeneration(ctx, accountID, time.Minute, 7))
+	openAI.SetError("ERR migration unavailable")
+	acquired, err := cache.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "failed-migration")
+	require.ErrorContains(t, err, "migrate account")
+	require.False(t, acquired)
+	require.NotContains(t, cache.routes, accountID, "an incomplete route must not become visible")
+
+	openAI.SetError("")
+	acquired, err = cache.AcquireAccountSlotForPlatform(ctx, "openai", accountID, 1, "retried-migration")
+	require.NoError(t, err)
+	require.False(t, acquired, "retry must preserve the active runtime block")
+	require.True(t, openAI.Exists(accountRuntimeCooldownKey(accountID)))
+}
+
 func TestCellAwareConcurrencyCacheEscrowRollsBackFailedAccountClaim(t *testing.T) {
 	control := miniredis.RunT(t)
 	openAI := miniredis.RunT(t)

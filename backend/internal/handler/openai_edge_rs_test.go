@@ -2350,5 +2350,7 @@ func TestOpenAIEdgeRepeatedRetryAndAbortReportFailureOnce(t *testing.T) {
 		}
 	}
 	require.Equal(t, 2, keys, "generic account and model route each receive one sample")
-	require.False(t, server.Exists("openai:account_stream_disconnect:822"), "abort must not add a second circuit outcome")
+	count, err := client.Get(c.Request.Context(), "openai:account_stream_disconnect:822").Int()
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "retry records the 5xx once; abort must not add a second circuit outcome")
 }

@@ -64,6 +64,7 @@ type OpenAIEdgeControlSnapshot struct {
 }
 
 type OpenAIEdgePlan struct {
+	TurnHealthEnabled  bool              `json:"turn_health_enabled,omitempty"`
 	OpsCallbackEnabled bool              `json:"ops_callback_enabled,omitempty"`
 	SettlementContext  string            `json:"settlement_context,omitempty"`
 	Action             string            `json:"action"`
@@ -219,6 +220,9 @@ type OpenAIEdgeRetryStageRequest struct {
 }
 
 type OpenAIEdgeCompleteRequest struct {
+	HealthOnly          bool        `json:"health_only,omitempty"`
+	HealthEventID       string      `json:"health_event_id,omitempty"`
+	TurnHealthReported  bool        `json:"turn_health_reported,omitempty"`
 	FailureDiagnostic   string      `json:"failure_diagnostic,omitempty"`
 	SettlementContext   string      `json:"settlement_context,omitempty"`
 	EdgeRequestID       string      `json:"edge_request_id"`

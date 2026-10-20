@@ -71,8 +71,9 @@ type openAIProxyStreamCircuitSnapshot struct {
 }
 
 type openAIAccountStreamDisconnectState struct {
-	count int64
-	start time.Time
+	count        int64
+	start        time.Time
+	blockedUntil time.Time
 }
 
 func resolveOpenAIProxyStreamCircuitSettings(s *OpenAIGatewayService) openAIProxyStreamCircuitSettings {
@@ -260,7 +261,7 @@ func openAIProxyStreamCircuitProxyID(account *Account) (int64, bool) {
 
 func (s *OpenAIGatewayService) recordOpenAIProxyStreamOutcome(account *Account, class OpenAIStreamFailureClass, _ bool, terminalSuccess bool, streamErr error) {
 	if account != nil && account.Platform == PlatformOpenAI {
-		if !terminalSuccess && class == OpenAIStreamFailureUpstreamDisconnect &&
+		if !terminalSuccess && (class == OpenAIStreamFailureUpstreamDisconnect || class == OpenAIStreamFailureUpstreamError) &&
 			(streamErr == nil || (!errors.Is(streamErr, context.Canceled) && !errors.Is(streamErr, context.DeadlineExceeded))) {
 			s.recordOpenAIAccountStreamDisconnect(account)
 		}
@@ -299,30 +300,41 @@ func (s *OpenAIGatewayService) recordOpenAIAccountStreamDisconnect(account *Acco
 	if s == nil || account == nil || account.Platform != PlatformOpenAI || account.ID <= 0 {
 		return
 	}
-	count := int64(1)
+	now := time.Now()
+	var count int64
+	var until time.Time
 	if s.openaiAccountHealthRedis != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		key := "openai:account_stream_disconnect:" + strconv.FormatInt(account.ID, 10)
-		countValue, err := s.openaiAccountHealthRedis.Eval(ctx,
-			"local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n",
-			[]string{key}, int(openAIAccountStreamFailureWindow.Seconds())).Int64()
-		if err == nil {
-			count = countValue
+		// Keep the threshold deadline immutable across concurrent replicas. Every
+		// later failure can repair a missed block write without extending it.
+		values, err := s.openaiAccountHealthRedis.Eval(ctx, `
+local n=redis.call('INCR',KEYS[1])
+if n==1 then redis.call('PEXPIRE',KEYS[1],ARGV[1]) end
+local until_ms=redis.call('GET',KEYS[2])
+if n>=tonumber(ARGV[2]) and not until_ms then
+ local now=redis.call('TIME')
+ until_ms=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)+tonumber(ARGV[3])
+ redis.call('SET',KEYS[2],until_ms,'PX',ARGV[3])
+end
+return {n,tonumber(until_ms) or 0}`, []string{key, key + ":block"},
+			openAIAccountStreamFailureWindow.Milliseconds(), openAIAccountStreamFailureThreshold, openAIStopSchedulingBridgeCooldown.Milliseconds()).Int64Slice()
+		if err == nil && len(values) == 2 {
+			count = values[0]
+			if values[1] > 0 {
+				until = time.UnixMilli(values[1])
+			}
 		} else {
 			slog.Warn("openai.account_stream_disconnect_counter_failed", "account_id", account.ID, "error", err)
-			count = s.nextLocalOpenAIAccountStreamDisconnectCount(account.ID, time.Now())
+			count, until = s.nextLocalOpenAIAccountStreamFailure(account.ID, now)
 		}
 	} else {
-		count = s.nextLocalOpenAIAccountStreamDisconnectCount(account.ID, time.Now())
-		s.pruneLocalOpenAIAccountStreamDisconnectCounts(time.Now())
+		count, until = s.nextLocalOpenAIAccountStreamFailure(account.ID, now)
 	}
-	// A single disconnect is recorded as a health failure but does not block
-	// the account. Repeated disconnects in the shared failure window use the established runtime block
-	// duration and automatic expiry instead of introducing a second cooldown
-	// ladder that can keep accounts sidelined for increasingly long periods.
-	if count == openAIAccountStreamFailureThreshold {
-		s.blockOpenAIAccountTransportFailure(account, "upstream_stream_disconnect", "upstream stream disconnected repeatedly")
+	s.pruneLocalOpenAIAccountStreamDisconnectCounts(now)
+	if count >= openAIAccountStreamFailureThreshold && until.After(now) {
+		s.blockOpenAIAccountTransportFailureUntil(account, "upstream_stream_failure", "upstream stream failed repeatedly", until)
 	}
 }
 
@@ -333,7 +345,13 @@ func (s *OpenAIGatewayService) blockOpenAIAccountTransportFailure(account *Accou
 	if s == nil || account == nil || account.ID <= 0 || account.Platform != PlatformOpenAI {
 		return
 	}
-	until := time.Now().Add(openAIStopSchedulingBridgeCooldown)
+	s.blockOpenAIAccountTransportFailureUntil(account, source, reason, time.Now().Add(openAIStopSchedulingBridgeCooldown))
+}
+
+func (s *OpenAIGatewayService) blockOpenAIAccountTransportFailureUntil(account *Account, source, reason string, until time.Time) {
+	if s == nil || account == nil || !until.After(time.Now()) {
+		return
+	}
 	s.BlockAccountScheduling(account, until, source)
 	if s.accountRepo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), openAIAccountStateUpdateTimeout)
@@ -344,7 +362,7 @@ func (s *OpenAIGatewayService) blockOpenAIAccountTransportFailure(account *Accou
 	}
 }
 
-func (s *OpenAIGatewayService) nextLocalOpenAIAccountStreamDisconnectCount(accountID int64, now time.Time) int64 {
+func (s *OpenAIGatewayService) nextLocalOpenAIAccountStreamFailure(accountID int64, now time.Time) (int64, time.Time) {
 	for {
 		value, loaded := s.openaiAccountStreamDisconnectCount.Load(accountID)
 		state, _ := value.(openAIAccountStreamDisconnectState)
@@ -353,12 +371,15 @@ func (s *OpenAIGatewayService) nextLocalOpenAIAccountStreamDisconnectCount(accou
 		} else {
 			state.count++
 		}
+		if state.count >= openAIAccountStreamFailureThreshold && state.blockedUntil.IsZero() {
+			state.blockedUntil = now.Add(openAIStopSchedulingBridgeCooldown)
+		}
 		if loaded {
 			if s.openaiAccountStreamDisconnectCount.CompareAndSwap(accountID, value, state) {
-				return state.count
+				return state.count, state.blockedUntil
 			}
 		} else if _, loaded = s.openaiAccountStreamDisconnectCount.LoadOrStore(accountID, state); !loaded {
-			return state.count
+			return state.count, state.blockedUntil
 		}
 	}
 }
@@ -403,7 +424,7 @@ func (s *OpenAIGatewayService) clearOpenAIAccountStreamFailures(accountID int64)
 	// success: a success on one replica cannot safely reset another replica's
 	// observation without a Redis write on every successful request. The key
 	// expires naturally after the short failure window.
-	s.openaiAccountStreamDisconnectCount.Delete(accountID)
+	// Local fallback uses the same fixed-window policy as Redis.
 }
 
 // RecordOpenAIEdgeStreamOutcome is the control-plane boundary used by edge-rs

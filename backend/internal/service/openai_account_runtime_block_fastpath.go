@@ -242,16 +242,13 @@ func (s *OpenAIGatewayService) clearLocalOpenAIPoolState(accountID int64) {
 	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
 }
 
-// clearOpenAIPoolAccountSchedulingBlock is reserved for explicit pool-state
-// disable/recovery paths. Automatic runtime cleanup uses
-// ClearAccountRuntimeBlockOnly, which preserves probe backoff state.
+// Pool disable/recovery clears only pool-owned state. Transport, rate-limit
+// and operator blocks have independent lifetimes and must survive this path.
 func (s *OpenAIGatewayService) clearOpenAIPoolAccountSchedulingBlock(accountID int64) {
 	if s == nil || accountID <= 0 {
 		return
 	}
-	s.clearLocalAccountRuntimeBlock(accountID)
 	s.clearLocalOpenAIPoolState(accountID)
-	s.clearOpenAIAccountCooldownInRedis(accountID)
 	s.clearOpenAIPoolCooldownInRedis(accountID)
 }
 
@@ -390,12 +387,6 @@ func (s *OpenAIGatewayService) storeOpenAIPoolCooldownInRedis(accountID int64, u
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		if err := s.concurrencyService.SetOpenAIPoolCooldownGeneration(ctx, accountID, until, generation); err != nil {
 			slog.Warn("openai.pool_cooldown_redis_set_failed", "account_id", accountID, "error", err)
-		}
-		// The atomic admission script still checks the legacy account cooldown
-		// key. Keep that marker as a compatibility gate while the dedicated key
-		// remains the sole source for pool-state display and recovery metadata.
-		if err := s.concurrencyService.SetAccountCooldownGeneration(ctx, accountID, until, generation); err != nil {
-			slog.Warn("openai.pool_admission_cooldown_redis_set_failed", "account_id", accountID, "error", err)
 		}
 		cancel()
 	}
