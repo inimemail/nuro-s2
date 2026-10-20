@@ -322,18 +322,24 @@ func (s *OpenAIGatewayService) recordOpenAIAccountStreamDisconnect(account *Acco
 	// duration and automatic expiry instead of introducing a second cooldown
 	// ladder that can keep accounts sidelined for increasingly long periods.
 	if count == openAIAccountStreamFailureThreshold {
-		until := time.Now().Add(openAIStopSchedulingBridgeCooldown)
-		const reason = "upstream stream disconnected repeatedly"
-		s.BlockAccountScheduling(account, until, "upstream_stream_disconnect")
-		// Persist the same short deadline through the existing temp-unschedulable
-		// field so the current account status UI can show the reason and countdown.
-		// Scheduling remains protected by the runtime block if persistence fails.
-		if s.accountRepo != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), openAIAccountStateUpdateTimeout)
-			if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
-				slog.Warn("openai.account_stream_disconnect_unschedulable_write_failed", "account_id", account.ID, "error", err)
-			}
-			cancel()
+		s.blockOpenAIAccountTransportFailure(account, "upstream_stream_disconnect", "upstream stream disconnected repeatedly")
+	}
+}
+
+// Reuse the existing short runtime block and status presentation. Repository
+// updates and the Redis cooldown are monotonic, so a transport fault cannot
+// shorten a longer rate limit, operator restriction or existing cooldown.
+func (s *OpenAIGatewayService) blockOpenAIAccountTransportFailure(account *Account, source, reason string) {
+	if s == nil || account == nil || account.ID <= 0 || account.Platform != PlatformOpenAI {
+		return
+	}
+	until := time.Now().Add(openAIStopSchedulingBridgeCooldown)
+	s.BlockAccountScheduling(account, until, source)
+	if s.accountRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), openAIAccountStateUpdateTimeout)
+		defer cancel()
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+			slog.Warn("openai.account_transport_unschedulable_write_failed", "account_id", account.ID, "error", err)
 		}
 	}
 }
@@ -405,6 +411,13 @@ func (s *OpenAIGatewayService) clearOpenAIAccountStreamFailures(accountID int64)
 // explicitly classified upstream disconnect outcome; client/local outcomes
 // never affect the proxy quarantine table.
 func (s *OpenAIGatewayService) RecordOpenAIEdgeStreamOutcome(account *Account, failureClass string, clientOutputStarted bool, terminalSuccess bool, errorMessage string) {
+	if !terminalSuccess && strings.EqualFold(strings.TrimSpace(failureClass), "upstream_no_progress") {
+		// This is the final configured hard deadline, not the learned semantic
+		// heuristic. A confirmed hang may be avoided immediately; health itself
+		// is reported once by the normal completion path.
+		s.blockOpenAIAccountTransportFailure(account, "upstream_no_progress", "upstream response made no effective progress")
+		return
+	}
 	class := OpenAIStreamFailureClass(strings.TrimSpace(failureClass))
 	var streamErr error
 	if strings.TrimSpace(errorMessage) != "" {

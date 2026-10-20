@@ -669,7 +669,9 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	return nil
 }
 
-// testOpenAIAccountConnection tests an OpenAI account's connection
+const openAITextAccountTestTimeout = 3 * time.Minute
+
+// testOpenAIAccountConnection tests an OpenAI account's connection.
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
@@ -708,6 +710,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt)
 	}
+
+	// Bound only the direct text probe. Images and compaction retain their
+	// dedicated workflows. Recovery recursion inherits this original deadline.
+	ctx, cancel := context.WithTimeout(ctx, openAITextAccountTestTimeout)
+	defer cancel()
+	originalRequest := c.Request
+	c.Request = c.Request.WithContext(ctx)
+	defer func() { c.Request = originalRequest }()
 
 	// Determine authentication method and API URL
 	var authToken string
@@ -816,6 +826,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	stopClose := context.AfterFunc(ctx, func() { _ = resp.Body.Close() })
+	defer stopClose()
 
 	if isOAuth && s.accountRepo != nil {
 		if updates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(updates) > 0 {
@@ -861,6 +873,11 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	authToken string,
 ) error {
 	ctx := c.Request.Context()
+	if account.Platform == PlatformOpenAI {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, openAITextAccountTestTimeout)
+		defer cancel()
+	}
 	apiURL := buildOpenAIChatCompletionsURL(normalizedBaseURL)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -894,6 +911,8 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	stopClose := context.AfterFunc(ctx, func() { _ = resp.Body.Close() })
+	defer stopClose()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

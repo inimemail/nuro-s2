@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -24,9 +25,17 @@ const (
 	openAIAccountHealthSharedQueueSize = 4096
 	openAIAccountHealthLoadQueueSize   = 1024
 	openAIAccountHealthLoadWorkers     = 2
+	openAIAccountHealthRefreshInterval = 15 * time.Second
+	openAIAccountHealthRefreshBatch    = 256
+	openAIAccountHealthMissingKeyLimit = 4096
+	openAIAccountHealthIOTimeout       = 2 * time.Second
 )
 
 var openAIAccountHealthUpdateScript = redis.NewScript(`
+if KEYS[3] ~= '' then
+  local previous = redis.call('GET', KEYS[3])
+  if previous then return cjson.decode(previous) end
+end
 local error_sample = tonumber(ARGV[1])
 local ttft_sample = ARGV[2]
 local report_ns = ARGV[3]
@@ -48,12 +57,21 @@ local old_error = redis.call('HGET', KEYS[1], 'error_rate')
 local error_rate = tonumber(old_error or '0')
 local sample_count = tonumber(redis.call('HGET', KEYS[1], 'sample_count') or '0')
 local error_updated_ns = redis.call('HGET', KEYS[1], 'error_updated_ns') or redis.call('HGET', KEYS[1], 'updated_ns') or '0'
+if not decimal_gt(error_updated_ns, reset_ns) then
+  -- Reset scans are bounded and may stop partway through a large account.
+  -- Enforce the fence here too, so the first post-reset sample never blends
+  -- with error history that the scan did not reach.
+  old_error = nil
+  error_rate = 0
+  sample_count = 0
+  error_updated_ns = '0'
+end
 if decimal_gt(report_ns, reset_ns) then
   error_rate = error_sample
   if old_error and sample_count > 0 then
     error_rate = alpha * error_sample + (1 - alpha) * tonumber(old_error)
   end
-  sample_count = redis.call('HINCRBY', KEYS[1], 'sample_count', 1)
+  sample_count = sample_count + 1
   if decimal_gt(report_ns, error_updated_ns) then
     error_updated_ns = report_ns
   end
@@ -91,7 +109,11 @@ if ttft then
 end
 redis.call('EXPIRE', KEYS[1], ttl_seconds)
 
-return {tostring(error_rate), ttft or '', sample_count, ttft_sample_count, updated_ns, version, error_updated_ns, ttft_updated_ns}
+local result = {tostring(error_rate), ttft or '', sample_count, ttft_sample_count, updated_ns, version, error_updated_ns, ttft_updated_ns}
+if KEYS[3] ~= '' then
+  redis.call('SET', KEYS[3], cjson.encode(result), 'EX', 30)
+end
+return result
 `)
 
 var openAIAccountHealthResetFenceScript = redis.NewScript(`
@@ -138,6 +160,7 @@ return 1
 `)
 
 type openAIAccountHealthSharedReport struct {
+	reportID    string
 	key         openAIAccountRuntimeStatsKey
 	success     bool
 	ttftMS      *int
@@ -162,18 +185,24 @@ type openAIAccountHealthSharedEvent struct {
 }
 
 type openAIAccountHealthSharedState struct {
-	client      *redis.Client
-	stats       *openAIAccountRuntimeStats
-	reports     chan openAIAccountHealthSharedReport
-	loads       chan openAIAccountRuntimeStatsKey
-	ctx         context.Context
-	cancel      context.CancelFunc
-	lifecycleMu sync.Mutex
-	closed      bool
-	startOnce   sync.Once
-	closeOnce   sync.Once
-	workers     sync.WaitGroup
-	loadOnce    sync.Map
+	client        *redis.Client
+	stats         *openAIAccountRuntimeStats
+	reports       chan openAIAccountHealthSharedReport
+	loads         chan openAIAccountRuntimeStatsKey
+	ctx           context.Context
+	cancel        context.CancelFunc
+	lifecycleMu   sync.Mutex
+	closed        bool
+	startOnce     sync.Once
+	closeOnce     sync.Once
+	workers       sync.WaitGroup
+	loadOnce      sync.Map
+	reportDrops   atomic.Int64
+	persistErrors atomic.Int64
+	publishErrors atomic.Int64
+	loadErrors    atomic.Int64
+	missingMu     sync.Mutex
+	missingUntil  map[openAIAccountRuntimeStatsKey]int64
 }
 
 func newOpenAIAccountHealthSharedState(client *redis.Client, stats *openAIAccountRuntimeStats, queueSize int) *openAIAccountHealthSharedState {
@@ -182,12 +211,13 @@ func newOpenAIAccountHealthSharedState(client *redis.Client, stats *openAIAccoun
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &openAIAccountHealthSharedState{
-		client:  client,
-		stats:   stats,
-		reports: make(chan openAIAccountHealthSharedReport, queueSize),
-		loads:   make(chan openAIAccountRuntimeStatsKey, openAIAccountHealthLoadQueueSize),
-		ctx:     ctx,
-		cancel:  cancel,
+		client:       client,
+		stats:        stats,
+		reports:      make(chan openAIAccountHealthSharedReport, queueSize),
+		loads:        make(chan openAIAccountRuntimeStatsKey, openAIAccountHealthLoadQueueSize),
+		ctx:          ctx,
+		cancel:       cancel,
+		missingUntil: make(map[openAIAccountRuntimeStatsKey]int64),
 	}
 }
 
@@ -248,7 +278,7 @@ func (s *openAIAccountRuntimeStats) enqueueSharedHealthReport(key openAIAccountR
 		return
 	}
 	key = normalizeOpenAIAccountRuntimeStatsKey(key)
-	report := openAIAccountHealthSharedReport{key: key, success: success, updatedNano: updatedNano}
+	report := openAIAccountHealthSharedReport{reportID: uuid.NewString(), key: key, success: success, updatedNano: updatedNano}
 	if firstTokenMS != nil && *firstTokenMS > 0 {
 		value := *firstTokenMS
 		report.ttftMS = &value
@@ -256,7 +286,9 @@ func (s *openAIAccountRuntimeStats) enqueueSharedHealthReport(key openAIAccountR
 	select {
 	case shared.reports <- report:
 	default:
-		slog.Debug("openai shared health report queue full")
+		if dropped := shared.reportDrops.Add(1); dropped == 1 || dropped%1024 == 0 {
+			slog.Warn("openai shared health report queue full", "dropped_total", dropped)
+		}
 	}
 }
 
@@ -320,12 +352,27 @@ func (s *openAIAccountHealthSharedState) runPublisher() {
 			return
 		case report = <-s.reports:
 		}
-		event, err := s.persist(report)
+		// Retry with a short-lived idempotency receipt: an acknowledged-late Lua
+		// write must never count the same sample twice.
+		var event openAIAccountHealthSharedEvent
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			event, err = s.persist(report)
+			if err == nil || s.ctx.Err() != nil {
+				break
+			}
+			s.persistErrors.Add(1)
+			if attempt < 2 && !waitOpenAISharedHealthRetry(s.ctx, time.Duration(attempt+1)*100*time.Millisecond) {
+				return
+			}
+		}
 		if err != nil {
 			if s.ctx.Err() != nil {
 				return
 			}
-			slog.Debug("openai shared health update failed", "error", err)
+			if failures := s.persistErrors.Load(); failures <= 3 || failures%1024 == 0 {
+				slog.Warn("openai shared health update failed after bounded retries", "error", err, "persist_errors_total", failures)
+			}
 			continue
 		}
 		s.stats.applySharedHealthEvent(event)
@@ -333,23 +380,52 @@ func (s *openAIAccountHealthSharedState) runPublisher() {
 		if err != nil {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-		err = s.client.Publish(ctx, openAIAccountHealthSharedChannel, payload).Err()
-		cancel()
+		for attempt := 0; attempt < 2; attempt++ {
+			ctx, cancel := context.WithTimeout(s.ctx, openAIAccountHealthIOTimeout)
+			err = s.client.WithTimeout(openAIAccountHealthIOTimeout).Publish(ctx, openAIAccountHealthSharedChannel, payload).Err()
+			cancel()
+			if err == nil || s.ctx.Err() != nil {
+				break
+			}
+			s.publishErrors.Add(1)
+			if attempt == 0 && !waitOpenAISharedHealthRetry(s.ctx, 100*time.Millisecond) {
+				return
+			}
+		}
 		if err != nil {
-			slog.Debug("openai shared health publish failed", "error", err)
+			if failures := s.publishErrors.Load(); failures <= 2 || failures%1024 == 0 {
+				slog.Warn("openai shared health publish failed after bounded retries", "error", err, "publish_errors_total", failures)
+			}
 		}
 	}
 }
 
 func (s *openAIAccountHealthSharedState) runSubscriber() {
+	// PubSub needs its own initialized pool: go-redis WithTimeout clones are
+	// suitable for commands, but do not initialize a subscription pool. Keep
+	// these socket/deadline options isolated from scheduling and billing I/O.
+	options := *s.client.Options()
+	options.ReadTimeout = openAIAccountHealthIOTimeout
+	options.WriteTimeout = openAIAccountHealthIOTimeout
+	options.ContextTimeoutEnabled = true
+	options.PoolSize = 1
+	options.MinIdleConns = 0 // The dedicated PubSub socket needs no idle command pool.
+	if options.DialTimeout <= 0 || options.DialTimeout > openAIAccountHealthIOTimeout {
+		options.DialTimeout = openAIAccountHealthIOTimeout
+	}
+	subscriberClient := redis.NewClient(&options)
+	defer func() { _ = subscriberClient.Close() }()
+	ticker := time.NewTicker(openAIAccountHealthRefreshInterval)
+	defer ticker.Stop()
 subscribeLoop:
 	for {
 		if s.ctx.Err() != nil {
 			return
 		}
-		pubsub := s.client.Subscribe(s.ctx, openAIAccountHealthSharedChannel)
-		if _, err := pubsub.Receive(s.ctx); err != nil {
+		// Bound both connection initialization and the subscription ACK. Receive
+		// without an explicit window can block indefinitely on a silent Redis.
+		pubsub := subscriberClient.Subscribe(s.ctx, openAIAccountHealthSharedChannel)
+		if _, err := pubsub.ReceiveTimeout(s.ctx, openAIAccountHealthIOTimeout); err != nil {
 			_ = pubsub.Close()
 			if s.ctx.Err() != nil {
 				return
@@ -361,11 +437,16 @@ subscribeLoop:
 			continue
 		}
 		messages := pubsub.Channel()
+		s.refreshActiveKeys()
 		for {
 			select {
 			case <-s.ctx.Done():
 				_ = pubsub.Close()
 				return
+			case <-ticker.C:
+				// PubSub is lossy and go-redis may reconnect internally without
+				// closing Channel. Bounded refresh also repairs those missed events.
+				s.refreshActiveKeys()
 			case message, ok := <-messages:
 				if !ok {
 					_ = pubsub.Close()
@@ -404,12 +485,18 @@ func (s *openAIAccountHealthSharedState) persist(report openAIAccountHealthShare
 	if report.ttftMS != nil {
 		ttft = strconv.Itoa(*report.ttftMS)
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, openAIAccountHealthIOTimeout)
 	defer cancel()
+	receiptKey := ""
+	if report.reportID != "" {
+		receiptKey = "sub2api:openai:health-report:" + report.reportID
+	}
 	result, err := openAIAccountHealthUpdateScript.Run(
 		ctx,
-		s.client,
-		[]string{openAIAccountHealthRedisKey(report.key), openAIAccountHealthResetRedisKey(report.key.accountID)},
+		// The shared client leaves ContextTimeoutEnabled off. Bound socket I/O
+		// on this clone too, without changing the scheduling/billing client.
+		s.client.WithTimeout(openAIAccountHealthIOTimeout),
+		[]string{openAIAccountHealthRedisKey(report.key), openAIAccountHealthResetRedisKey(report.key.accountID), receiptKey},
 		errorSample,
 		ttft,
 		report.updatedNano,
@@ -457,11 +544,25 @@ func (s *openAIAccountHealthSharedState) runLoader() {
 
 func (s *openAIAccountHealthSharedState) loadFromRedis(key openAIAccountRuntimeStatsKey) {
 	redisKey := openAIAccountHealthRedisKey(key)
-	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-	values, err := s.client.HGetAll(ctx, redisKey).Result()
+	defer s.loadOnce.Delete(redisKey)
+	ctx, cancel := context.WithTimeout(s.ctx, openAIAccountHealthIOTimeout)
+	pipe := s.client.WithTimeout(openAIAccountHealthIOTimeout).Pipeline()
+	fence := pipe.Get(ctx, openAIAccountHealthResetRedisKey(key.accountID))
+	health := pipe.HGetAll(ctx, redisKey)
+	_, err := pipe.Exec(ctx)
 	cancel()
+	if err != nil && err != redis.Nil {
+		s.loadErrors.Add(1)
+		return
+	}
+	// A reset publication can also be missed. Apply its monotonic fence before
+	// the health hash, without clearing newer failures or the TTFT history.
+	if resetNano, err := fence.Int64(); err == nil && resetNano > s.stats.errorResetNano(key.accountID) {
+		s.stats.resetLocalErrorHealth(key.accountID, resetNano)
+	}
+	values, err := health.Result()
 	if err != nil {
-		s.loadOnce.Delete(redisKey)
+		s.loadErrors.Add(1)
 		return
 	}
 	if len(values) == 0 {
@@ -470,7 +571,70 @@ func (s *openAIAccountHealthSharedState) loadFromRedis(key openAIAccountRuntimeS
 	event, err := openAIAccountHealthEventFromMap(key, values)
 	if err == nil {
 		s.stats.applySharedHealthEvent(event)
+	} else {
+		s.loadErrors.Add(1)
 	}
+}
+
+func (s *openAIAccountHealthSharedState) loadMissing(key openAIAccountRuntimeStatsKey) {
+	if s == nil || s.ctx.Err() != nil {
+		return
+	}
+	key = normalizeOpenAIAccountRuntimeStatsKey(key)
+	now := time.Now().UnixNano()
+	s.missingMu.Lock()
+	if now < s.missingUntil[key] {
+		s.missingMu.Unlock()
+		return
+	}
+	if len(s.missingUntil) >= openAIAccountHealthMissingKeyLimit {
+		// Never allocate a runtime stat per candidate for arbitrary model names.
+		// The negative-load throttle and its cleanup work are both bounded.
+		visited := 0
+		for oldKey, until := range s.missingUntil {
+			if until <= now {
+				delete(s.missingUntil, oldKey)
+			}
+			visited++
+			if visited >= 16 {
+				break
+			}
+		}
+		if len(s.missingUntil) >= openAIAccountHealthMissingKeyLimit {
+			s.missingMu.Unlock()
+			return
+		}
+	}
+	s.missingUntil[key] = now + int64(openAIAccountHealthRefreshInterval)
+	s.missingMu.Unlock()
+	s.load(key)
+}
+
+func (s *openAIAccountHealthSharedState) refreshKey(key openAIAccountRuntimeStatsKey, stat *openAIAccountRuntimeStat) {
+	if s == nil || stat == nil || s.ctx.Err() != nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	next := stat.sharedRefreshAfterNano.Load()
+	if now < next || !stat.sharedRefreshAfterNano.CompareAndSwap(next, now+int64(openAIAccountHealthRefreshInterval)) {
+		return
+	}
+	s.load(key)
+}
+
+func (s *openAIAccountHealthSharedState) refreshActiveKeys() {
+	// Bound both the scan and queued work. Request-path reads also refresh
+	// their own keys asynchronously, so a large catalog cannot starve hot keys.
+	visited := 0
+	s.stats.accounts.Range(func(rawKey, rawStat any) bool {
+		visited++
+		key, keyOK := rawKey.(openAIAccountRuntimeStatsKey)
+		stat, statOK := rawStat.(*openAIAccountRuntimeStat)
+		if keyOK && statOK {
+			s.refreshKey(key, stat)
+		}
+		return visited < openAIAccountHealthRefreshBatch
+	})
 }
 
 func (s *openAIAccountRuntimeStats) applySharedHealthEvent(event openAIAccountHealthSharedEvent) {
@@ -496,7 +660,12 @@ func (s *openAIAccountRuntimeStats) applySharedHealthEvent(event openAIAccountHe
 	}
 	stat.mu.Lock()
 	defer stat.mu.Unlock()
-	if event.Version <= stat.sharedVersion.Load() || event.UpdatedNano < stat.lastUpdatedNano.Load() {
+	lastUpdatedNano := stat.lastUpdatedNano.Load()
+	// Expired/evicted hashes start their version counter over. A strictly newer
+	// sample may establish that new sequence; delayed events from the old hash
+	// still cannot overwrite a newer local or shared observation.
+	if event.UpdatedNano < lastUpdatedNano ||
+		(event.Version <= stat.sharedVersion.Load() && event.UpdatedNano <= lastUpdatedNano) {
 		return
 	}
 	errorUpdatedNano := event.ErrorUpdatedNano
@@ -593,9 +762,34 @@ func (s *openAIAccountHealthSharedState) resetAccountErrorHealth(ctx context.Con
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if s == nil || s.client == nil || accountID <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, openAIAccountHealthIOTimeout)
+	defer cancel()
+	clientForIO := func() (*redis.Client, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		timeout := openAIAccountHealthIOTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, context.DeadlineExceeded
+			}
+			if remaining < timeout {
+				timeout = remaining
+			}
+		}
+		return s.client.WithTimeout(timeout), nil
+	}
+	redisClient, err := clientForIO()
+	if err != nil {
+		return err
+	}
 	effectiveResetNano, err := openAIAccountHealthResetFenceScript.Run(
 		ctx,
-		s.client,
+		redisClient,
 		[]string{openAIAccountHealthResetRedisKey(accountID)},
 		resetNano,
 		int64(openAIAccountHealthSharedTTL/time.Second),
@@ -606,12 +800,20 @@ func (s *openAIAccountHealthSharedState) resetAccountErrorHealth(ctx context.Con
 	var cursor uint64
 	pattern := openAIAccountHealthSharedKeyPrefix + strconv.FormatInt(accountID, 10) + ":*"
 	for {
-		keys, next, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		redisClient, err = clientForIO()
+		if err != nil {
+			return err
+		}
+		keys, next, err := redisClient.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
 			return err
 		}
 		for _, redisKey := range keys {
-			changed, err := openAIAccountHealthResetErrorScript.Run(ctx, s.client, []string{redisKey}, effectiveResetNano, int64(openAIAccountHealthSharedTTL/time.Second)).Int()
+			redisClient, err = clientForIO()
+			if err != nil {
+				return err
+			}
+			changed, err := openAIAccountHealthResetErrorScript.Run(ctx, redisClient, []string{redisKey}, effectiveResetNano, int64(openAIAccountHealthSharedTTL/time.Second)).Int()
 			if err != nil {
 				return err
 			}
@@ -627,7 +829,11 @@ func (s *openAIAccountHealthSharedState) resetAccountErrorHealth(ctx context.Con
 	if err != nil {
 		return err
 	}
-	return s.client.Publish(ctx, openAIAccountHealthSharedChannel, payload).Err()
+	redisClient, err = clientForIO()
+	if err != nil {
+		return err
+	}
+	return redisClient.Publish(ctx, openAIAccountHealthSharedChannel, payload).Err()
 }
 
 func openAIAccountHealthRedisKey(key openAIAccountRuntimeStatsKey) string {

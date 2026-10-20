@@ -287,7 +287,7 @@ func TestAcquireFirstAvailableAccountSlot_UsesOptionalCacheAndReleasesSelectedAc
 	require.Equal(t, []string{cache.requestID}, cache.releasedRequestIDs)
 }
 
-func TestAcquireFirstAvailableAccountSlot_UnlimitedCandidateSkipsRedis(t *testing.T) {
+func TestAcquireFirstAvailableAccountSlot_UnlimitedCandidateUsesSharedAdmission(t *testing.T) {
 	cache := &arbitrationConcurrencyCacheForTest{
 		selectedAccountID: 99,
 		acquired:          true,
@@ -302,8 +302,9 @@ func TestAcquireFirstAvailableAccountSlot_UnlimitedCandidateSkipsRedis(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.Acquired)
-	require.Equal(t, int64(77), result.AccountID)
-	require.Empty(t, cache.candidates)
+	require.Equal(t, int64(99), result.AccountID, "shared cooldown may reject the first unlimited candidate")
+	require.Len(t, cache.candidates, 2)
+	result.ReleaseFunc()
 }
 
 func TestAcquireFirstAvailableAccountSlot_SelectsUnlimitedAfterBusyLimitedWithoutAccountLease(t *testing.T) {
@@ -383,14 +384,22 @@ func TestAcquireAccountSlot_Failure(t *testing.T) {
 }
 
 func TestAcquireAccountSlot_UnlimitedConcurrency(t *testing.T) {
-	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
+	cache := &stubConcurrencyCacheForTest{acquireResult: true}
+	svc := NewConcurrencyService(cache)
+	t.Cleanup(svc.StopBackgroundWorkers)
 
 	for _, maxConcurrency := range []int{0, -1} {
 		result, err := svc.AcquireAccountSlot(context.Background(), 1, maxConcurrency)
 		require.NoError(t, err)
 		require.True(t, result.Acquired, "maxConcurrency=%d 应无限制通过", maxConcurrency)
 		require.NotNil(t, result.ReleaseFunc, "ReleaseFunc 应为 no-op 函数")
+		result.ReleaseFunc()
 	}
+	require.Empty(t, cache.releasedAccountIDs)
+	cache.acquireResult = false
+	result, err := svc.AcquireAccountSlot(context.Background(), 1, 0)
+	require.NoError(t, err)
+	require.False(t, result.Acquired, "unlimited concurrency still honors shared cooldown")
 }
 
 func TestAcquireAccountSlot_CacheError(t *testing.T) {

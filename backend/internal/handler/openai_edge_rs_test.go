@@ -14,7 +14,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -2228,4 +2230,125 @@ func TestNormalizeOpenAIEdgePrepareBodyPrefersRawBase64(t *testing.T) {
 	if string(req.Body) != string(raw) {
 		t.Fatalf("expected raw body to win, got %s", string(req.Body))
 	}
+}
+
+func TestOpenAIEdgeConfirmedProgressTimeoutIsAccountFailure(t *testing.T) {
+	req := service.OpenAIEdgeCompleteRequest{ErrorType: "edge_upstream_no_progress_timeout", FailureClass: "upstream_no_progress"}
+	require.False(t, openAIEdgeCompletionIsRequestLocal(req))
+	require.True(t, openAIEdgeShouldRecordCircuitOutcome(req, false, false))
+	req.ClientDisconnected = true
+	require.False(t, openAIEdgeShouldRecordCircuitOutcome(req, false, false))
+	req.ClientDisconnected = false
+	req.FailureClass = "client_cancelled"
+	require.False(t, openAIEdgeShouldRecordCircuitOutcome(req, false, false))
+	req.FailureClass = "upstream_error" // e.g. model unsupported, not a transport hang
+	require.False(t, openAIEdgeShouldRecordCircuitOutcome(req, false, false))
+}
+
+func TestOpenAIEdgeProgressTimeoutRetryRetainsExecutionUnknownGuard(t *testing.T) {
+	for _, errorType := range []string{"edge_upstream_no_progress_timeout", "edge_upstream_body_idle_timeout", "edge_upstream_transport_error"} {
+		t.Run(errorType, func(t *testing.T) {
+			account := &service.Account{ID: 819, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+			lease := &openAIEdgeLease{leaseID: "lease-progress-timeout", expiresAt: time.Now().Add(time.Minute), account: account, apiKey: &service.APIKey{}, failedAccountIDs: make(map[int64]struct{})}
+			h := &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}, concurrencyHelper: &ConcurrencyHelper{}, openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease}}
+			c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+			decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+				LeaseID: lease.leaseID, AccountID: account.ID, ErrorType: errorType, ExecutionState: "execution_unknown", SupportsStagedRetry: true,
+			})
+			require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
+			require.Equal(t, "execution_unknown_replay_blocked", decision.Reason)
+			require.False(t, decision.FailureRecorded, "the definitive completion owns the single health/circuit sample")
+			require.Empty(t, lease.failedAccountIDs)
+		})
+	}
+}
+
+func TestOpenAIEdgeNoProgressCompletionSettlesHealthOnce(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{InternalAPIEnabled: true, InternalSecret: "edge-secret"}
+	gateway := &service.OpenAIGatewayService{}
+	account := &service.Account{ID: 820, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	released := 0
+	lease := &openAIEdgeLease{edgeRequestID: "edge-stall", leaseID: "lease-stall", account: account,
+		accountReleaseFunc: func() { released++ }}
+	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease}}
+	payload := `{"edge_request_id":"edge-stall","lease_id":"lease-stall","account_id":820,"success":false,"failure_class":"upstream_no_progress","error_type":"edge_upstream_no_progress_timeout","terminal_event_type":"response.failed"}`
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", payload, "edge-secret")
+	h.OpenAIEdgeComplete(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, released)
+	first := gateway.SnapshotOpenAIAccountSchedulerMetrics()
+	c, w = newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", payload, "edge-secret")
+	h.OpenAIEdgeComplete(c)
+	require.Equal(t, http.StatusConflict, w.Code, "an unsealed duplicate must not replay transient health effects")
+	require.Equal(t, 1, released)
+	require.Equal(t, first, gateway.SnapshotOpenAIAccountSchedulerMetrics())
+}
+
+func TestOpenAIEdgeRetryRecordedFailureCompletionRemainsNeutral(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{InternalAPIEnabled: true, InternalSecret: "edge-secret"}
+	account := &service.Account{ID: 821, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_enabled": true, "pool_soft_cooldown_error_threshold": 1}}
+	gateway := &service.OpenAIGatewayService{}
+	lease := &openAIEdgeLease{edgeRequestID: "edge-recorded", leaseID: "lease-recorded", account: account, terminalFailureRecorded: true}
+	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease}}
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", `{"edge_request_id":"edge-recorded","lease_id":"lease-recorded","account_id":821,"failure_class":"upstream_error","upstream_status_code":502}`, "edge-secret")
+	h.OpenAIEdgeComplete(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.False(t, gateway.OpenAIPoolSoftCooldownState(account.ID).Cooling, "terminal retry side effects must not run again on completion")
+}
+
+func TestOpenAIEdgeRepeatedRetryAndAbortReportFailureOnce(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	gateway := &service.OpenAIGatewayService{}
+	gateway.SetOpenAIAccountHealthRedisClient(client)
+	t.Cleanup(gateway.CloseOpenAIWSPool)
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{InternalAPIEnabled: true, InternalSecret: "edge-secret"}
+	account := &service.Account{ID: 822, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	released := 0
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-retry-once", leaseID: "lease-retry-once", account: account,
+		accountReleaseFunc: func() { released++ },
+	}
+	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease}}
+	for range 2 {
+		c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+		decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+			LeaseID: lease.leaseID, AccountID: account.ID, UpstreamStatusCode: 502,
+			ErrorMessage: "upstream failed after accepting request", ExecutionState: "execution_unknown",
+		})
+		require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
+		require.True(t, decision.FailureRecorded)
+	}
+	// A delayed/older Edge abort may lack the already-recorded reason marker.
+	// The lease still owns the definitive health decision and slot release.
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/abort",
+		`{"edge_request_id":"edge-retry-once","lease_id":"lease-retry-once","account_id":822,"relay_attempted":true,"failure_class":"upstream_disconnect","reason":"relay_failed"}`, "edge-secret")
+	h.OpenAIEdgeAbort(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, released)
+	// A later report is a queue barrier: when it persists, preceding reports
+	// have also reached Redis. Check the actual shared health sample counts.
+	gateway.ReportOpenAIAccountScheduleResult(823, true, nil)
+	require.Eventually(t, func() bool {
+		for _, key := range server.Keys() {
+			if strings.HasPrefix(key, "sub2api:openai:health:v1:823:") {
+				return server.HGet(key, "sample_count") == "1"
+			}
+		}
+		return false
+	}, 2*time.Second, time.Millisecond)
+	keys := 0
+	for _, key := range server.Keys() {
+		if strings.HasPrefix(key, "sub2api:openai:health:v1:822:") {
+			keys++
+			require.Equal(t, "1", server.HGet(key, "sample_count"), "retry and abort must share one failure sample per health scope")
+		}
+	}
+	require.Equal(t, 2, keys, "generic account and model route each receive one sample")
+	require.False(t, server.Exists("openai:account_stream_disconnect:822"), "abort must not add a second circuit outcome")
 }

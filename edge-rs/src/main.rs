@@ -1526,6 +1526,8 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
 }
 
 const EDGE_RESPONSE_HEADER_TIMEOUT: &str = "edge upstream response header timeout";
+const EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT: &str =
+    "edge upstream response header deadline exceeded";
 const EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED: &str =
     "edge response header total budget exhausted before upstream attempt";
 #[cfg(test)]
@@ -1560,7 +1562,41 @@ fn settlement_error_is_permanent(error: &anyhow::Error) -> bool {
 }
 
 fn is_edge_response_header_timeout(err: &anyhow::Error) -> bool {
-    err.to_string() == EDGE_RESPONSE_HEADER_TIMEOUT
+    matches!(
+        err.to_string().as_str(),
+        EDGE_RESPONSE_HEADER_TIMEOUT | EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT
+    )
+}
+
+fn response_header_timeout_cause(
+    configured: Option<Duration>,
+    actual_window: Duration,
+) -> &'static str {
+    // A materially shorter shared/race budget is request-local. Equal total
+    // and per-attempt limits lose a few microseconds while preparing send();
+    // do not make the default equal-budget case permanently health-neutral.
+    // Ignore only bookkeeping jitter, never meaningful resource/queue waits.
+    if configured.is_some_and(|limit| {
+        let bookkeeping_slack = (limit / 1000).min(Duration::from_millis(10));
+        actual_window >= limit.saturating_sub(bookkeeping_slack)
+    }) {
+        EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT
+    } else {
+        EDGE_RESPONSE_HEADER_TIMEOUT
+    }
+}
+
+fn relay_upstream_failure_class(error: &anyhow::Error) -> &'static str {
+    if error.to_string() == EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT {
+        "upstream_no_progress"
+    } else if error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(|error| !error.is_builder())
+    {
+        "upstream_disconnect"
+    } else {
+        "abort_failed"
+    }
 }
 
 fn early_placeholder_failure_kind(error: &anyhow::Error) -> Option<EarlyPlaceholderFailureKind> {
@@ -2984,17 +3020,23 @@ impl ClientDisconnectCompleteGuard {
         request.first_token_ms = first_token_ms;
         request.real_first_token_ms = real_first_token_ms;
         request.first_client_flush_ms = first_client_flush_ms;
-        request.error_type = if success {
-            None
-        } else {
-            Some("stream_error".to_string())
-        };
+        if success {
+            request.error_type = None;
+        } else if request.error_type.is_none() {
+            request.error_type = Some("stream_error".to_string());
+        }
         request.error_message = error_message;
         request.failure_diagnostic = summary.failure_diagnostic.clone();
         request.upstream_status_code = upstream_status_code;
         request.terminal_event_type = summary.terminal_event_type(None);
         request.cyber_blocked = summary.cyber_blocked;
-        if request.failure_class.as_deref() != Some("lease_lost") {
+        if let Some(class) = request
+            .error_type
+            .as_deref()
+            .and_then(stream_failure_cause_class)
+        {
+            request.failure_class = Some(class.to_string());
+        } else if request.failure_class.as_deref() != Some("lease_lost") {
             request.failure_class =
                 classify_stream_failure_with_status(success, false, summary, upstream_status_code);
         }
@@ -3019,6 +3061,16 @@ impl ClientDisconnectCompleteGuard {
         if let Ok(mut request) = self.request.lock() {
             request.failure_class = Some("lease_lost".to_string());
             request.error_type = Some("edge_lease_lost".to_string());
+        }
+        self.definitive_failure.store(true, Ordering::SeqCst);
+    }
+
+    // Save the cause before yielding a synthetic terminal frame. A downstream
+    // may drop the body at that yield; Drop must settle the same real fault.
+    fn mark_upstream_failure(&self, error_type: &str) {
+        if let Ok(mut request) = self.request.lock() {
+            request.error_type = Some(error_type.to_string());
+            request.failure_class = stream_failure_cause_class(error_type).map(str::to_string);
         }
         self.definitive_failure.store(true, Ordering::SeqCst);
     }
@@ -3117,6 +3169,46 @@ fn classify_stream_failure_with_status(
         return Some("upstream_error".to_string());
     }
     classify_stream_failure(success, client_disconnected, summary)
+}
+
+fn stream_failure_cause_class(error_type: &str) -> Option<&'static str> {
+    match error_type {
+        "edge_upstream_transport_error" => Some("upstream_disconnect"),
+        "edge_upstream_body_idle_timeout"
+        | "edge_upstream_no_progress_timeout"
+        | "edge_upstream_response_header_timeout" => Some("upstream_no_progress"),
+        "edge_lease_lost" => Some("lease_lost"),
+        _ => None,
+    }
+}
+
+// Unlike raw body-idle protection, this deadline is refreshed only by model
+// progress. Heartbeats, placeholders and response.created cannot keep it alive.
+// It uses the existing effective body-idle window, with no learned TTFT cutoff.
+struct EffectiveProgressWatchdog {
+    timeout: Option<Duration>,
+    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl EffectiveProgressWatchdog {
+    fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            timeout,
+            timer: timeout.map(tokio::time::sleep).map(Box::pin),
+        }
+    }
+
+    fn observe(&mut self, progress: bool) {
+        if progress {
+            if let (Some(timer), Some(timeout)) = (self.timer.as_mut(), self.timeout) {
+                timer.as_mut().reset(tokio::time::Instant::now() + timeout);
+            }
+        }
+    }
+
+    async fn wait(&mut self) {
+        wait_optional_sleep(&mut self.timer).await;
+    }
 }
 
 impl Drop for ClientDisconnectCompleteGuard {
@@ -4117,7 +4209,7 @@ async fn handle_openai_edge(
                     failure_class: if local_capacity {
                         "local_capacity_rejected"
                     } else {
-                        "abort_failed"
+                        relay_upstream_failure_class(&err)
                     }
                     .to_string(),
                     client_disconnected: false,
@@ -4696,6 +4788,8 @@ async fn relay_ws_session(
     let mut success = true;
     let mut client_disconnected = false;
     let mut error_message: Option<String> = None;
+    let mut upstream_failure_cause: Option<&str> = None;
+    let mut upstream_closed = false;
     let mut summary = ChatStreamSummary {
         request_id: upstream_request_id,
         ..Default::default()
@@ -4757,6 +4851,10 @@ async fn relay_ws_session(
         .then_some(ws_body_idle_timeout)
         .flatten()
         .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
+
+    let mut ws_progress_watchdog = EffectiveProgressWatchdog::new(
+        ws_response_active.then_some(ws_body_idle_timeout).flatten(),
+    );
 
     let lease_lost = tokio::select! {
         biased;
@@ -4853,9 +4951,12 @@ async fn relay_ws_session(
                             commit_state_for_turn = RETRY_COMMIT_NONE;
                         }
                         if let Err(err) = upstream_write.send(upstream_msg).await {
-                            success = false;
-                            failure_state.mark_other_failure();
-                            error_message = Some(err.to_string());
+                            if starts_response || ws_response_active {
+                                success = false;
+                                failure_state.mark_other_failure();
+                                upstream_failure_cause = Some("edge_upstream_transport_error");
+                                error_message = Some(err.to_string());
+                            }
                             break;
                         }
                         if starts_response {
@@ -4864,6 +4965,7 @@ async fn relay_ws_session(
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                             ws_body_idle_timer = ws_body_idle_timeout
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
+                            ws_progress_watchdog = EffectiveProgressWatchdog::new(ws_body_idle_timeout);
                         }
                     }
                     Some(Err(err)) => {
@@ -4896,25 +4998,21 @@ async fn relay_ws_session(
                             current_turn_real_first_token_ms =
                                 Some(turn_started_at.elapsed().as_millis() as i64);
                         }
+                        ws_progress_watchdog.observe(
+                            upstream_json.as_ref().is_some_and(json_starts_semantic_progress),
+                        );
                         if ws_response_active {
                             ws_body_idle_timer = ws_body_idle_timeout
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                         }
                         if matches!(msg, TungsteniteMessage::Close(_)) {
+                            upstream_closed = true;
                             if ws_response_active && !client_disconnected {
-                                let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
-                                    summary.response_id.as_deref(),
-                                ));
-                                if client_socket.send(failed).await.is_ok() {
-                                    summary.failed = true;
-                                    summary.failed_terminal_event_type =
-                                        Some("response.failed".to_string());
-                                    summary.terminal_event_type =
-                                        Some("response.failed".to_string());
-                                    success = false;
-                                }
+                                upstream_failure_cause = Some("edge_upstream_transport_error");
+                                success = false;
+                                failure_state.mark_other_failure();
+                                error_message = Some("upstream websocket closed before completion".to_string());
                             }
-                            let _ = client_socket.send(AxumWsMessage::Close(None)).await;
                             break;
                         }
                         if !matches!(
@@ -5015,6 +5113,7 @@ async fn relay_ws_session(
                                                                 .map(Duration::from_millis);
                                                             ws_body_idle_timer = ws_body_idle_timeout
                                                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
+                                                            ws_progress_watchdog = EffectiveProgressWatchdog::new(ws_body_idle_timeout);
                                                             continue;
                                                         }
                                                     }
@@ -5047,6 +5146,7 @@ async fn relay_ws_session(
                             ws_response_active = false;
                             first_token_timeout_timer = None;
                             ws_body_idle_timer = None;
+                            ws_progress_watchdog = EffectiveProgressWatchdog::new(None);
                         }
                         let downstream_cache_usage_mode_for_turn = if downstream_cache_usage_model
                             .as_deref()
@@ -5118,34 +5218,22 @@ async fn relay_ws_session(
                         }
                     }
                     Some(Err(err)) => {
-                        success = false;
-                        failure_state.mark_other_failure();
-                        error_message = Some(err.to_string());
+                        // A provider may drop an idle TCP connection without a
+                        // WS closing handshake after response.completed. Only
+                        // an unfinished turn can turn that into a health fault.
                         if ws_response_active && !client_disconnected {
-                            let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
-                                summary.response_id.as_deref(),
-                            ));
-                            if client_socket.send(failed).await.is_ok() {
-                                summary.failed = true;
-                                summary.failed_terminal_event_type =
-                                    Some("response.failed".to_string());
-                                summary.terminal_event_type = Some("response.failed".to_string());
-                            }
+                            success = false;
+                            failure_state.mark_other_failure();
+                            error_message = Some(err.to_string());
+                            upstream_failure_cause = Some("edge_upstream_transport_error");
                         }
                         break;
                     }
                     None => {
-                        success = false;
                         if ws_response_active && !client_disconnected {
-                            let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
-                                summary.response_id.as_deref(),
-                            ));
-                            if client_socket.send(failed).await.is_ok() {
-                                summary.failed = true;
-                                summary.failed_terminal_event_type =
-                                    Some("response.failed".to_string());
-                                summary.terminal_event_type = Some("response.failed".to_string());
-                            }
+                            success = false;
+                            failure_state.mark_other_failure();
+                            upstream_failure_cause = Some("edge_upstream_transport_error");
                         }
                         break;
                     }
@@ -5170,7 +5258,15 @@ async fn relay_ws_session(
             _ = wait_optional_sleep(&mut ws_body_idle_timer) => {
                 success = false;
                 failure_state.mark_other_failure();
+                upstream_failure_cause = Some("edge_upstream_body_idle_timeout");
                 error_message = Some("upstream websocket body idle timeout".to_string());
+                break;
+            }
+            _ = ws_progress_watchdog.wait() => {
+                success = false;
+                failure_state.mark_other_failure();
+                upstream_failure_cause = Some("edge_upstream_no_progress_timeout");
+                error_message = Some("upstream websocket made no effective progress within the configured body idle window".to_string());
                 break;
             }
         }
@@ -5183,6 +5279,28 @@ async fn relay_ws_session(
     // downstream write. This also fences awaits inside the WS relay loop.
     drop(upstream_write);
     drop(upstream_read);
+    if upstream_failure_cause.is_some() {
+        // The upstream fault is independent of whether a disconnected or slow
+        // downstream can receive its diagnostic frame. Preserve it first.
+        summary.failed = true;
+        summary.failed_terminal_event_type = Some("response.failed".to_string());
+        summary.terminal_event_type = Some("response.failed".to_string());
+        // Upstream is closed first. Bound the diagnostic write as well.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            client_socket.send(AxumWsMessage::Text(safe_ws_response_failed_event(
+                summary.response_id.as_deref(),
+            ))),
+        )
+        .await;
+    }
+    if upstream_closed {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            client_socket.send(AxumWsMessage::Close(None)),
+        )
+        .await;
+    }
     if lease_lost {
         success = false;
         error_message = Some("edge lease lost".to_string());
@@ -5234,6 +5352,10 @@ async fn relay_ws_session(
             success,
             failure_class: if error_message.as_deref() == Some("edge lease lost") {
                 Some("lease_lost".to_string())
+            } else if !success && !client_disconnected && upstream_failure_cause.is_some() {
+                upstream_failure_cause
+                    .and_then(stream_failure_cause_class)
+                    .map(str::to_string)
             } else if !success && !client_disconnected && session_failed {
                 Some("upstream_error".to_string())
             } else {
@@ -5260,6 +5382,8 @@ async fn relay_ws_session(
             edge_retry_count: 0,
             error_type: if success {
                 None
+            } else if let Some(cause) = upstream_failure_cause {
+                Some(cause.to_string())
             } else if session_failure_state.is_cache_policy_only() {
                 Some("cache_creation_optimization_unsupported".to_string())
             } else {
@@ -6927,7 +7051,10 @@ async fn open_body_retry_upstream_unfenced(
             }
             Err(_) => {
                 selected.guard.release();
-                anyhow::bail!(EDGE_RESPONSE_HEADER_TIMEOUT)
+                anyhow::bail!(response_header_timeout_cause(
+                    response_header_timeout,
+                    timeout
+                ))
             }
         }
     } else {
@@ -7190,7 +7317,11 @@ async fn retry_body_upstream(
                 upstream: None,
                 retry_count,
                 keep_current: false,
-                reason,
+                reason: if stream_failure_cause_class(&error_type).is_some() {
+                    error_type
+                } else {
+                    reason
+                },
             };
         }
         if !wait_for_retry_after(
@@ -7356,6 +7487,15 @@ async fn retry_body_upstream(
                         retry_count,
                         keep_current: true,
                         reason: "semantic_keep_current".to_string(),
+                    };
+                }
+                if error.to_string() == EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT {
+                    return BodyRetryOutcome {
+                        plan,
+                        upstream: None,
+                        retry_count,
+                        keep_current: false,
+                        reason: "edge_upstream_response_header_timeout".to_string(),
                     };
                 }
                 upstream_status_code = None;
@@ -7602,6 +7742,9 @@ async fn relay_upstream_direct(
                     }
                     Err(error) => error,
                 };
+                if error.to_string() == EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT {
+                    outer_complete_guard.mark_upstream_failure("edge_upstream_response_header_timeout");
+                }
                 let abort_identity = lease_identity_snapshot(&commit_lease_identity);
                 // Even when Go has already recorded the failure, abort still
                 // owns lease/slot release. Its neutral reason prevents a
@@ -7613,7 +7756,7 @@ async fn relay_upstream_direct(
                         lease_id: abort_identity.lease_id,
                         account_id: abort_identity.account_id,
                         reason: format!("early_placeholder_relay_failed: {error}"),
-                        failure_class: "abort_failed".to_string(),
+                        failure_class: relay_upstream_failure_class(&error).to_string(),
                         client_disconnected: false,
                         relay_attempted: true,
                         fallback_to_go: false,
@@ -7880,7 +8023,10 @@ async fn relay_upstream_direct_core_impl(
                 }
                 Err(_) => {
                     selected.guard.release();
-                    return Err(anyhow::anyhow!(EDGE_RESPONSE_HEADER_TIMEOUT));
+                    return Err(anyhow::anyhow!(response_header_timeout_cause(
+                        edge_response_header_timeout,
+                        remaining
+                    )));
                 }
             }
         } else {
@@ -7912,6 +8058,7 @@ async fn relay_upstream_direct_core_impl(
     };
     let (upstream, mut upstream_client_guard) = match send_result {
         Ok(result) => result,
+        Err(err) if err.to_string() == EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT => return Err(err),
         Err(err)
             if early_placeholder_mode
                 && (plan.edge_response_header_failover
@@ -8337,6 +8484,7 @@ async fn relay_upstream_direct_core_impl(
         let mut semantic_progress_timer = semantic_progress_timeout.map(tokio::time::sleep).map(Box::pin);
         let mut heartbeat_timer = Some(Box::pin(tokio::time::sleep(SSE_HEARTBEAT_INTERVAL)));
         let mut body_idle_timer = edge_body_idle_timeout.map(tokio::time::sleep).map(Box::pin);
+        let mut progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
         let mut semantic_stall_failover_used = false;
 
         enum RelaySelectEvent {
@@ -8347,6 +8495,7 @@ async fn relay_upstream_direct_core_impl(
             Upstream(Option<Result<Bytes, reqwest::Error>>),
             BodyIdleTimeout,
             SemanticProgressTimeout,
+            NoProgressTimeout,
         }
 
         'relay: loop {
@@ -8375,6 +8524,7 @@ async fn relay_upstream_direct_core_impl(
                     _ = wait_optional_sleep(&mut body_idle_timer) => {
                         RelaySelectEvent::BodyIdleTimeout
                     }
+                    _ = progress_watchdog.wait() => RelaySelectEvent::NoProgressTimeout,
                     next = async {
                         RelaySelectEvent::Upstream(bytes_stream.next().await)
                     } => next,
@@ -8482,16 +8632,17 @@ async fn relay_upstream_direct_core_impl(
                     }
                     continue;
                 }
-                timeout_event @ (RelaySelectEvent::BodyIdleTimeout | RelaySelectEvent::SemanticProgressTimeout) => {
+                timeout_event @ (RelaySelectEvent::BodyIdleTimeout | RelaySelectEvent::SemanticProgressTimeout | RelaySelectEvent::NoProgressTimeout) => {
                     let semantic_timeout = matches!(timeout_event, RelaySelectEvent::SemanticProgressTimeout);
-                    let retry_error_type = if semantic_timeout { "edge_semantic_progress_timeout" } else { "edge_upstream_body_idle_timeout" };
-                    let retry_error_message = if semantic_timeout { "upstream semantic progress timeout" } else { "upstream body idle timeout" };
+                    let no_progress = matches!(timeout_event, RelaySelectEvent::NoProgressTimeout);
+                    let retry_error_type = if semantic_timeout { "edge_semantic_progress_timeout" } else if no_progress { "edge_upstream_no_progress_timeout" } else { "edge_upstream_body_idle_timeout" };
+                    let retry_error_message = if semantic_timeout { "upstream semantic progress timeout" } else if no_progress { "upstream made no effective progress within the configured body idle window" } else { "upstream body idle timeout" };
                     if semantic_timeout && semantic_stall_failover_used {
                         semantic_progress_timer = None;
                         semantic_sample_complete = true;
                         continue 'relay;
                     }
-                    if real_first_token_ms.is_none() && (!semantic_timeout || !semantic_stall_failover_used) {
+                    if real_first_token_ms.is_none() && semantic_timeout && !semantic_stall_failover_used {
                         if semantic_timeout {
                             semantic_stall_failover_used = true;
                         }
@@ -8575,13 +8726,25 @@ async fn relay_upstream_direct_core_impl(
                             last_semantic_progress_at = Instant::now();
                             max_semantic_gap = Duration::ZERO;
                             semantic_sample_complete = false;
+                            progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
                             continue 'relay;
+                        }
+                        if stream_failure_cause_class(&retry.reason).is_some() {
+                            guard.mark_upstream_failure(&retry.reason);
                         }
                         completion_error_type = Some(retry.reason);
                     }
+                    // The upstream body has already been sent. A hard stall
+                    // is final for this execution; close the transport before
+                    // yielding and let completion own the single fault sample.
+                    bytes_stream = futures_util::stream::empty().boxed();
+                    upstream_client_guard.release();
                     success = false;
                     error_message = Some(retry_error_message.to_string());
-                    if completion_error_type.is_none() {
+                    if !semantic_timeout {
+                        completion_error_type = Some(retry_error_type.to_string());
+                        guard.mark_upstream_failure(retry_error_type);
+                    } else if completion_error_type.is_none() {
                         completion_error_type = Some(retry_error_type.to_string());
                     }
                     if !summary.failed {
@@ -8712,7 +8875,11 @@ async fn relay_upstream_direct_core_impl(
                         last_semantic_progress_at = Instant::now();
                         max_semantic_gap = Duration::ZERO;
                         semantic_sample_complete = false;
+                        progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
                         continue 'relay;
+                    }
+                    if stream_failure_cause_class(&retry.reason).is_some() {
+                        guard.mark_upstream_failure(&retry.reason);
                     }
                     completion_error_type = Some(retry.reason);
                 }
@@ -8720,6 +8887,11 @@ async fn relay_upstream_direct_core_impl(
                     success = false;
                     error_message = Some("upstream stream ended before completion".to_string());
                     if !summary.failed {
+                        let cause = completion_error_type.as_deref()
+                            .filter(|cause| stream_failure_cause_class(cause).is_some())
+                            .unwrap_or("edge_upstream_transport_error");
+                        guard.mark_upstream_failure(cause);
+                        completion_error_type = Some(cause.to_string());
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
                         summary.terminal_event_type = Some("error".to_string());
@@ -8866,7 +9038,11 @@ async fn relay_upstream_direct_core_impl(
                                 last_semantic_progress_at = Instant::now();
                                 max_semantic_gap = Duration::ZERO;
                                 semantic_sample_complete = false;
+                                progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
                                 continue 'relay;
+                            }
+                            if stream_failure_cause_class(&retry.reason).is_some() {
+                                guard.mark_upstream_failure(&retry.reason);
                             }
                             completion_error_type = Some(retry.reason);
                         }
@@ -8884,6 +9060,7 @@ async fn relay_upstream_direct_core_impl(
                         max_semantic_gap = max_semantic_gap.max(now.duration_since(last_semantic_progress_at));
                         last_semantic_progress_at = now;
                     }
+                    progress_watchdog.observe(observation.starts_semantic_progress);
                     if observation.starts_visible_output {
                         semantic_progress_timer = None;
                         semantic_sample_complete = true;
@@ -9169,12 +9346,21 @@ async fn relay_upstream_direct_core_impl(
                             last_semantic_progress_at = Instant::now();
                             max_semantic_gap = Duration::ZERO;
                             semantic_sample_complete = false;
+                            progress_watchdog = EffectiveProgressWatchdog::new(edge_body_idle_timeout);
                             continue 'relay;
                         }
-                        completion_error_type = Some(retry.reason);
+                        if stream_failure_cause_class(&retry.reason).is_some() {
+                            guard.mark_upstream_failure(&retry.reason);
+                            completion_error_type = Some(retry.reason);
+                        }
                     }
                     success = false;
                     error_message = Some(err.to_string());
+                    let cause = completion_error_type.as_deref()
+                        .filter(|cause| stream_failure_cause_class(cause).is_some())
+                        .unwrap_or("edge_upstream_transport_error");
+                    guard.mark_upstream_failure(cause);
+                    completion_error_type = Some(cause.to_string());
                     if !summary.failed {
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
@@ -9319,9 +9505,10 @@ async fn relay_upstream_direct_core_impl(
             lease_id: current_plan.lease_id.clone(),
             account_id: current_plan.account_id,
             success,
-            failure_class: if completion_error_type.as_deref() == Some("edge_lease_lost") {
-                Some("lease_lost".to_string())
-            } else { classify_stream_failure(success, false, &summary) },
+            failure_class: if !success {
+                completion_error_type.as_deref().and_then(stream_failure_cause_class)
+                    .map(str::to_string).or_else(|| classify_stream_failure(success, false, &summary))
+            } else { None },
             client_disconnected: false,
             request_id,
             response_id,
@@ -15163,6 +15350,127 @@ mod tests {
         ));
 
         assert_eq!(nested.usage.cache_creation_input_tokens, 9);
+    }
+
+    #[tokio::test]
+    async fn effective_progress_watchdog_ignores_heartbeats_and_structural_events() {
+        let mut guard = EffectiveProgressWatchdog::new(Some(Duration::from_millis(30)));
+        let deadline = guard.timer.as_ref().unwrap().deadline();
+        for value in [
+            serde_json::json!({"type":"response.created"}),
+            serde_json::json!({"type":"response.in_progress"}),
+            serde_json::json!({"type":"response.transport_progress.delta","delta":" "}),
+            serde_json::json!({"type":"response.output_text.delta","delta":""}),
+        ] {
+            guard.observe(json_starts_semantic_progress(&value));
+            assert_eq!(guard.timer.as_ref().unwrap().deadline(), deadline);
+        }
+        tokio::time::timeout(Duration::from_secs(1), guard.wait())
+            .await
+            .expect("heartbeat-only stream must expire");
+    }
+
+    #[tokio::test]
+    async fn effective_progress_watchdog_allows_long_reasoning_and_tool_streams() {
+        let mut guard = EffectiveProgressWatchdog::new(Some(Duration::from_millis(100)));
+        for value in [
+            serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}),
+            serde_json::json!({"type":"response.function_call_arguments.delta","delta":"{\"x\":"}),
+            serde_json::json!({"type":"response.output_text.delta","delta":"answer"}),
+        ]
+        .into_iter()
+        .cycle()
+        .take(6)
+        {
+            tokio::select! {
+                _ = guard.wait() => panic!("real reasoning/tool/text progress must keep the stream alive"),
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+            guard.observe(json_starts_semantic_progress(&value));
+        }
+        // The stream has already exceeded one window in total, but each real
+        // progress event renewed it. Silence after output is still bounded.
+        tokio::time::timeout(Duration::from_secs(1), guard.wait())
+            .await
+            .expect("post-output stall must expire");
+        let mut disabled = EffectiveProgressWatchdog::new(None);
+        disabled.observe(true);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), disabled.wait())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn configured_header_deadline_is_distinct_from_shared_request_budget() {
+        let configured = Some(Duration::from_secs(120));
+        assert_eq!(
+            response_header_timeout_cause(configured, Duration::from_secs(120)),
+            EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT
+        );
+        assert_eq!(
+            response_header_timeout_cause(configured, Duration::from_secs(5)),
+            EDGE_RESPONSE_HEADER_TIMEOUT
+        );
+        assert_eq!(
+            response_header_timeout_cause(None, Duration::from_secs(5)),
+            EDGE_RESPONSE_HEADER_TIMEOUT
+        );
+        assert_eq!(
+            response_header_timeout_cause(
+                Some(Duration::from_secs(15)),
+                Duration::from_millis(14_999)
+            ),
+            EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT
+        );
+        assert_eq!(
+            response_header_timeout_cause(Some(Duration::from_secs(15)), Duration::from_secs(14)),
+            EDGE_RESPONSE_HEADER_TIMEOUT
+        );
+        assert_eq!(
+            relay_upstream_failure_class(&anyhow::anyhow!(EDGE_UPSTREAM_RESPONSE_HEADER_TIMEOUT)),
+            "upstream_no_progress"
+        );
+        assert_eq!(
+            relay_upstream_failure_class(&anyhow::anyhow!(EDGE_RESPONSE_HEADER_TIMEOUT)),
+            "abort_failed"
+        );
+    }
+
+    #[test]
+    fn synthetic_terminal_cannot_erase_transport_failure_cause() {
+        let mut summary = ChatStreamSummary::default();
+        summary.failed = true;
+        summary.terminal_event_type = Some("response.failed".to_string());
+        assert_eq!(
+            classify_stream_failure(false, false, &summary).as_deref(),
+            Some("upstream_error")
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_upstream_transport_error"),
+            Some("upstream_disconnect")
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_upstream_body_idle_timeout"),
+            Some("upstream_no_progress")
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_upstream_no_progress_timeout"),
+            Some("upstream_no_progress")
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_semantic_progress_timeout"),
+            None
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_race_response_header_timeout"),
+            None
+        );
+        assert_eq!(
+            stream_failure_cause_class("edge_upstream_stream_failed"),
+            None
+        );
     }
 
     #[test]

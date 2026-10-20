@@ -86,9 +86,11 @@ func TestEdgeStreamRealRustTransportRecovery(t *testing.T) {
 		t.Run(strconv.Itoa(split), func(t *testing.T) {
 			var executions, preparations, settlements atomic.Int32
 			usage := make(chan service.OpenAIEdgeCompleteRequest, 10)
-			output := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fixture\"}}\n\n" +
+			// Supply provider timestamps so the existing created_at compatibility
+			// repair is a no-op and this test isolates byte-exact TCP recovery.
+			output := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fixture\",\"created_at\":1700000000}}\n\n" +
 				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
-				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fixture\",\"model\":\"gpt-test\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n\n"
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fixture\",\"created_at\":1700000000,\"model\":\"gpt-test\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n\n"
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Existing Edge connection keep-warm uses GET after 30s. Count
 				// generation POSTs, not the unrelated idle-connection probe.

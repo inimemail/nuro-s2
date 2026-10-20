@@ -170,7 +170,8 @@ func TestOpenAIAccountStreamDisconnectCounterIsSharedAcrossServices(t *testing.T
 	// A successful turn on another replica does not issue a Redis write or
 	// produce replica-dependent reset behavior; the shared window expires by TTL.
 	second.ReportOpenAIAccountScheduleResultForRequest(account, "gpt-test", true, nil)
-	_, count := client.Get(t.Context(), "openai:account_stream_disconnect:5004").Result()
+	count, err := client.Get(t.Context(), "openai:account_stream_disconnect:5004").Result()
+	require.NoError(t, err)
 	require.Equal(t, "1", count)
 	second.recordOpenAIAccountStreamDisconnect(account)
 	_, blocked = second.openaiAccountRuntimeBlockUntil.Load(account.ID)
@@ -250,3 +251,30 @@ type errCircuitTestValue struct{}
 func (errCircuitTestValue) Error() string { return "upstream disconnect" }
 
 func ptrInt64ForCircuit(value int64) *int64 { return &value }
+
+func TestOpenAIConfirmedNoProgressUsesExistingShortAccountBlock(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 5010, Platform: PlatformOpenAI, ProxyID: ptrInt64ForCircuit(101)}
+	svc.RecordOpenAIEdgeStreamOutcome(account, "upstream_no_progress", true, false, "configured deadline expired")
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	raw, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok)
+	until, _, valid := parseAccountRuntimeDeadline(raw)
+	require.True(t, valid)
+	require.WithinDuration(t, time.Now().Add(openAIStopSchedulingBridgeCooldown), until, time.Second)
+	require.False(t, svc.isOpenAIProxyStreamQuarantined(account), "an account hang must not quarantine every account on its proxy")
+	// The shared transport helper itself must not also report the health sample.
+	_, _, _, samples, _, _ := svc.getOpenAIAccountRuntimeStats().snapshotForRouteWithMeta(account.ID, "gpt-test", OpenAIUpstreamTransportHTTPSSE)
+	require.Zero(t, samples)
+}
+
+func TestOpenAIConfirmedNoProgressDoesNotShortenExistingBlock(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 5011, Platform: PlatformOpenAI}
+	longUntil := time.Now().Add(time.Hour)
+	svc.BlockAccountScheduling(account, longUntil, "existing operator block")
+	svc.RecordOpenAIEdgeStreamOutcome(account, "upstream_no_progress", false, false, "deadline expired")
+	raw, _ := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	until, _, _ := parseAccountRuntimeDeadline(raw)
+	require.Equal(t, longUntil, until)
+}

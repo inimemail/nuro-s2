@@ -429,3 +429,21 @@ func newOpenAIWSV2TestConfig() *config.Config {
 	cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = 3600
 	return cfg
 }
+
+func TestOpenAIPreviousResponseRuntimeBlockWithoutSnapshotRefresh(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(23)
+	account := Account{ID: 803, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 0, GroupIDs: []int64{groupID},
+		Extra: map[string]any{"openai_apikey_responses_websockets_v2_enabled": true}}
+	cache := &stubGatewayCache{}
+	store := NewOpenAIWSStateStore(cache)
+	svc := &OpenAIGatewayService{accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, cache: cache,
+		cfg: newOpenAIWSV2TestConfig(), concurrencyService: NewConcurrencyService(stubConcurrencyCache{}), openaiWSStateStore: store}
+	t.Cleanup(svc.concurrencyService.StopBackgroundWorkers)
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_blocked", account.ID, time.Hour))
+	svc.BlockAccountScheduling(&account, time.Now().Add(time.Minute), "confirmed no progress")
+	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_blocked", "gpt-test", nil, false)
+	require.NoError(t, err)
+	require.Nil(t, selection, "continuity affinity cannot bypass runtime exclusion")
+}

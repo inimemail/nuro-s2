@@ -89,21 +89,25 @@ type OpenAIAccountScheduleDecision struct {
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
-	SelectTotal              int64
-	StickyPreviousHitTotal   int64
-	StickySessionHitTotal    int64
-	LoadBalanceSelectTotal   int64
-	AccountSwitchTotal       int64
-	SchedulerLatencyMsTotal  int64
-	SchedulerLatencyMsAvg    float64
-	StickyHitRatio           float64
-	AccountSwitchRate        float64
-	LoadSkewAvg              float64
-	RuntimeStatsAccountCount int
-	LastCandidateCount       int64
-	LastLockedPriority       int64
-	SnapshotGeneration       int64
-	ExclusionsByReason       map[string]int64
+	SelectTotal               int64
+	StickyPreviousHitTotal    int64
+	StickySessionHitTotal     int64
+	LoadBalanceSelectTotal    int64
+	AccountSwitchTotal        int64
+	SchedulerLatencyMsTotal   int64
+	SchedulerLatencyMsAvg     float64
+	StickyHitRatio            float64
+	AccountSwitchRate         float64
+	LoadSkewAvg               float64
+	RuntimeStatsAccountCount  int
+	LastCandidateCount        int64
+	LastLockedPriority        int64
+	SnapshotGeneration        int64
+	ExclusionsByReason        map[string]int64
+	SharedHealthReportDrops   int64
+	SharedHealthPersistErrors int64
+	SharedHealthPublishErrors int64
+	SharedHealthLoadErrors    int64
 }
 
 type OpenAIAccountScheduler interface {
@@ -342,15 +346,16 @@ type openAIAccountRuntimeStatsKey struct {
 }
 
 type openAIAccountRuntimeStat struct {
-	mu                sync.Mutex
-	errorRateEWMABits atomic.Uint64
-	ttftEWMABits      atomic.Uint64
-	sampleCount       atomic.Int64
-	ttftSampleCount   atomic.Int64
-	lastUpdatedNano   atomic.Int64
-	errorUpdatedNano  atomic.Int64
-	ttftUpdatedNano   atomic.Int64
-	sharedVersion     atomic.Int64
+	mu                     sync.Mutex
+	errorRateEWMABits      atomic.Uint64
+	ttftEWMABits           atomic.Uint64
+	sampleCount            atomic.Int64
+	ttftSampleCount        atomic.Int64
+	lastUpdatedNano        atomic.Int64
+	errorUpdatedNano       atomic.Int64
+	ttftUpdatedNano        atomic.Int64
+	sharedVersion          atomic.Int64
+	sharedRefreshAfterNano atomic.Int64
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -502,22 +507,8 @@ func (s *openAIAccountRuntimeStats) snapshotForRequestWithFreshnessMeta(accountI
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool) {
-	if s == nil || accountID <= 0 {
-		return 0, 0, false
-	}
-	if strings.TrimSpace(requestedModel) != "" || transport != "" {
-		var found bool
-		errorRate, ttft, hasTTFT, found = s.snapshotForKey(openAIAccountRuntimeStatsKey{
-			accountID: accountID,
-			kind:      "text",
-			model:     requestedModel,
-			transport: string(transport),
-		})
-		if found {
-			return errorRate, ttft, hasTTFT
-		}
-	}
-	return s.snapshotForRequest(accountID, "")
+	errorRate, ttft, hasTTFT, _, _, _ = s.snapshotForRouteWithMeta(accountID, requestedModel, transport)
+	return
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForRouteWithMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
@@ -537,7 +528,7 @@ func (s *openAIAccountRuntimeStats) snapshotForRouteWithFreshnessMeta(accountID 
 			model:     requestedModel,
 			transport: string(transport),
 		})
-		if found {
+		if found && (sampleCount > 0 || ttftSampleCount > 0) {
 			return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated, errorUpdated, ttftUpdated
 		}
 	}
@@ -562,11 +553,19 @@ func (s *openAIAccountRuntimeStats) snapshotForKeyWithFreshnessMeta(key openAIAc
 	key = normalizeOpenAIAccountRuntimeStatsKey(key)
 	value, ok := s.accounts.Load(key)
 	if !ok {
+		// Hydrate newly encountered routes without a Redis round trip in the
+		// scheduler. Initial unknown health remains eligible as before.
+		if shared := s.sharedHealthState(); shared != nil {
+			shared.loadMissing(key)
+		}
 		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
 		return 0, 0, false, false, 0, 0, time.Time{}, time.Time{}, time.Time{}
+	}
+	if shared := s.sharedHealthState(); shared != nil {
+		shared.refreshKey(key, stat)
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	sampleCount = stat.sampleCount.Load()
@@ -1753,6 +1752,21 @@ func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore,
 // this preserves health-first semantics while preventing cost-balanced
 // sessions from staying pinned to an expensive account forever.
 func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []openAIAccountCandidateScore, preferred map[int64]struct{}, costBalanced bool, now time.Time, policy adaptiveTTFTSwitchPolicy) bool {
+	// Apply the same fresh error evidence as policy selection before promoting
+	// affinity. Otherwise the final sticky splice can undo health-first ordering.
+	fresh := freshOpenAIHealthCandidates(append([]openAIAccountCandidateScore{sticky}, pool...), now, policy)
+	sticky = fresh[0]
+	pool = fresh[1:]
+	if sticky.sampleCount >= accountHealthUnknownMinSamples {
+		for _, other := range pool {
+			if other.account == nil || other.account.ID == sticky.account.ID || other.sampleCount < accountHealthUnknownMinSamples {
+				continue
+			}
+			if _, ok := preferred[other.account.ID]; ok && sticky.errorRate > other.errorRate+accountHealthErrorGap {
+				return false
+			}
+		}
+	}
 	if adaptiveOpenAICandidateTooSlowForTTFTPolicy(sticky, pool, preferred, policy) {
 		return false
 	}
@@ -2757,6 +2771,12 @@ func (s *defaultOpenAIAccountScheduler) SnapshotMetrics() OpenAIAccountScheduler
 		snapshot.SnapshotGeneration = s.service.schedulerSnapshot.Generation()
 	}
 	snapshot.ExclusionsByReason = s.metrics.exclusions.snapshot()
+	if shared := s.stats.sharedHealthState(); shared != nil {
+		snapshot.SharedHealthReportDrops = shared.reportDrops.Load()
+		snapshot.SharedHealthPersistErrors = shared.persistErrors.Load()
+		snapshot.SharedHealthPublishErrors = shared.publishErrors.Load()
+		snapshot.SharedHealthLoadErrors = shared.loadErrors.Load()
+	}
 	if selectTotal > 0 {
 		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
 		snapshot.StickyHitRatio = float64(stickyHit) / float64(selectTotal)

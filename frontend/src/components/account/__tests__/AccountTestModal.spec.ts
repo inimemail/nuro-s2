@@ -245,4 +245,81 @@ describe('AccountTestModal', () => {
 
     expect(wrapper.text()).toContain('已通过 /v1/chat/completions 验证')
   })
+  it('allows cancelling an in-flight test without closing the modal', async () => {
+    const wrapper = mount(AccountTestModal, {
+      props: { show: true, account: buildAccount() },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
+    await flushPromises()
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    })) as any
+    const pending = (wrapper.vm as any).startTest()
+    await flushPromises()
+    expect((wrapper.vm as any).status).toBe('connecting')
+    await wrapper.findAll('button').find(button => button.text() === 'common.cancel')!.trigger('click')
+    await pending
+    expect((wrapper.vm as any).status).toBe('idle')
+    expect(wrapper.text()).toContain('admin.accounts.testCancelled')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('bounds a stalled OpenAI text test and shows a timeout error', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = mount(AccountTestModal, {
+      props: { show: true, account: buildAccount() },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
+    try {
+      await flushPromises()
+      global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })) as any
+      const pending = (wrapper.vm as any).startTest()
+      await vi.advanceTimersByTimeAsync(190_000)
+      await pending
+      expect((wrapper.vm as any).status).toBe('error')
+      expect(wrapper.text()).toContain('admin.accounts.testTimedOut')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['gpt-image-2', 'gemini-3-pro-image-preview'])('keeps the text timeout off for an image alias mapped to %s', async (upstreamModel) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    getAvailableModelsMock.mockResolvedValue([{ id: 'my-image-alias', upstream_model: upstreamModel }])
+    const account = buildAccount()
+    account.type = 'apikey'
+    const wrapper = mount(AccountTestModal, {
+      props: { show: true, account },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
+    try {
+      await flushPromises()
+      const vm = wrapper.vm as any
+      expect(vm.supportsImageTest).toBe(true)
+      vm.testPrompt = 'draw a cat'
+      let signal: AbortSignal | undefined
+      global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+        signal = options?.signal as AbortSignal
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })) as any
+      const pending = vm.startTest()
+      await vi.advanceTimersByTimeAsync(190_000)
+      expect(signal?.aborted).toBe(false)
+      expect(vm.status).toBe('connecting')
+      const [, options] = (global.fetch as any).mock.calls[0]
+      expect(JSON.parse(options.body)).toMatchObject({ model_id: 'my-image-alias', prompt: 'draw a cat' })
+      vm.cancelTest()
+      await pending
+      expect(vm.status).toBe('idle')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
 })

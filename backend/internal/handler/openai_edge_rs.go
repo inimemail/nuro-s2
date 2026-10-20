@@ -35,6 +35,7 @@ const (
 )
 
 type openAIEdgeLease struct {
+	terminalFailureRecorded bool
 	// retryMu serializes retry/staged-retry decisions for one lease. It is
 	// deliberately separate from mu so account selection and release callbacks
 	// never hold the lifecycle lock across external service calls.
@@ -2254,7 +2255,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	edgeSemanticProgressTimeout := status == 0 && errorType == "edge_semantic_progress_timeout"
 	edgeStreamFailure := status == 0 && errorType == "edge_upstream_stream_failed"
 	edgeBodyTransportFailure := status == 0 && (errorType == "edge_upstream_transport_error" ||
-		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout" || edgeSemanticProgressTimeout)
+		errorType == "edge_upstream_body_idle_timeout" || errorType == "edge_upstream_no_progress_timeout" || edgeSemanticProgressTimeout)
 	commitState := req.EffectiveCommitState()
 	if commitState == service.OpenAIEdgeCommitStateRealOutput || commitState == service.OpenAIEdgeCommitStateTerminal {
 		if cachePolicyApplied &&
@@ -2396,11 +2397,11 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	if executionUnknown {
-		failureRecorded := false
+		failureRecorded := lease.terminalFailureRecorded
 		// Preserve the established account-health side effects for failures that
 		// previously entered normal failover. Request-local race/body timeout
 		// classes remain isolated and must not create a shared cooldown.
-		if !edgeResponseHeaderTimeout && !edgeBodyTransportFailure && h.gatewayService != nil {
+		if !failureRecorded && !edgeResponseHeaderTimeout && !edgeBodyTransportFailure && h.gatewayService != nil {
 			failoverErr := &service.UpstreamFailoverError{
 				StatusCode:                 status,
 				ResponseBody:               responseBody,
@@ -2417,6 +2418,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), groupID, lease.sessionHash, lease.account, failoverErr, routingModel)
 			lease.failedAccountIDs[lease.account.ID] = struct{}{}
 			failureRecorded = true
+			lease.terminalFailureRecorded = true
 		}
 		statusCode := http.StatusBadGateway
 		if status == 0 && (edgeBodyTransportFailure || edgeStreamFailure) {
@@ -3133,10 +3135,10 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		// An incomplete terminal is normally neutral (for example provider-side
 		// truncation), but Edge's explicit upstream_disconnect classification is
 		// stronger evidence that the account transport actually broke mid-stream.
-		if strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect") {
+		if openAIEdgeFailureClassIsAccountTransport(req.FailureClass) {
 			protocolNeutralTerminal = false
 		}
-		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || protocolNeutralTerminal
+		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || lease.terminalFailureRecorded || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || protocolNeutralTerminal
 		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
 		// Keep the process-local proxy circuit in sync with the terminal outcome.
 		// A successful terminal response clears prior disconnect observations. An
@@ -3144,7 +3146,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		// protocol-level incomplete terminal event: that event is not a successful
 		// terminal response and represents the same non-terminal upstream break.
 		// Client/local/cache-policy outcomes remain neutral.
-		if !restored && openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
+		if !restored && !lease.terminalFailureRecorded && openAIEdgeShouldRecordCircuitOutcome(req, successfulTerminal, cachePolicyCompatibilityFailure) {
 			h.gatewayService.RecordOpenAIEdgeStreamOutcome(
 				lease.account,
 				req.FailureClass,
@@ -3348,6 +3350,15 @@ func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 	}
 }
 
+func openAIEdgeFailureClassIsAccountTransport(failureClass string) bool {
+	switch strings.ToLower(strings.TrimSpace(failureClass)) {
+	case "upstream_disconnect", "upstream_no_progress":
+		return true
+	default:
+		return false
+	}
+}
+
 func openAIEdgeShouldRecordCircuitOutcome(req service.OpenAIEdgeCompleteRequest, successfulTerminal, cachePolicyCompatibilityFailure bool) bool {
 	if req.ClientDisconnected || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeCompletionIsRequestLocal(req) || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
 		return false
@@ -3355,14 +3366,14 @@ func openAIEdgeShouldRecordCircuitOutcome(req service.OpenAIEdgeCompleteRequest,
 	if successfulTerminal {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect")
+	return openAIEdgeFailureClassIsAccountTransport(req.FailureClass)
 }
 
 func openAIEdgeAbortShouldRecordCircuitOutcome(req service.OpenAIEdgeAbortRequest) bool {
 	if !req.RelayAttempted || req.ClientDisconnected || req.FallbackToGo || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || openAIEdgeAbortReasonIsNeutral(req.Reason) {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect")
+	return openAIEdgeFailureClassIsAccountTransport(req.FailureClass)
 }
 
 func openAIEdgeCachePolicyCompatibilityFailure(lease *openAIEdgeLease, req service.OpenAIEdgeCompleteRequest) bool {
@@ -3400,7 +3411,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 			// Abort is also a settlement boundary for relay failures that never
 			// reached a terminal event. The circuit itself ignores client/local
 			// classes, while retaining upstream_disconnect observations.
-			if openAIEdgeAbortShouldRecordCircuitOutcome(req) {
+			if !lease.terminalFailureRecorded && openAIEdgeAbortShouldRecordCircuitOutcome(req) {
 				h.gatewayService.RecordOpenAIEdgeStreamOutcome(
 					lease.account,
 					req.FailureClass,
@@ -3413,7 +3424,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 		if openAIEdgeAbortShouldFlushPromptAudit(req) {
 			defer h.flushOpenAIEdgePromptAudit(lease)
 		}
-		if h.gatewayService != nil && lease.account != nil && req.RelayAttempted && !req.ClientDisconnected &&
+		if h.gatewayService != nil && lease.account != nil && !lease.terminalFailureRecorded && req.RelayAttempted && !req.ClientDisconnected &&
 			!openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) && !openAIEdgeAbortReasonIsNeutral(req.Reason) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}

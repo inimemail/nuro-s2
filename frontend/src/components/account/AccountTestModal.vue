@@ -108,7 +108,7 @@
           </div>
           <div v-else-if="status === 'connecting'" class="flex items-center gap-2 text-yellow-400">
             <Icon name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-            <span>{{ t('admin.accounts.connectingToApi') }}</span>
+            <span>{{ t('admin.accounts.testInProgress') }}</span>
           </div>
 
           <!-- Output Lines -->
@@ -229,6 +229,13 @@
           class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
         >
           {{ t('common.close') }}
+        </button>
+        <button
+          v-if="status === 'connecting'"
+          @click="cancelTest"
+          class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
+        >
+          {{ t('common.cancel') }}
         </button>
         <button
           @click="startTest"
@@ -354,7 +361,8 @@ const supportsGeminiImageTest = computed(() => {
 })
 
 const supportsOpenAIImageTest = computed(() => {
-  const modelID = selectedModelId.value.toLowerCase()
+  const model = availableModels.value.find(model => model.id === selectedModelId.value)
+  const modelID = (model?.upstream_model || selectedModelId.value).trim().toLowerCase()
   if (modelID.startsWith('gemini-') && (modelID.endsWith('-image') || modelID.includes('-image-'))) return props.account?.platform === 'openai' && props.account?.type === 'apikey'
   if (!modelID.startsWith('gpt-image-')) return false
   return props.account?.platform === 'openai'
@@ -436,6 +444,12 @@ const abortStream = () => {
   }
 }
 
+const cancelTest = () => {
+  abortStream()
+  status.value = 'idle'
+  addLine(t('admin.accounts.testCancelled'), 'text-gray-400')
+}
+
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
   if (outputLines.value.length > 2000) outputLines.value.splice(0, outputLines.value.length - 2000)
@@ -465,6 +479,16 @@ const startTest = async () => {
   const generation = streamGeneration
   const accountID = props.account.id
   const current = () => !disposed && props.show && props.account?.id === accountID && generation === streamGeneration
+  let timedOut = false
+  // The backend text probe has a three-minute deadline. Keep a small margin
+  // for its final event while also bounding a stalled browser connection.
+  const timeout = isOpenAIAccount.value && !supportsImageTest.value && testMode.value === 'default'
+    ? setTimeout(() => {
+      if (!current()) return
+      timedOut = true
+      controller.abort()
+    }, 190_000)
+    : undefined
 
   try {
     // Create EventSource for SSE
@@ -541,15 +565,16 @@ const startTest = async () => {
     }
   } catch (error: unknown) {
     if (!current()) return
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (!timedOut && error instanceof DOMException && error.name === 'AbortError') {
       status.value = 'idle'
       return
     }
     status.value = 'error'
-    const msg = error instanceof Error ? error.message : 'Unknown error'
+    const msg = timedOut ? t('admin.accounts.testTimedOut') : (error instanceof Error ? error.message : 'Unknown error')
     errorMessage.value = msg
     addLine(`Error: ${msg}`, 'text-red-400')
   } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
     if (current()) abortController = null
   }
 }
@@ -568,7 +593,7 @@ const handleEvent = (event: {
 }) => {
   switch (event.type) {
     case 'test_start':
-      addLine(t('admin.accounts.connectedToApi'), 'text-green-400')
+      addLine(t('admin.accounts.testRequestStarted'), 'text-blue-400')
       if (event.model) {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }

@@ -567,8 +567,8 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 }
 
 func (s *ConcurrencyService) AcquireAccountSlotForPlatform(ctx context.Context, platform string, accountID int64, maxConcurrency int) (*AcquireResult, error) {
-	// If maxConcurrency is 0 or negative, no limit
-	if maxConcurrency <= 0 {
+	// Unlimited concurrency still needs Redis' atomic account-cooldown gate.
+	if maxConcurrency <= 0 && (s == nil || s.cache == nil) {
 		return &AcquireResult{
 			Acquired:    true,
 			ReleaseFunc: func() {}, // no-op
@@ -590,6 +590,9 @@ func (s *ConcurrencyService) AcquireAccountSlotForPlatform(ctx context.Context, 
 	}
 
 	if acquired {
+		if maxConcurrency <= 0 {
+			return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
+		}
 		renewalKey := "account:" + strconv.FormatInt(accountID, 10) + ":" + requestID
 		if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
 			s.registerSlotRenewal(renewalKey, "account", accountID, requestID)
@@ -614,19 +617,6 @@ func (s *ConcurrencyService) AcquireAccountSlotForPlatform(ctx context.Context, 
 func (s *ConcurrencyService) AcquireFirstAvailableAccountSlot(ctx context.Context, candidates []AccountSlotCandidate) (*AccountSlotArbitrationResult, error) {
 	if len(candidates) == 0 {
 		return &AccountSlotArbitrationResult{}, nil
-	}
-	for _, candidate := range candidates {
-		if candidate.AccountID <= 0 {
-			continue
-		}
-		if candidate.MaxConcurrency <= 0 {
-			return &AccountSlotArbitrationResult{
-				Acquired:    true,
-				AccountID:   candidate.AccountID,
-				ReleaseFunc: func() {},
-			}, nil
-		}
-		break
 	}
 	if s == nil || s.cache == nil {
 		for _, candidate := range candidates {

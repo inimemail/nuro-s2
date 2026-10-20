@@ -5257,11 +5257,11 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, latest); paused {
 			return nil, nil
 		}
-		if s.isOpenAIAccountRuntimeBlocked(latest) {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
 		account = latest
+	}
+	if s.isOpenAIAccountRuntimeBlocked(account) {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		return nil, nil
 	}
 	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account, !requireCompact && IsOpenAINativeCompactionV2Context(ctx)) == 0 {
 		if requireCompact {

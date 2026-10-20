@@ -622,3 +622,32 @@ func TestAccountTestService_OpenAIChatCompletionsPathRejectsNonJSONStream(t *tes
 	require.Contains(t, recorder.Body.String(), "/v1/chat/completions")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
 }
+
+func TestOpenAITextAccountProbeClosesStalledBodyOnDeadline(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chat=%t", chat), func(t *testing.T) {
+			c, recorder := newTestContext()
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Millisecond)
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+			reader, writer := io.Pipe()
+			defer writer.Close()
+			upstream := &queuedHTTPUpstream{responses: []*http.Response{{StatusCode: 200, Header: make(http.Header), Body: reader}}}
+			svc := &AccountTestService{httpUpstream: upstream}
+			account := &Account{ID: 811, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "test-token"}}
+			started := time.Now()
+			if chat {
+				_ = svc.testOpenAIChatCompletionsConnection(c, account, "gpt-test", "hi", "https://api.example.com", "test-key")
+			} else {
+				_ = svc.testOpenAIAccountConnection(c, account, "gpt-test", "", "default")
+			}
+			require.Less(t, time.Since(started), time.Second)
+			require.Contains(t, recorder.Body.String(), `"type":"error"`)
+			require.NotContains(t, recorder.Body.String(), `"success":true`)
+			require.Len(t, upstream.requests, 1, "a direct account probe must not switch or replay")
+			deadline, ok := upstream.requests[0].Context().Deadline()
+			require.True(t, ok)
+			require.LessOrEqual(t, time.Until(deadline), openAITextAccountTestTimeout)
+		})
+	}
+}
