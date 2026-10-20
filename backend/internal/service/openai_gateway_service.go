@@ -483,6 +483,8 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil               sync.Map // key: int64(accountID), value: time.Time
+	openaiAccountStreamDisconnectCount           sync.Map // key: int64(accountID), value: openAIAccountStreamDisconnectState
+	openaiAccountStreamDisconnectCleanupAt       atomic.Int64
 	openaiPoolSoftCooldownUntil                  sync.Map // key: int64(accountID), value: time.Time
 	openaiPoolSoftCooldownContext                sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
 	openaiPoolSoftCooldownFailureCount           sync.Map // key: int64(accountID), value: int

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,8 @@ const (
 	defaultOpenAIProxyStreamQuarantineTTL     = 10 * time.Minute
 	defaultOpenAIProxyStreamCircuitMaxEntries = 4096
 	defaultOpenAIProxyStreamFailureCollapse   = 3 * time.Second
+	openAIAccountStreamFailureWindow          = 2 * time.Minute
+	openAIAccountStreamFailureThreshold       = 2
 )
 
 // OpenAIStreamFailureClass distinguishes upstream failures from downstream
@@ -64,6 +68,11 @@ type openAIProxyStreamCircuit struct {
 
 type openAIProxyStreamCircuitSnapshot struct {
 	blockedUntil map[int64]time.Time
+}
+
+type openAIAccountStreamDisconnectState struct {
+	count int64
+	start time.Time
 }
 
 func resolveOpenAIProxyStreamCircuitSettings(s *OpenAIGatewayService) openAIProxyStreamCircuitSettings {
@@ -250,6 +259,12 @@ func openAIProxyStreamCircuitProxyID(account *Account) (int64, bool) {
 }
 
 func (s *OpenAIGatewayService) recordOpenAIProxyStreamOutcome(account *Account, class OpenAIStreamFailureClass, _ bool, terminalSuccess bool, streamErr error) {
+	if account != nil && account.Platform == PlatformOpenAI {
+		if !terminalSuccess && class == OpenAIStreamFailureUpstreamDisconnect &&
+			(streamErr == nil || (!errors.Is(streamErr, context.Canceled) && !errors.Is(streamErr, context.DeadlineExceeded))) {
+			s.recordOpenAIAccountStreamDisconnect(account)
+		}
+	}
 	proxyID, ok := openAIProxyStreamCircuitProxyID(account)
 	if !ok {
 		return
@@ -273,6 +288,116 @@ func (s *OpenAIGatewayService) recordOpenAIProxyStreamOutcome(account *Account, 
 		return
 	}
 	circuit.recordFailure(proxyID, time.Now())
+}
+
+// recordOpenAIAccountStreamDisconnect temporarily removes a repeatedly
+// disconnecting OpenAI account from scheduling without changing its persisted
+// enabled state. The Redis counter makes the fixed failure window consistent across
+// gateway replicas; the shared account cooldown is already consumed by the
+// normal scheduler admission path.
+func (s *OpenAIGatewayService) recordOpenAIAccountStreamDisconnect(account *Account) {
+	if s == nil || account == nil || account.Platform != PlatformOpenAI || account.ID <= 0 {
+		return
+	}
+	count := int64(1)
+	if s.openaiAccountHealthRedis != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		key := "openai:account_stream_disconnect:" + strconv.FormatInt(account.ID, 10)
+		countValue, err := s.openaiAccountHealthRedis.Eval(ctx,
+			"local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n",
+			[]string{key}, int(openAIAccountStreamFailureWindow.Seconds())).Int64()
+		if err == nil {
+			count = countValue
+		} else {
+			slog.Warn("openai.account_stream_disconnect_counter_failed", "account_id", account.ID, "error", err)
+			count = s.nextLocalOpenAIAccountStreamDisconnectCount(account.ID, time.Now())
+		}
+	} else {
+		count = s.nextLocalOpenAIAccountStreamDisconnectCount(account.ID, time.Now())
+		s.pruneLocalOpenAIAccountStreamDisconnectCounts(time.Now())
+	}
+	// A single disconnect is recorded as a health failure but does not block
+	// the account. Repeated disconnects in the shared failure window use the established runtime block
+	// duration and automatic expiry instead of introducing a second cooldown
+	// ladder that can keep accounts sidelined for increasingly long periods.
+	if count == openAIAccountStreamFailureThreshold {
+		until := time.Now().Add(openAIStopSchedulingBridgeCooldown)
+		const reason = "upstream stream disconnected repeatedly"
+		s.BlockAccountScheduling(account, until, "upstream_stream_disconnect")
+		// Persist the same short deadline through the existing temp-unschedulable
+		// field so the current account status UI can show the reason and countdown.
+		// Scheduling remains protected by the runtime block if persistence fails.
+		if s.accountRepo != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), openAIAccountStateUpdateTimeout)
+			if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+				slog.Warn("openai.account_stream_disconnect_unschedulable_write_failed", "account_id", account.ID, "error", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func (s *OpenAIGatewayService) nextLocalOpenAIAccountStreamDisconnectCount(accountID int64, now time.Time) int64 {
+	for {
+		value, loaded := s.openaiAccountStreamDisconnectCount.Load(accountID)
+		state, _ := value.(openAIAccountStreamDisconnectState)
+		if !loaded || state.start.IsZero() || now.Before(state.start) || now.Sub(state.start) >= openAIAccountStreamFailureWindow {
+			state = openAIAccountStreamDisconnectState{count: 1, start: now}
+		} else {
+			state.count++
+		}
+		if loaded {
+			if s.openaiAccountStreamDisconnectCount.CompareAndSwap(accountID, value, state) {
+				return state.count
+			}
+		} else if _, loaded = s.openaiAccountStreamDisconnectCount.LoadOrStore(accountID, state); !loaded {
+			return state.count
+		}
+	}
+}
+
+func (s *OpenAIGatewayService) pruneLocalOpenAIAccountStreamDisconnectCounts(now time.Time) {
+	if s == nil {
+		return
+	}
+	nowNano := now.UnixNano()
+	lastSweep := s.openaiAccountStreamDisconnectCleanupAt.Load()
+	if lastSweep > 0 && nowNano-lastSweep < int64(time.Minute) {
+		return
+	}
+	if !s.openaiAccountStreamDisconnectCleanupAt.CompareAndSwap(lastSweep, nowNano) {
+		return
+	}
+	s.openaiAccountStreamDisconnectCount.Range(func(key, value any) bool {
+		state, ok := value.(openAIAccountStreamDisconnectState)
+		if !ok || state.start.IsZero() || now.Sub(state.start) > openAIAccountStreamFailureWindow {
+			s.openaiAccountStreamDisconnectCount.Delete(key)
+		}
+		return true
+	})
+}
+
+// RecordOpenAIAccountStreamDisconnect records a confirmed upstream disconnect
+// from transports whose terminal result is not available to the normal HTTP
+// settlement callback (notably failed WebSocket turns).
+func (s *OpenAIGatewayService) RecordOpenAIAccountStreamDisconnect(account *Account, requestedModel string) {
+	if s == nil || account == nil {
+		return
+	}
+	s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, true, false, errors.New("websocket upstream stream disconnected"))
+	s.ReportOpenAIAccountScheduleResultForRequest(account, requestedModel, false, nil)
+}
+
+func (s *OpenAIGatewayService) clearOpenAIAccountStreamFailures(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	// Redis holds a shared fixed-window failure count. Do not clear it on
+	// success: a success on one replica cannot safely reset another replica's
+	// observation without a Redis write on every successful request. The key
+	// expires naturally after the short failure window.
+	s.openaiAccountStreamDisconnectCount.Delete(accountID)
 }
 
 // RecordOpenAIEdgeStreamOutcome is the control-plane boundary used by edge-rs

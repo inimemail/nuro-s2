@@ -3356,6 +3356,9 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(accou
 		return
 	}
 	if success {
+		if account.Platform == PlatformOpenAI {
+			s.clearOpenAIAccountStreamFailures(account.ID)
+		}
 		if nonOpenAIPoolPlatform(account.Platform) {
 			if s.nonOpenAIPoolRuntime != nil {
 				s.nonOpenAIPoolRuntime.markSuccess(account)

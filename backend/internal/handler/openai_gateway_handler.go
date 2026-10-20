@@ -3019,6 +3019,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					)
 				}
 				if result == nil {
+					if turnErr != nil && !service.IsOpenAIWSAccountHealthNeutralError(turnErr) &&
+						service.OpenAIWSIngressRequestWasWritten(turnErr) && service.IsOpenAIWSUpstreamDisconnectError(turnErr) {
+						h.gatewayService.RecordOpenAIAccountStreamDisconnect(account, reqModel)
+					}
 					return
 				}
 				turnRequestedModel := strings.TrimSpace(result.Model)
@@ -3061,6 +3065,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				terminalType := strings.ToLower(strings.TrimSpace(result.TerminalEventType))
 				successfulTerminal, neutralOutcome := classifyOpenAIResponsesForwardResultWithError(result, turnErr)
+				if turnErr != nil && !service.IsOpenAIWSAccountHealthNeutralError(turnErr) &&
+					service.OpenAIWSIngressRequestWasWritten(turnErr) && service.IsOpenAIWSUpstreamDisconnectError(turnErr) {
+					h.gatewayService.RecordOpenAIAccountStreamDisconnect(account, routingModel)
+				}
 				cyberBlocked := result.CyberBlocked
 				switch {
 				case successfulTerminal:

@@ -61,6 +61,27 @@ func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {
 	))
 }
 
+func TestOpenAIWSIngressRequestWasWritten(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, OpenAIWSIngressRequestWasWritten(nil))
+	require.False(t, OpenAIWSIngressRequestWasWritten(
+		wrapOpenAIWSIngressTurnError("write_upstream", errors.New("dial failed"), false),
+	))
+	require.True(t, OpenAIWSIngressRequestWasWritten(
+		wrapOpenAIWSIngressWrittenTurnError("read_upstream", errors.New("connection reset"), false, "attempt-1"),
+	))
+	require.True(t, IsOpenAIWSUpstreamDisconnectError(
+		wrapOpenAIWSIngressWrittenTurnError("read_upstream", errors.New("connection reset by peer"), false, "attempt-1"),
+	))
+	require.False(t, IsOpenAIWSUpstreamDisconnectError(
+		wrapOpenAIWSIngressWrittenTurnError("read_client", errors.New("connection reset by peer"), false, "attempt-1"),
+	))
+	require.False(t, IsOpenAIWSUpstreamDisconnectError(
+		wrapOpenAIWSIngressWrittenTurnError("read_upstream", context.Canceled, false, "attempt-1"),
+	))
+}
+
 func TestOpenAIWSIngressPreviousResponseRecoveryEnabled(t *testing.T) {
 	t.Parallel()
 

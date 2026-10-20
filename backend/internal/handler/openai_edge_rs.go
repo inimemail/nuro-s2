@@ -3129,8 +3129,14 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		stallActionSuccess := successfulTerminal || req.ClientDisconnected || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass)
 		h.settleOpenAIEdgeStallAction(lease, stallActionSuccess)
 		requestLocalOutcome := openAIEdgeCompletionIsRequestLocal(req)
-		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || terminalType == "response.incomplete" ||
-			terminalType == "response.cancelled" || terminalType == "response.canceled"
+		protocolNeutralTerminal := terminalType == "response.incomplete" || terminalType == "response.cancelled" || terminalType == "response.canceled"
+		// An incomplete terminal is normally neutral (for example provider-side
+		// truncation), but Edge's explicit upstream_disconnect classification is
+		// stronger evidence that the account transport actually broke mid-stream.
+		if strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect") {
+			protocolNeutralTerminal = false
+		}
+		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || protocolNeutralTerminal
 		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
 		// Keep the process-local proxy circuit in sync with the terminal outcome.
 		// A successful terminal response clears prior disconnect observations. An

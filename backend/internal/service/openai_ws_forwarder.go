@@ -263,6 +263,32 @@ func openAIWSIngressAttempt(err error) (string, bool) {
 	return "", false
 }
 
+// OpenAIWSIngressRequestWasWritten reports whether a failed turn had already
+// been sent upstream, so callers can distinguish account-side transport
+// failures from local preflight failures.
+func OpenAIWSIngressRequestWasWritten(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if errors.As(err, &turnErr) && turnErr != nil {
+		return turnErr.requestWritten
+	}
+	_, written := openAIWSIngressAttempt(err)
+	return written
+}
+
+// IsOpenAIWSUpstreamDisconnectError restricts disconnect health accounting to
+// a transport read failure on the upstream side. Generic WS close errors can
+// also describe a downstream client disconnect, so the relay stage matters.
+func IsOpenAIWSUpstreamDisconnectError(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil || turnErr.stage != "read_upstream" || turnErr.cause == nil {
+		return false
+	}
+	if errors.Is(turnErr.cause, context.Canceled) || errors.Is(turnErr.cause, context.DeadlineExceeded) {
+		return false
+	}
+	return isOpenAIWSClientDisconnectError(turnErr.cause)
+}
+
 func isOpenAIWSIngressTurnRetryable(err error) bool {
 	var turnErr *openAIWSIngressTurnError
 	if !errors.As(err, &turnErr) || turnErr == nil {

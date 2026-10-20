@@ -983,11 +983,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			relayErr,
 		)
 	}
-	turnErr := wrapOpenAIWSIngressTurnError(
-		relayExit.Stage,
-		relayErr,
-		relayExit.WroteDownstream,
-	)
+	var turnErr error
+	if upstreamFirstMessageSent {
+		turnErr = wrapOpenAIWSIngressWrittenTurnError(relayExit.Stage, relayErr, relayExit.WroteDownstream, "")
+	} else {
+		turnErr = wrapOpenAIWSIngressTurnError(relayExit.Stage, relayErr, relayExit.WroteDownstream)
+	}
 	if result.AccountHealthNeutral {
 		turnErr = MarkOpenAIWSAccountHealthNeutralError(turnErr)
 	}
