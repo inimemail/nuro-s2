@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -17,6 +18,7 @@ type RequestMetadata struct {
 	PrefetchedStickyAccountID  *int64
 	PrefetchedStickyGroupID    *int64
 	SingleAccountRetry         *bool
+	singleAccountRetryProbe    *singleAccountRetryProbe
 	AccountSwitchCount         *int
 }
 
@@ -182,6 +184,20 @@ func PrefetchedStickyAccountIDFromContext(ctx context.Context) (int64, bool) {
 	return 0, false
 }
 
+type singleAccountRetryProbe struct {
+	once    sync.Once
+	resolve func(context.Context) bool
+	value   bool
+}
+
+// WithSingleAccountRetryProbe delays the optional query until a retry needs it.
+// Explicit metadata and legacy flags retain precedence over the probe.
+func WithSingleAccountRetryProbe(ctx context.Context, resolve func(context.Context) bool) context.Context {
+	return updateRequestMetadata(ctx, false, func(md *RequestMetadata) {
+		md.singleAccountRetryProbe = &singleAccountRetryProbe{resolve: resolve}
+	}, nil)
+}
+
 func SingleAccountRetryFromContext(ctx context.Context) (bool, bool) {
 	if md := metadataFromContext(ctx); md != nil && md.SingleAccountRetry != nil {
 		return *md.SingleAccountRetry, true
@@ -192,6 +208,18 @@ func SingleAccountRetryFromContext(ctx context.Context) (bool, bool) {
 	if value, ok := ctx.Value(ctxkey.SingleAccountRetry).(bool); ok {
 		requestMetadataFallbackSingleAccountRetryTotal.Add(1)
 		return value, true
+	}
+	if md := metadataFromContext(ctx); md != nil && md.singleAccountRetryProbe != nil {
+		probe := md.singleAccountRetryProbe
+		if ctx.Err() != nil {
+			return false, true
+		}
+		probe.once.Do(func() {
+			if probe.resolve != nil {
+				probe.value = probe.resolve(ctx)
+			}
+		})
+		return probe.value, true
 	}
 	return false, false
 }

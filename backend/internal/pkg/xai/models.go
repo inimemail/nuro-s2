@@ -24,6 +24,7 @@ const (
 
 var defaultModels = []Model{
 	{ID: "grok-4.7", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.7"},
+	{ID: "grok-4.7-fast", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.7 Fast"},
 	{ID: "grok-4.6", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.6"},
 	{ID: "grok-4.5", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.5"},
 	{ID: "grok-4.3", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.3"},
@@ -40,6 +41,7 @@ var defaultModels = []Model{
 }
 
 var grokTextModelAliases = map[string]string{
+	"grok-4.7-fast": "grok-4.7-fast", "grok-4.7-build-fast": "grok-4.7-fast",
 	"grok-4.7": "grok-4.7", "grok-4.7-latest": "grok-4.7",
 	"grok": "grok-4.5", "grok-latest": "grok-4.5", "grok-4.5-latest": "grok-4.5",
 	"grok-4.6": "grok-4.6", "grok-4.6-latest": "grok-4.6",

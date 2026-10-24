@@ -3524,7 +3524,8 @@ export default {
         antigravityOauth: 'Antigravity OAuth',
         antigravityApikey: 'Connect via Base URL + API Key',
         upstream: 'Upstream',
-        upstreamDesc: 'Connect via Base URL + API Key'
+        upstreamDesc: 'Connect via Base URL + API Key',
+        serviceAccount: 'Service Account'
       },
       status: {
         active: 'Active',

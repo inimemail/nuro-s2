@@ -65,6 +65,7 @@
 </template>
 
 <script setup lang="ts">
+import { supportsAccountQuota } from '@/utils/accountQuota'
 import { computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
@@ -136,7 +137,7 @@ const canDuplicate = computed(() => !isShadow.value && ['apikey', 'upstream', 'b
 const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
 const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
 const hasQuotaLimit = computed(() => {
-  return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
+  return supportsAccountQuota(props.account) && (
     (props.account?.quota_limit ?? 0) > 0 ||
     (props.account?.quota_daily_limit ?? 0) > 0 ||
     (props.account?.quota_weekly_limit ?? 0) > 0

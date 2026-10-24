@@ -36,9 +36,20 @@ const pOpts = computed(() => [
   { value: 'grok', label: 'Grok' },
   { value: 'kimi', label: 'Kimi' },
   { value: 'zhipu', label: 'Zhipu' },
-  { value: 'deepseek', label: 'DeepSeek' }
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'minimax', label: 'MiniMax' },
+  { value: 'opencode_go', label: 'OpenCode Go' },
+  { value: 'typesafe', label: 'TypeSafe' }
 ])
-const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'bedrock', label: 'AWS Bedrock' }])
+const tOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allTypes') },
+  { value: 'oauth', label: t('admin.accounts.oauthType') },
+  { value: 'setup-token', label: t('admin.accounts.setupToken') },
+  { value: 'apikey', label: t('admin.accounts.apiKey') },
+  { value: 'upstream', label: t('admin.accounts.types.upstream') },
+  { value: 'bedrock', label: 'AWS Bedrock' },
+  { value: 'service_account', label: t('admin.accounts.types.serviceAccount') }
+])
 const poolModeOpts = computed(() => [
   { value: '', label: t('admin.accounts.allPoolModes') },
   { value: 'non_pool', label: t('admin.accounts.poolModeFilter.nonPool') },

@@ -3784,6 +3784,7 @@ export default {
         antigravityApikey: '通过 Base URL + API Key 连接',
         upstream: '对接上游',
         upstreamDesc: '通过 Base URL + API Key 连接上游',
+        serviceAccount: '服务账号',
         api_key: 'API Key',
         cookie: 'Cookie'
       },

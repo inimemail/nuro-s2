@@ -221,6 +221,10 @@ const (
 // CheckErrorPolicy 检查池模式、自定义错误码和临时不可调度规则。
 // 池模式错误只参与 failover/软冷却；非池模式下自定义错误码开启时覆盖后续逻辑。
 func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) ErrorPolicyResult {
+	if statusCode == http.StatusForbidden && (isCloudflare1010JSON(responseBody) || isOfficialProviderCloudflare1010(account, responseBody)) {
+		return ErrorPolicySkipped
+	}
+
 	if account.IsPoolMode() && account.Platform == PlatformAnthropic {
 		return ErrorPolicySkipped
 	}
@@ -257,6 +261,11 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 如果启用且错误码不在列表中，则不处理（不停止调度、不标记限流/过载）
 	if !account.ShouldHandleErrorCode(statusCode) {
 		slog.Info("account_error_code_skipped", "account_id", account.ID, "status_code", statusCode)
+		return false
+	}
+
+	// CDN 1010 is link evidence; skip account/model penalties before local rules.
+	if statusCode == http.StatusForbidden && (isCloudflare1010JSON(responseBody) || isOfficialProviderCloudflare1010(account, responseBody)) {
 		return false
 	}
 
@@ -835,7 +844,7 @@ func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody 
 // Antigravity 平台区分 validation/violation/generic 三种类型，均 SetError 永久禁用；
 // 其他平台保持原有 SetError 行为。
 func (s *RateLimitService) handle403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
-	if isOfficialProviderCloudflare1010(account, responseBody) {
+	if isCloudflare1010JSON(responseBody) || isOfficialProviderCloudflare1010(account, responseBody) {
 		return false
 	}
 	if isCNProviderQuotaExhausted403(account, responseBody, upstreamMsg) {

@@ -181,17 +181,56 @@ func (a *Account) ApplyHeaderOverrides(h http.Header) {
 	if len(overrides) == 0 {
 		return
 	}
-	// 覆写名两两不同（大小写不敏感）且各自只操作同名键，应用顺序不影响结果。
-	// 全量 EqualFold 扫描兜底删除任意 casing 的既有键：透传链路可能保留客户端
-	// 原始 casing，非 canonical/wire casing 的键 deleteHeaderAllForms 覆盖不到。
-	for name, value := range overrides {
-		for existing := range h {
-			if strings.EqualFold(existing, name) {
-				delete(h, existing)
+	applyHeaderOverrideEntries(h, overrides)
+}
+
+func applyHeaderOverrideEntries(h http.Header, overrides map[string]string) {
+	if len(overrides) < 4 {
+		for name, value := range overrides {
+			for existing := range h {
+				if strings.EqualFold(existing, name) {
+					delete(h, existing)
+				}
+			}
+			h[resolveWireCasing(name)] = []string{value}
+		}
+		return
+	}
+	// A stack buffer avoids allocating a lowercase string for every header.
+	// Unusual legacy keys retain EqualFold's Unicode semantics.
+	for existing := range h {
+		var lower [256]byte
+		ascii := len(existing) <= len(lower)
+		if ascii {
+			for i := 0; i < len(existing); i++ {
+				c := existing[i]
+				if c >= 128 {
+					ascii = false
+					break
+				}
+				if c >= 'A' && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+				lower[i] = c
 			}
 		}
+		if ascii {
+			if _, ok := overrides[string(lower[:len(existing)])]; ok {
+				delete(h, existing)
+			}
+		} else {
+			for name := range overrides {
+				if strings.EqualFold(existing, name) {
+					delete(h, existing)
+					break
+				}
+			}
+		}
+	}
+	for name, value := range overrides {
 		h[resolveWireCasing(name)] = []string{value}
 	}
+
 }
 
 // NormalizeHeaderOverrideCredentials 校验并原地规范化 credentials 中的请求头覆写字段。

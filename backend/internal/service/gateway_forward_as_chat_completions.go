@@ -418,6 +418,10 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	pump := newAnthropicNativeLinePump(scanner, s.compatStreamInterval())
+	defer func() { pump.stop(); _ = resp.Body.Close() }()
+	markDisconnected := func() { clientDisconnected = true; pump.beginDrain() }
+	pump.watchClient(gatewayCompatClientContext(c), markDisconnected)
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
@@ -430,10 +434,17 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			Duration:         time.Since(startTime),
 			FirstTokenMs:     firstTokenMs,
 			ClientDisconnect: clientDisconnected,
+			FailedOutcome:    !clientDisconnected && anthState.StopReason == "max_tokens",
 		}
 	}
 
 	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
+		if gatewayCompatClientContext(c).Err() != nil {
+			markDisconnected()
+		}
+		if clientDisconnected {
+			return false
+		}
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
 			return false
@@ -442,22 +453,25 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		// c 可能持有请求侧注入的 ToolNameRewrite；无则仅做静态前缀还原。
 		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
-			clientDisconnected = true
-			return true
+			markDisconnected()
+			return false
 		}
 		return false
 	}
 
 	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) bool {
 		if event.Type == "ping" {
+			if clientDisconnected {
+				return false
+			}
 			if _, err := fmt.Fprint(c.Writer, ": ping\n\n"); err != nil {
-				clientDisconnected = true
-				return true
+				markDisconnected()
+				return false
 			}
 			c.Writer.Flush()
 			return false
 		}
-		if firstChunk && (event.Type == "content_block_delta" || (event.Type == "content_block_start" && event.ContentBlock != nil && (event.ContentBlock.Text != "" || event.ContentBlock.Thinking != "" || event.ContentBlock.Type == "tool_use"))) {
+		if firstChunk && anthropicCompatStartsRealOutput(event) {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
@@ -482,59 +496,74 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 				}
 			}
 		}
-		c.Writer.Flush()
+		if !clientDisconnected {
+			c.Writer.Flush()
+		}
 		return false
 	}
 
 	invalidStream := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		if _, ok := extractOpenAISSEEventLine(line); !ok {
-			continue
+	var readErr error
+	for {
+		eventType, payload, err := nextAnthropicCompatFrame(pump, maxLineSize)
+		if gatewayCompatClientContext(c).Err() != nil {
+			markDisconnected()
 		}
-
-		if !scanner.Scan() {
-			invalidStream = true
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
 			break
 		}
-		dataLine := scanner.Text()
-		payload, ok := extractOpenAISSEDataLine(dataLine)
-		if !ok {
-			invalidStream = true
-			continue
-		}
-
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			invalidStream = true
-			continue
+			break
 		}
-
-		if processAnthropicEvent(&event) {
-			return resultWithUsage(), nil
+		if event.Type == "" {
+			event.Type = eventType
+		}
+		if event.Type == "error" || (eventType != "" && event.Type != eventType) {
+			invalidStream = true
+			break
+		}
+		if event.Type == "message_stop" && !anthState.CreatedSent {
+			invalidStream = true
+			break
+		}
+		_ = processAnthropicEvent(&event)
+		if anthState.CompletedSent {
+			break
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := readErr; err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("forward_as_cc stream: read error",
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
 		}
-		writeSafeGatewayStreamFailure(c, false)
+		if !clientDisconnected {
+			writeSafeGatewayStreamFailure(c, false)
+		}
 		result := resultWithUsage()
-		result.FailedOutcome = true
+		result.FailedOutcome = !clientDisconnected
 		return result, fmt.Errorf("read upstream stream: %w", err)
 	}
 
 	if invalidStream || !anthState.CompletedSent {
-		writeSafeGatewayStreamFailure(c, false)
+		if !clientDisconnected {
+			writeSafeGatewayStreamFailure(c, false)
+		}
 		result := resultWithUsage()
-		result.FailedOutcome = true
+		result.FailedOutcome = !clientDisconnected
 		return result, errors.New("upstream stream ended without a valid message_stop")
 	}
 
+	if clientDisconnected {
+		return resultWithUsage(), nil
+	}
 	finalCCChunks := apicompat.FinalizeResponsesChatStream(ccState)
 	for _, chunk := range finalCCChunks {
 		if writeChunk(chunk) {
@@ -542,6 +571,10 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		}
 	}
 
+	if clientDisconnected || gatewayCompatClientContext(c).Err() != nil {
+		clientDisconnected = true
+		return resultWithUsage(), nil
+	}
 	// Write [DONE] marker
 	if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
 		clientDisconnected = true

@@ -263,14 +263,14 @@ func aliasDeepSeekResponsesImages(input any) {
 		}
 	case map[string]any:
 		if value["type"] == "input_image" || value["type"] == "image_url" || value["type"] == "image" {
-			imageURL, _ := value["url"].(string)
-			if imageURL == "" {
-				imageURL, _ = value["image_url"].(string)
-			}
+			imageURL, _ := value["image_url"].(string)
 			if imageURL == "" {
 				if image, ok := value["image_url"].(map[string]any); ok {
 					imageURL, _ = image["url"].(string)
 				}
+			}
+			if imageURL == "" {
+				imageURL, _ = value["url"].(string)
 			}
 			if imageURL == "" {
 				if source, ok := value["source"].(map[string]any); ok {
@@ -288,7 +288,7 @@ func aliasDeepSeekResponsesImages(input any) {
 			}
 			if imageURL != "" {
 				value["type"] = "input_image"
-				value["url"] = imageURL
+				delete(value, "url")
 				value["image_url"] = imageURL
 			}
 		}

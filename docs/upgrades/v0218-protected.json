@@ -1,0 +1,144 @@
+{
+  "baseline": "b4c3e9d766274bc062acb16ff9922897658a511a",
+  "files": {
+    "backend/internal/service/openai_prompt_cache_creation_optimization.go": "136c54e5f122eb14f9090c7336a1a46f491047875f56d23878b7b69d6c98f216",
+    "backend/internal/service/openai_prompt_cache_creation_runtime.go": "28608d851812b664bfc52d5f66af9926246d7b302558071c525bcc4afb19387c",
+    "backend/internal/service/openai_prompt_cache_usage_presentation.go": "75f2b63d9d32a375c935557a75fb4fffce6802f8afb3a37e30027f46e0470238",
+    "backend/internal/service/openai_gateway_chat_completions_raw.go": "4dfa7cd8268aed15a75082eb6b7344ab1016734403eaacdc84e92f0b22878550",
+    "backend/internal/service/openai_upstream_strong_isolation.go": "1bd0f6ca4bf0deec7f5cf5cc9e492b4ee7016d6baafbf74d2b2fb672237c6281",
+    "backend/internal/service/anthropic_upstream_strong_isolation.go": "5693cf783e7dca9ef3aa6a29b36db0d78c7da842542c4ecb9f4b84d2e1fe3456",
+    "backend/internal/handler/openai_edge_continuation.go": "0caefd94887324eba3e9af5458cd58ed8dd7c99543555600d3f325da23f90995",
+    "backend/internal/handler/openai_edge_ingress.go": "90101b8d75b3af2af60ae7b2a628a8b287ac27f392c9f0d7e5b4c7d1b8f7a905",
+    "backend/internal/handler/openai_edge_resume.go": "6f05d5dd637df7a81f53d43b5a2711d6c51382caa26595a9791bc77bfb0d7f41",
+    "backend/internal/handler/openai_edge_rs.go": "0c3b2283be38cf34b0955bd5cff2ad5d14eb429e431953429fae69175f69ae36",
+    "backend/internal/handler/openai_edge_settlement.go": "adff1c331a37982df4f4d3b3d9f9536d6f389a14c50c4ce96b0a8d9f1f3425b9",
+    "backend/internal/handler/openai_edge_sse.go": "3fb022d7e04631f6f087ea65a082988aaf9a50da4a4adb284cf896c5c6684987",
+    "backend/internal/service/openai_edge_rs.go": "d2c5671fae42970cda07f075ace4a8ea83fbb03982b1b9fa18a539dde4d538eb",
+    "backend/internal/service/openai_first_token_placeholder_coordinator.go": "b784e897ed8cc33dd89441d443ecbe2484ba0b1cda71ad11afe516cf4b5e308c",
+    "backend/internal/service/http_upstream_profile.go": "49d82515f068546c1b31315a7e3083e3b3ef636298e65d94bb3fda15e1167d9a",
+    "backend/internal/repository/http_upstream.go": "a04698c33ba6f518e8579ba8c6d381225b4c4656e0d1ae8d329f0bb3e3c88181",
+    "edge-rs/src/main.rs": "87babe7a2b0aa9bbc9a840543a838bd688d9b0d0163e6f10264c77fa4b7ffffa",
+    "edge-rs/src/stream_session.rs": "19f81594c03625aac5e796b1abd3b9c6d2b3f7189a7bc7c9b7a2db1e44dd3890",
+    "backend/internal/service/openai_account_scheduler.go": "71b7e967ebab23f4e7a5748460596f1f012b9dd722182960b38822cc4b93d881",
+    "backend/internal/service/scheduler_snapshot_service.go": "24a894556ac849d926cab4f90131697cec8f97acd9bd1b0c5c30e7a2a27415a3"
+  },
+  "existing_migration_prefixes": {
+    "006": [
+      "006_add_users_allowed_groups_compat.sql",
+      "006_fix_invalid_subscription_expires_at.sql"
+    ],
+    "028": [
+      "028_add_account_notes.sql",
+      "028_add_usage_logs_user_agent.sql",
+      "028_group_image_pricing.sql"
+    ],
+    "029": [
+      "029_add_group_claude_code_restriction.sql",
+      "029_usage_log_image_fields.sql"
+    ],
+    "033": [
+      "033_add_promo_codes.sql",
+      "033_ops_monitoring_vnext.sql"
+    ],
+    "034": [
+      "034_ops_upstream_error_events.sql",
+      "034_usage_dashboard_aggregation_tables.sql"
+    ],
+    "036": [
+      "036_ops_error_logs_add_is_count_tokens.sql",
+      "036_scheduler_outbox.sql"
+    ],
+    "037": [
+      "037_add_account_rate_multiplier.sql",
+      "037_ops_alert_silences.sql"
+    ],
+    "045": [
+      "045_add_accounts_extra_index.sql",
+      "045_add_announcements.sql",
+      "045_add_api_key_quota.sql"
+    ],
+    "046": [
+      "046_add_sora_accounts.sql",
+      "046_add_usage_log_reasoning_effort.sql"
+    ],
+    "047": [
+      "047_add_sora_pricing_and_media_type.sql",
+      "047_add_user_group_rate_multipliers.sql"
+    ],
+    "052": [
+      "052_add_group_sort_order.sql",
+      "052_migrate_upstream_to_apikey.sql"
+    ],
+    "053": [
+      "053_add_security_secrets.sql",
+      "053_add_skip_monitoring_to_error_passthrough.sql"
+    ],
+    "054": [
+      "054_drop_legacy_cache_columns.sql",
+      "054_ops_system_logs.sql"
+    ],
+    "060": [
+      "060_add_gemini31_flash_image_to_model_mapping.sql",
+      "060_add_usage_log_openai_ws_mode.sql"
+    ],
+    "070": [
+      "070_add_scheduled_test_auto_recover.sql",
+      "070_add_usage_log_service_tier.sql"
+    ],
+    "071": [
+      "071_add_gemini25_flash_image_to_model_mapping.sql",
+      "071_add_usage_billing_dedup.sql"
+    ],
+    "075": [
+      "075_add_usage_log_upstream_model.sql",
+      "075_map_haiku45_to_sonnet46.sql"
+    ],
+    "080": [
+      "080_create_tls_fingerprint_profiles.sql",
+      "080_ops_error_logs_add_latency_breakdown.sql"
+    ],
+    "081": [
+      "081_add_group_account_filter.sql",
+      "081_create_channels.sql"
+    ],
+    "095": [
+      "095_channel_features.sql",
+      "095_subscription_plans.sql"
+    ],
+    "101": [
+      "101_add_account_stats_pricing.sql",
+      "101_add_balance_notify_fields.sql",
+      "101_add_channel_features_config.sql",
+      "101_add_payment_mode.sql"
+    ],
+    "102": [
+      "102_add_balance_notify_threshold_type.sql",
+      "102_add_out_trade_no_to_payment_orders.sql"
+    ],
+    "125": [
+      "125_add_channel_monitors.sql",
+      "125_add_group_rpm_limit.sql"
+    ],
+    "126": [
+      "126_add_channel_monitor_aggregation.sql",
+      "126_add_user_rpm_limit.sql"
+    ],
+    "127": [
+      "127_add_user_group_rpm_override.sql",
+      "127_drop_channel_monitor_deleted_at.sql"
+    ],
+    "134": [
+      "134_affiliate_ledger_audit_snapshots.sql",
+      "134_image_generation_group_controls.sql"
+    ],
+    "135": [
+      "135_allow_email_oauth_provider_types.sql",
+      "135_content_moderation.sql"
+    ],
+    "136": [
+      "136_add_dingtalk_provider_type.sql",
+      "136_remove_ops_retry_replay.sql",
+      "136_usage_log_image_size_metadata.sql"
+    ]
+  }
+}

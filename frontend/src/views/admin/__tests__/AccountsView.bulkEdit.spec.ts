@@ -463,4 +463,93 @@ describe('admin AccountsView bulk edit scope', () => {
 			interval_seconds: 36000
 		})
 	})
+  it('coalesces only matching in-flight statistics and refreshes again after completion', async () => {
+    listAccounts.mockResolvedValue({ items: [{ id: 1 }], total: 1, pages: 1 })
+    const pending: Array<(value: any) => void> = []
+    getBatchTodayStats.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+    const wrapper = mountAccountsView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    const before = getBatchTodayStats.mock.calls.length
+    const first = vm.refreshTodayStatsBatch()
+    const second = vm.refreshTodayStatsBatch()
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(before)
+    pending[0]({ stats: { '1': { requests: 3 } } })
+    await Promise.all([first, second])
+    const third = vm.refreshTodayStatsBatch()
+    expect(getBatchTodayStats).toHaveBeenCalledTimes(before + 1)
+    pending[1]({ stats: {} })
+    await third
+    wrapper.unmount()
+  })
+
+  it('rejects stale incremental rows and ETags after a foreground query change', async () => {
+    listAccounts.mockResolvedValue({ items: [{ id: 2, name: 'new' }], total: 1, pages: 1 })
+    const wrapper = mountAccountsView()
+    await flushPromises()
+    let resolve!: (value: any) => void
+    listWithEtag.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const vm = wrapper.vm as any
+    const incremental = vm.refreshAccountsIncrementally()
+    vm.params.search = 'new'
+    await vm.load()
+    resolve({ etag: 'old-etag', notModified: false, data: { items: [{ id: 1, name: 'old' }], total: 99, pages: 9 } })
+    await incremental
+    expect(vm.accounts[0].id).toBe(2)
+    expect(vm.pagination.total).toBe(1)
+    expect(vm.autoRefreshETag).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('refreshes statistics for the committed query after cancelling an active load', async () => {
+    vi.useFakeTimers()
+    let wrapper: ReturnType<typeof mountAccountsView> | undefined
+    try {
+      listAccounts.mockResolvedValueOnce({ items: [{ id: 1 }], total: 1, pages: 1 })
+      wrapper = mountAccountsView()
+      await flushPromises()
+      const vm = wrapper.vm as any
+      getBatchTodayStats.mockClear()
+
+      let resolveOld!: (value: any) => void
+      let resolveNew!: (value: any) => void
+      listAccounts.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+        .mockImplementationOnce(() => new Promise(resolve => { resolveNew = resolve }))
+      const oldLoad = vm.load()
+      vm.params.search = 'new query'
+      vm.debouncedReload()
+      await flushPromises()
+      expect(getBatchTodayStats).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(300)
+      resolveNew({ items: [{ id: 2 }], total: 1, pages: 1 })
+      await flushPromises()
+      expect(getBatchTodayStats).toHaveBeenCalledTimes(1)
+      expect(getBatchTodayStats.mock.calls[0]?.[0]).toEqual([2])
+
+      resolveOld({ items: [{ id: 1 }], total: 1, pages: 1 })
+      await oldLoad
+      await flushPromises()
+      expect(vm.accounts[0].id).toBe(2)
+      expect(getBatchTodayStats).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper?.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores incremental responses that arrive after unmount', async () => {
+    const wrapper = mountAccountsView()
+    await flushPromises()
+    let resolve!: (value: any) => void
+    listWithEtag.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const vm = wrapper.vm as any
+    const request = vm.refreshAccountsIncrementally()
+    wrapper.unmount()
+    resolve({ etag: 'late', notModified: false, data: { items: [{ id: 9 }], total: 9, pages: 9 } })
+    await request
+    expect(vm.accounts).toEqual([])
+    expect(vm.autoRefreshETag).toBeNull()
+  })
+
 })

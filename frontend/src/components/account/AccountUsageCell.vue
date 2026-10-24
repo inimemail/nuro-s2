@@ -468,6 +468,12 @@
         </span>
       </div>
 
+      <div v-if="hasApiKeyQuota" class="mb-1 space-y-1 rounded-md border border-indigo-100 bg-indigo-50/40 p-1.5 dark:border-indigo-900/40 dark:bg-indigo-950/20" data-testid="gemini-account-quota">
+        <UsageProgressBar v-if="quotaDailyBar" label="1d" :utilization="quotaDailyBar.utilization" :resets-at="quotaDailyBar.resetsAt" color="indigo" />
+        <UsageProgressBar v-if="quotaWeeklyBar" label="7d" :utilization="quotaWeeklyBar.utilization" :resets-at="quotaWeeklyBar.resetsAt" color="emerald" />
+        <UsageProgressBar v-if="quotaTotalBar" label="total" :utilization="quotaTotalBar.utilization" color="purple" />
+      </div>
+
       <!-- Usage data or unlimited flow -->
       <div class="space-y-1">
         <div
@@ -774,6 +780,7 @@
 </template>
 
 <script setup lang="ts">
+import { supportsAccountQuota } from '@/utils/accountQuota'
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
@@ -1934,7 +1941,7 @@ const makeQuotaBar = (
 }
 
 const hasApiKeyQuota = computed(() => {
-  if (props.account.type !== 'apikey' && props.account.type !== 'bedrock') return false
+  if (!supportsAccountQuota(props.account)) return false
   return (
     (props.account.quota_daily_limit ?? 0) > 0 ||
     (props.account.quota_weekly_limit ?? 0) > 0 ||

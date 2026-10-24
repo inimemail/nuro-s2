@@ -148,7 +148,8 @@ func TestV028DeepSeekImageAliasesDoNotTouchToolArguments(t *testing.T) {
 	body := []byte(`{"input":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},{"type":"input_image","file_id":"file-1"}]},{"type":"function_call","arguments":"{\"image_url\":\"untouched\"}"}]}`)
 	a := &Account{Platform: PlatformDeepseek, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_protocol": "responses"}}
 	out := normalizeDeepSeekResponsesRequestBody(a, body)
-	require.Equal(t, "data:image/png;base64,abc", gjson.GetBytes(out, "input.0.content.0.url").String())
+	require.Equal(t, "data:image/png;base64,abc", gjson.GetBytes(out, "input.0.content.0.image_url").String())
+	require.False(t, gjson.GetBytes(out, "input.0.content.0.url").Exists())
 	require.Equal(t, "file-1", gjson.GetBytes(out, "input.0.content.1.file_id").String())
 	require.Equal(t, gjson.GetBytes(body, "input.1.arguments").String(), gjson.GetBytes(out, "input.1.arguments").String())
 	a.Platform = PlatformKimi

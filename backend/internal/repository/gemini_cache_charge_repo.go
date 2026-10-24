@@ -493,11 +493,11 @@ func (r *geminiCacheChargeRepository) finishCharge(ctx context.Context, o *servi
 		if e != nil {
 			return e
 		}
-		var accountType string
-		if e = tx.QueryRowContext(ctx, `SELECT type FROM accounts WHERE id=$1`, o.AccountID).Scan(&accountType); e != nil {
+		var accountType, accountPlatform string
+		if e = tx.QueryRowContext(ctx, `SELECT type, platform FROM accounts WHERE id=$1`, o.AccountID).Scan(&accountType, &accountPlatform); e != nil {
 			return e
 		}
-		if accountCost.IsPositive() && accountType == service.AccountTypeAPIKey {
+		if accountCost.IsPositive() && service.AccountSupportsQuota(accountPlatform, accountType) {
 			if _, e = incrementUsageBillingAccountQuota(ctx, tx, o.AccountID, accountCost.StringFixed(8)); e != nil {
 				return e
 			}

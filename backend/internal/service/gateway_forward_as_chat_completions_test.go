@@ -152,5 +152,5 @@ func TestHandleCCStreamingFromAnthropic_WritesSafeFailureForTruncatedStream(t *t
 	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
 	require.NotContains(t, rec.Body.String(), "Anthropic")
 	require.NotContains(t, rec.Body.String(), "private-upstream.example")
-	require.NotContains(t, rec.Body.String(), `[DONE]`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]\n\n")
 }

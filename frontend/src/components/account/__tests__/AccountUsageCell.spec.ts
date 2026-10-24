@@ -76,6 +76,24 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('Vertex 配额与本地今日统计同时显示，非 Gemini service account 不误用配额', async () => {
+    getUsage.mockResolvedValue({})
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 2118, platform: 'gemini', type: 'service_account', quota_limit: 100, quota_used: 25, quota_daily_limit: 10, quota_daily_used: 4 }),
+        todayStats: { requests: 12, tokens: 3200, cost: 1.25, user_cost: 2.5 }
+      },
+      global: { stubs: { UsageProgressBar: { props: ['label', 'utilization'], template: '<div>{{ label }}|{{ utilization }}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="gemini-account-quota"]').text()).toContain('total|25')
+    expect(wrapper.text()).toContain('12 req')
+    expect(wrapper.text()).toContain('A $1.25')
+    await wrapper.setProps({ account: makeAccount({ id: 2119, platform: 'anthropic', type: 'service_account', quota_limit: 100 }) })
+    expect(wrapper.find('[data-testid="gemini-account-quota"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
     getUsage.mockResolvedValue({
       antigravity_quota: {

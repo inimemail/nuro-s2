@@ -36,6 +36,7 @@
 </template>
 
 <script setup lang="ts">
+import { supportsAccountQuota } from '@/utils/accountQuota'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Account } from '@/types'
@@ -176,7 +177,7 @@ const formatCost = (value: number | null | undefined) => {
 }
 
 // ====== 配额 ======
-const isQuotaEligible = computed(() => props.account.type === 'apikey' || props.account.type === 'bedrock')
+const isQuotaEligible = computed(() => supportsAccountQuota(props.account))
 
 const showDailyQuota = computed(() =>
   isQuotaEligible.value && props.account.quota_daily_limit != null && props.account.quota_daily_limit > 0

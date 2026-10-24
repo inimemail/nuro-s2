@@ -24,6 +24,7 @@ type UsageBillingCommand struct {
 	AccountID           int64
 	SubscriptionID      *int64
 	AccountType         string
+	AccountPlatform     string
 	Model               string
 	ServiceTier         string
 	ReasoningEffort     string

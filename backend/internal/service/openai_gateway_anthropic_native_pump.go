@@ -15,6 +15,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -33,10 +34,15 @@ type anthropicNativeLineEvent struct {
 // anthropicNativeLinePump 以独立 goroutine 泵送 scanner 的行，并对逐行到达
 // 间隔施加 interval 上限（<=0 表示禁用，保持无界读的旧行为）。
 type anthropicNativeLinePump struct {
-	events   chan anthropicNativeLineEvent
-	done     chan struct{}
-	timer    *time.Timer
-	interval time.Duration
+	events       chan anthropicNativeLineEvent
+	done         chan struct{}
+	timer        *time.Timer
+	interval     time.Duration
+	clientDone   <-chan struct{}
+	deadline     time.Time
+	drainTimer   *time.Timer
+	disconnected bool
+	onDisconnect func()
 }
 
 // newAnthropicNativeLinePump 启动泵 goroutine；调用方 defer pump.stop()。
@@ -71,29 +77,72 @@ func newAnthropicNativeLinePump(scanner *bufio.Scanner, interval time.Duration) 
 // next 阻塞返回下一行。返回 io.EOF 表示上游正常收流；errAnthropicNativeStreamIdle
 // 表示 interval 内无任何数据到达（计时从收到上一行时起算，事件处理耗时不算入，
 // 与 readOpenAICompatBufferedTerminal 的 resetTimeout 语义一致）。
+// watchClient is opt-in; native callers retain their current behavior.
+func (p *anthropicNativeLinePump) watchClient(ctx context.Context, onDisconnect func()) {
+	if ctx == nil {
+		return
+	}
+	p.clientDone = ctx.Done()
+	p.deadline, _ = ctx.Deadline()
+	p.onDisconnect = onDisconnect
+}
+
+func (p *anthropicNativeLinePump) beginDrain() {
+	if p.disconnected {
+		return
+	}
+	p.disconnected = true
+	p.clientDone = nil
+	budget := 180 * time.Second
+	if !p.deadline.IsZero() && time.Until(p.deadline) < budget {
+		budget = time.Until(p.deadline)
+	}
+	if budget < 0 {
+		budget = 0
+	}
+	p.drainTimer = time.NewTimer(budget)
+	if p.onDisconnect != nil {
+		p.onDisconnect()
+	}
+}
+
 func (p *anthropicNativeLinePump) next() (string, error) {
-	var timeoutCh <-chan time.Time
-	if p.timer != nil {
-		timeoutCh = p.timer.C
-	}
-	var ev anthropicNativeLineEvent
-	var ok bool
-	select {
-	case ev, ok = <-p.events:
-	case <-timeoutCh:
-		// A slow downstream write can let the timer expire while upstream
-		// data is already queued. Drain it before declaring the upstream idle.
-		select {
-		case ev, ok = <-p.events:
-		default:
-			return "", errAnthropicNativeStreamIdle
+	for {
+		var timeoutCh, drainCh <-chan time.Time
+		if p.timer != nil {
+			timeoutCh = p.timer.C
 		}
+		if p.drainTimer != nil {
+			drainCh = p.drainTimer.C
+		}
+		// An active upstream (including pings) cannot extend the absolute drain.
+		select {
+		case <-drainCh:
+			return "", errAnthropicCompatDrainTimeout
+		default:
+		}
+		var ev anthropicNativeLineEvent
+		var ok bool
+		select {
+		case <-p.clientDone:
+			p.beginDrain()
+			continue
+		case <-drainCh:
+			return "", errAnthropicCompatDrainTimeout
+		case ev, ok = <-p.events:
+		case <-timeoutCh:
+			select {
+			case ev, ok = <-p.events:
+			default:
+				return "", errAnthropicNativeStreamIdle
+			}
+		}
+		if !ok {
+			return "", io.EOF
+		}
+		p.resetTimer()
+		return ev.line, ev.err
 	}
-	if !ok {
-		return "", io.EOF
-	}
-	p.resetTimer()
-	return ev.line, ev.err
 }
 
 // resetTimer 在收到一行后重启间隔计时器。
@@ -114,6 +163,9 @@ func (p *anthropicNativeLinePump) resetTimer() {
 // 调用方关闭 resp.Body（间隔超时分支已做）才能真正退出。
 func (p *anthropicNativeLinePump) stop() {
 	close(p.done)
+	if p.drainTimer != nil {
+		p.drainTimer.Stop()
+	}
 	if p.timer != nil {
 		if !p.timer.Stop() {
 			select {

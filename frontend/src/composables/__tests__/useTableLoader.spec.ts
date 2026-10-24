@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { onUnmounted } from 'vue'
 import { useTableLoader } from '@/composables/useTableLoader'
 
 // Mock @vueuse/core 的 useDebounceFn
@@ -248,4 +249,51 @@ describe('useTableLoader', () => {
       await load()
     })
   })
+  it('ignores a superseded response even when transport ignores abort', async () => {
+    const pending: Array<(response: any) => void> = []
+    const fetchFn = vi.fn((_page?: number, _size?: number, _params?: unknown, _options?: unknown) => new Promise<any>(resolve => pending.push(resolve)))
+    const table = useTableLoader({ fetchFn, initialParams: { search: 'old' } })
+    const first = table.load()
+    table.params.search = 'new'
+    const second = table.load()
+    expect(fetchFn.mock.calls[0]?.[2]).toEqual({ search: 'old' })
+    pending[1]({ items: [{ id: 2 }], total: 2, pages: 2 })
+    await second
+    pending[0]({ items: [{ id: 1 }], total: 1, pages: 1 })
+    await first
+    expect(table.items.value).toEqual([{ id: 2 }])
+    expect(table.pagination.total).toBe(2)
+  })
+
+  it('suppresses superseded errors and leaves active loading intact', async () => {
+    let rejectOld!: (reason: unknown) => void
+    let resolveNew!: (value: any) => void
+    const fetchFn = vi.fn().mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveNew = resolve }))
+    const table = useTableLoader({ fetchFn })
+    const old = table.load()
+    const current = table.load()
+    rejectOld(new Error('stale'))
+    await expect(old).resolves.toBeUndefined()
+    expect(table.loading.value).toBe(true)
+    resolveNew({ items: [], total: 0, pages: 0 })
+    await current
+    expect(table.loading.value).toBe(false)
+  })
+
+  it('does not commit or start debounced work after unmount', async () => {
+    let resolve!: (value: any) => void
+    const fetchFn = vi.fn(() => new Promise<any>(done => { resolve = done }))
+    const table = useTableLoader({ fetchFn })
+    const request = table.load()
+    table.debouncedReload()
+    const unmount = vi.mocked(onUnmounted).mock.calls.at(-1)?.[0]
+    unmount?.()
+    resolve({ items: [{ id: 9 }], total: 9, pages: 9 })
+    await request
+    await vi.runAllTimersAsync()
+    expect(table.items.value).toEqual([])
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
 })

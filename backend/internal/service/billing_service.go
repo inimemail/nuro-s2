@@ -824,6 +824,13 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier: 2, LongContextOutputMultiplier: 2,
 		SupportsCacheBreakdown: false,
 	}
+	// Fast has its own card; it must not fall through to the standard 4.7 price.
+	s.fallbackPrices["grok-4.7-fast"] = &ModelPricing{
+		InputPricePerToken: 4e-6, OutputPricePerToken: 12e-6, CacheReadPricePerToken: 1e-6,
+		LongContextInputThreshold: 200000, LongContextThresholdInclusive: true,
+		LongContextInputMultiplier: 1.5, LongContextOutputMultiplier: 1.5,
+		SupportsCacheBreakdown: false,
+	}
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
 		InputPricePerToken: 1.25e-6, OutputPricePerToken: 2.5e-6, CacheReadPricePerToken: 0.2e-6,
 		LongContextInputThreshold: 200000, LongContextThresholdInclusive: true,
@@ -1049,11 +1056,18 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		}
 	}
 
+	// Provider-qualified Fast aliases must use the same card as native IDs.
+	switch strings.ToLower(xai.StripGrokProviderPrefix(modelLower)) {
+	case "grok-4.7-fast", "grok-4.7-build-fast":
+		return s.fallbackPrices["grok-4.7-fast"]
+	}
 	switch modelLower {
 	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest":
 		return s.fallbackPrices["grok-4.5"]
 	case "grok-4.7", "grok-4.7-latest":
 		return s.fallbackPrices["grok-4.7"]
+	case "grok-4.7-fast", "grok-4.7-build-fast":
+		return s.fallbackPrices["grok-4.7-fast"]
 	case "grok-4.6", "grok-4.6-latest":
 		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.3",
@@ -1634,6 +1648,14 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		cloned.LongContextThresholdInclusive = true
 		cloned.LongContextInputMultiplier = 2
 		cloned.LongContextOutputMultiplier = 2
+		return &cloned
+	}
+	if (nativeModel == "grok-4.7-fast" || nativeModel == "grok-4.7-build-fast") && forceDeepSeekRates && !pricing.PricingOverride {
+		cloned := *pricing
+		cloned.LongContextInputThreshold = 200000
+		cloned.LongContextThresholdInclusive = true
+		cloned.LongContextInputMultiplier = 1.5
+		cloned.LongContextOutputMultiplier = 1.5
 		return &cloned
 	}
 	if forceDeepSeekRates && isDeepSeekModel(model) {

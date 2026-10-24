@@ -2497,7 +2497,7 @@
 
       <!-- 配额控制 (非 Anthropic apikey/bedrock) -->
       <div
-        v-else-if="form.type === 'apikey' || form.type === 'bedrock'"
+        v-else-if="supportsAccountQuota(form)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -4577,6 +4577,7 @@
 </template>
 
 <script setup lang="ts">
+import { supportsAccountQuota } from '@/utils/accountQuota'
 import VertexAuthFields from './VertexAuthFields.vue'
 import GeminiCacheCapabilityFields from './GeminiCacheCapabilityFields.vue'
 import SeedanceControl from './SeedanceControl.vue'
@@ -7431,7 +7432,7 @@ const createAccountAndFinish = async (
   }
   // Inject quota limits for apikey/bedrock accounts
   let finalExtra = extra
-  if (type === 'apikey' || type === 'bedrock') {
+  if (supportsAccountQuota({ platform, type })) {
     const quotaExtra: Record<string, unknown> = { ...(extra || {}) }
     if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {
       quotaExtra.quota_limit = editQuotaLimit.value

@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -547,6 +548,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	pump := newAnthropicNativeLinePump(scanner, s.compatStreamInterval())
+	defer func() { pump.stop(); _ = resp.Body.Close() }()
+	markDisconnected := func() { clientDisconnected = true; pump.beginDrain() }
+	pump.watchClient(gatewayCompatClientContext(c), markDisconnected)
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
@@ -559,12 +564,13 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			Duration:         time.Since(startTime),
 			FirstTokenMs:     firstTokenMs,
 			ClientDisconnect: clientDisconnected,
+			FailedOutcome:    !clientDisconnected && state.StopReason == "max_tokens",
 		}
 	}
 
 	// processEvent handles a single parsed Anthropic SSE event.
 	processEvent := func(event *apicompat.AnthropicStreamEvent) bool {
-		if firstChunk {
+		if firstChunk && anthropicCompatStartsRealOutput(event) {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
@@ -582,6 +588,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		// Convert to Responses events
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
 		for _, evt := range events {
+			if clientDisconnected {
+				break
+			}
 			payload, err := json.Marshal(evt)
 			if err != nil {
 				logger.L().Warn("forward_as_responses stream: failed to marshal event",
@@ -601,11 +610,11 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				logger.L().Info("forward_as_responses stream: client disconnected",
 					zap.String("request_id", requestID),
 				)
-				clientDisconnected = true
-				return true
+				markDisconnected()
+				return false
 			}
 		}
-		if len(events) > 0 {
+		if !clientDisconnected && len(events) > 0 {
 			c.Writer.Flush()
 		}
 		return false
@@ -613,81 +622,117 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	// Read Anthropic SSE events
 	invalidStream := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		eventType, ok := parseAnthropicSSEField(line, "event")
-		if !ok {
-			continue
+	var readErr error
+	for {
+		eventType, payload, err := nextAnthropicCompatFrame(pump, maxLineSize)
+		if gatewayCompatClientContext(c).Err() != nil {
+			markDisconnected()
 		}
-
-		// Read data line
-		if !scanner.Scan() {
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+		var event apicompat.AnthropicStreamEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			invalidStream = true
 			break
 		}
-		dataLine := scanner.Text()
-		payload, ok := parseAnthropicSSEField(dataLine, "data")
-		if !ok {
+		if event.Type == "" {
+			event.Type = eventType
+		}
+		if event.Type == "error" || (eventType != "" && event.Type != eventType) {
 			invalidStream = true
-			continue
+			break
 		}
-
-		var event apicompat.AnthropicStreamEvent
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			logger.L().Warn("forward_as_responses stream: failed to parse event",
-				zap.Error(err),
-				zap.String("request_id", requestID),
-				zap.String("event_type", eventType),
-			)
+		if event.Type == "message_stop" && !state.CreatedSent {
 			invalidStream = true
-			continue
+			break
 		}
-		// SSE permits the event name to live only in the `event:` field. Some
-		// compatible Anthropic gateways omit the duplicate JSON `type` field;
-		// restore it before conversion so the event is not silently discarded.
-		if strings.TrimSpace(event.Type) == "" {
-			event.Type = strings.TrimSpace(eventType)
-		}
-
-		if processEvent(&event) {
-			return resultWithUsage(), nil
+		_ = processEvent(&event)
+		if state.CompletedSent {
+			break
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := readErr; err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("forward_as_responses stream: read error",
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
 		}
-		writeSafeGatewayStreamFailure(c, true)
+		if !clientDisconnected {
+			writeSafeGatewayStreamFailure(c, true, state)
+		}
 		result := resultWithUsage()
-		result.FailedOutcome = true
+		result.FailedOutcome = !clientDisconnected
 		return result, fmt.Errorf("read upstream stream: %w", err)
 	}
 
 	if invalidStream || !state.CompletedSent {
-		writeSafeGatewayStreamFailure(c, true)
+		if !clientDisconnected {
+			writeSafeGatewayStreamFailure(c, true, state)
+		}
 		result := resultWithUsage()
-		result.FailedOutcome = true
+		result.FailedOutcome = !clientDisconnected
 		return result, errors.New("upstream stream ended without a valid message_stop")
 	}
 	return resultWithUsage(), nil
 }
 
-func writeSafeGatewayStreamFailure(c *gin.Context, responses bool) {
-	if c == nil || c.Writer == nil {
+func writeSafeGatewayStreamFailure(c *gin.Context, responses bool, states ...*apicompat.AnthropicEventToResponsesState) {
+	if c == nil || c.Writer == nil || (c.Request != nil && gatewayCompatClientContext(c).Err() != nil) {
 		return
 	}
-	payload := `data: {"error":{"type":"upstream_error","message":"Upstream request failed"}}` + "\n\n"
+	const failureKey = "gateway_compat_failure_sent"
+	if value, ok := c.Get(failureKey); ok && value == true {
+		return
+	}
+	var state *apicompat.AnthropicEventToResponsesState
+	if len(states) > 0 {
+		state = states[0]
+	}
+	if state != nil && state.CompletedSent {
+		return
+	}
+	c.Set(failureKey, true)
+	payload := `data: {"error":{"type":"upstream_error","message":"Upstream request failed"}}` + "\n\ndata: [DONE]\n\n"
 	if responses {
-		payload = `data: {"type":"response.failed","response":{"status":"failed","error":{"type":"upstream_error","message":"Upstream request failed"}}}` + "\n\n"
+		id := "resp_" + uuid.NewString()
+		seq := 0
+		if state != nil {
+			if isSafeCompatResponseID(state.ResponseID) {
+				id = state.ResponseID
+			}
+			seq = state.SequenceNumber
+			state.SequenceNumber++
+			state.CompletedSent = true
+		}
+		encoded, _ := json.Marshal(map[string]any{
+			"type": "response.failed", "sequence_number": seq,
+			"response": map[string]any{"id": id, "object": "response", "status": "failed", "output": []any{},
+				"error": map[string]string{"code": "upstream_error", "type": "upstream_error", "message": "Upstream request failed"}},
+		})
+		payload = "event: response.failed\ndata: " + string(encoded) + "\n\n"
 	}
 	if _, err := fmt.Fprint(c.Writer, payload); err == nil {
 		c.Writer.Flush()
 	}
 	MarkResponseCommitted(c)
+}
+
+func isSafeCompatResponseID(id string) bool {
+	if len(id) > 128 || !(strings.HasPrefix(id, "resp_") || strings.HasPrefix(id, "msg_")) {
+		return false
+	}
+	for _, char := range id {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // appendRawJSON appends a JSON fragment string to existing raw JSON.

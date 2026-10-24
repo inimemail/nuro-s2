@@ -986,6 +986,14 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	}
 
 	// 2. 处理常见的模型名称变体
+	// Preserve exact custom cards above, then resolve the Fast alias before
+	// fuzzy matching can accidentally select a different Grok family price.
+	if lastSegment(modelLower) == "grok-4.7-build-fast" {
+		if pricing, ok := s.pricingData["grok-4.7-fast"]; ok {
+			return pricing
+		}
+	}
+
 	// claude-opus-4-5-20251101 -> claude-opus-4.5-20251101
 	for _, candidate := range lookupCandidates {
 		normalized := strings.ReplaceAll(candidate, "-4-5-", "-4.5-")

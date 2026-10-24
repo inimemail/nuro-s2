@@ -494,6 +494,7 @@ import { ref, reactive, computed, defineAsyncComponent, onMounted, onUnmounted, 
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { loadAccountFilters, saveAccountFilters } from '@/utils/accountFilters'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import type { OpenAIFirstTokenTimeoutPlaceholderStage } from '@/api/admin/settings'
@@ -547,6 +548,13 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const exportStepUp = useStepUp()
+const filterScope = authStore.isAdmin && authStore.user?.id ? `admin:${authStore.user.id}` : null
+const savedFilters = loadAccountFilters(filterScope)
+let disposed = false
+let listGeneration = 0
+let incrementalController: AbortController | null = null
+let todayStatsInFlight: { key: string; controller: AbortController; promise: Promise<void> } | null = null
+
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -799,6 +807,7 @@ const clampPoolSoftCooldownMaxSeconds = (value: unknown) => {
 const loadPoolSoftCooldownSettings = async () => {
   try {
     const settings = await adminAPI.settings.getSettings()
+    if (disposed) return
     poolSoftCooldownMaxSeconds.openai = clampPoolSoftCooldownMaxSeconds(settings.openai_pool_soft_cooldown_max_seconds)
     poolSoftCooldownMaxSeconds.openaiImage = clampPoolSoftCooldownMaxSeconds(settings.openai_image_pool_soft_cooldown_max_seconds)
     poolSoftCooldownMaxSeconds.anthropic = clampPoolSoftCooldownMaxSeconds(settings.anthropic_pool_soft_cooldown_max_seconds)
@@ -884,48 +893,51 @@ const buildDefaultTodayStats = (): WindowStats => ({
   user_cost: 0
 })
 
-const refreshTodayStatsBatch = async () => {
-  // Why this checks both columns:
-  // - today_stats column shows dedicated today's metrics.
-  // - usage column also embeds today's stats for Key/Bedrock rows.
-  // So we only skip fetching when BOTH columns are hidden.
+const refreshTodayStatsBatch = (): Promise<void> => {
+  if (disposed) return Promise.resolve()
   if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage')) {
+    todayStatsReqSeq.value++
+    todayStatsInFlight?.controller.abort()
+    todayStatsInFlight = null
     todayStatsLoading.value = false
     todayStatsError.value = null
-    return
+    return Promise.resolve()
   }
-
   const accountIDs = accounts.value.map(account => account.id)
+  const key = `${listGeneration}:${[...accountIDs].sort((a, b) => a - b).join(',')}`
+  if (todayStatsInFlight?.key === key) return todayStatsInFlight.promise
+  todayStatsInFlight?.controller.abort()
   const reqSeq = ++todayStatsReqSeq.value
+  const generation = listGeneration
   if (accountIDs.length === 0) {
+    todayStatsInFlight = null
     todayStatsByAccountId.value = {}
     todayStatsError.value = null
     todayStatsLoading.value = false
-    return
+    return Promise.resolve()
   }
-
+  const controller = new AbortController()
+  const current = () => !disposed && !controller.signal.aborted && reqSeq === todayStatsReqSeq.value && generation === listGeneration
   todayStatsLoading.value = true
   todayStatsError.value = null
-
-  try {
-    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs)
-    if (reqSeq !== todayStatsReqSeq.value) return
-    const serverStats = result.stats ?? {}
-    const nextStats: Record<string, WindowStats> = {}
-    for (const accountID of accountIDs) {
-      const key = String(accountID)
-      nextStats[key] = serverStats[key] ?? buildDefaultTodayStats()
+  const promise = (async () => {
+    try {
+      const result = await adminAPI.accounts.getBatchTodayStats(accountIDs, { signal: controller.signal })
+      if (!current()) return
+      const nextStats: Record<string, WindowStats> = {}
+      for (const accountID of accountIDs) nextStats[String(accountID)] = result.stats?.[String(accountID)] ?? buildDefaultTodayStats()
+      todayStatsByAccountId.value = nextStats
+    } catch (error) {
+      if (!current()) return
+      todayStatsError.value = 'Failed'
+      console.error('Failed to load account today stats:', error)
+    } finally {
+      if (todayStatsInFlight?.controller === controller) todayStatsInFlight = null
+      if (current()) todayStatsLoading.value = false
     }
-    todayStatsByAccountId.value = nextStats
-  } catch (error) {
-    if (reqSeq !== todayStatsReqSeq.value) return
-    todayStatsError.value = 'Failed'
-    console.error('Failed to load account today stats:', error)
-  } finally {
-    if (reqSeq === todayStatsReqSeq.value) {
-      todayStatsLoading.value = false
-    }
-  }
+  })()
+  todayStatsInFlight = { key, controller, promise }
+  return promise
 }
 
 const autoRefreshIntervalLabel = (sec: number) => {
@@ -1042,6 +1054,7 @@ const {
   params,
   pagination,
   load: baseLoad,
+  cancel: cancelTableLoad,
   reload: baseReload,
   debouncedReload: baseDebouncedReload,
   handlePageChange: baseHandlePageChange,
@@ -1049,9 +1062,9 @@ const {
 } = useTableLoader<Account, any>({
   fetchFn: adminAPI.accounts.list,
   initialParams: {
-    platform: '',
+    platform: savedFilters.platform,
     type: '',
-    status: '',
+    status: savedFilters.status,
     privacy_mode: '',
     pool_mode: '',
     group: '',
@@ -1059,6 +1072,10 @@ const {
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
   }
+})
+
+watch(() => [params.platform, params.status], () => {
+  saveAccountFilters(filterScope, params)
 })
 
 const {
@@ -1143,6 +1160,14 @@ useSwipeSelect(accountTableRef, {
 }, swipeVirtualContext)
 
 const resetAutoRefreshCache = () => {
+  listGeneration++
+  incrementalController?.abort()
+  incrementalController = null
+  autoRefreshFetching.value = false
+  todayStatsReqSeq.value++
+  todayStatsInFlight?.controller.abort()
+  todayStatsInFlight = null
+  todayStatsLoading.value = false
   autoRefreshETag.value = null
 }
 
@@ -1156,7 +1181,9 @@ const load = async () => {
   if (isFirstLoad.value) {
     requestParams.lite = '1'
   }
+  const generation = listGeneration
   await baseLoad()
+  if (disposed || generation !== listGeneration) return
   normalizeSoftCooldownDisplayRows(accounts.value)
   if (isFirstLoad.value) {
     isFirstLoad.value = false
@@ -1169,12 +1196,15 @@ const reload = async () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
+  const generation = listGeneration
   await baseReload()
+  if (disposed || generation !== listGeneration) return
   normalizeSoftCooldownDisplayRows(accounts.value)
   await refreshTodayStatsBatch()
 }
 
 const debouncedReload = () => {
+  cancelTableLoad()
   clearSelection()
   hasPendingListSync.value = false
   resetAutoRefreshCache()
@@ -1209,8 +1239,10 @@ const handleSort = (key: string, order: AccountSortOrder) => {
   load()
 }
 
-watch(loading, (isLoading, wasLoading) => {
-  if (wasLoading && !isLoading && pendingTodayStatsRefresh.value) {
+// Cancellation also clears loading. Refresh only after rows are committed so
+// aborting a request cannot consume the next query's statistics refresh.
+watch(accounts, () => {
+  if (pendingTodayStatsRefresh.value) {
     normalizeSoftCooldownDisplayRows(accounts.value)
     pendingTodayStatsRefresh.value = false
     refreshTodayStatsBatch().catch((error) => {
@@ -1333,13 +1365,17 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
 }
 
 const refreshAccountsIncrementally = async () => {
-  if (autoRefreshFetching.value) return
+  if (disposed || loading.value || autoRefreshFetching.value) return
+  const generation = listGeneration
+  const controller = new AbortController()
+  incrementalController = controller
+  const current = () => !disposed && generation === listGeneration && incrementalController === controller && !controller.signal.aborted
   autoRefreshFetching.value = true
   try {
     const result = await adminAPI.accounts.listWithEtag(
       pagination.page,
       pagination.page_size,
-      toRaw(params) as {
+      { ...toRaw(params) } as {
         platform?: string
         type?: string
         status?: string
@@ -1351,9 +1387,10 @@ const refreshAccountsIncrementally = async () => {
         sort_order?: AccountSortOrder
 
       },
-      { etag: autoRefreshETag.value }
+      { etag: autoRefreshETag.value, signal: controller.signal }
     )
 
+    if (!current()) return
     if (result.etag) {
       autoRefreshETag.value = result.etag
     }
@@ -1366,9 +1403,12 @@ const refreshAccountsIncrementally = async () => {
 
     await refreshTodayStatsBatch()
   } catch (error) {
-    console.error('Auto refresh failed:', error)
+    if (current()) console.error('Auto refresh failed:', error)
   } finally {
-    autoRefreshFetching.value = false
+    if (current()) {
+      autoRefreshFetching.value = false
+      incrementalController = null
+    }
   }
 }
 
@@ -2251,7 +2291,9 @@ const handleProbeUpstreamBilling = async (account: Account) => {
 }
 const loadUpstreamBillingProbeSettings = async () => {
   try {
-    Object.assign(upstreamBillingProbeSettings, await adminAPI.accounts.getUpstreamBillingProbeSettings())
+    const settings = await adminAPI.accounts.getUpstreamBillingProbeSettings()
+    if (disposed) return
+    Object.assign(upstreamBillingProbeSettings, settings)
   } catch (error) {
     console.error('Failed to load upstream billing probe settings:', error)
   }
@@ -2490,17 +2532,16 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 onMounted(async () => {
+  const references = Promise.all([adminAPI.proxies.getAll(), adminAPI.groups.getAll()])
+    .then(([p, g]) => { if (!disposed) { proxies.value = p; groups.value = g } })
+    .catch(error => console.error('Failed to load proxies/groups:', error))
   await Promise.all([loadPoolSoftCooldownSettings(), loadUpstreamBillingProbeSettings()])
-  load()
+  if (disposed) return
+  void load().catch(error => { if (!disposed) console.error('Failed to load accounts:', error) })
   resumeUiTicker()
   resumeOpenAIPoolRecoveryRefresh()
-  try {
-    const [p, g] = await Promise.all([adminAPI.proxies.getAll(), adminAPI.groups.getAll()])
-    proxies.value = p
-    groups.value = g
-  } catch (error) {
-    console.error('Failed to load proxies/groups:', error)
-  }
+  await references
+  if (disposed) return
   window.addEventListener('scroll', handleScroll, true)
   document.addEventListener('click', handleClickOutside)
 
@@ -2515,6 +2556,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  resetAutoRefreshCache()
   cancelAccountEditorChunkWarmup()
   window.removeEventListener('scroll', handleScroll, true)
   document.removeEventListener('click', handleClickOutside)

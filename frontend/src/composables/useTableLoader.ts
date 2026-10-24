@@ -35,12 +35,14 @@ export function useTableLoader<T, P extends Record<string, any>>(options: TableL
   })
 
   let abortController: AbortController | null = null
+  let disposed = false
 
   const isAbortError = (error: any) => {
     return error?.name === 'AbortError' || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
   }
 
   const load = async () => {
+    if (disposed) return
     if (abortController) {
       abortController.abort()
     }
@@ -52,23 +54,30 @@ export function useTableLoader<T, P extends Record<string, any>>(options: TableL
       const response = await fetchFn(
         pagination.page,
         pagination.page_size,
-        toRaw(params) as P,
+        { ...toRaw(params) } as P,
         { signal: currentController.signal }
       )
 
+      if (disposed || abortController !== currentController || currentController.signal.aborted) return
       items.value = response.items || []
       pagination.total = response.total || 0
       pagination.pages = response.pages || 0
     } catch (error) {
-      if (!isAbortError(error)) {
+      if (!disposed && abortController === currentController && !isAbortError(error)) {
         console.error('Table load error:', error)
         throw error
       }
     } finally {
-      if (abortController === currentController) {
+      if (!disposed && abortController === currentController) {
         loading.value = false
       }
     }
+  }
+
+  const cancel = () => {
+    abortController?.abort()
+    abortController = null
+    loading.value = false
   }
 
   const reload = () => {
@@ -93,6 +102,7 @@ export function useTableLoader<T, P extends Record<string, any>>(options: TableL
   }
 
   onUnmounted(() => {
+    disposed = true
     abortController?.abort()
   })
 
@@ -102,6 +112,7 @@ export function useTableLoader<T, P extends Record<string, any>>(options: TableL
     params,
     pagination,
     load,
+    cancel,
     reload,
     debouncedReload,
     handlePageChange,

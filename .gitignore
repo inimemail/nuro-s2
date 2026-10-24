@@ -134,6 +134,11 @@ docs/*
 !docs/upgrade-v0215-nuro-status.md
 !docs/upgrade-v0216-nuro-status.md
 !docs/upgrade-v0217-nuro-status.md
+!docs/upgrade-v0218-nuro-status.md
+!docs/upgrades/
+docs/upgrades/*
+!docs/upgrades/v0218-protected.json
+!docs/upgrades/v0218-validation.md
 !docs/seedance-api.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
@@ -144,3 +149,6 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# Python validation artifacts
+__pycache__/
