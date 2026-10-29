@@ -17,10 +17,10 @@ function render(id = 1, platform = 'openai') {
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 describe('v0.2.8 account test modal', () => {
   it('places supported new models first without inserting unavailable models', async () => {
-    api.models.mockResolvedValue(models('gpt-5.6', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol'))
+    api.models.mockResolvedValue(models('gpt-5.6', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol'))
     const wrapper = render(); await flushPromises()
     const options = wrapper.findAll('option').map(option => option.text()).filter(text => text.startsWith('gpt-'))
-    expect(options).toEqual(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6'])
+    expect(options).toEqual(['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6'])
     wrapper.unmount()
   })
   it('ignores old model results after switching accounts', async () => {

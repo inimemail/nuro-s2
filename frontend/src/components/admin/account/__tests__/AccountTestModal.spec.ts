@@ -150,6 +150,7 @@ describe('AccountTestModal', () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
       { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
+      { id: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra' },
       { id: 'gpt-6-astra', display_name: 'GPT-6 Astra' },
       { id: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol' },
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }
@@ -186,6 +187,7 @@ describe('AccountTestModal', () => {
     const vm = wrapper.vm as any
     expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
       'gpt-6.1-sol',
+      'gpt-6.1-terra',
       'gpt-6-astra',
       'gpt-6',
       'gpt-5.6',
