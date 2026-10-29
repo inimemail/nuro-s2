@@ -108,6 +108,7 @@ func (Group) Fields() []ent.Field {
 			Default(30),
 
 		// 图片生成计费配置（antigravity 和 gemini 平台使用）
+		field.Bool("image_count_billing").Default(false),
 		field.Bool("allow_image_generation").
 			Default(false).
 			Comment("是否允许该分组使用图片生成能力"),

@@ -3,12 +3,15 @@ package antigravity
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
 	"time"
 )
+
+var ErrMalformedFunctionCall = errors.New("upstream returned malformed function call")
 
 // TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
 func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
@@ -34,6 +37,12 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 		v1Resp.ModelVersion = directResp.ModelVersion
 	}
 
+	if len(v1Resp.Response.Candidates) > 0 && v1Resp.Response.Candidates[0].FinishReason == "MALFORMED_FUNCTION_CALL" {
+		// Only extract usage: processing malformed parts can invoke legacy
+		// content diagnostics, and must never produce a successful response.
+		usage := claudeUsageFromGemini(v1Resp.Response.UsageMetadata)
+		return nil, &usage, ErrMalformedFunctionCall
+	}
 	// 使用处理器转换
 	processor := NewNonStreamingProcessor()
 	claudeResp := processor.Process(&v1Resp.Response, v1Resp.ResponseID, originalModel)
@@ -45,6 +54,19 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 	}
 
 	return respBytes, &claudeResp.Usage, nil
+}
+
+func claudeUsageFromGemini(metadata *GeminiUsageMetadata) ClaudeUsage {
+	if metadata == nil {
+		return ClaudeUsage{}
+	}
+	// Gemini prompt tokens include cache reads; Claude input tokens do not.
+	return ClaudeUsage{
+		InputTokens:          max(metadata.PromptTokenCount-metadata.CachedContentTokenCount, 0),
+		OutputTokens:         metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount,
+		CacheReadInputTokens: metadata.CachedContentTokenCount,
+		ImageOutputTokens:    metadata.ImageOutputTokens(),
+	}
 }
 
 // NonStreamingProcessor 非流式响应处理器
@@ -276,16 +298,7 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 		stopReason = "max_tokens"
 	}
 
-	// 注意：Gemini 的 promptTokenCount 包含 cachedContentTokenCount，
-	// 但 Claude 的 input_tokens 不包含 cache_read_input_tokens，需要减去
-	usage := ClaudeUsage{}
-	if geminiResp.UsageMetadata != nil {
-		cached := geminiResp.UsageMetadata.CachedContentTokenCount
-		usage.InputTokens = max(geminiResp.UsageMetadata.PromptTokenCount-cached, 0)
-		usage.OutputTokens = geminiResp.UsageMetadata.CandidatesTokenCount + geminiResp.UsageMetadata.ThoughtsTokenCount
-		usage.CacheReadInputTokens = cached
-		usage.ImageOutputTokens = geminiResp.UsageMetadata.ImageOutputTokens()
-	}
+	usage := claudeUsageFromGemini(geminiResp.UsageMetadata)
 
 	// 生成响应 ID
 	respID := responseID

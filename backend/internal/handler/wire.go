@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
 	compositeRouteHandler *admin.CompositeRouteHandler,
 	cnProviderQuota *service.CNProviderQuotaService,
 	cnProviderBalance *service.CNProviderBalanceService,
+	scopedAdmin *admin.ScopedAdminHandler,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
@@ -58,6 +59,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetCNProviderServices(cnProviderQuota, cnProviderBalance)
 	userHandler.SetStepUpServices(totpService, userService)
 	return &AdminHandlers{
+		ScopedAdmin:            scopedAdmin,
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
 		Group:                  groupHandler,
@@ -221,6 +223,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewErrorPassthroughHandler,
 	admin.NewTLSFingerprintProfileHandler,
 	admin.NewAdminAPIKeyHandler,
+	admin.NewScopedAdminHandler,
 	admin.NewScheduledTestHandler,
 	admin.NewChannelHandler,
 	admin.NewChannelMonitorHandler,

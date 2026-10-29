@@ -11,7 +11,7 @@
         @click.self="handleClose"
       >
         <!-- Modal panel -->
-        <div ref="dialogRef" :class="['modal-content', widthClasses]" @click.stop>
+        <div ref="dialogRef" :class="['modal-content', widthClasses]" :tabindex="trapFocus ? -1 : undefined" @click.stop>
           <!-- Header -->
           <div class="modal-header">
             <h3 :id="dialogId" class="modal-title">
@@ -69,6 +69,7 @@ interface Props {
   closeOnEscape?: boolean
   closeOnClickOutside?: boolean
   zIndex?: number
+  trapFocus?: boolean
 }
 
 interface Emits {
@@ -79,7 +80,8 @@ const props = withDefaults(defineProps<Props>(), {
   width: 'normal',
   closeOnEscape: true,
   closeOnClickOutside: false,
-  zIndex: 50
+  zIndex: 50,
+  trapFocus: false
 })
 
 const emit = defineEmits<Emits>()
@@ -113,6 +115,28 @@ const handleEscape = (event: KeyboardEvent) => {
   const topDialog = [...openDialogs].sort((a, b) => a[1] - b[1]).at(-1)?.[0]
   if (props.show && props.closeOnEscape && event.key === 'Escape' && topDialog === dialogId) {
     emit('close')
+  }
+  // Opt in on the new scoped-key dialogs without changing existing dialogs.
+  if (!props.trapFocus || !props.show || event.key !== 'Tab' || topDialog !== dialogId || !dialogRef.value) return
+  const focusable = [...dialogRef.value.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )].filter(element => !element.matches(':disabled') && element.tabIndex >= 0 && element.getClientRects().length > 0)
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (!first || !last) {
+    event.preventDefault()
+    dialogRef.value.focus()
+  } else if (
+    document.activeElement === dialogRef.value ||
+    !dialogRef.value.contains(document.activeElement) ||
+    event.shiftKey && document.activeElement === first
+  ) {
+    event.preventDefault()
+    const target = event.shiftKey ? last : first
+    target.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
   }
 }
 

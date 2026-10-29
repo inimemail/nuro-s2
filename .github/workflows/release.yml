@@ -26,23 +26,71 @@ permissions:
   packages: write
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
+      tag: ${{ steps.identity.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve immutable release identity
+        id: identity
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG_NAME="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          SHA=$(python3 tools/release_artifacts.py resolve --tag "$TAG_NAME")
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\ntag=%s\n' "$SHA" "$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+  # Every required check validates the same commit that is packaged below.
+  validate:
+    needs: [resolve]
+    uses: ./.github/workflows/backend-ci.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  validate-security:
+    needs: [resolve]
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
   # Update VERSION file with tag version
   update-version:
+    needs: [resolve, validate, validate-security]
+    env:
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
 
       - name: Update VERSION file
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
+          VERSION=${RELEASE_TAG#v}
           echo "$VERSION" > backend/cmd/server/VERSION
           echo "Updated VERSION file to: $VERSION"
+
+      - name: Bind version artifact
+        run: |
+          mkdir -p /tmp/release-version
+          cp backend/cmd/server/VERSION /tmp/release-version/VERSION
+          python3 tools/release_artifacts.py write --artifact /tmp/release-version --manifest /tmp/version-manifest.json --sha "$RELEASE_SHA" --tag "$RELEASE_TAG"
+
+      - name: Upload version manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: version-manifest
+          path: /tmp/version-manifest.json
+          retention-days: 1
 
       - name: Upload VERSION artifact
         uses: actions/upload-artifact@v7
@@ -52,20 +100,26 @@ jobs:
           retention-days: 1
 
   build-frontend:
+    needs: [resolve, validate, validate-security]
+    env:
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 9.15.9
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24.13.0'
           cache: 'pnpm'
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -77,6 +131,18 @@ jobs:
         run: pnpm run build
         working-directory: frontend
 
+      - name: Bind frontend artifact
+        run: |
+          python3 tools/release_artifacts.py write --artifact backend/internal/web/dist --manifest /tmp/frontend-manifest.json \
+            --sha "$RELEASE_SHA" --tag "$RELEASE_TAG" --toolchain "node=$(node --version)" --toolchain "pnpm=$(pnpm --version)"
+
+      - name: Upload frontend manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-manifest
+          path: /tmp/frontend-manifest.json
+          retention-days: 1
+
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v7
         with:
@@ -85,14 +151,19 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [update-version, build-frontend]
+    needs: [resolve, update-version, build-frontend]
+    env:
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      GOFLAGS: -mod=readonly
+      GORELEASER_CURRENT_TAG: ${{ needs.resolve.outputs.tag }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
 
       - name: Download VERSION artifact
         uses: actions/download-artifact@v8
@@ -105,6 +176,25 @@ jobs:
         with:
           name: frontend-dist
           path: backend/internal/web/dist/
+
+      - name: Download artifact manifests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: '*-manifest'
+          merge-multiple: true
+          path: /tmp/release-manifests
+
+      - name: Verify artifact identities and tag
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "$RELEASE_SHA"
+          mkdir -p /tmp/release-version
+          cp backend/cmd/server/VERSION /tmp/release-version/VERSION
+          python3 tools/release_artifacts.py verify --artifact /tmp/release-version --manifest /tmp/release-manifests/version-manifest.json --sha "$RELEASE_SHA" --tag "$RELEASE_TAG"
+          python3 tools/release_artifacts.py verify --artifact backend/internal/web/dist --manifest /tmp/release-manifests/frontend-manifest.json \
+            --sha "$RELEASE_SHA" --tag "$RELEASE_TAG" --toolchain 'node=v24.13.0' --toolchain 'pnpm=9.15.9'
+          test "$(tr -d '\r\n' < backend/cmd/server/VERSION)" = "${RELEASE_TAG#v}"
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -126,14 +216,12 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Setup Rust
-        if: ${{ env.SIMPLE_RELEASE != 'true' }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.90.0
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
 
       - name: Install cross
-        if: ${{ env.SIMPLE_RELEASE != 'true' }}
-        run: cargo install cross --locked
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Login to DockerHub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
@@ -151,42 +239,51 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch tags with annotations
-        run: |
-          # 确保获取完整的 annotated tag 信息
-          git fetch --tags --force
-
-      - name: Get tag message
+      - name: Get tag message safely
         id: tag_message
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME=${{ github.event.inputs.tag }}
-          else
-            TAG_NAME=${GITHUB_REF#refs/tags/}
-          fi
-          echo "Processing tag: $TAG_NAME"
-
-          # 获取完整的 tag message（跳过第一行标题）
-          TAG_MESSAGE=$(git tag -l --format='%(contents:body)' "$TAG_NAME")
-
-          # 调试输出
-          echo "Tag message length: ${#TAG_MESSAGE}"
-          echo "Tag message preview:"
-          echo "$TAG_MESSAGE" | head -10
-
-          # 使用 EOF 分隔符处理多行内容
-          echo "message<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          DELIMITER="message_$(openssl rand -hex 16)"
+          printf 'message<<%s\n' "$DELIMITER" >> "$GITHUB_OUTPUT"
+          git tag -l --format='%(contents:body)' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          printf '\n%s\n' "$DELIMITER" >> "$GITHUB_OUTPUT"
 
       - name: Set lowercase owner for GHCR
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+      - name: Build edge-rs release archives
+        run: |
+          set -euo pipefail
+          TAG_NAME="$RELEASE_TAG"
+          VERSION=${RELEASE_TAG#v}
+
+          mkdir -p /tmp/release-edge .release-edge/amd64
+          cross build --locked --manifest-path edge-rs/Cargo.toml --release --target x86_64-unknown-linux-musl
+          cp edge-rs/target/x86_64-unknown-linux-musl/release/sub2api-edge-rs /tmp/release-edge/sub2api-edge-rs
+          cp /tmp/release-edge/sub2api-edge-rs .release-edge/amd64/sub2api-edge-rs
+          tar -C /tmp/release-edge -czf /tmp/release-edge/sub2api-edge-rs_${VERSION}_linux_amd64.tar.gz sub2api-edge-rs
+          rm -f /tmp/release-edge/sub2api-edge-rs
+
+          if [ "$SIMPLE_RELEASE" != 'true' ]; then
+            mkdir -p .release-edge/arm64
+            cross build --locked --manifest-path edge-rs/Cargo.toml --release --target aarch64-unknown-linux-musl
+            cp edge-rs/target/aarch64-unknown-linux-musl/release/sub2api-edge-rs /tmp/release-edge/sub2api-edge-rs
+            cp /tmp/release-edge/sub2api-edge-rs .release-edge/arm64/sub2api-edge-rs
+            tar -C /tmp/release-edge -czf /tmp/release-edge/sub2api-edge-rs_${VERSION}_linux_arm64.tar.gz sub2api-edge-rs
+            rm -f /tmp/release-edge/sub2api-edge-rs
+          fi
+
+          cd /tmp/release-edge
+          sha256sum sub2api-edge-rs_${VERSION}_linux_*.tar.gz > edge-rs-checksums.txt
+
+      - name: Verify locks before publishing
+        run: git diff --exit-code -- backend/go.mod backend/go.sum frontend/package.json frontend/pnpm-lock.yaml edge-rs/Cargo.lock
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
-          version: '~> v2'
+          version: 'v2.14.0'
           args: release --clean --skip=validate ${{ env.SIMPLE_RELEASE == 'true' && '--config=.goreleaser.simple.yaml' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -196,41 +293,44 @@ jobs:
           GITHUB_REPO_NAME: ${{ github.event.repository.name }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || 'skip' }}
 
-      - name: Build edge-rs release archives
-        if: ${{ env.SIMPLE_RELEASE != 'true' }}
+      - name: Collect prebuilt Edge archives
+        run: |
+          mkdir -p dist/edge-rs
+          cp /tmp/release-edge/* dist/edge-rs/
+
+      - name: Check dependency locks remained read-only
+        run: git diff --exit-code -- backend/go.mod backend/go.sum frontend/package.json frontend/pnpm-lock.yaml edge-rs/Cargo.lock
+
+      - name: Record complete release provenance
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
+          OWNER_LOWER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          IMAGE_DIGEST=$(docker buildx imagetools inspect "ghcr.io/${OWNER_LOWER}/sub2api:${RELEASE_TAG#v}" --format '{{.Manifest.Digest}}')
+          RUST_VERSION=$(rustc --version)
+          python3 tools/release_artifacts.py inventory --artifact dist --manifest /tmp/release-manifest.json \
+            --sha "$RELEASE_SHA" --tag "$RELEASE_TAG" --image-digest "$IMAGE_DIGEST" \
+            --component-manifest /tmp/release-manifests/frontend-manifest.json \
+            --component-manifest /tmp/release-manifests/version-manifest.json \
+            --toolchain "go=$(go env GOVERSION)" --toolchain "rust=$RUST_VERSION"
 
-          mkdir -p dist/edge-rs
-          cross build --manifest-path edge-rs/Cargo.toml --release --target x86_64-unknown-linux-musl
-          cp edge-rs/target/x86_64-unknown-linux-musl/release/sub2api-edge-rs dist/edge-rs/sub2api-edge-rs
-          tar -C dist/edge-rs -czf dist/edge-rs/sub2api-edge-rs_${VERSION}_linux_amd64.tar.gz sub2api-edge-rs
-          rm -f dist/edge-rs/sub2api-edge-rs
+      - name: Upload release provenance evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-provenance
+          path: /tmp/release-manifest.json
 
-          cross build --manifest-path edge-rs/Cargo.toml --release --target aarch64-unknown-linux-musl
-          cp edge-rs/target/aarch64-unknown-linux-musl/release/sub2api-edge-rs dist/edge-rs/sub2api-edge-rs
-          tar -C dist/edge-rs -czf dist/edge-rs/sub2api-edge-rs_${VERSION}_linux_arm64.tar.gz sub2api-edge-rs
-          rm -f dist/edge-rs/sub2api-edge-rs
-
-          cd dist/edge-rs
-          sha256sum sub2api-edge-rs_${VERSION}_linux_*.tar.gz > edge-rs-checksums.txt
+      - name: Attach release provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" /tmp/release-manifest.json --clobber
 
       - name: Upload edge-rs release archives
         if: ${{ env.SIMPLE_RELEASE != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME=${{ github.event.inputs.tag }}
-          else
-            TAG_NAME=${GITHUB_REF#refs/tags/}
-          fi
+          TAG_NAME="$RELEASE_TAG"
+          VERSION=${RELEASE_TAG#v}
           gh release upload "$TAG_NAME" dist/edge-rs/sub2api-edge-rs_*.tar.gz dist/edge-rs/edge-rs-checksums.txt --clobber
 
       # Update DockerHub description
@@ -250,6 +350,7 @@ jobs:
       - name: Send Telegram Notification
         if: ${{ env.SIMPLE_RELEASE != 'true' }}
         env:
+          TAG_MESSAGE: ${{ steps.tag_message.outputs.message }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -261,17 +362,13 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME=${{ github.event.inputs.tag }}
-          else
-            TAG_NAME=${GITHUB_REF#refs/tags/}
-          fi
+          TAG_NAME="$RELEASE_TAG"
+          VERSION=${RELEASE_TAG#v}
           VERSION=${TAG_NAME#v}
           REPO="${{ github.repository }}"
           GHCR_IMAGE="ghcr.io/${REPO,,}"  # ${,,} converts to lowercase
 
           # 获取 tag message 内容并转义 Markdown 特殊字符
-          TAG_MESSAGE='${{ steps.tag_message.outputs.message }}'
           TAG_MESSAGE=$(echo "$TAG_MESSAGE" | sed 's/\([_*`\[]\)/\\\1/g')
 
           # 限制消息长度（Telegram 消息限制 4096 字符，预留空间给头尾固定内容）
@@ -319,36 +416,3 @@ jobs:
                 parse_mode: "Markdown",
                 disable_web_page_preview: true
               }')"
-
-  sync-version-file:
-    needs: [release]
-    if: ${{ needs.release.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout default branch
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-
-      - name: Sync VERSION file to released tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
-
-          CURRENT_VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION || true)
-          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
-            echo "VERSION file already matches $VERSION"
-            exit 0
-          fi
-
-          echo "$VERSION" > backend/cmd/server/VERSION
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/cmd/server/VERSION
-          git commit -m "chore: sync VERSION to ${VERSION} [skip ci]"
-          git push origin HEAD:${{ github.event.repository.default_branch }}

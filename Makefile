@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-critical test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-critical test-frontend-full test-rust test-datamanagementd secret-scan
 
 FRONTEND_CRITICAL_VITEST := \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
@@ -36,6 +36,15 @@ test-frontend:
 
 test-frontend-critical:
 	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
+
+test-frontend-full:
+	@pnpm --dir frontend run lint:check
+	@pnpm --dir frontend run typecheck
+	@pnpm --dir frontend run test:run
+	@pnpm --dir frontend run build
+
+test-rust:
+	@cd edge-rs && cargo fmt --check && cargo check --locked && cargo test --locked && cargo test --release --locked && cargo clippy --all-targets --locked -- -D warnings
 
 test-datamanagementd:
 	@cd datamanagement && go test ./...

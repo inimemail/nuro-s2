@@ -925,6 +925,10 @@
               />
               {{ t("admin.groups.imagePricing.allowImageGeneration") }}
             </label>
+            <label v-if="['openai', 'composite'].includes(createForm.platform)" class="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50/60 p-3 text-sm text-gray-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-gray-200 md:col-span-2">
+              <input v-model="createForm.image_count_billing" :disabled="!createForm.allow_image_generation" type="checkbox" class="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50" />
+              <span class="min-w-0"><span class="block font-medium">{{ t('admin.groups.imagePricing.countBilling') }}</span><span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('admin.groups.imagePricing.countBillingHint') }}</span></span>
+            </label>
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
                 v-model="createForm.image_rate_independent"
@@ -2546,6 +2550,10 @@
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
               {{ t("admin.groups.imagePricing.allowImageGeneration") }}
+            </label>
+            <label v-if="['openai', 'composite'].includes(editForm.platform)" class="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50/60 p-3 text-sm text-gray-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-gray-200 md:col-span-2">
+              <input v-model="editForm.image_count_billing" :disabled="!editForm.allow_image_generation" type="checkbox" class="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50" />
+              <span class="min-w-0"><span class="block font-medium">{{ t('admin.groups.imagePricing.countBilling') }}</span><span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">{{ t('admin.groups.imagePricing.countBillingHint') }}</span></span>
             </label>
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
@@ -4301,6 +4309,7 @@ const createForm = reactive({
   peak_end: "",
   peak_rate_multiplier: 1,
   // 图片生成计费配置
+  image_count_billing: false,
   allow_image_generation: false,
   image_rate_independent: false,
   image_rate_multiplier: 1,
@@ -4666,6 +4675,7 @@ const editForm = reactive({
   peak_end: "",
   peak_rate_multiplier: 1,
   // 图片生成计费配置
+  image_count_billing: false,
   allow_image_generation: false,
   image_rate_independent: false,
   image_rate_multiplier: 1,
@@ -5125,6 +5135,7 @@ const closeCreateModal = () => {
   createForm.peak_start = "";
   createForm.peak_end = "";
   createForm.peak_rate_multiplier = 1;
+  createForm.image_count_billing = false;
   createForm.allow_image_generation = false;
   createForm.image_rate_independent = false;
   createForm.image_rate_multiplier = 1;
@@ -5346,6 +5357,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.monthly_limit_usd = group.monthly_limit_usd;
   editForm.long_context_pricing_enabled = group.long_context_pricing_enabled ?? true;
   editForm.model_pricing = groupPricingFromAPI(group.model_pricing);
+  editForm.image_count_billing = group.image_count_billing ?? false;
   editForm.allow_image_generation = group.allow_image_generation ?? false;
   editForm.image_rate_independent = group.image_rate_independent ?? false;
   editForm.image_rate_multiplier = group.image_rate_multiplier ?? 1;
@@ -5867,4 +5879,6 @@ onUnmounted(() => {
   accountSearchRunner.clearAll();
   clearAllAccountSearchState();
 });
+watch(() => [createForm.platform, createForm.allow_image_generation], () => { if (!createForm.allow_image_generation || !['openai', 'composite'].includes(createForm.platform)) createForm.image_count_billing = false })
+watch(() => [editForm.platform, editForm.allow_image_generation], () => { if (!editForm.allow_image_generation || !['openai', 'composite'].includes(editForm.platform)) editForm.image_count_billing = false })
 </script>

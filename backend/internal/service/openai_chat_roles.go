@@ -44,6 +44,16 @@ func strictChatCompatibility(account *Account, targetURL string) (roles, reasoni
 // numbers. Non-target destinations and unchanged requests return the input bytes.
 func normalizeStrictChatRequest(account *Account, targetURL string, body []byte) ([]byte, error) {
 	roles, reasoning := strictChatCompatibility(account, targetURL)
+	// Only a selected OpenCode DeepSeek destination gets developer-role conversion.
+	// Keep its native reasoning payload untouched.
+	if account != nil && account.Type == AccountTypeAPIKey && !account.IsGrok() {
+		parsed, err := url.Parse(targetURL)
+		official := err == nil && (strings.EqualFold(parsed.Hostname(), "opencode.ai") || strings.EqualFold(parsed.Hostname(), "api.opencode.ai"))
+		model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+		if (account.IsOpenCodeGo() || official) && isDeepSeekModel(model) {
+			roles, reasoning = true, false
+		}
+	}
 	if !roles && !reasoning {
 		return body, nil
 	}
@@ -112,7 +122,7 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return nil, err
 		}
-		if err := validateNewModelChatReasoningTools(model, gjson.GetBytes(body, "reasoning_effort").String(), len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0); err != nil {
+		if err := validateNewModelChatReasoningTools(model, gjson.GetBytes(body, "reasoning_effort").String(), len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0 || len(gjson.GetBytes(body, "additional_tools").Array()) > 0); err != nil {
 			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return nil, err
 		}
@@ -132,6 +142,9 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 }
 
 func validateNewModelChatReasoningTools(model, effort string, hasTools bool) error {
+	if hasTools && openai.RequiresResponsesForToolCalls(model) {
+		return fmt.Errorf("model %s requires the Responses endpoint for tool calls", model)
+	}
 	if err := openai.ValidateGPT61SolReasoningEffort(model, effort); err != nil {
 		return err
 	}

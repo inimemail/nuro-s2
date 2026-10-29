@@ -70,6 +70,7 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	"antigravity_force_token_refresh_reason":       {},
 	"codex_usage_updated_at":                       {},
 	service.GrokBillingSnapshotExtraKey:            {},
+	service.GrokModelCatalogExtraKey:               {},
 	service.GrokQuotaSnapshotExtraKey:              {},
 	"session_window_utilization":                   {},
 	service.UpstreamBillingProbeExtraKey:           {},
@@ -803,6 +804,7 @@ func updateAccountExtraPreservingGrokRuntimeSnapshots(ctx context.Context, exec 
 	payload := copyJSONMap(normalizeJSONMap(extra))
 	delete(payload, service.GrokBillingSnapshotExtraKey)
 	delete(payload, service.GrokQuotaSnapshotExtraKey)
+	delete(payload, service.GrokModelCatalogExtraKey)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -817,10 +819,12 @@ func updateAccountExtraPreservingGrokRuntimeSnapshots(ctx context.Context, exec 
 			WHEN COALESCE(extra, '{}'::jsonb) ? ($3::text)
 				THEN jsonb_build_object($3::text, extra -> ($3::text))
 			ELSE '{}'::jsonb
-		END
+		END || CASE
+            WHEN COALESCE(extra, '{}'::jsonb) ? ($5::text) THEN jsonb_build_object($5::text,extra->($5::text)) ELSE '{}'::jsonb
+        END
 		WHERE id = $4
 			AND deleted_at IS NULL
-	`, string(raw), service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, accountID)
+	`, string(raw), service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, accountID, service.GrokModelCatalogExtraKey)
 	if err != nil {
 		return err
 	}

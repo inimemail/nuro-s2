@@ -365,6 +365,7 @@ func TestAPIContracts(t *testing.T) {
 							"batch_image_discount_multiplier": 0,
 						"batch_image_hold_multiplier": 0,
 						"image_rate_independent": false,
+						"image_count_billing": false,
 						"image_rate_multiplier": 0,
 							"claude_code_only": false,
 							"allow_messages_dispatch": false,

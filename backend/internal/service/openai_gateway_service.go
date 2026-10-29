@@ -309,6 +309,7 @@ type OpenAIForwardResult struct {
 	// AccountHealthNeutral marks failures caused by optional gateway policy
 	// compatibility after the response has already been committed.
 	AccountHealthNeutral bool
+	ImageEndpoint        bool // Set only by a dedicated image endpoint.
 	ImageCount           int
 	ImageSize            string
 	ImageInputSize       string
@@ -10470,13 +10471,17 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 }
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
-	return firstPositiveGJSONInt(
+	cachedTokens := firstPositiveGJSONInt(
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
 		value.Get("cache_read_input_tokens"),
 		value.Get("cache_read_tokens"),
 		value.Get("cached_tokens"),
 	)
+	if cachedTokens > 0 {
+		return cachedTokens
+	}
+	return firstPositiveGJSONInt(value.Get("prompt_cache_hit_tokens"))
 }
 
 func openAICacheCreationTokensFromUsage(value gjson.Result) int {
@@ -12262,7 +12267,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		}
 	}
 	if result != nil && result.ImageCount > 0 {
-		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
+		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); imageCountBillingApplies(apiKey, result.ImageEndpoint) || resolved == nil || resolved.Mode != BillingModeToken {
 			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier), nil
 		}
 	}
@@ -12371,12 +12376,13 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 	multiplier float64,
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
+	tokens := UsageTokens{InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens, CacheCreationTokens: result.Usage.CacheCreationInputTokens}
 	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
 	if resolved != nil && resolved.Source == PricingSourceGroup &&
 		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
 		gid := apiKey.Group.ID
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
+			Tokens: tokens, Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
 			RequestCount: result.ImageCount, SizeTier: sizeTier,
 			RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
 		})
@@ -12388,7 +12394,7 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
 		gid := apiKey.Group.ID
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
+			Tokens: tokens, Ctx: ctx,
 			Model:          billingModel,
 			GroupID:        &gid,
 			Group:          apiKey.Group,
@@ -13525,7 +13531,10 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model) {
+	if openai.IsGPT61TerraModelSpelling(model) && strings.EqualFold(strings.TrimSpace(raw), "none") {
+		return "none"
+	}
+	if (openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) || openai.IsGPT61SolModelSpelling(model) {
 		switch value := strings.ToLower(strings.TrimSpace(raw)); value {
 		case "max":
 			return value

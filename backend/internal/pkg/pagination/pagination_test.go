@@ -1,6 +1,20 @@
 package pagination
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
+
+func TestOffsetDoesNotOverflow(t *testing.T) {
+	for _, page := range []int{math.MinInt, -1, 0, 1, 2, math.MaxInt, math.MaxInt / 20} {
+		for _, size := range []int{math.MinInt, -1, 0, 1, 20, 21, 1000, math.MaxInt} {
+			p := PaginationParams{Page: page, PageSize: size}
+			if offset := p.Offset(); offset < 0 || offset > math.MaxInt-p.Limit() {
+				t.Fatalf("invalid offset for page %d size %d: %d", page, size, offset)
+			}
+		}
+	}
+}
 
 func TestNormalizeSortOrder(t *testing.T) {
 	t.Parallel()

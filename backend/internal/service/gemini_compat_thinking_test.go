@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -358,6 +359,51 @@ func TestGeminiForwardAsChatCompletions_DropsHistoryReasoningContent(t *testing.
 	require.Contains(t, sent, "Third")
 	require.Contains(t, sent, "Hello")
 	require.Contains(t, sent, "Again")
+}
+
+type signatureErrorBody struct {
+	io.Reader
+	closed         bool
+	readAfterClose bool
+}
+
+func (b *signatureErrorBody) Read(p []byte) (int, error) {
+	if b.closed {
+		b.readAfterClose = true
+		return 0, io.ErrClosedPipe
+	}
+	return b.Reader.Read(p)
+}
+func (b *signatureErrorBody) Close() error { b.closed = true; return nil }
+
+func TestGeminiMessagesForward_SignatureRetryExhaustedBudget(t *testing.T) {
+	for _, retries := range []int{0, 1} {
+		t.Run(fmt.Sprintf("retries_%d", retries), func(t *testing.T) {
+			responses := []*http.Response{}
+			bodies := []*signatureErrorBody{}
+			for range retries + 1 {
+				body := &signatureErrorBody{Reader: strings.NewReader(`{"error":{"code":400,"message":"Function call is missing a thought_signature","status":"INVALID_ARGUMENT"}}`)}
+				bodies = append(bodies, body)
+				responses = append(responses, &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: body})
+			}
+			upstream := &queuedHTTPUpstreamStub{responses: responses}
+			cfg := &config.Config{}
+			cfg.Gateway.MaxSameAccountRetriesGemini = &retries
+			svc := &GeminiMessagesCompatService{httpUpstream: upstream, cfg: cfg}
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+			account := geminiCompatThinkingTestAccount()
+			account.Credentials["model_mapping"] = map[string]any{"claude-sonnet-4-5": "gemini-3.8-flash"}
+			c, recorder := newAntigravityCompatContext(http.MethodPost, "/v1/messages", body)
+			_, err := svc.Forward(context.Background(), c, account, body)
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.Len(t, upstream.requestBodies, retries+1)
+			for _, responseBody := range bodies {
+				require.True(t, responseBody.closed)
+				require.False(t, responseBody.readAfterClose, "exhausted retry must retain the final response for normal error handling")
+			}
+		})
+	}
 }
 
 func TestGeminiMessagesForward_SignatureRetryKeepsClientThinkingParams(t *testing.T) {

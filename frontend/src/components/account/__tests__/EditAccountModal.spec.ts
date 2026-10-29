@@ -1805,4 +1805,53 @@ describe('v0.2.17 account settings', () => {
     expect(wrapper.get('[data-testid="antigravity-model-capabilities"]').text()).toContain('New upstream model')
     expect(wrapper.text()).toContain('admin.accounts.modelCapabilityImages')
   })
+
+  it('uses the newest Antigravity capabilities after replacing a pending sync', async () => {
+    const account = buildAccount()
+    account.platform = 'antigravity'
+    account.type = 'oauth'
+    account.credentials = { access_token: 'test-token', model_mapping: { alias: 'target' } }
+    let resolveFirst!: (value: any) => void
+    syncUpstreamModelsMock.mockReset()
+      .mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ models: ['target'], metadata: { target: { display_name: 'Current capabilities' } } })
+    const wrapper = mountModal(account)
+    const sync = () => wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
+    await sync().trigger('click')
+    await wrapper.get('input[placeholder="admin.accounts.requestModel"]').setValue('edited-alias')
+    resolveFirst({ models: ['target'], metadata: { target: { display_name: 'Stale capabilities' } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.applyUpstreamModels')
+    await sync().trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="antigravity-model-capabilities"]').text()).toContain('Current capabilities')
+    expect(wrapper.text()).not.toContain('Stale capabilities')
+    expect(wrapper.get<HTMLInputElement>('input[placeholder="admin.accounts.requestModel"]').element.value).toBe('edited-alias')
+    wrapper.unmount()
+  })
+
+  it('clears previous capabilities when applying an Antigravity sync without metadata', async () => {
+    const account = buildAccount()
+    account.platform = 'antigravity'
+    account.type = 'oauth'
+    account.credentials = { access_token: 'test-token', model_mapping: { alias: 'target' } }
+    let resolveSecond!: (value: any) => void
+    syncUpstreamModelsMock.mockReset()
+      .mockResolvedValueOnce({ models: ['target'], metadata: { target: { display_name: 'Previous capabilities' } } })
+      .mockReturnValueOnce(new Promise(resolve => { resolveSecond = resolve }))
+    const wrapper = mountModal(account)
+    const sync = () => wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
+    await sync().trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Previous capabilities')
+    await sync().trigger('click')
+    await wrapper.get('input[placeholder="admin.accounts.requestModel"]').setValue('edited-alias')
+    resolveSecond({ models: ['target'] })
+    await flushPromises()
+    const apply = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.applyUpstreamModels')!
+    await apply.trigger('click')
+    expect(wrapper.find('[data-testid="antigravity-model-capabilities"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('input[placeholder="admin.accounts.requestModel"]').element.value).toBe('edited-alias')
+    wrapper.unmount()
+  })
 })

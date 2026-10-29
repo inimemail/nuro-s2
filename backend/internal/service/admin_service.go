@@ -219,6 +219,7 @@ type CreateGroupInput struct {
 	MonthlyLimitUSD                   *float64 // 月限额 (USD)
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         bool
+	ImageCountBilling            bool
 	AllowBatchImageGeneration    bool
 	ImageRateIndependent         bool
 	ImageRateMultiplier          *float64
@@ -297,6 +298,7 @@ type UpdateGroupInput struct {
 	MonthlyLimitUSD                   *float64 // 月限额 (USD)
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         *bool
+	ImageCountBilling            *bool
 	AllowBatchImageGeneration    *bool
 	ImageRateIndependent         *bool
 	ImageRateMultiplier          *float64
@@ -948,7 +950,7 @@ func (s *adminServiceImpl) ensureNotLastAdmin(ctx context.Context) error {
 		return fmt.Errorf("count admin users: %w", err)
 	}
 	if result == nil || result.Total <= 1 {
-		return errors.New("cannot demote the last admin user")
+		return infraerrors.BadRequest("LAST_ADMIN_DEMOTE_FORBIDDEN", "cannot demote the last admin user")
 	}
 	return nil
 }
@@ -987,7 +989,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 
 	// Protect admin users: cannot disable admin accounts
 	if user.Role == RoleAdmin && input.Status == "disabled" {
-		return nil, errors.New("cannot disable admin user")
+		return nil, infraerrors.BadRequest("ADMIN_DISABLE_FORBIDDEN", "cannot disable admin user; change the role to user first")
 	}
 
 	oldConcurrency := user.Concurrency
@@ -1134,7 +1136,7 @@ func (s *adminServiceImpl) DeleteUser(ctx context.Context, id int64) error {
 		return err
 	}
 	if user.Role == "admin" {
-		return errors.New("cannot delete admin user")
+		return infraerrors.BadRequest("ADMIN_DELETE_FORBIDDEN", "cannot delete admin user; change the role to user first")
 	}
 
 	apiKeys, err := s.listUserAPIKeysForDeletion(ctx, id)
@@ -2151,6 +2153,9 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if platform == "" {
 		platform = PlatformAnthropic
 	}
+	if input.ImageCountBilling && (!input.AllowImageGeneration || (platform != PlatformOpenAI && platform != PlatformComposite)) {
+		return nil, infraerrors.BadRequest("IMAGE_COUNT_BILLING_INVALID", "Per-image billing requires an OpenAI or composite group with image generation enabled")
+	}
 	modelPricing, err := normalizeGroupModelPricing(platform, input.ModelPricing)
 	if err != nil {
 		return nil, err
@@ -2323,6 +2328,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		WeeklyLimitUSD:                       weeklyLimit,
 		MonthlyLimitUSD:                      monthlyLimit,
 		AllowImageGeneration:                 input.AllowImageGeneration,
+		ImageCountBilling:                    input.ImageCountBilling,
 		AllowBatchImageGeneration:            input.AllowBatchImageGeneration,
 		ImageRateIndependent:                 input.ImageRateIndependent,
 		ImageRateMultiplier:                  imageRateMultiplier,
@@ -2640,6 +2646,15 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	// 图片生成计费配置：负数表示清除（使用默认价格）
 	if input.AllowImageGeneration != nil {
 		group.AllowImageGeneration = *input.AllowImageGeneration
+	}
+	if input.ImageCountBilling != nil {
+		group.ImageCountBilling = *input.ImageCountBilling
+	}
+	if group.ImageCountBilling && (!group.AllowImageGeneration || (group.Platform != PlatformOpenAI && group.Platform != PlatformComposite)) {
+		if input.ImageCountBilling != nil && *input.ImageCountBilling {
+			return nil, infraerrors.BadRequest("IMAGE_COUNT_BILLING_INVALID", "Per-image billing requires an OpenAI or composite group with image generation enabled")
+		}
+		group.ImageCountBilling = false
 	}
 	if input.AllowBatchImageGeneration != nil {
 		group.AllowBatchImageGeneration = *input.AllowBatchImageGeneration
@@ -3652,6 +3667,7 @@ func normalizeGrokMediaEligibilityUpdateExtra(account *Account, input *UpdateAcc
 	// update path below; a client payload must never become the returned state.
 	delete(normalized, GrokBillingSnapshotExtraKey)
 	delete(normalized, GrokQuotaSnapshotExtraKey)
+	delete(normalized, GrokModelCatalogExtraKey)
 	raw, provided := input.Extra[GrokMediaEligibleExtraKey]
 	if provided {
 		if raw == nil {
@@ -3861,6 +3877,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		accountExtra = maps.Clone(accountExtra)
 		delete(accountExtra, GrokBillingSnapshotExtraKey)
 		delete(accountExtra, GrokQuotaSnapshotExtraKey)
+		delete(accountExtra, GrokModelCatalogExtraKey)
 		delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingProbeExtraKey)
@@ -4188,7 +4205,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{
 			"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start",
-			GrokBillingSnapshotExtraKey, GrokQuotaSnapshotExtraKey,
+			GrokBillingSnapshotExtraKey, GrokQuotaSnapshotExtraKey, GrokModelCatalogExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v

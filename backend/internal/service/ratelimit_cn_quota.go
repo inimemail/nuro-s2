@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -55,4 +56,39 @@ func (s *RateLimitService) handleCNQuota403(ctx context.Context, account *Accoun
 	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
 		slog.Warn("cn_quota_temp_pause_failed", "account_id", account.ID, "error", err)
 	}
+}
+
+// Short cooldown is allowed only with positive evidence for every known window.
+// Missing, malformed, stale or non-finite data never weakens quota protection.
+func cnCodingPlanFrequency429(account *Account, body []byte, now time.Time) bool {
+	if account == nil || !account.IsCNProvider() || !account.IsCodingPlan() {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	for _, marker := range []string{"额度", "已用尽", "用完", "quota", "usage limit", "insufficient", "balance"} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	frequency := false
+	for _, marker := range []string{"速率限制", "请求频率", "访问频率", "请求过于频繁", "请求太频繁", "too many requests", "rate limit exceeded", "rate_limit_exceeded", "ratelimit exceeded"} {
+		if strings.Contains(text, marker) {
+			frequency = true
+			break
+		}
+	}
+	if !frequency {
+		return false
+	}
+	stamp, err := time.Parse(time.RFC3339, cnNormalizeResetTime(account.Extra[cnExtraKey(account.Platform, cnExtraSuffixUsageUpdated)]))
+	if err != nil || stamp.After(now) || now.Sub(stamp) > 20*time.Minute {
+		return false
+	}
+	for _, key := range []string{cnExtraSuffix5hUsed, cnExtraSuffixWeeklyUsed} {
+		used, ok := cnParseF64(account.Extra[cnExtraKey(account.Platform, key)])
+		if !ok || math.IsNaN(used) || math.IsInf(used, 0) || used < 0 || used >= 90 {
+			return false
+		}
+	}
+	return true
 }

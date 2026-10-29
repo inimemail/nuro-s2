@@ -107,6 +107,7 @@
       >
         {{ isSyncingUpstream ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
       </button>
+      <button v-if="isSyncingUpstream" type="button" class="btn btn-secondary text-sm" @click="invalidateUpstreamSync">{{ t('common.cancel') }}</button>
       <button
         type="button"
         @click="clearAll"
@@ -114,6 +115,11 @@
       >
         {{ t('admin.accounts.clearAllModels') }}
       </button>
+    </div>
+
+    <div v-if="pendingUpstreamModels.length" role="status" class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-900/20">
+      <p class="min-w-0 flex-1 text-sm text-emerald-800 dark:text-emerald-200">{{ t('admin.accounts.syncUpstreamModelsPending', { count: pendingUpstreamModels.length }) }}</p>
+      <button type="button" class="btn btn-secondary shrink-0 text-sm" @click="applyUpstreamModels()">{{ t('admin.accounts.applyUpstreamModels') }}</button>
     </div>
 
     <!-- Custom Model Input -->
@@ -143,7 +149,7 @@
 
 <script setup lang="ts">
 import { extractSafeApiErrorMessage, isApiRequestCancelled } from '@/utils/apiError'
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { accountsAPI } from '@/api/admin/accounts'
@@ -160,6 +166,7 @@ const props = defineProps<{
   platform?: string
   platforms?: string[]
   accountId?: number
+  syncActive?: boolean
   syncCredentials?: {
     platform: string
     type: string
@@ -280,47 +287,65 @@ const fillRelated = () => {
   emit('update:modelValue', newModels)
 }
 
-const syncUpstreamModels = async () => {
-  if (isSyncingUpstream.value) return
-  if (!props.accountId && !props.syncCredentials) return
+let syncGeneration = 0
+let syncController: AbortController | undefined
+const pendingUpstreamModels = ref<string[]>([])
+const invalidateUpstreamSync = () => {
+  syncGeneration += 1
+  syncController?.abort()
+  syncController = undefined
+  isSyncingUpstream.value = false
+  pendingUpstreamModels.value = []
+}
+watch(() => [props.accountId, props.platform, props.platforms, props.syncActive, props.syncCredentials], invalidateUpstreamSync, { deep: true, flush: 'sync' })
+onBeforeUnmount(invalidateUpstreamSync)
 
+const applyUpstreamModels = (models = pendingUpstreamModels.value) => {
+  const newModels = [...props.modelValue]
+  for (const model of models) {
+    if (!newModels.includes(model)) newModels.push(model)
+  }
+  const addedCount = newModels.length - props.modelValue.length
+  emit('update:modelValue', newModels)
+  pendingUpstreamModels.value = []
+  if (addedCount > 0) {
+    appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: models.length }))
+  } else {
+    appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: models.length }))
+  }
+}
+
+const syncUpstreamModels = async () => {
+  if (isSyncingUpstream.value || props.syncActive === false) return
+  if (!props.accountId && !props.syncCredentials) return
+  const generation = ++syncGeneration
+  const controller = new AbortController()
+  syncController = controller
+  const draft = [...props.modelValue]
+  pendingUpstreamModels.value = []
   isSyncingUpstream.value = true
   try {
-    let result
-    if (props.accountId) {
-      result = await accountsAPI.syncUpstreamModels(props.accountId)
-    } else if (props.syncCredentials) {
-      result = await accountsAPI.syncUpstreamModelsPreview(props.syncCredentials as SyncUpstreamPreviewParams)
-    } else {
-      return
-    }
-    const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
-    if (upstreamModels.length === 0) {
+    const result = props.accountId
+      ? await accountsAPI.syncUpstreamModels(props.accountId, { signal: controller.signal })
+      : await accountsAPI.syncUpstreamModelsPreview(props.syncCredentials as SyncUpstreamPreviewParams, { signal: controller.signal })
+    if (generation !== syncGeneration || controller.signal.aborted) return
+    const models = [...new Set(result.models.map(model => model.trim()).filter(Boolean))]
+    if (!models.length) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
-      return
-    }
-
-    const newModels = [...props.modelValue]
-    let addedCount = 0
-    for (const model of upstreamModels) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-        addedCount += 1
-      }
-    }
-
-    emit('update:modelValue', newModels)
-    if (addedCount > 0) {
-      appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
+    } else if (draft.length !== props.modelValue.length || draft.some((value, index) => value !== props.modelValue[index])) {
+      pendingUpstreamModels.value = models
     } else {
-      appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
+      applyUpstreamModels(models)
     }
   } catch (error) {
-    if (isApiRequestCancelled(error)) return
+    if (generation !== syncGeneration || controller.signal.aborted || isApiRequestCancelled(error)) return
     const message = extractSafeApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
     appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))
   } finally {
-    isSyncingUpstream.value = false
+    if (generation === syncGeneration) {
+      isSyncingUpstream.value = false
+      syncController = undefined
+    }
   }
 }
 

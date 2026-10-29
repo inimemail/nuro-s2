@@ -672,6 +672,7 @@ type WebAuthnConfig struct {
 }
 
 type SecurityConfig struct {
+	ScopedAdminAPIKeysEnabled     bool                                       `mapstructure:"scoped_admin_api_keys_enabled"`
 	URLAllowlist                  URLAllowlistConfig                         `mapstructure:"url_allowlist"`
 	ResponseHeaders               ResponseHeaderConfig                       `mapstructure:"response_headers"`
 	CSP                           CSPConfig                                  `mapstructure:"csp"`
@@ -1080,6 +1081,8 @@ type GatewayConfig struct {
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
 	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
 	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
+	// Nil preserves the historical total of five attempts for programmatic configs.
+	MaxSameAccountRetriesGemini *int `mapstructure:"max_same_account_retries_gemini"`
 
 	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
@@ -2251,6 +2254,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 }
 
 func setDefaults() {
+	viper.SetDefault("security.scoped_admin_api_keys_enabled", false)
 	viper.SetDefault("gateway.min_output_tokens", 128)
 	viper.SetDefault("run_mode", RunModeStandard)
 	// Existing installs without this field keep their startup behavior.
@@ -2661,6 +2665,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.max_same_account_retries_gemini", 4)
 	viper.SetDefault("gateway.gemini_explicit_cache_enabled", false)
 	viper.SetDefault("gateway.gemini_explicit_cache_max_resources", 10000)
 	viper.SetDefault("gateway.gemini_explicit_cache_max_ttl_seconds", 86400)
@@ -2914,6 +2919,9 @@ func setDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if n := c.Gateway.MaxSameAccountRetriesGemini; n != nil && (*n < 0 || *n > 10) {
+		return fmt.Errorf("gateway.max_same_account_retries_gemini must be between 0 and 10")
+	}
 	// Zero preserves the default for older programmatic config construction.
 	if c.Gateway.MinOutputTokens == 0 {
 		c.Gateway.MinOutputTokens = 128

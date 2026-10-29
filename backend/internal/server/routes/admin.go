@@ -26,6 +26,17 @@ func RegisterAdminRoutes(
 	admin.Use(panelRateLimiter.Global())
 	admin.Use(gin.HandlerFunc(auditLog))
 	admin.Use(h.Gateway.GeminiCachePermissionBarrier)
+	if h.Admin.ScopedAdmin != nil {
+		admin.Use(h.Admin.ScopedAdmin.Intercept)
+		keys := admin.Group("/settings/scoped-admin-keys")
+		keys.GET("/capabilities", h.Admin.ScopedAdmin.Capabilities)
+		keys.GET("", h.Admin.ScopedAdmin.List)
+		keys.POST("", gin.HandlerFunc(stepUp), h.Admin.ScopedAdmin.Create)
+		keys.PUT("/:id", gin.HandlerFunc(stepUp), h.Admin.ScopedAdmin.Update)
+		keys.POST("/:id/rotate", gin.HandlerFunc(stepUp), h.Admin.ScopedAdmin.Change)
+		keys.POST("/:id/revoke", gin.HandlerFunc(stepUp), h.Admin.ScopedAdmin.Change)
+		keys.DELETE("/:id", gin.HandlerFunc(stepUp), h.Admin.ScopedAdmin.Change)
+	}
 	{
 		admin.GET("/gemini-cache/reconcile", panelRateLimiter.Heavy(), h.Gateway.GeminiCacheReconcile)
 		admin.POST("/gemini-cache/reconcile/:operationID/recheck", panelRateLimiter.Heavy(), gin.HandlerFunc(stepUp), h.Gateway.GeminiCacheReconcile)
@@ -390,6 +401,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp m
 		accounts.POST("/models/sync-upstream-preview", h.Admin.Account.SyncUpstreamModelsPreview)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
+		accounts.GET("/:id/models/diagnostics", h.Admin.Account.GrokModelDiagnostics)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", gin.HandlerFunc(stepUp), h.Admin.Account.ExportData)
 		accounts.POST("/data", h.Admin.Account.ImportData)

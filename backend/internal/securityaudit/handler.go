@@ -3,6 +3,7 @@ package securityaudit
 import (
 	"database/sql"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -241,6 +242,9 @@ func promptEventFilterFromQuery(c *gin.Context) (EventFilter, error) {
 			copyValue := parsed
 			*target = &copyValue
 		}
+	}
+	if filter.Page > math.MaxInt/filter.PageSize {
+		return EventFilter{}, infraerrors.BadRequest("PROMPT_AUDIT_PAGE_INVALID", "page is invalid")
 	}
 	return filter, nil
 }

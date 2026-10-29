@@ -2989,3 +2989,18 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 func (h *AccountHandler) SetOpenCodeGoUsageService(s *service.OpenCodeGoUsageService) {
 	h.openCodeGoUsage = s
 }
+
+// GrokModelDiagnostics reads saved state only; syncing remains an explicit POST.
+func (h *AccountHandler) GrokModelDiagnostics(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), id)
+	if err != nil || account.Platform != service.PlatformGrok {
+		response.NotFound(c, "Account not found")
+		return
+	}
+	response.Success(c, service.BuildGrokCatalogDiagnostics(account, time.Now().UTC()))
+}

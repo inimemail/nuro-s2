@@ -68,6 +68,9 @@ func normalizeKnownOpenAICodexModel(model string) string {
 	if mapped := getNormalizedCodexModel(normalized); mapped != "" {
 		return mapped
 	}
+	if openai.IsGPT61TerraModelSpelling(normalized) {
+		return "gpt-6.1-terra"
+	}
 	if openai.IsGPT61SolModelSpelling(normalized) {
 		return "gpt-6.1-sol"
 	}

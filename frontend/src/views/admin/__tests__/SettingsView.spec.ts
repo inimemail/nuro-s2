@@ -4,6 +4,10 @@ import { flushPromises, mount } from "@vue/test-utils";
 
 import SettingsView from "../SettingsView.vue";
 
+vi.mock("@/api/admin/adminAccessKeys", () => ({
+  adminAccessKeysAPI: { capabilities: vi.fn().mockResolvedValue({ enabled: false, permissions: [], routes: [] }) },
+}));
+
 const {
   getSettings,
   updateSettings,
@@ -114,7 +118,8 @@ vi.mock("@/composables/useClipboard", () => ({
   }),
 }));
 
-vi.mock("@/utils/apiError", () => ({
+vi.mock("@/utils/apiError", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/utils/apiError")>(),
   extractApiErrorMessage: () => "error",
 }));
 

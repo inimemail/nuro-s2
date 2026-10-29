@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
@@ -260,9 +261,9 @@ func addUsageSurcharge(base, surcharge *CostBreakdown) *CostBreakdown {
 var ErrModelPricingUnavailable = errors.New("pricing not found")
 
 const (
-	deepseekFlashOffPeakInputPrice  = 2.2e-7
-	deepseekFlashOffPeakOutputPrice = 6.6e-7
-	deepseekFlashOffPeakCacheRead   = 7e-9
+	deepseekFlashOffPeakInputPrice  = 1.5e-7
+	deepseekFlashOffPeakOutputPrice = 6e-7
+	deepseekFlashOffPeakCacheRead   = 3e-9
 	deepseekProOffPeakInputPrice    = 6.6e-7
 	deepseekProOffPeakOutputPrice   = 1.98e-6
 	deepseekProOffPeakCacheRead     = 2.2e-8
@@ -495,6 +496,19 @@ func (s *BillingService) initFallbackPricing() {
 	// OpenAI GPT-6.1 Sol official pricing (USD/token). Keep this separate from
 	// GPT-6 Sol because model aliases are normalized to this exact key before
 	// fallback lookup.
+	s.fallbackPrices["gpt-6.1-terra"] = &ModelPricing{
+		InputPricePerToken:                 1e-6,
+		InputPricePerTokenPriority:         2e-6,
+		OutputPricePerToken:                5e-6,
+		OutputPricePerTokenPriority:        10e-6,
+		CacheCreationPricePerToken:         1.25e-6,
+		CacheCreationPricePerTokenPriority: 2.5e-6,
+		CacheReadPricePerToken:             0.05e-6,
+		CacheReadPricePerTokenPriority:     0.1e-6,
+		LongContextInputThreshold:          272_000,
+		LongContextInputMultiplier:         2,
+		LongContextOutputMultiplier:        1.5,
+	}
 	s.fallbackPrices["gpt-6.1-sol"] = &ModelPricing{
 		InputPricePerToken:                 2e-6,
 		InputPricePerTokenPriority:         4e-6,
@@ -1029,7 +1043,7 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
-		case "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna":
+		case "gpt-6.1-terra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna":
 			return s.fallbackPrices[normalized]
 		case "gpt-6-astra":
 			return s.fallbackPrices["gpt-6-astra"]
@@ -1662,7 +1676,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 		return applyDeepSeekOfficialPeakPricing(model, pricing, time.Unix(0, 0))
 	}
 	normalized := normalizeKnownOpenAICodexModel(model)
-	isGPT56 := isOpenAIGPT56Model(normalized)
+	isGPT56 := isOpenAIGPT56Model(normalized) || openai.IsGPT61TerraModelSpelling(normalized)
 	usesLegacyLongContextPricing := usesOpenAILegacyLongContextPricing(normalized)
 	if !isGPT56 && !usesLegacyLongContextPricing {
 		return pricing

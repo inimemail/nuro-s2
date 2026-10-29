@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -79,6 +80,9 @@ var auditActionOverrides = map[string]string{
 }
 
 var auditBodyOmittedRoutes = map[string]struct{}{
+	"POST /api/v1/admin/settings/scoped-admin-keys":             {},
+	"PUT /api/v1/admin/settings/scoped-admin-keys/:id":          {},
+	"POST /api/v1/admin/settings/scoped-admin-keys/:id/rotate":  {},
 	"POST /api/v1/auth/passkey/login/begin":                     {},
 	"POST /api/v1/auth/passkey/login/finish":                    {},
 	"POST /api/v1/user/passkeys/register/begin":                 {},
@@ -174,6 +178,12 @@ func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddle
 			entry.RequestID = requestID
 		}
 		extra := map[string]any{}
+		if value, ok := c.Get(adminaccess.PrincipalContextKey); ok {
+			if p, ok := value.(*service.ScopedAdminPrincipal); ok && p != nil {
+				extra["admin_key_id"] = p.Key.ID
+				extra["admin_key_revision"] = p.Key.Revision
+			}
+		}
 		if len(c.Params) > 0 {
 			params := map[string]string{}
 			for _, p := range c.Params {

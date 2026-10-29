@@ -689,8 +689,8 @@ export interface SyncUpstreamModelsResult {
  * @param id - Account ID
  * @returns List of model IDs returned by the upstream
  */
-export async function syncUpstreamModels(id: number): Promise<SyncUpstreamModelsResult> {
-  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`)
+export async function syncUpstreamModels(id: number, options?: { signal?: AbortSignal }): Promise<SyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`, undefined, { signal: options?.signal })
   return data
 }
 
@@ -706,8 +706,8 @@ export interface SyncUpstreamPreviewParams {
  * @param params - Connection credentials
  * @returns List of model IDs returned by the upstream
  */
-export async function syncUpstreamModelsPreview(params: SyncUpstreamPreviewParams): Promise<SyncUpstreamModelsResult> {
-  const { data } = await apiClient.post<SyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-preview', params)
+export async function syncUpstreamModelsPreview(params: SyncUpstreamPreviewParams, options?: { signal?: AbortSignal }): Promise<SyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<SyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-preview', params, { signal: options?.signal })
   return data
 }
 
@@ -1051,3 +1051,16 @@ export const accountsAPI = {
 }
 
 export default accountsAPI
+
+export interface GrokModelDiagnosticsResult {
+  status: 'unknown' | 'stale' | 'source_changed' | 'success' | 'failed'
+  attempted_at: string
+  succeeded_at?: string
+  catalog_count: number
+  models: Array<{ model: string; status: 'listed' | 'not_listed' | 'unverifiable' | 'out_of_scope' }>
+}
+
+export async function getGrokModelDiagnostics(id: number, signal?: AbortSignal): Promise<GrokModelDiagnosticsResult> {
+  const { data } = await apiClient.get<GrokModelDiagnosticsResult>(`/admin/accounts/${id}/models/diagnostics`, { signal })
+  return data
+}

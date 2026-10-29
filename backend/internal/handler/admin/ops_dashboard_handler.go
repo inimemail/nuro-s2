@@ -2,6 +2,7 @@ package admin
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -266,10 +267,14 @@ func parseOpsOpenAITokenStatsFilter(c *gin.Context) (*service.OpsOpenAITokenStat
 		StartTime: start,
 		EndTime:   end,
 		Platform:  strings.TrimSpace(c.Query("platform")),
-		Scope: strings.TrimSpace(strings.ToLower(c.Query("scope"))),
+		Scope:     strings.TrimSpace(strings.ToLower(c.Query("scope"))),
 	}
-	if filter.Scope == "" { filter.Scope = "openai_legacy" }
-	if filter.Scope != "openai_legacy" && filter.Scope != "all" { return nil, fmt.Errorf("invalid scope") }
+	if filter.Scope == "" {
+		filter.Scope = "openai_legacy"
+	}
+	if filter.Scope != "openai_legacy" && filter.Scope != "all" {
+		return nil, fmt.Errorf("invalid scope")
+	}
 
 	if v := strings.TrimSpace(c.Query("group_id")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -310,6 +315,9 @@ func parseOpsOpenAITokenStatsFilter(c *gin.Context) (*service.OpsOpenAITokenStat
 			return nil, fmt.Errorf("invalid page_size")
 		}
 		filter.PageSize = pageSize
+	}
+	if filter.PageSize > 0 && filter.Page > math.MaxInt/filter.PageSize {
+		return nil, fmt.Errorf("invalid page")
 	}
 	return filter, nil
 }

@@ -152,3 +152,9 @@ output/
 
 # Python validation artifacts
 __pycache__/
+
+# Reviewable v0.2.19 implementation and frozen baseline
+!docs/upgrades/v0219-*.md
+!docs/upgrades/v0219-protected.json
+# Architecture-specific paired binaries staged only by the release workflow.
+/.release-edge/

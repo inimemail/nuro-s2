@@ -38,3 +38,43 @@ func (s *GeminiMessagesCompatService) AntigravityGeminiModelIDs(ctx context.Cont
 	sort.Strings(models)
 	return models, nil
 }
+
+// DeclaredModelIDs returns a complete native declaration only when every eligible
+// native account restricts its models. Empty declarations retain upstream discovery.
+func (s *GeminiMessagesCompatService) DeclaredModelIDs(ctx context.Context, groupID *int64) ([]string, error) {
+	accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, PlatformGemini, true)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for i := range accounts {
+		if accounts[i].Platform != PlatformGemini {
+			continue
+		}
+		mapping := accounts[i].GetModelMapping()
+		if len(mapping) == 0 {
+			return nil, nil
+		}
+		for model, target := range mapping {
+			if strings.TrimSpace(target) != "" {
+				seen[strings.TrimPrefix(model, "models/")] = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func DeclaredModelsCover(declared []string, model string) bool {
+	normalized := normalizeRequestedModelForLookup(PlatformGemini, model)
+	for _, pattern := range declared {
+		if matchWildcard(pattern, model) || matchWildcard(pattern, normalized) {
+			return true
+		}
+	}
+	return false
+}

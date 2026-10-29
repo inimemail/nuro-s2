@@ -28,7 +28,7 @@ func normalizeGPT6ResponsesSampling(body []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if !openai.IsGPT6SolOrLunaModelSpelling(model) && !openai.IsGPT61SolModelSpelling(model) || (openai.IsGPT6SolOrLunaModelSpelling(model) && strings.EqualFold(effort, "none")) {
+	if !openai.IsGPT6SolOrLunaModelSpelling(model) && !openai.IsGPT61SolModelSpelling(model) && !openai.IsGPT61TerraModelSpelling(model) || ((openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) && strings.EqualFold(effort, "none")) {
 		return body, nil
 	}
 	out := body

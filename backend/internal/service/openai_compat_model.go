@@ -39,6 +39,9 @@ func validateGPT61SolRequestBody(body []byte, modelCandidates ...string) error {
 }
 
 func NormalizeOpenAICompatRequestedModel(model string) string {
+	if openai.IsGPT61TerraModelSpelling(model) {
+		return "gpt-6.1-terra"
+	}
 	if openai.IsGPT61SolModelSpelling(model) {
 		return "gpt-6.1-sol"
 	}
@@ -64,6 +67,19 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 		return
 	}
 
+	if openai.IsGPT61TerraModelSpelling(originalModel) {
+		req.Model = NormalizeOpenAICompatRequestedModel(originalModel)
+		if req.OutputConfig == nil || strings.TrimSpace(req.OutputConfig.Effort) == "" {
+			_, effort, ok := splitOpenAICompatReasoningModel(originalModel)
+			if ok {
+				if req.OutputConfig == nil {
+					req.OutputConfig = &apicompat.AnthropicOutputConfig{}
+				}
+				req.OutputConfig.Effort = effort
+			}
+		}
+		return
+	}
 	normalizedModel, derivedEffort, hasReasoningSuffix := splitOpenAICompatReasoningModel(originalModel)
 	if hasReasoningSuffix && normalizedModel != "" {
 		req.Model = normalizedModel
@@ -85,6 +101,14 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 }
 
 func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reasoningEffort string, ok bool) {
+	if openai.IsGPT61TerraModelSpelling(model) {
+		id := canonicalizeOpenAIModelAliasSpelling(model)
+		effort, suffix := strings.CutPrefix(id, "gpt-6.1-terra-")
+		if suffix && effort != "openai-compact" {
+			return "gpt-6.1-terra", effort, true
+		}
+		return "gpt-6.1-terra", "", false
+	}
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return "", "", false

@@ -39,7 +39,7 @@ const (
 	openAIChatGPTFilesURL          = "https://chatgpt.com/backend-api/files"
 	openAIImageBackendUserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	openAIImageMaxDownloadBytes    = 20 << 20 // 20MB per image download
-	openAIImageMaxUploadPartSize   = 20 << 20 // 20MB per multipart upload part
+	openAIImageMaxUploadPartSize   = 50 << 20 // 50MiB per multipart upload part; total body limit still applies.
 	openAIImagesResponsesMainModel = "gpt-5.4-mini"
 )
 
@@ -318,7 +318,7 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 		return fmt.Errorf("multipart boundary is required")
 	}
 
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	reader := newImageMultipartReader(body, boundary)
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -333,10 +333,13 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 			continue
 		}
 
-		data, err := io.ReadAll(io.LimitReader(part, openAIImageMaxUploadPartSize))
+		data, err := io.ReadAll(io.LimitReader(part, openAIImageMaxUploadPartSize+1))
 		_ = part.Close()
 		if err != nil {
 			return fmt.Errorf("read multipart field %s: %w", name, err)
+		}
+		if len(data) > openAIImageMaxUploadPartSize {
+			return fmt.Errorf("multipart field exceeds the 50MiB upload limit")
 		}
 
 		fileName := strings.TrimSpace(part.FileName())
@@ -693,6 +696,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 
 	var usage OpenAIUsage
 	imageCount := parsed.N
+	if imageCountBillingApplies(getAPIKeyFromContext(c), true) {
+		imageCount = 0
+	}
 	var firstTokenMs *int
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime)
@@ -709,6 +715,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 					ResponseHeaders:            resp.Header.Clone(),
 					Duration:                   time.Since(startTime),
 					FirstTokenMs:               ttft,
+					ImageEndpoint:              true,
 					ImageCount:                 streamCount,
 					ImageSize:                  parsed.SizeTier,
 					ImageInputSize:             parsed.Size,
@@ -732,6 +739,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			ResponseHeaders:            resp.Header.Clone(),
 			Duration:                   time.Since(startTime),
 			FirstTokenMs:               firstTokenMs,
+			ImageEndpoint:              true,
 			ImageCount:                 imageCount,
 			ImageSize:                  parsed.SizeTier,
 			ImageInputSize:             parsed.Size,
@@ -757,6 +765,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			ResponseHeaders:            resp.Header.Clone(),
 			Duration:                   time.Since(startTime),
 			FirstTokenMs:               firstTokenMs,
+			ImageEndpoint:              true,
 			ImageCount:                 imageCount,
 			ImageSize:                  parsed.SizeTier,
 			ImageInputSize:             parsed.Size,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	basemiddleware "github.com/Wei-Shaw/sub2api/internal/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -39,6 +40,24 @@ func (p *PanelRateLimiter) Heavy() gin.HandlerFunc {
 
 func (p *PanelRateLimiter) userScoped(scope string, limitOf func(service.PanelRateLimitSettings) int) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if value, ok := c.Get(adminaccess.PrincipalContextKey); ok {
+			principal, valid := value.(*service.ScopedAdminPrincipal)
+			if !valid || principal == nil || p == nil || p.limiter == nil {
+				AbortWithError(c, 503, "SCOPED_ADMIN_UNAVAILABLE", "Scoped administration is unavailable")
+				return
+			}
+			result, err := p.limiter.Allow(c.Request.Context(), "panel:"+scope+":admin-key:"+strconv.FormatInt(principal.Key.ID, 10), principal.Key.RPM, panelRateLimitWindow)
+			if err != nil {
+				AbortWithError(c, 503, "SCOPED_ADMIN_UNAVAILABLE", "Scoped administration is unavailable")
+				return
+			}
+			if !result.Allowed {
+				abortPanelRateLimited(c, result.RetryAfter)
+				return
+			}
+			c.Next()
+			return
+		}
 		if p == nil || p.limiter == nil || p.settingService == nil {
 			c.Next()
 			return

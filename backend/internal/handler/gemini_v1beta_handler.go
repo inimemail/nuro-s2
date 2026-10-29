@@ -71,6 +71,24 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 
+	if declared, err := h.geminiCompatService.DeclaredModelIDs(c.Request.Context(), apiKey.GroupID); err == nil && len(declared) > 0 {
+		models := make([]gemini.Model, 0, len(declared)+len(agModels))
+		for _, id := range declared {
+			if service.IsSafeGeminiModelPathSegment(id) && !strings.ContainsAny(id, "*?") {
+				models = append(models, gemini.FallbackModel(id))
+			}
+		}
+		// A wildcard declaration needs the provider list to enumerate concrete IDs.
+		if len(models) == len(declared) {
+			encoded, _ := json.Marshal(gemini.ModelsListResponse{Models: models})
+			if merged, ok := appendUpstreamGeminiModels(encoded, agModels, apiKey.Group); ok {
+				c.Data(http.StatusOK, "application/json", merged)
+			} else {
+				c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: allowedGeminiDiscoveryModels(models, apiKey.Group)})
+			}
+			return
+		}
+	}
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
 		if len(agModels) > 0 {
@@ -170,6 +188,14 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		return
 	}
 
+	if declared, err := h.geminiCompatService.DeclaredModelIDs(c.Request.Context(), apiKey.GroupID); err == nil && len(declared) > 0 {
+		if !service.DeclaredModelsCover(declared, modelName) && !agModel {
+			googleError(c, http.StatusNotFound, "Model not found")
+			return
+		}
+		c.JSON(http.StatusOK, gemini.FallbackModel(modelName))
+		return
+	}
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
 		// 没有 gemini 账户，检查是否有 antigravity 账户可用

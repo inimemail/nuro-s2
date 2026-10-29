@@ -592,6 +592,7 @@ export interface Group {
   peak_end: string
   peak_rate_multiplier: number
   // 图片生成计费配置
+  image_count_billing?: boolean
   allow_image_generation: boolean
   image_rate_independent: boolean
   image_rate_multiplier: number
@@ -748,6 +749,7 @@ export interface CreateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   model_pricing?: Group['model_pricing']
+  image_count_billing?: boolean
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
@@ -818,6 +820,7 @@ export interface UpdateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   model_pricing?: Group['model_pricing']
+  image_count_billing?: boolean
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number

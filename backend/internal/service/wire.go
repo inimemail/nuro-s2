@@ -715,6 +715,7 @@ var ProviderSet = wire.NewSet(
 	NewSeedanceService,
 	NewPasskeyService,
 	NewModelPlazaService,
+	NewScopedAdminService,
 	// Core services
 	NewAuthService,
 	NewUserService,

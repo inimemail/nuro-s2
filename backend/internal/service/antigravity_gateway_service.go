@@ -1852,6 +1852,15 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		streamRes, err := s.handleClaudeStreamToNonStreaming(c, resp, startTime, originalModel)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_collect_error error=%v", prefix, err)
+			if streamRes != nil {
+				if streamRes.usage == nil {
+					streamRes.usage = &ClaudeUsage{}
+				}
+				return &ForwardResult{
+					RequestID: requestID, Usage: *streamRes.usage, Model: originalModel, UpstreamModel: billingModel,
+					Stream: false, Duration: time.Since(startTime), FirstTokenMs: streamRes.firstTokenMs,
+				}, err
+			}
 			return nil, err
 		}
 		usage = streamRes.usage
@@ -3936,6 +3945,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(resp *http.Respo
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 
 	var firstTokenMs *int
+	var observedUsage *ClaudeUsage
 	var last map[string]any
 	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（包括 text、thinking、functionCall、inlineData 等）
@@ -4036,6 +4046,13 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(resp *http.Respo
 				continue
 			}
 
+			if metadata, ok := parsed["usageMetadata"].(map[string]any); ok && len(metadata) > 0 {
+				observedUsage = extractGeminiUsage(inner)
+			}
+			if extractGeminiFinishReason(parsed) == "MALFORMED_FUNCTION_CALL" {
+				return nil, &antigravityStreamResult{usage: observedUsage, firstTokenMs: firstTokenMs, upstreamError: true}, antigravity.ErrMalformedFunctionCall
+			}
+
 			last = parsed
 
 			// 保留最后一个有 parts 的响应，并收集所有 parts
@@ -4120,6 +4137,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 
 	var firstTokenMs *int
+	var observedUsage *ClaudeUsage
 	var last map[string]any
 	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（包括 text、thinking、functionCall、inlineData 等）
@@ -4214,6 +4232,13 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 			if firstTokenMs == nil {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
+			}
+
+			if metadata, ok := parsed["usageMetadata"].(map[string]any); ok && len(metadata) > 0 {
+				observedUsage = extractGeminiUsage(inner)
+			}
+			if extractGeminiFinishReason(parsed) == "MALFORMED_FUNCTION_CALL" {
+				return &antigravityStreamResult{usage: observedUsage, firstTokenMs: firstTokenMs, upstreamError: true}, s.writeClaudeError(c, http.StatusBadGateway, "malformed_function_call", "Upstream returned an invalid tool call")
 			}
 
 			last = parsed

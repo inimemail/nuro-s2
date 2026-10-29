@@ -207,6 +207,7 @@
           </div>
         </div>
         <!-- /Tab: Security — Admin API Key -->
+        <AdminAccessKeysSettings v-if="activeTab === 'security'" />
 
         <!-- Tab: Gateway -->
         <div v-if="activeTab === 'gateway'" class="space-y-6">
@@ -8307,6 +8308,7 @@ import type {
   Proxy,
 } from "@/types";
 import type { ProviderInstance } from "@/types/payment";
+import AdminAccessKeysSettings from "@/components/admin/settings/AdminAccessKeysSettings.vue";
 import AppLayout from "@/components/layout/AppLayout.vue";
 import Icon from "@/components/icons/Icon.vue";
 import Select from "@/components/common/Select.vue";

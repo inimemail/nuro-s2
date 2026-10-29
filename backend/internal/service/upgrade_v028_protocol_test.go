@@ -139,7 +139,7 @@ func TestV028ScopedImageErrorsAndNewModelToolGuard(t *testing.T) {
 	}
 	require.Error(t, validateNewModelChatReasoningTools("gpt-6-sol", "high", true))
 	require.NoError(t, validateNewModelChatReasoningTools("gpt-6-sol", "none", true))
-	require.NoError(t, validateNewModelChatReasoningTools("gpt-6.1-sol", "high", true))
+	require.Error(t, validateNewModelChatReasoningTools("gpt-6.1-sol", "high", true))
 	require.NoError(t, validateNewModelChatReasoningTools("gpt-5.6", "high", true))
 	require.Error(t, validateNewModelChatReasoningTools("claude-opus-5-5", "", true))
 }

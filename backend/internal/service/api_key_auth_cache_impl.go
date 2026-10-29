@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 23 // v23: localized groups and cache reservation quota
+const apiKeyAuthSnapshotVersion = 24 // v24: explicit per-image billing opt-in
 
 var errAPIKeyAuthGroupPricingVersionChanged = errors.New("API key auth group pricing version changed")
 
@@ -505,6 +505,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			WeeklyLimitUSD:                    apiKey.Group.WeeklyLimitUSD,
 			MonthlyLimitUSD:                   apiKey.Group.MonthlyLimitUSD,
 			AllowImageGeneration:              apiKey.Group.AllowImageGeneration,
+			ImageCountBilling:                 apiKey.Group.ImageCountBilling,
 			AllowBatchImageGeneration:         apiKey.Group.AllowBatchImageGeneration,
 			ImageRateIndependent:              apiKey.Group.ImageRateIndependent,
 			ImageRateMultiplier:               apiKey.Group.ImageRateMultiplier,
@@ -624,6 +625,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			WeeklyLimitUSD:                       snapshot.Group.WeeklyLimitUSD,
 			MonthlyLimitUSD:                      snapshot.Group.MonthlyLimitUSD,
 			AllowImageGeneration:                 snapshot.Group.AllowImageGeneration,
+			ImageCountBilling:                    snapshot.Group.ImageCountBilling,
 			AllowBatchImageGeneration:            snapshot.Group.AllowBatchImageGeneration,
 			ImageRateIndependent:                 snapshot.Group.ImageRateIndependent,
 			ImageRateMultiplier:                  snapshot.Group.ImageRateMultiplier,

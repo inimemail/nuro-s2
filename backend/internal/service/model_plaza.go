@@ -164,6 +164,9 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 					continue
 				}
 				pricing := modelPlazaImageDisplayPricing(model.Pricing, groupEntities[groupID], channelPriced[j])
+				if gp := matchGroupModelPricing(groupEntities[groupID], model.Name); gp != nil {
+					pricing = cloneChannelModelPricing(gp)
+				}
 				key := strings.ToLower(strings.TrimSpace(model.Platform)) + "\x00" + strings.ToLower(strings.TrimSpace(model.Name))
 				if at, found := index[key]; found {
 					if group.Models[at].Pricing == nil && pricing != nil {

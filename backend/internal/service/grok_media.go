@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -62,6 +61,7 @@ func (e GrokMediaEndpoint) IsVideoMutationRequest() bool {
 }
 
 type GrokMediaRequestInfo struct {
+	ParseError      error `json:"-"`
 	Model           string
 	Prompt          string
 	N               int
@@ -130,7 +130,7 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	info := GrokMediaRequestInfo{N: 1}
 	if gjson.ValidBytes(body) {
 		parseGrokMediaJSONRequest(body, &info)
-	} else {
+	} else if len(body) > 0 {
 		parseGrokMediaMultipartRequest(contentType, body, &info)
 	}
 	info.Model = strings.TrimSpace(info.Model)
@@ -215,20 +215,28 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 		return
 	}
 	mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(contentType))
-	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
+	if err != nil {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/") {
+			info.ParseError = errors.New("invalid multipart content-type")
+		}
+		return
+	}
+	if !strings.EqualFold(mediaType, "multipart/form-data") {
 		return
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
+		info.ParseError = errors.New("multipart boundary is required")
 		return
 	}
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	reader := newImageMultipartReader(body, boundary)
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
 			return
 		}
 		if err != nil {
+			info.ParseError = errors.New("invalid multipart upload")
 			return
 		}
 		name := strings.TrimSpace(part.FormName())
@@ -236,9 +244,14 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 			_ = part.Close()
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(part, openAIImageMaxUploadPartSize))
+		data, err := io.ReadAll(io.LimitReader(part, openAIImageMaxUploadPartSize+1))
 		_ = part.Close()
 		if err != nil {
+			info.ParseError = errors.New("invalid multipart upload")
+			return
+		}
+		if len(data) > openAIImageMaxUploadPartSize {
+			info.ParseError = errors.New("multipart field exceeds the 50MiB upload limit")
 			return
 		}
 		fileName := strings.TrimSpace(part.FileName())
@@ -416,6 +429,9 @@ func (s *OpenAIGatewayService) ForwardGrokMediaWithVideoBinding(ctx context.Cont
 
 func (s *OpenAIGatewayService) forwardGrokMedia(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, requestID string, body []byte, contentType string, bindVideo func(string) error) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
+	if info := ParseGrokMediaRequest(contentType, body); info.ParseError != nil {
+		return nil, info.ParseError
+	}
 	if account == nil {
 		return nil, fmt.Errorf("grok account is required")
 	}
@@ -746,12 +762,15 @@ func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conten
 	if endpoint != GrokMediaEndpointImagesEdits || gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
+	info := ParseGrokMediaRequest(contentType, body)
+	if info.ParseError != nil {
+		return nil, "", info.ParseError
+	}
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
 		return body, contentType, nil
 	}
 
-	info := ParseGrokMediaRequest(contentType, body)
 	payload := make(map[string]any)
 	if info.Model != "" {
 		payload["model"] = info.Model

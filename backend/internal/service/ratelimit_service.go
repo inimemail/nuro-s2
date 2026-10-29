@@ -987,6 +987,10 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 // handle429 处理429限流错误
 // 解析响应头获取重置时间，标记账号为限流状态
 func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
+	if cnCodingPlanFrequency429(account, responseBody, time.Now()) {
+		s.apply429FallbackRateLimit(ctx, account, "cn_frequency_limit")
+		return
+	}
 	if account != nil && IsOllamaCloudUsageAccount(account) && ollamaCloudRateLimitRecoveryEnabled(account) && s.ollamaCloudUsageProbe != nil {
 		cooldown, enabled := s.get429FallbackCooldown(ctx, account)
 		if enabled {

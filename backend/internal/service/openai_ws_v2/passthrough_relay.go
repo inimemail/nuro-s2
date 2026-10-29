@@ -1133,6 +1133,7 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 		"cache_read_input_tokens",
 		"cache_read_tokens",
 		"cached_tokens",
+		"prompt_cache_hit_tokens",
 	)
 }
 

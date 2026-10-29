@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -20,8 +21,8 @@ func NewAdminAuthMiddleware(
 	return AdminAuthMiddleware(adminAuth(authService, userService, settingService))
 }
 
-func ProvideAdminAuthMiddleware(authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, auditService *service.AuditLogService) AdminAuthMiddleware {
-	return AdminAuthMiddleware(adminAuthWithSecurity(authService, userService, settingService, auditService))
+func ProvideAdminAuthMiddleware(authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, auditService *service.AuditLogService, scoped *service.ScopedAdminService) AdminAuthMiddleware {
+	return AdminAuthMiddleware(adminAuthWithSecurity(authService, userService, settingService, auditService, scoped))
 }
 
 // adminAuth 管理员认证中间件实现
@@ -41,6 +42,7 @@ func adminAuthWithSecurity(
 	userService *service.UserService,
 	settingService *service.SettingService,
 	auditService *service.AuditLogService,
+	scopedServices ...*service.ScopedAdminService,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// WebSocket upgrade requests cannot set Authorization headers in browsers.
@@ -60,7 +62,7 @@ func adminAuthWithSecurity(
 		// 检查 x-api-key header（Admin API Key 认证）
 		apiKey := c.GetHeader("x-api-key")
 		if apiKey != "" {
-			if !validateAdminAPIKey(c, apiKey, settingService, userService) {
+			if !validateAdminAPIKey(c, apiKey, settingService, userService, scopedServices...) {
 				return
 			}
 			c.Next()
@@ -134,6 +136,7 @@ func validateAdminAPIKey(
 	key string,
 	settingService *service.SettingService,
 	userService *service.UserService,
+	scopedServices ...*service.ScopedAdminService,
 ) bool {
 	storedKey, err := settingService.GetAdminAPIKey(c.Request.Context())
 	if err != nil {
@@ -143,6 +146,33 @@ func validateAdminAPIKey(
 
 	// 未配置或不匹配，统一返回相同错误（避免信息泄露）
 	if storedKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) != 1 {
+		// Legacy matching always wins, including a legacy value that happens
+		// to use the scoped prefix. JWT/WS never enter this branch.
+		if len(scopedServices) > 0 && scopedServices[0].Enabled() {
+			principal, authErr := scopedServices[0].Authenticate(c.Request.Context(), key, SecurityClientIP(c))
+			if authErr == nil {
+				permission := adminaccess.RoutePermission(c.Request.Method, c.FullPath())
+				if permission == "" || !principal.Key.Policy.Has(permission) {
+					AbortWithError(c, 403, "SCOPED_ADMIN_DENIED", "Operation is outside this key's permissions")
+					return false
+				}
+				owner, ownerErr := userService.GetByID(c.Request.Context(), principal.Key.CreatorID)
+				if ownerErr != nil || owner == nil || !owner.IsAdmin() || !owner.IsActive() {
+					AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
+					return false
+				}
+				c.Set(adminaccess.PrincipalContextKey, principal)
+				c.Set(string(ContextKeyUser), AuthSubject{UserID: owner.ID, Concurrency: owner.Concurrency})
+				c.Set(string(ContextKeyUserRole), owner.Role)
+				c.Set(ContextKeyAuthEmail, owner.Email)
+				c.Set("auth_method", service.AuditAuthMethodAdminAPIKey)
+				return true
+			}
+			if errors.Is(authErr, service.ErrScopedAdminUnavailable) {
+				AbortWithError(c, 503, "SCOPED_ADMIN_UNAVAILABLE", "Scoped administration is unavailable")
+				return false
+			}
+		}
 		AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
 		return false
 	}

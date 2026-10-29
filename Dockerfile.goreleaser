@@ -11,6 +11,7 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 FROM ${POSTGRES_IMAGE} AS pg-client
 
 FROM ${ALPINE_IMAGE}
+ARG TARGETARCH
 
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
 LABEL description="Sub2API - AI API Gateway Platform"
@@ -22,6 +23,7 @@ RUN apk add --no-cache \
     tzdata \
     curl \
     su-exec \
+    util-linux \
     libpq \
     zstd-libs \
     lz4-libs \
@@ -44,6 +46,7 @@ WORKDIR /app
 
 # Copy pre-built binary from GoReleaser
 COPY sub2api /app/sub2api
+COPY .release-edge/${TARGETARCH}/sub2api-edge-rs /app/sub2api-edge-rs
 COPY backend/resources /app/resources
 
 # Create data directory
@@ -51,13 +54,14 @@ RUN mkdir -p /app/data && chown -R sub2api:sub2api /app
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+COPY deploy/paired-entrypoint.sh /app/paired-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh /app/paired-entrypoint.sh /app/sub2api-edge-rs
 
-EXPOSE 8080
+EXPOSE 8080 18080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${SERVER_PORT:-8080}/health || exit 1
 
 # Run the application (entrypoint fixes /app/data ownership then execs as sub2api)
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["/app/sub2api"]
+CMD ["/app/paired-entrypoint.sh"]

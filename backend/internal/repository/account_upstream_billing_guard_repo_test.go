@@ -244,7 +244,7 @@ func TestUpdateAccountExtraPreservesDatabaseProbeSnapshot(t *testing.T) {
 func TestUpdateAccountExtraPreservesDatabaseGrokRuntimeSnapshots(t *testing.T) {
 	db, mock := newSQLMock(t)
 	mock.ExpectExec(`(?s)UPDATE accounts.*jsonb_build_object\(\$2::text, extra -> \(\$2::text\)\).*jsonb_build_object\(\$3::text, extra -> \(\$3::text\)\)`).
-		WithArgs(`{"feature":true,"grok_media_eligible":false}`, service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, int64(8)).
+		WithArgs(`{"feature":true,"grok_media_eligible":false}`, service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, int64(8), service.GrokModelCatalogExtraKey).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	extra := map[string]any{
 		"feature":                           true,

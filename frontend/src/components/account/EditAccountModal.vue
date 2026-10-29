@@ -273,7 +273,7 @@
 
             <!-- Whitelist Mode -->
             <div v-if="modelRestrictionMode === 'whitelist'">
-              <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+              <ModelWhitelistSelector :sync-active="show" v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
                 <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
@@ -1288,7 +1288,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+            <ModelWhitelistSelector :sync-active="show" v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
@@ -1653,7 +1653,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+            <ModelWhitelistSelector :sync-active="show" v-model="allowedModels" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
@@ -2022,6 +2022,8 @@
         </div>
       </div>
 
+      <GrokModelDiagnostics v-if="account.platform === 'grok'" :account-id="account.id" :active="show" />
+
       <!-- Antigravity model restriction (applies to all antigravity types) -->
       <!-- Antigravity 只支持模型映射模式，不支持白名单模式 -->
       <div v-if="account.platform === 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -2042,8 +2044,13 @@
             >
               {{ isSyncingAntigravityUpstream ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
             </button>
+            <button v-if="isSyncingAntigravityUpstream" type="button" class="btn btn-secondary text-sm" @click="invalidateAntigravitySync">{{ t('common.cancel') }}</button>
           </div>
 
+          <div v-if="pendingAntigravityModels.length" role="status" class="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-900/20">
+            <p class="min-w-0 flex-1 text-sm text-emerald-800 dark:text-emerald-200">{{ t('admin.accounts.syncUpstreamModelsPending', { count: pendingAntigravityModels.length }) }}</p>
+            <button type="button" class="btn btn-secondary shrink-0 text-sm" @click="applyAntigravityModels()">{{ t('admin.accounts.applyUpstreamModels') }}</button>
+          </div>
           <div v-if="antigravityModelMappings.length > 0" class="mb-3 space-y-2">
             <div
               v-for="(mapping, index) in antigravityModelMappings"
@@ -3901,8 +3908,10 @@ import type { UpstreamModelMetadata } from '@/api/admin/accounts'
 import VertexAuthFields from './VertexAuthFields.vue'
 import GeminiCacheCapabilityFields from './GeminiCacheCapabilityFields.vue'
 import SeedanceControl from './SeedanceControl.vue'
+import GrokModelDiagnostics from './GrokModelDiagnostics.vue'
 import { isSeedanceEnabled } from '@/utils/seedance'
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
+import { extractSafeApiErrorMessage, isApiRequestCancelled } from '@/utils/apiError'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -6258,40 +6267,72 @@ const addAntigravityPresetMapping = (from: string, to: string) => {
   antigravityModelMappings.value.push({ from, to })
 }
 
+let antigravitySyncGeneration = 0
+let antigravitySyncController: AbortController | undefined
+const pendingAntigravityModels = ref<string[]>([])
+const pendingAntigravityMetadata = ref<Record<string, UpstreamModelMetadata>>({})
+const invalidateAntigravitySync = () => {
+  antigravitySyncGeneration += 1
+  antigravitySyncController?.abort()
+  antigravitySyncController = undefined
+  isSyncingAntigravityUpstream.value = false
+  pendingAntigravityModels.value = []
+  pendingAntigravityMetadata.value = {}
+}
+watch([() => props.show, () => props.account?.id, () => props.account?.platform, () => props.account?.type, editBaseUrl, editApiKey, antigravityModelRestrictionMode], invalidateAntigravitySync, { flush: 'sync' })
+watch(() => props.account?.credentials, invalidateAntigravitySync, { deep: true, flush: 'sync' })
+onBeforeUnmount(invalidateAntigravitySync)
+
+const applyAntigravityModels = (models = pendingAntigravityModels.value) => {
+  antigravityModelMetadata.value = pendingAntigravityMetadata.value
+  pendingAntigravityMetadata.value = {}
+  let addedCount = 0
+  for (const model of models) {
+    if (!antigravityModelMappings.value.some(mapping => mapping.from === model)) {
+      antigravityModelMappings.value.push({ from: model, to: model })
+      addedCount += 1
+    }
+  }
+  pendingAntigravityModels.value = []
+  if (addedCount > 0) {
+    appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: models.length }))
+  } else {
+    appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: models.length }))
+  }
+}
+
 const syncAntigravityUpstreamModels = async () => {
-  if (!props.account?.id || isSyncingAntigravityUpstream.value) return
-
+  if (!props.show || !props.account?.id || isSyncingAntigravityUpstream.value) return
   const syncingAccount = props.account
+  const generation = ++antigravitySyncGeneration
+  const controller = new AbortController()
+  antigravitySyncController = controller
+  const draft = antigravityModelMappings.value.map(mapping => ({ ...mapping }))
   isSyncingAntigravityUpstream.value = true
+  pendingAntigravityModels.value = []
+  pendingAntigravityMetadata.value = {}
   try {
-    const result = await adminAPI.accounts.syncUpstreamModels(props.account.id)
-    if (!props.show || props.account !== syncingAccount) return
-    antigravityModelMetadata.value = result.metadata ?? {}
-    const upstreamModels = result.models.map((model) => model.trim()).filter(Boolean)
-    if (upstreamModels.length === 0) {
+    const result = await adminAPI.accounts.syncUpstreamModels(syncingAccount.id, { signal: controller.signal })
+    if (generation !== antigravitySyncGeneration || controller.signal.aborted || !props.show || props.account !== syncingAccount) return
+    const models = [...new Set(result.models.map(model => model.trim()).filter(Boolean))]
+    if (!models.length) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
-      return
-    }
-
-    let addedCount = 0
-    for (const model of upstreamModels) {
-      const exists = antigravityModelMappings.value.some((mapping) => mapping.from === model)
-      if (!exists) {
-        antigravityModelMappings.value.push({ from: model, to: model })
-        addedCount += 1
-      }
-    }
-
-    if (addedCount > 0) {
-      appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
+    } else if (draft.length !== antigravityModelMappings.value.length || draft.some((mapping, index) => mapping.from !== antigravityModelMappings.value[index]?.from || mapping.to !== antigravityModelMappings.value[index]?.to)) {
+      pendingAntigravityModels.value = models
+      pendingAntigravityMetadata.value = result.metadata ?? {}
     } else {
-      appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
+      pendingAntigravityMetadata.value = result.metadata ?? {}
+      applyAntigravityModels(models)
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : t('admin.accounts.syncUpstreamModelsFailed')
+    if (generation !== antigravitySyncGeneration || controller.signal.aborted || isApiRequestCancelled(error)) return
+    const message = extractSafeApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
     appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))
   } finally {
-    isSyncingAntigravityUpstream.value = false
+    if (generation === antigravitySyncGeneration) {
+      isSyncingAntigravityUpstream.value = false
+      antigravitySyncController = undefined
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -81,7 +82,13 @@ func (s *AccountTestService) FetchUpstreamModelCatalog(ctx context.Context, acco
 	if s != nil && account != nil && account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		return s.fetchAntigravityOAuthModelCatalog(ctx, account)
 	}
+	started := time.Now().UTC()
 	models, err := s.FetchUpstreamSupportedModels(ctx, account)
+	if s != nil && account != nil && account.Platform == PlatformGrok {
+		if persistErr := s.persistGrokCatalog(ctx, account, started, models, err); persistErr != nil && err == nil {
+			return nil, newUpstreamModelSyncUpstreamError("Model catalog could not be saved safely; retry sync", persistErr)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

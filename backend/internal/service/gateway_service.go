@@ -709,6 +709,7 @@ type ForwardResult struct {
 	ReasoningEffort               *string
 
 	// 图片生成计费字段（图片生成模型使用）
+	ImageEndpoint      bool   // Set only by a dedicated image endpoint.
 	ImageCount         int    // 生成的图片数量
 	ImageSize          string // 最终计费尺寸 "1K", "2K", "4K"
 	ImageInputSize     string // 请求中的原始图片尺寸

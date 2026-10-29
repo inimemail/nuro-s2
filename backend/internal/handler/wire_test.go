@@ -56,6 +56,7 @@ func TestProvideAdminHandlersWiresUserStepUpDependencies(t *testing.T) {
 		nil, // compositeRouteHandler
 		nil, // cnProviderQuota
 		nil, // cnProviderBalance
+		nil,
 	)
 
 	require.Same(t, userHandler, handlers.User)

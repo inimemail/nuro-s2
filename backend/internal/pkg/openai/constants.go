@@ -25,6 +25,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
+	{ID: "gpt-6.1-terra", Object: "model", Created: 1704067200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
 	{ID: "gpt-6.1-sol", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-6", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 (Astra)"},
@@ -104,6 +105,28 @@ func CodexBaseInstructionsForModel(model string) string {
 		}
 	}
 	return latestCodexInstructions()
+}
+
+// Terra supports disabled reasoning; Sol validation deliberately remains separate.
+func IsGPT61TerraModelSpelling(model string) bool {
+	id := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), "_", "-")
+	id = strings.TrimPrefix(strings.TrimPrefix(id, "openai/"), "models/")
+	if id == "gpt-6.1-terra" {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(id, "gpt-6.1-terra-")
+	if !ok {
+		return false
+	}
+	switch suffix {
+	case "none", "low", "medium", "high", "xhigh", "max", "openai-compact":
+		return true
+	}
+	return false
+}
+
+func RequiresResponsesForToolCalls(model string) bool {
+	return IsGPT61TerraModelSpelling(model) || IsGPT61SolModelSpelling(model)
 }
 
 func IsGPT61SolModelSpelling(model string) bool {

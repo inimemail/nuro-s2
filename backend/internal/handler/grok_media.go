@@ -96,6 +96,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 	contentType := c.GetHeader("Content-Type")
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
+	if requestInfo.ParseError != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid multipart upload or upload exceeds the size limit")
+		return
+	}
 	requestModel := requestInfo.Model
 	routingModel := requestModel
 	if upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok {

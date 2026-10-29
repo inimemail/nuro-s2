@@ -354,6 +354,12 @@ func (s *GeminiMessagesCompatService) markGeminiResponseSignal(c *gin.Context, a
 // A later account attempt must not inherit an in-band outcome from a failed
 // attempt. Clear only the marker owned by this observer, preserving other errors.
 func resetGeminiResponseSignal(c *gin.Context) {
+	if c != nil {
+		if _, observed := c.Get(geminiImageObservationKey); observed {
+			c.Set(geminiObservedImageCountKey, 0)
+			c.Set(geminiImageObservationKey, nil)
+		}
+	}
 	if c == nil {
 		return
 	}
@@ -373,6 +379,7 @@ func resetGeminiResponseSignal(c *gin.Context) {
 // Observe before validating/converting: an error envelope may be rejected by
 // the existing safe-response guard and never reach the success path.
 func (s *GeminiMessagesCompatService) observeGeminiPayload(c *gin.Context, body []byte, stream bool) {
+	observeGeminiImageCount(c, body)
 	if sig, ok := detectGeminiResponseSignalInBody(body); ok {
 		s.markGeminiResponseSignal(c, nil, sig, stream, "")
 	} else if !stream && isGeminiEmptyResponseBody(body) {
@@ -384,6 +391,7 @@ func (s *GeminiMessagesCompatService) observeGeminiPayload(c *gin.Context, body 
 // chunk is not an empty response; only the collector's nil EOF signal means
 // that the entire upstream stream lacked a response.
 func (s *GeminiMessagesCompatService) observeGeminiCollectedPayload(c *gin.Context, body []byte) {
+	observeGeminiImageCount(c, body)
 	if body == nil {
 		s.markGeminiEmptyResponse(c, nil, false, "")
 	} else if sig, ok := detectGeminiResponseSignalInBody(body); ok {

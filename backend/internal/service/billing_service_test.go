@@ -180,7 +180,7 @@ func TestGetModelPricing_ChineseFallbacks(t *testing.T) {
 		input  float64
 		output float64
 	}{
-		{"deepseek-chat", 2.2e-7, 6.6e-7},
+		{"deepseek-chat", 1.5e-7, 6e-7},
 		{"glm-5.1", 1.4e-6, 4.4e-6},
 		{"glm-5.2", 1.4e-6, 4.4e-6},
 		{"kimi-k2.6", 0.95e-6, 4e-6},
