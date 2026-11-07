@@ -223,6 +223,9 @@ type UsageInfo struct {
 	GeminiProMinute    *UsageProgress `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
 	GeminiFlashMinute  *UsageProgress `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
 
+	AntigravityQuotaGroups  []*AntigravityQuotaGroup           `json:"antigravity_quota_groups,omitempty"`
+	AntigravityQuotaSources map[string]*AntigravityQuotaSource `json:"antigravity_quota_sources,omitempty"`
+
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
 
@@ -1904,11 +1907,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		if cache, ok := cached.(*antigravityUsageCache); ok {
 			ttl := antigravityCacheTTL(cache.usageInfo)
 			if time.Since(cache.timestamp) < ttl {
-				usage := cache.usageInfo
-				if usage.FiveHour != nil && usage.FiveHour.ResetsAt != nil {
-					usage.FiveHour.RemainingSeconds = int(time.Until(*usage.FiveHour.ResetsAt).Seconds())
-				}
-				return usage, nil
+				return cloneAntigravityUsageForPresentation(cache.usageInfo), nil
 			}
 		}
 	}
@@ -1921,11 +1920,15 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 			if cache, ok := cached.(*antigravityUsageCache); ok {
 				ttl := antigravityCacheTTL(cache.usageInfo)
 				if time.Since(cache.timestamp) < ttl {
-					usage := cache.usageInfo
-					// 重新计算 RemainingSeconds，避免返回过时的剩余秒数
-					recalcAntigravityRemainingSeconds(usage)
-					return usage, nil
+					return cache.usageInfo, nil
 				}
+			}
+		}
+
+		var previous *UsageInfo
+		if cached, ok := s.cache.antigravityCache.Load(account.ID); ok {
+			if old, ok := cached.(*antigravityUsageCache); ok {
+				previous = old.usageInfo
 			}
 		}
 
@@ -1937,6 +1940,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		fetchResult, err := s.antigravityQuotaFetcher.FetchQuota(fetchCtx, account, proxyURL)
 		if err != nil {
 			degraded := buildAntigravityDegradedUsage(err)
+			degraded = mergeAntigravityLastGood(degraded, previous)
 			enrichUsageWithAccountError(degraded, account)
 			s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
 				usageInfo: degraded,
@@ -1945,6 +1949,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 			return degraded, nil
 		}
 
+		fetchResult.UsageInfo = mergeAntigravityLastGood(fetchResult.UsageInfo, previous)
 		enrichUsageWithAccountError(fetchResult.UsageInfo, account)
 		s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
 			usageInfo: fetchResult.UsageInfo,
@@ -1961,7 +1966,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		now := time.Now()
 		return &UsageInfo{UpdatedAt: &now}, nil
 	}
-	return usage, nil
+	return cloneAntigravityUsageForPresentation(usage), nil
 }
 
 func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {

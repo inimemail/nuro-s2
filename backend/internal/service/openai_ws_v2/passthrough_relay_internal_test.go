@@ -587,3 +587,16 @@ func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {
 	require.True(t, observed.terminal)
 	require.Equal(t, "resp_fallback", observed.responseID)
 }
+
+func TestEveryTurnTokenTimingWithoutResponseID(t *testing.T) {
+	start := time.Unix(100, 0)
+	first := 17
+	state := &relayState{firstTokenMs: &first, activeTurn: &relayTurnTiming{startAt: start.Add(time.Second)}}
+	observeUpstreamMessage(state, []byte(`{"type":"response.output_text.delta","delta":"second turn"}`), start, func() time.Time { return start.Add(1250 * time.Millisecond) }, nil)
+	require.Equal(t, 17, *state.firstTokenMs)
+	require.NotNil(t, state.activeTurn.firstTokenMs)
+	require.Equal(t, 250, *state.activeTurn.firstTokenMs)
+	state.activeTurn = &relayTurnTiming{startAt: start.Add(2 * time.Second)}
+	observeUpstreamMessage(state, []byte(`{"type":"response.in_progress"}`), start, func() time.Time { return start.Add(2300 * time.Millisecond) }, nil)
+	require.Nil(t, state.activeTurn.firstTokenMs)
+}

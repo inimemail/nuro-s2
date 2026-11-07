@@ -45,7 +45,8 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	if upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok && len(body) > 0 {
@@ -68,7 +69,12 @@ func (h *OpenAIGatewayHandler) GrokWebSearch(c *gin.Context) {
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
-	if err != nil || len(body) == 0 {
+	if err != nil {
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
+		return
+	}
+	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is required")
 		return
 	}
@@ -105,7 +111,12 @@ func (h *OpenAIGatewayHandler) GrokXSearch(c *gin.Context) {
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
-	if err != nil || len(body) == 0 {
+	if err != nil {
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
+		return
+	}
+	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is required")
 		return
 	}

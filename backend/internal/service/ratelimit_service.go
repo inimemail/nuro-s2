@@ -264,6 +264,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return false
 	}
 
+	if statusCode == http.StatusTooManyRequests && account.Platform == PlatformAnthropic {
+		s.samplePassiveUsageFromHeaders(ctx, account, headers)
+	}
+
 	// CDN 1010 is link evidence; skip account/model penalties before local rules.
 	if statusCode == http.StatusForbidden && (isCloudflare1010JSON(responseBody) || isOfficialProviderCloudflare1010(account, responseBody)) {
 		return false
@@ -858,12 +862,7 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 		return s.handleOpenAI403(ctx, account, upstreamMsg, responseBody)
 	}
 	if isKimiConcurrentRequestLimit403(account, upstreamMsg) {
-		until := time.Now().Add(time.Duration(openAI403CooldownMinutesDefault) * time.Minute)
-		reason := "cn_concurrency_limit: " + kimiConcurrentRequestLimitMessage
-		s.notifyAccountSchedulingBlocked(account, until, "cn_concurrency_limit")
-		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
-			slog.Warn("kimi_concurrency_limit_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
-		}
+		s.apply429FallbackRateLimit(ctx, account, "cn_concurrency_limit")
 		return true
 	}
 	// 非 Antigravity 平台：保持原有行为
@@ -1674,6 +1673,7 @@ func (s *RateLimitService) handle529(ctx context.Context, account *Account) {
 func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Account, headers http.Header) {
 	status := headers.Get("anthropic-ratelimit-unified-5h-status")
 	if status == "" {
+		s.samplePassiveUsageFromHeaders(ctx, account, headers)
 		return
 	}
 

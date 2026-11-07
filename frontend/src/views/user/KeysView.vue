@@ -977,6 +977,7 @@
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
       :group-id="selectedKey?.group?.id"
+      :models-list-config="selectedKey?.group?.models_list_config"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
     />
@@ -1872,6 +1873,7 @@ const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
     clientType,
     providerName,
     apiKey: row.key,
+    allowedModels: row.group?.models_list_config?.enabled ? row.group.models_list_config.models : null,
     usageScript
   })
 

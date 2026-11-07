@@ -6,7 +6,15 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ssebudget"
+	"github.com/gin-gonic/gin"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -170,6 +178,36 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		assert.Equal(t, payload, result)
 	})
 
+	t.Run("resource overflow drains valid late metrics", func(t *testing.T) {
+		chunk := func(raw string) []byte {
+			return []byte(`{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(raw)) + `"}`)
+		}
+		oversized := buildFrame("chunk", chunk(`{"type":"content_block_delta","delta":{"text":"`+strings.Repeat("secret", 2000)+`"}}`))
+		metrics := chunk(`{"type":"message_delta","amazon-bedrock-invocationMetrics":{"inputTokenCount":123,"outputTokenCount":45}}`)
+		raw := append(oversized, buildFrame("chunk", metrics)...)
+		cfg := &config.Config{}
+		cfg.Gateway.SSEMaxEventBytes = 512
+		cfg.Gateway.SSEQueueMaxBytes = 128
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+		resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(raw))}
+		result, err := (&GatewayService{cfg: cfg}).handleBedrockStreamingResponse(t.Context(), resp, c, &Account{ID: 1}, time.Now(), "claude-test")
+		require.ErrorIs(t, err, ssebudget.ErrExceeded)
+		require.NotNil(t, result)
+		require.Equal(t, 123, result.usage.InputTokens)
+		require.Equal(t, 45, result.usage.OutputTokens)
+		require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
+		require.NotContains(t, rec.Body.String(), "secret")
+		// Discarding a payload still verifies its CRC; corrupted transport
+		// must never masquerade as a valid late accounting event.
+		oversized[len(oversized)-1] ^= 1
+		decoder := newBedrockEventStreamDecoder(bytes.NewReader(oversized))
+		decoder.resourceLimit = 512
+		_, err = decoder.Decode()
+		require.ErrorContains(t, err, "message CRC mismatch")
+	})
+
 	t.Run("skip non-chunk events", func(t *testing.T) {
 		// Write initial-response followed by chunk
 		var buf bytes.Buffer
@@ -258,4 +296,27 @@ func TestBuildBedrockURL(t *testing.T) {
 		url := BuildBedrockURL("us-east-1", "us.anthropic.claude-sonnet-4-6", true)
 		assert.Equal(t, "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream", url)
 	})
+}
+
+// A valid prelude CRC must not permit an allocation based on untrusted lengths.
+func TestBedrockRejectsLengthsBeforeReadingBody(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		total, headers uint32
+	}{
+		{"underflow", 15, 0},
+		{"header exceeds frame", 16, 1},
+		{"header limit", 200000, 128<<10 + 1},
+		{"payload limit", 16 + (16 << 20) + 1, 0},
+		{"near four GiB", ^uint32(0), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prelude := make([]byte, 12)
+			binary.BigEndian.PutUint32(prelude, tc.total)
+			binary.BigEndian.PutUint32(prelude[4:], tc.headers)
+			binary.BigEndian.PutUint32(prelude[8:], crc32.ChecksumIEEE(prelude[:8]))
+			_, err := newBedrockEventStreamDecoder(bytes.NewReader(prelude)).Decode()
+			require.ErrorContains(t, err, "invalid eventstream frame")
+		})
+	}
 }

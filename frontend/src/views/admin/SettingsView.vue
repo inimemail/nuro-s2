@@ -1498,6 +1498,8 @@
                 </p>
               </div>
 
+              <RegistrationEmailBlacklist v-model="form.registration_email_blacklist" :saved="savedRegistrationBlacklist" />
+
               <div
                 class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
               >
@@ -8270,6 +8272,7 @@
 </template>
 
 <script setup lang="ts">
+import RegistrationEmailBlacklist from "@/components/settings/RegistrationEmailBlacklist.vue";
 import { ref, reactive, computed, defineAsyncComponent, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { adminAPI } from "@/api";
@@ -8704,6 +8707,7 @@ const sendingTestEmail = ref(false);
 const smtpPasswordManuallyEdited = ref(false);
 const testEmailAddress = ref("");
 const registrationEmailSuffixWhitelistTags = ref<string[]>([]);
+const savedRegistrationBlacklist = ref<string[]>([]);
 const registrationEmailSuffixWhitelistDraft = ref("");
 const forwardedClientIpHeaderDraft = ref("");
 const tablePageSizeOptionsInput = ref("10, 20, 50, 100");
@@ -9007,6 +9011,7 @@ const form = reactive<SettingsForm>({
   registration_enabled: true,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
+  registration_email_blacklist: [] as string[],
   registration_email_domain_quota_enabled: false,
   promo_code_enabled: true,
   invitation_code_enabled: false,
@@ -10235,6 +10240,8 @@ async function loadSettings() {
     form.default_subscriptions = normalizeDefaultSubscriptionSettings(
       settings.default_subscriptions,
     );
+    form.registration_email_blacklist = settings.registration_email_blacklist || [];
+    savedRegistrationBlacklist.value = [...form.registration_email_blacklist];
     registrationEmailSuffixWhitelistTags.value =
       normalizeRegistrationEmailSuffixDomains(
         settings.registration_email_suffix_whitelist,
@@ -10559,6 +10566,7 @@ async function saveSettings() {
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
+      registration_email_blacklist: form.registration_email_blacklist,
       registration_email_suffix_whitelist:
         registrationEmailSuffixWhitelistTags.value.map((suffix) =>
           suffix.startsWith("*.") ? suffix : `@${suffix}`,
@@ -10913,6 +10921,8 @@ async function saveSettings() {
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(updated));
     form.default_platform_quotas = normalizePlatformQuotasMap(updated.default_platform_quotas);
     form.non_openai_pool = normalizeNonOpenAIPoolForm(updated.non_openai_pool);
+    form.registration_email_blacklist = updated.registration_email_blacklist || [];
+    savedRegistrationBlacklist.value = [...form.registration_email_blacklist];
     registrationEmailSuffixWhitelistTags.value =
       normalizeRegistrationEmailSuffixDomains(
         updated.registration_email_suffix_whitelist,

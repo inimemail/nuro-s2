@@ -33,6 +33,13 @@ server:
   # Maximum Go drain time before force-closing active requests during shutdown.
   # Go 进程关闭时等待现有请求的最长时间；默认快速恢复，超时后强制关闭。
   graceful_shutdown_timeout: 5
+  # Opt-in registered request-body/image-buffer budget in bytes; not an RSS limit.
+  # 请求体/图片转换已登记缓冲总预算（字节），0 关闭，不是进程 RSS 上限。
+  request_body_memory_budget: 0
+  # Per-operation idle deadlines in seconds (0–86400); no stream lifetime limit.
+  # 单次读/写空闲超时（秒），0 关闭；不限制长流总时长。
+  request_read_idle_timeout: 0
+  response_write_idle_timeout: 0
   # Trusted proxies for X-Forwarded-For parsing (CIDR/IP). Empty disables trusted proxies.
   # 信任的代理地址（CIDR/IP 格式），用于解析 X-Forwarded-For 头。留空则禁用代理信任。
   trusted_proxies: []
@@ -568,6 +575,16 @@ gateway:
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040
+  # Optional limits for non-frozen Go conversion streams; 0 keeps the old path.
+  # 非冻结 Go 转换流的可选限制；不覆盖 Rust Edge/raw passthrough/WS。
+  # Line/event sizes are bytes; event_lines counts framing lines too.
+  # 单行/事件字节上限与事件行数（含分隔空行）；建议搭配事件字节上限。
+  sse_max_line_bytes: 0
+  sse_max_event_bytes: 0
+  sse_max_event_lines: 0
+  # One oversized event may occupy an empty queue; pair with event byte limit.
+  # 队列字节上限；单个大事件可独占空队列，需配合事件字节上限使用。
+  sse_queue_max_bytes: 0
   # Log upstream error response body summary (safe/truncated; does not log request content)
   # 记录上游错误响应体摘要（安全/截断；不记录请求内容）
   log_upstream_error_body: true

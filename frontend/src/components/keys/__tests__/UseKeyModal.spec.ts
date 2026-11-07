@@ -22,11 +22,11 @@ describe('UseKeyModal', () => {
     global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
   })
 
-  it('keeps the ordinary default config unchanged and escapes auth JSON', () => {
+  it('uses the allowed Sol default and escapes auth JSON', () => {
     const wrapper = mountOpenAI()
     expect(wrapper.findAll('pre code')[0].text()).toBe(`model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+model = "gpt-6.1-sol"
+review_model = "gpt-6.1-sol"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -37,6 +37,7 @@ name = "OpenAI"
 base_url = "https://example.com/v1"
 wire_api = "responses"
 requires_openai_auth = true
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 
 [features]
 goals = true`)
@@ -127,7 +128,7 @@ goals = true`)
     expect(parsed.provider.grok.models['grok-composer-2.5-fast']).toBeDefined()
   })
 
-  it('renders GPT-5.5 and goals feature in OpenAI Codex config', () => {
+  it('renders GPT-6.1 Sol and goals feature in OpenAI Codex config', () => {
     const wrapper = mount(UseKeyModal, {
       props: {
         show: true,
@@ -151,15 +152,15 @@ goals = true`)
     const configToml = codeBlocks.find((content) => content.includes('model_provider = "OpenAI"'))
 
     expect(configToml).toBeDefined()
-    expect(configToml).toContain('model = "gpt-5.5"')
-    expect(configToml).toContain('review_model = "gpt-5.5"')
+    expect(configToml).toContain('model = "gpt-6.1-sol"')
+    expect(configToml).toContain('review_model = "gpt-6.1-sol"')
     expect(configToml).not.toContain('model = "gpt-5.4"')
     expect(configToml).not.toContain('model_context_window')
     expect(configToml).not.toContain('model_auto_compact_token_limit')
     expect(configToml).toContain('[features]\ngoals = true')
   })
 
-  it('renders GPT-5.5 and goals feature in OpenAI Codex WebSocket config', async () => {
+  it('renders GPT-6.1 Sol and goals feature in OpenAI Codex WebSocket config', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
         show: true,
@@ -191,8 +192,8 @@ goals = true`)
     const configToml = codeBlocks.find((content) => content.includes('supports_websockets = true'))
 
     expect(configToml).toBeDefined()
-    expect(configToml).toContain('model = "gpt-5.5"')
-    expect(configToml).toContain('review_model = "gpt-5.5"')
+    expect(configToml).toContain('model = "gpt-6.1-sol"')
+    expect(configToml).toContain('review_model = "gpt-6.1-sol"')
     expect(configToml).not.toContain('model = "gpt-5.4"')
     expect(configToml).not.toContain('model_context_window')
     expect(configToml).not.toContain('model_auto_compact_token_limit')

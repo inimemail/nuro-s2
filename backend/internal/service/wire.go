@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -650,6 +651,9 @@ func ProvideOpsIngressRejectAggregator(
 // ProvideSettingService wires SettingService with group reader and proxy repo.
 func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
+	if err := svc.RefreshRegistrationBlacklist(context.Background()); err != nil {
+		logger.LegacyPrintf("service.setting", "registration blacklist startup load failed")
+	}
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
 	if err := svc.LoadAPIKeyACLTrustForwardedIPSetting(context.Background()); err != nil {
@@ -712,6 +716,7 @@ func ProvideAuthCacheInvalidationWorker(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	ProvideRequestBodyBudget,
 	NewSeedanceService,
 	NewPasskeyService,
 	NewModelPlazaService,
@@ -728,7 +733,7 @@ var ProviderSet = wire.NewSet(
 	NewProxyService,
 	NewRedeemService,
 	NewPromoService,
-	NewUsageService,
+	ProvideUsageService,
 	NewDashboardService,
 	ProvidePricingService,
 	NewBillingService,
@@ -894,4 +899,13 @@ func ProvideGeminiCachedContentService(repo GeminiCachedContentRepository, charg
 	s := NewGeminiCachedContentService(repo, charges, publisher, provider, accounts, gateway, billing, resolver, cfg)
 	s.Start()
 	return s
+}
+
+// ProvideRequestBodyBudget shares one ledger between HTTP entry and claimed
+// image workers. Zero keeps scopes nil and adds no per-request bookkeeping.
+func ProvideRequestBodyBudget(cfg *config.Config) *pkghttputil.BodyBudget {
+	if cfg == nil || cfg.Server.RequestBodyMemoryBudget <= 0 {
+		return nil
+	}
+	return pkghttputil.NewBodyBudget(cfg.Server.RequestBodyMemoryBudget)
 }

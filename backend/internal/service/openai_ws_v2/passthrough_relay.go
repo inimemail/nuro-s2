@@ -889,9 +889,9 @@ func observeUpstreamMessage(
 		}
 	}
 
-	if state.firstTokenMs == nil && isTokenEvent(eventType) {
+	if isTokenEvent(eventType) {
 		ms := int(now.Sub(startAt).Milliseconds())
-		if ms >= 0 {
+		if state.firstTokenMs == nil && ms >= 0 {
 			state.firstTokenMs = &ms
 		}
 		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {

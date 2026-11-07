@@ -1,6 +1,7 @@
 import type { GroupPlatform } from '@/types'
+import { selectDefaultCodexModel, utf8Base64, CODEX_IMAGE_ACTOR_HEADERS } from './codexExport'
 
-export const OPENAI_CC_SWITCH_CODEX_MODEL = 'gpt-5.5'
+export const OPENAI_CC_SWITCH_CODEX_MODEL = 'gpt-6.1-sol'
 export const GROK_CC_SWITCH_MODEL = 'grok-4.5'
 
 export type CcSwitchClientType = 'claude' | 'gemini'
@@ -18,6 +19,7 @@ export interface CcSwitchImportDeeplinkInput {
   providerName: string
   apiKey: string
   usageScript: string
+  allowedModels?: string[] | null
 }
 
 function withV1Endpoint(baseUrl: string): string {
@@ -72,13 +74,30 @@ export function buildCcSwitchImportDeeplink(input: CcSwitchImportDeeplinkInput):
     ['apiKey', input.apiKey],
     ['configFormat', 'json'],
     ['usageEnabled', 'true'],
-    ['usageScript', btoa(input.usageScript)],
+    ['usageScript', utf8Base64(input.usageScript)],
     ['usageAutoInterval', '30']
   ]
 
+  if (input.platform === 'openai' && input.allowedModels) {
+    config.model = selectDefaultCodexModel(input.allowedModels)
+  }
   if (config.model) {
     entries.splice(2, 0, ['model', config.model])
   }
 
+  if (config.app === 'codex') {
+    const content = `model_provider = "sub2api"
+${config.model ? `model = ${JSON.stringify(config.model)}` : '# Select an allowed model before sending a request.'}
+
+[model_providers.sub2api]
+name = "Sub2API"
+base_url = ${JSON.stringify(config.endpoint)}
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = ${JSON.stringify(input.apiKey)}
+${CODEX_IMAGE_ACTOR_HEADERS}
+`
+    entries.push(['config', utf8Base64(JSON.stringify({ config: content }))])
+  }
   return `ccswitch://v1/import?${new URLSearchParams(entries).toString()}`
 }

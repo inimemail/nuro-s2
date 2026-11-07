@@ -10,6 +10,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// An image endpoint failure is model-local evidence; text penalties retain
+// their existing counter and escalation policy.
+func (s *AntigravityGatewayService) handleInternal500ForModel(ctx context.Context, prefix string, account *Account, model string) {
+	if account != nil && isImageGenerationModel(model) {
+		until := time.Now().Add(2 * time.Minute)
+		if setModelRateLimitByModelName(ctx, s.accountRepo, account.ID, model, prefix, http.StatusInternalServerError, until, false) {
+			s.updateAccountModelRateLimitInCache(ctx, account, model, until)
+		}
+		return
+	}
+	s.handleInternal500RetryExhausted(ctx, prefix, account)
+}
+
 // INTERNAL 500 渐进惩罚：连续多轮全部返回特定 500 错误时的惩罚时长
 const (
 	internal500PenaltyTier1Duration  = 30 * time.Minute // 第 1 轮：临时不可调度 30 分钟

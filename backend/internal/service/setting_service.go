@@ -197,6 +197,8 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 
 // SettingService 系统设置服务
 type SettingService struct {
+	registrationBlacklist       atomic.Pointer[registrationBlacklistSnapshot]
+	registrationBlacklistFlight singleflight.Group
 	claudeVersionSync           *ClaudeCLIVersionSyncService
 	settingRepo                 SettingRepository
 	defaultSubGroupReader       DefaultSubscriptionGroupReader
@@ -1910,6 +1912,11 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if utf8.RuneCountInString(settings.ModelPlazaDescription) > ModelPlazaDescriptionMaxLength {
 		return nil, infraerrors.BadRequest("MODEL_PLAZA_DESCRIPTION_TOO_LONG", "Model plaza description is too long (max 4000 characters)")
 	}
+	normalizedBlacklist, err := NormalizeRegistrationEmailBlacklist(settings.RegistrationEmailBlacklist)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_REGISTRATION_EMAIL_BLACKLIST", err.Error())
+	}
+	settings.RegistrationEmailBlacklist = normalizedBlacklist
 	normalizedWhitelist, err := NormalizeRegistrationEmailSuffixWhitelist(settings.RegistrationEmailSuffixWhitelist)
 	if err != nil {
 		return nil, infraerrors.BadRequest("INVALID_REGISTRATION_EMAIL_SUFFIX_WHITELIST", err.Error())
@@ -1974,6 +1981,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		return nil, fmt.Errorf("marshal registration email suffix whitelist: %w", err)
 	}
 	updates[SettingKeyRegistrationEmailSuffixWhitelist] = string(registrationEmailSuffixWhitelistJSON)
+	blacklistJSON, _ := json.Marshal(settings.RegistrationEmailBlacklist)
+	updates[SettingKeyRegistrationEmailBlacklist] = string(blacklistJSON)
 	updates[SettingKeyRegistrationEmailDomainQuotaEnabled] = strconv.FormatBool(settings.RegistrationEmailDomainQuotaEnabled)
 	updates[SettingKeyPromoCodeEnabled] = strconv.FormatBool(settings.PromoCodeEnabled)
 	updates[SettingKeyPasswordResetEnabled] = strconv.FormatBool(settings.PasswordResetEnabled)
@@ -2578,6 +2587,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		value:     settings.OpenAIAllowClaudeCodeCodexPlugin,
 		expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
 	})
+	s.publishRegistrationBlacklist(settings.RegistrationEmailBlacklist)
 	s.codexCLIOnlyPolicySF.Forget("codex_cli_only_policy")
 	s.codexCLIOnlyPolicyCache.Store(&cachedCodexCLIOnlyPolicy{expiresAt: 0})
 	if s.onPromptAuditEnabledUpdate != nil {
@@ -3498,6 +3508,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyRegistrationEnabled:                       "true",
 		SettingKeyEmailVerifyEnabled:                        "false",
 		SettingKeyRegistrationEmailSuffixWhitelist:          "[]",
+		SettingKeyRegistrationEmailBlacklist:                "[]",
 		SettingKeyRegistrationEmailDomainQuotaEnabled:       "false",
 		SettingKeyPromoCodeEnabled:                          "true", // 默认启用优惠码功能
 		SettingKeyLoginAgreementEnabled:                     "false",
@@ -3750,6 +3761,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		RegistrationEnabled:                 settings[SettingKeyRegistrationEnabled] == "true",
 		EmailVerifyEnabled:                  emailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:    ParseRegistrationEmailSuffixWhitelist(settings[SettingKeyRegistrationEmailSuffixWhitelist]),
+		RegistrationEmailBlacklist:          parseRegistrationBlacklist(settings[SettingKeyRegistrationEmailBlacklist]),
 		RegistrationEmailDomainQuotaEnabled: settings[SettingKeyRegistrationEmailDomainQuotaEnabled] == "true",
 		PromoCodeEnabled:                    settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
 		PasswordResetEnabled:                emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true",

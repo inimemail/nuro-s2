@@ -624,6 +624,7 @@ export interface Group {
   allow_live: boolean
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
+  models_list_config?: ModelsListConfig
   codex_models_manifest_config?: CodexModelsManifestConfig
   require_oauth_only: boolean
   require_privacy_set: boolean
@@ -1276,6 +1277,18 @@ export interface GrokBillingSummary {
   failed_windows?: string[]
 }
 
+export interface AntigravityQuotaGroup {
+  key: string
+  name: string
+  description?: string
+  windows: Array<{ window: string; utilization: number | null; resets_at?: string | null }>
+}
+export interface AntigravityQuotaSource {
+  updated_at?: string | null
+  error?: string
+  stale?: boolean
+}
+
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
   updated_at: string | null
@@ -1290,6 +1303,8 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  antigravity_quota_groups?: AntigravityQuotaGroup[] | null
+  antigravity_quota_sources?: Record<string, AntigravityQuotaSource> | null
   grok_request_quota?: GrokQuotaWindow | null
   grok_token_quota?: GrokQuotaWindow | null
   grok_retry_after_seconds?: number | null

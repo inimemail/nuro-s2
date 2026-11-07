@@ -358,6 +358,15 @@ func (s *NotificationEmailService) PreviewTemplate(ctx context.Context, input No
 }
 
 func (s *NotificationEmailService) Send(ctx context.Context, input NotificationEmailSendInput) error {
+	return s.sendWithContext(ctx, input, false)
+}
+
+// SendBounded preserves template, preference and dedupe handling, with a
+// cancellable SMTP transport for best-effort billing reminders only.
+func (s *NotificationEmailService) SendBounded(ctx context.Context, input NotificationEmailSendInput) error {
+	return s.sendWithContext(ctx, input, true)
+}
+func (s *NotificationEmailService) sendWithContext(ctx context.Context, input NotificationEmailSendInput, bounded bool) error {
 	info, normalizedEvent, err := s.eventInfo(input.Event)
 	if err != nil {
 		return notificationEmailTemplateErr(err)
@@ -405,7 +414,11 @@ func (s *NotificationEmailService) Send(ctx context.Context, input NotificationE
 	if s.emailService == nil {
 		return notificationEmailConfigErr(errors.New("email service is not configured"))
 	}
-	if err := s.emailService.SendEmail(ctx, recipient, rendered.Subject, rendered.HTML); err != nil {
+	send := s.emailService.SendEmail
+	if bounded {
+		send = s.emailService.SendNotificationEmail
+	}
+	if err := send(ctx, recipient, rendered.Subject, rendered.HTML); err != nil {
 		return notificationEmailDeliveryErr(err)
 	}
 	if deliveryKey != "" {

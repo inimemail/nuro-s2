@@ -25,7 +25,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
-	{ID: "gpt-6.1-terra", Object: "model", Created: 1704067200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
+	{ID: "gpt-6.1-terra", Object: "model", Created: 1792972800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
 	{ID: "gpt-6.1-sol", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-6", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 (Astra)"},
@@ -38,6 +38,8 @@ var DefaultModels = []Model{
 	{ID: "gpt-image-1", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 1"},
 	{ID: "gpt-image-1.5", Object: "model", Created: 1735689600, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 1.5"},
 	{ID: "gpt-image-2", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2"},
+	{ID: "gpt-image-2.6-flare", Object: "model", Created: 1793923200, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.6 Flare"},
+	{ID: "gpt-image-2.6-sunburst", Object: "model", Created: 1793923200, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.6 Sunburst"},
 }
 
 // DefaultModelIDs returns the default model ID list
@@ -119,7 +121,7 @@ func IsGPT61TerraModelSpelling(model string) bool {
 		return false
 	}
 	switch suffix {
-	case "none", "low", "medium", "high", "xhigh", "max", "openai-compact":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max", "openai-compact":
 		return true
 	}
 	return false
@@ -186,6 +188,22 @@ func ValidateGPT61SolReasoningEffort(model, effort string) error {
 		case "none", "minimal":
 			return fmt.Errorf("gpt-6.1-sol does not support reasoning effort %q", effort)
 		}
+	}
+	return nil
+}
+
+// ValidateGPT61TerraModelRequest also validates effort suffixes before alias normalization.
+func ValidateGPT61TerraModelRequest(model, effort string) error {
+	if !IsGPT61TerraModelSpelling(model) {
+		return nil
+	}
+	id := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), "_", "-")
+	id = strings.TrimPrefix(strings.TrimPrefix(id, "openai/"), "models/")
+	if id == "gpt-6.1-terra-minimal" || strings.EqualFold(strings.TrimSpace(effort), "minimal") {
+		return fmt.Errorf("gpt-6.1-terra does not support reasoning effort minimal; use none, low, medium, high, xhigh or max")
+	}
+	if strings.EqualFold(strings.TrimSpace(effort), "ultra") {
+		return fmt.Errorf("gpt-6.1-terra API reasoning effort ultra is a Codex client level; use none, low, medium, high, xhigh or max")
 	}
 	return nil
 }

@@ -95,6 +95,9 @@ func (s *OpenAICodexVersionSyncService) refreshIdentityRuntime() {
 	}
 	ctx, cancel := context.WithTimeout(s.lifecycleCtx, openAICodexVersionSyncTimeout)
 	defer cancel()
+	if err := s.settingService.RefreshRegistrationBlacklist(ctx); err != nil {
+		slog.Warn("registration_blacklist_refresh_failed")
+	}
 	if err := s.settingService.RefreshOpenAICodexIdentityRuntime(ctx); err != nil {
 		slog.Warn("openai_codex_identity_runtime_refresh_failed", "error", err)
 	}

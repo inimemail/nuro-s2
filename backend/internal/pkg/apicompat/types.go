@@ -426,6 +426,18 @@ type ResponsesOutput struct {
 
 func (o ResponsesOutput) MarshalJSON() ([]byte, error) {
 	type alias ResponsesOutput
+	if o.Type == "message" {
+		content := o.Content
+		if content == nil {
+			content = []ResponsesContentPart{}
+		}
+		// Only override content's omitempty behavior. The streaming item helper
+		// projects text fields and would discard refusal and media payloads here.
+		return json.Marshal(struct {
+			alias
+			Content []ResponsesContentPart `json:"content"`
+		}{alias: alias(o), Content: content})
+	}
 	if o.Type != "tool_search_call" {
 		return json.Marshal(alias(o))
 	}

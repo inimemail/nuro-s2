@@ -1,10 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import UsageView from '../UsageView.vue'
 
-const { query, getDashboardSnapshotV2, getStatsByDateRange, list, showError, showWarning, showSuccess, showInfo } = vi.hoisted(() => ({
+const { exportPage, query, getDashboardSnapshotV2, getStatsByDateRange, list, showError, showWarning, showSuccess, showInfo } = vi.hoisted(() => ({
+  exportPage: vi.fn(),
   query: vi.fn(),
   getDashboardSnapshotV2: vi.fn(),
   getStatsByDateRange: vi.fn(),
@@ -67,6 +68,7 @@ const messages: Record<string, string> = {
 
 vi.mock('@/api', () => ({
   usageAPI: {
+    exportPage,
     query,
     getDashboardSnapshotV2,
     getStatsByDateRange,
@@ -109,7 +111,9 @@ const DataTableStub = {
 }
 
 describe('user UsageView tooltip', () => {
+  afterEach(() => vi.useRealTimers())
   beforeEach(() => {
+    exportPage.mockReset()
     query.mockReset()
     getDashboardSnapshotV2.mockReset()
     getStatsByDateRange.mockReset()
@@ -147,6 +151,65 @@ describe('user UsageView tooltip', () => {
       observe() {}
       disconnect() {}
     }
+  })
+
+  const mountExportView = async () => {
+    query.mockResolvedValue({ items: [], total: 0 })
+    list.mockResolvedValue({ items: [] })
+    const wrapper = mount(UsageView, { global: { stubs: {
+      AppLayout: AppLayoutStub, TablePageLayout: TablePageLayoutStub, Pagination: true,
+      EmptyState: true, Select: true, DateRangePicker: true, DataTable: DataTableStub,
+      Icon: true, Teleport: true
+    } } })
+    await flushPromises()
+    return { wrapper, state: (wrapper.vm as any).$?.setupState }
+  }
+
+  it('bounds CSV 429 retries and never downloads a partial export', async () => {
+    exportPage.mockRejectedValue({ status: 429, retryAfter: '999999' })
+    const { wrapper, state } = await mountExportView()
+    vi.useFakeTimers()
+    const exporting = state.exportToCSV()
+    await vi.advanceTimersByTimeAsync(180000)
+    await exporting
+    expect(exportPage).toHaveBeenCalledTimes(4)
+    for (const call of exportPage.mock.calls) {
+      expect(call[0].page_size).toBe(1000)
+      expect(call[0].cursor).toBeUndefined()
+    }
+    expect(showError).toHaveBeenCalledTimes(1)
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(state.exporting).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('cancels a CSV retry wait without a later request or success message', async () => {
+    exportPage.mockRejectedValue({ status: 429, retryAfter: '60' })
+    const { wrapper, state } = await mountExportView()
+    vi.useFakeTimers()
+    const exporting = state.exportToCSV()
+    await vi.advanceTimersByTimeAsync(0)
+    state.cancelExport()
+    await exporting
+    await vi.advanceTimersByTimeAsync(120000)
+    expect(exportPage).toHaveBeenCalledTimes(1)
+    expect(exportPage.mock.calls[0][1].aborted).toBe(true)
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showError).not.toHaveBeenCalled()
+    expect(state.exportWaitSeconds).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('keeps formulas literal after leading whitespace and preserves ordinary CSV text', async () => {
+    const { wrapper, state } = await mountExportView()
+    expect(state.escapeCSVValue('=SUM(1,2)')).toBe('"\'=SUM(1,2)"')
+    expect(state.escapeCSVValue('@cmd')).toBe('"\'@cmd"')
+    expect(state.escapeCSVValue('\n=SUM(1,2)')).toBe('"\'\n=SUM(1,2)"')
+    expect(state.escapeCSVValue(' \t=SUM(1,2)')).toBe('"\' \t=SUM(1,2)"')
+    expect(state.escapeCSVValue('\uFEFF+SUM(1,2)')).toBe('"\'\uFEFF+SUM(1,2)"')
+    expect(state.escapeCSVValue('  model-name')).toBe('  model-name')
+    expect(state.escapeCSVValue('x"\n')).toBe('"x""\n"')
+    wrapper.unmount()
   })
 
   it('shows fast service tier and unit prices in user tooltip', async () => {
@@ -270,7 +333,8 @@ describe('user UsageView tooltip', () => {
       },
     ]
 
-    query.mockResolvedValue({
+    exportPage.mockResolvedValue({
+      has_more: false,
       items: exportedLogs,
       total: 1,
       pages: 1,
@@ -315,14 +379,14 @@ describe('user UsageView tooltip', () => {
     await setupState.exportToCSV()
 
     expect(exportedBlob).not.toBeNull()
-    const hasSortedExportQuery = query.mock.calls.some((call) => {
+    const hasSortedExportQuery = exportPage.mock.calls.some((call) => {
       const params = call[0] as Record<string, unknown> | undefined
       const config = call[1]
       return (
-        params?.page_size === 100 &&
+        params?.page_size === 1000 &&
         params?.sort_by === 'created_at' &&
         params?.sort_order === 'desc' &&
-        config === undefined
+        config instanceof AbortSignal
       )
     })
     expect(hasSortedExportQuery).toBe(true)
@@ -364,7 +428,8 @@ describe('user UsageView tooltip', () => {
       },
     ]
 
-    query.mockResolvedValue({
+    exportPage.mockResolvedValue({
+      has_more: false,
       items: exportedLogs,
       total: 1,
       pages: 1,

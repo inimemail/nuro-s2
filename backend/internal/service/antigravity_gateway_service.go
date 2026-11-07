@@ -782,7 +782,7 @@ urlFallbackLoop:
 
 				// INTERNAL 500 渐进惩罚：3 次重试全部命中特定 500 时递增计数器并惩罚
 				if allAttemptsInternal500 && isAntigravityInternalServerError(resp.StatusCode, respBody) {
-					s.handleInternal500RetryExhausted(p.ctx, p.prefix, p.account)
+					s.handleInternal500ForModel(p.ctx, p.prefix, p.account, resolveFinalAntigravityModelKey(p.ctx, p.account, p.requestedModel))
 				}
 
 				// 其他 4xx 错误或重试用尽，直接返回
@@ -1070,7 +1070,7 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 	if shouldUseAntigravityGeminiTestRequest(modelID, mappedModel) {
 		requestBody, err = s.buildGeminiTestRequestWithPrompt(projectID, mappedModel, prompt)
 	} else {
-		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel)
+		requestBody, err = s.buildClaudeTestRequestWithPrompt(projectID, mappedModel, prompt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
@@ -1182,12 +1182,16 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 		return s.wrapV1InternalRequest(projectID, model, payloadBytes)
 	}
 
+	textPrompt, maxTokens := ".", 1
+	if strings.TrimSpace(prompt) != "" {
+		textPrompt, maxTokens = prompt, 1024
+	}
 	payload := map[string]any{
 		"contents": []map[string]any{
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "."},
+					{"text": textPrompt},
 				},
 			},
 		},
@@ -1198,7 +1202,7 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 			},
 		},
 		"generationConfig": map[string]any{
-			"maxOutputTokens": 1,
+			"maxOutputTokens": maxTokens,
 		},
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
@@ -1213,15 +1217,28 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 // buildClaudeTestRequest 构建 Claude 格式测试请求并转换为 Gemini 格式
 // 使用最小 token 消耗：输入 "." + MaxTokens: 1
 func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel string) ([]byte, error) {
+	return s.buildClaudeTestRequestWithPrompt(projectID, mappedModel, "")
+}
+
+func (s *AntigravityGatewayService) buildClaudeTestRequestWithPrompt(projectID, mappedModel, prompt string) ([]byte, error) {
+	textPrompt, maxTokens := ".", 1
+	if strings.TrimSpace(prompt) != "" {
+		textPrompt, maxTokens = prompt, 1024
+	}
+	content, err := json.Marshal(textPrompt)
+	if err != nil {
+		return nil, err
+	}
+
 	claudeReq := &antigravity.ClaudeRequest{
 		Model: mappedModel,
 		Messages: []antigravity.ClaudeMessage{
 			{
 				Role:    "user",
-				Content: json.RawMessage(`"."`),
+				Content: content,
 			},
 		},
-		MaxTokens: 1,
+		MaxTokens: maxTokens,
 		Stream:    false,
 	}
 	return antigravity.TransformClaudeToGemini(claudeReq, projectID, mappedModel)
@@ -2584,6 +2601,13 @@ handleSuccess:
 		streamRes, err := s.handleGeminiStreamToNonStreaming(c, resp, startTime)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_collect_error error=%v", prefix, err)
+			if streamRes != nil && streamRes.usage != nil {
+				return &ForwardResult{
+					RequestID: requestID, Usage: *streamRes.usage, Model: originalModel, UpstreamModel: billingModel,
+					Stream: false, Duration: time.Since(startTime), FirstTokenMs: streamRes.firstTokenMs,
+					FailedOutcome: true,
+				}, err
+			}
 			return nil, err
 		}
 		usage = streamRes.usage
@@ -3211,7 +3235,18 @@ func handleStreamReadError(err error, clientDisconnected bool, prefix string) (d
 	return false, false
 }
 
-func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time) (retResult *antigravityStreamResult, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.streamResourceConfig(), true, true)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+			if retResult != nil {
+				retResult.upstreamError = true
+			}
+		}
+		guard.Finish()
+	}()
+
 	c.Status(resp.StatusCode)
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -3243,11 +3278,16 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	// 独立 goroutine 读取上游，避免读取阻塞影响超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -3320,6 +3360,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				result := &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}
 				if !sawTerminal && !result.clientDisconnect {
@@ -3447,7 +3490,18 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 
 // handleGeminiStreamToNonStreaming 读取上游流式响应，合并为非流式响应返回给客户端
 // Gemini 流式响应是增量的，需要累积所有 chunk 的内容
-func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time) (retResult *antigravityStreamResult, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.streamResourceConfig(), false, true)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+			if retResult != nil {
+				retResult.upstreamError = true
+			}
+		}
+		guard.Finish()
+	}()
+
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.MaxLineSize > 0 {
@@ -3471,11 +3525,16 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	// 独立 goroutine 读取上游，避免读取阻塞影响超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -3515,6 +3574,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				// 流结束，返回收集的响应
 				goto returnResponse
@@ -3523,7 +3585,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, ev.err
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, ev.err
 			}
 
 			line := ev.line
@@ -3964,11 +4026,16 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(resp *http.Respo
 	// 独立 goroutine 读取上游，避免读取阻塞影响超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -4008,6 +4075,9 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(resp *http.Respo
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				// 流结束，转换并返回响应
 				goto returnResponse
@@ -4016,7 +4086,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(resp *http.Respo
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity claude non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, nil, ev.err
+				return nil, &antigravityStreamResult{usage: observedUsage, firstTokenMs: firstTokenMs, upstreamError: true}, ev.err
 			}
 
 			line := ev.line
@@ -4127,7 +4197,18 @@ returnResponse:
 
 // handleClaudeStreamToNonStreaming 收集上游流式响应，转换为 Claude 非流式格式返回
 // 用于处理客户端非流式请求但上游只支持流式的情况
-func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (retResult *antigravityStreamResult, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.streamResourceConfig(), false, false)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+			if retResult != nil {
+				retResult.upstreamError = true
+			}
+		}
+		guard.Finish()
+	}()
+
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.settingService != nil && s.settingService.cfg != nil && s.settingService.cfg.Gateway.MaxLineSize > 0 {
@@ -4150,11 +4231,16 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 	// 独立 goroutine 读取上游，避免读取阻塞影响超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -4194,6 +4280,9 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				// 流结束，转换并返回响应
 				goto returnResponse
@@ -4202,7 +4291,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity claude non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, ev.err
+				return &antigravityStreamResult{usage: observedUsage, firstTokenMs: firstTokenMs, upstreamError: true}, ev.err
 			}
 
 			line := ev.line
@@ -4307,7 +4396,18 @@ returnResponse:
 }
 
 // handleClaudeStreamingResponse 处理 Claude 流式响应（Gemini SSE → Claude SSE 转换）
-func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
+func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (retResult *antigravityStreamResult, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.streamResourceConfig(), true, false)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+			if retResult != nil {
+				retResult.upstreamError = true
+			}
+		}
+		guard.Finish()
+	}()
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -4350,11 +4450,16 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 	// 独立 goroutine 读取上游，避免读取阻塞影响超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -4427,6 +4532,9 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				// Only an explicit upstream finish reason is a successful terminal.
 				sawTerminal := processor.MessageStopSent()
@@ -4566,7 +4674,7 @@ func cleanGeminiRequest(body []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	modified := false
+	modified := normalizeAntigravityResponseSchema(payload)
 
 	// 1. 清理 Tools
 	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
@@ -4853,11 +4961,16 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 	}
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.streamResourceConfig())
 	sendEvent := func(ev scanEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -4923,6 +5036,9 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				if !sawTerminal && !cw.Disconnected() {
 					sendSafeError()

@@ -160,6 +160,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import type { GroupPlatform } from '@/types'
+import { selectDefaultCodexModel, CODEX_IMAGE_ACTOR_HEADERS } from '@/utils/codexExport'
 
 interface Props {
   show: boolean
@@ -168,6 +169,7 @@ interface Props {
   platform: GroupPlatform | null
   allowMessagesDispatch?: boolean
   groupId?: number | null
+  modelsListConfig?: { enabled: boolean; models: string[] } | null
 }
 
 interface Emits {
@@ -191,6 +193,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
 const { t } = useI18n()
+const defaultOpenAIModel = computed(() => selectDefaultCodexModel(props.modelsListConfig?.enabled ? props.modelsListConfig.models : null))
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
 const copiedIndex = ref<number | null>(null)
@@ -597,8 +600,7 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+${defaultOpenAIModel.value ? `model = ${tomlString(defaultOpenAIModel.value)}\nreview_model = ${tomlString(defaultOpenAIModel.value)}` : '# Select an allowed model before sending a request.'}
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -609,6 +611,7 @@ name = "OpenAI"
 base_url = ${tomlString(baseUrl)}
 wire_api = "responses"
 requires_openai_auth = true
+${CODEX_IMAGE_ACTOR_HEADERS}
 
 [features]
 goals = true${remoteCatalogFeature.value}`
@@ -663,8 +666,7 @@ function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+${defaultOpenAIModel.value ? `model = ${tomlString(defaultOpenAIModel.value)}\nreview_model = ${tomlString(defaultOpenAIModel.value)}` : '# Select an allowed model before sending a request.'}
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -676,6 +678,7 @@ base_url = ${tomlString(baseUrl)}
 wire_api = "responses"
 supports_websockets = true
 requires_openai_auth = true
+${CODEX_IMAGE_ACTOR_HEADERS}
 
 [features]
 responses_websockets_v2 = true
@@ -724,6 +727,12 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
 			max: {}
 		}
 	},
+  'gpt-6.1-terra': {
+    name: 'GPT-6.1 Terra',
+    limit: { context: 872000, output: 128000 },
+    options: { store: false },
+    variants: { none: {}, low: {}, medium: {}, high: {}, xhigh: {}, max: {} }
+  },
 	'gpt-6': {
 		name: 'GPT-6 (Astra)',
 		limit: {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -24,7 +25,7 @@ import (
 // ProviderSet 提供服务器层的依赖
 var ProviderSet = wire.NewSet(
 	ProvideRouter,
-	ProvideHTTPServer,
+	ProvideHTTPServerWithBodyBudget,
 )
 
 // ProvideRouter 提供路由器
@@ -103,7 +104,19 @@ func ProvideRouter(
 
 // ProvideHTTPServer 提供 HTTP 服务器
 func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
+	return ProvideHTTPServerWithBodyBudget(cfg, router, service.ProvideRequestBodyBudget(cfg))
+}
+func ProvideHTTPServerWithBodyBudget(cfg *config.Config, router *gin.Engine, budget *pkghttputil.BodyBudget) *http.Server {
 	httpHandler := http.Handler(router)
+	if budget != nil {
+		next := httpHandler
+		httpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scope := budget.Scope()
+			defer scope.Release()
+			next.ServeHTTP(w, r.WithContext(pkghttputil.WithBodyReservation(r.Context(), scope)))
+		})
+	}
+	httpHandler = pkghttputil.WithIdleDeadlines(httpHandler, time.Duration(cfg.Server.RequestReadIdleTimeout)*time.Second, time.Duration(cfg.Server.ResponseWriteIdleTimeout)*time.Second)
 	server := &http.Server{
 		Addr:           cfg.Server.Address(),
 		Handler:        httpHandler,

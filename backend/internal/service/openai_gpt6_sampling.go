@@ -23,6 +23,9 @@ func normalizeGPT6ResponsesSampling(body []byte) ([]byte, error) {
 	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()), "disabled") {
 		effort = "none"
 	}
+	if err := openai.ValidateGPT61TerraModelRequest(model, effort); err != nil {
+		return nil, err
+	}
 	if openai.IsGPT61SolModelSpelling(model) {
 		if err := openai.ValidateGPT61SolModelRequest(model, effort); err != nil {
 			return nil, err

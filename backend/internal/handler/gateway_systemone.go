@@ -28,7 +28,8 @@ func (h *GatewayHandler) SystemOne(c *gin.Context) {
 	}
 	body, err := httputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	model, err := typesafe.ValidateSystemOneRequest(body)

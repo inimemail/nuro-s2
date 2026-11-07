@@ -70,6 +70,10 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 				abortWithGoogleError(c, 503, "API key authentication is temporarily unavailable")
 				return
 			}
+			if c.Request.Context().Err() != nil {
+				c.AbortWithStatus(499)
+				return
+			}
 			abortWithGoogleError(c, 500, "Failed to validate API key")
 			return
 		}

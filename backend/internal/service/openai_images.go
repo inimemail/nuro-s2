@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -72,6 +73,12 @@ type OpenAIImagesRequest struct {
 	Size               string
 	ExplicitSize       bool
 	SizeTier           string
+	Complexity         string
+	FrameCount         *int
+	FrameDurationMS    *int
+	SVG                *OpenAIImagesSVGOptions
+	MarkupImageURL     string
+	MarkupUpload       *OpenAIImagesUpload
 	ResponseFormat     string
 	Quality            string
 	Background         string
@@ -89,6 +96,7 @@ type OpenAIImagesRequest struct {
 	Uploads            []OpenAIImagesUpload
 	MaskUpload         *OpenAIImagesUpload
 	Body               []byte
+	bodyReservation    *pkghttputil.BodyReservation
 	bodyHash           string
 }
 
@@ -136,6 +144,14 @@ func (r *OpenAIImagesRequest) moderationImages() []map[string]string {
 	if r.MaskUpload != nil {
 		if dataURL := r.MaskUpload.ModerationDataURL(); dataURL != "" {
 			images = append(images, map[string]string{"image_url": dataURL})
+		}
+	}
+	if r.MarkupImageURL != "" {
+		images = append(images, map[string]string{"image_url": r.MarkupImageURL})
+	}
+	if r.MarkupUpload != nil {
+		if data := r.MarkupUpload.ModerationDataURL(); data != "" {
+			images = append(images, map[string]string{"image_url": data})
 		}
 	}
 	return images
@@ -188,10 +204,16 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 
 	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
 	req := &OpenAIImagesRequest{
-		Endpoint:    endpoint,
-		ContentType: contentType,
-		N:           1,
-		Body:        body,
+		Endpoint:        endpoint,
+		ContentType:     contentType,
+		N:               1,
+		Body:            body,
+		bodyReservation: pkghttputil.BodyReservationFromContext(c.Request.Context()),
+	}
+	// Register the copied field strings / multipart ReadAll capacities before
+	// parsing. This bounds registered buffers, not arbitrary decoder heap.
+	if err := req.bodyReservation.Reserve(3 * int64(len(body))); err != nil {
+		return nil, err
 	}
 	if len(body) > 0 {
 		sum := sha256.Sum256(body)
@@ -216,6 +238,9 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 		}
 	}
 
+	if err := validateOpenAIImages26Options(req); err != nil {
+		return nil, err
+	}
 	applyOpenAIImagesDefaults(req)
 	if err := validateCompatibleImagesModel(req.Model); err != nil {
 		return nil, err
@@ -226,6 +251,21 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 }
 
 func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
+	for _, field := range []string{"complexity", "frame_count", "frame_duration_ms", "svg"} {
+		if value := gjson.GetBytes(body, field); value.Exists() {
+			if err := parseOpenAIImages26Field(field, value.Raw, req); err != nil {
+				return err
+			}
+		}
+	}
+	if markup := gjson.GetBytes(body, "markup"); markup.Exists() {
+		if !markup.IsObject() || markup.Get("file_id").Exists() || markup.Get("image_url").Type != gjson.String || strings.TrimSpace(markup.Get("image_url").String()) == "" {
+			return fmt.Errorf("markup requires image_url; file_id is not supported")
+		}
+		req.MarkupImageURL = markup.Get("image_url").String()
+		req.HasNativeOptions = true
+	}
+
 	if modelResult := gjson.GetBytes(body, "model"); modelResult.Exists() {
 		req.Model = strings.TrimSpace(modelResult.String())
 		req.ExplicitModel = req.Model != ""
@@ -302,7 +342,7 @@ func parseOpenAIImagesJSONRequest(body []byte, req *OpenAIImagesRequest) error {
 			return fmt.Errorf("images[].image_url is required")
 		}
 	}
-	req.HasNativeOptions = hasOpenAINativeImageOptions(func(path string) bool {
+	req.HasNativeOptions = req.HasNativeOptions || hasOpenAINativeImageOptions(func(path string) bool {
 		return gjson.GetBytes(body, path).Exists()
 	})
 	return nil
@@ -345,9 +385,9 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 		fileName := strings.TrimSpace(part.FileName())
 		if fileName != "" {
 			partContentType := strings.TrimSpace(part.Header.Get("Content-Type"))
-			if name == "mask" && len(data) > 0 {
-				req.HasMask = true
-				width, height := parseOpenAIImageDimensions(part.Header)
+			if (name == "mask" || name == "markup") && len(data) > 0 {
+				req.HasMask = req.HasMask || name == "mask"
+				width, height := openAIImageDimensions(data)
 				maskUpload := OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
@@ -356,10 +396,15 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 					Width:       width,
 					Height:      height,
 				}
-				req.MaskUpload = &maskUpload
+				if name == "markup" {
+					req.MarkupUpload = &maskUpload
+					req.HasNativeOptions = true
+				} else {
+					req.MaskUpload = &maskUpload
+				}
 			}
 			if name == "image" || strings.HasPrefix(name, "image[") {
-				width, height := parseOpenAIImageDimensions(part.Header)
+				width, height := openAIImageDimensions(data)
 				req.Uploads = append(req.Uploads, OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
@@ -374,6 +419,15 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 
 		value := strings.TrimSpace(string(data))
 		switch name {
+		case "complexity", "frame_count", "frame_duration_ms", "svg":
+			raw := value
+			if name == "complexity" {
+				encoded, _ := json.Marshal(value)
+				raw = string(encoded)
+			}
+			if err := parseOpenAIImages26Field(name, raw, req); err != nil {
+				return err
+			}
 		case "model":
 			req.Model = value
 			req.ExplicitModel = value != ""
@@ -439,10 +493,6 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 		return fmt.Errorf("image file is required")
 	}
 	return nil
-}
-
-func parseOpenAIImageDimensions(_ textproto.MIMEHeader) (int, int) {
-	return 0, 0
 }
 
 func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
@@ -597,6 +647,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
+	if err := validateNativeImagesRoute(account, upstreamModel); err != nil {
+		return nil, err
+	}
 	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
 		return nil, err
 	}
@@ -608,10 +661,25 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		parsed.Endpoint,
 		account.Type,
 	)
-	forwardBody, forwardContentType, err := rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
-	if err != nil {
-		return nil, err
+	var forwardBody []byte
+	var forwardContentType string
+	var err error
+	if requiresCodexDirectImages(upstreamModel) {
+		forwardBody, _, err = buildOpenAIImagesOAuthPayload(parsed, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		forwardContentType = "application/json"
+	} else {
+		if err := parsed.bodyReservation.Reserve(3 * int64(len(body))); err != nil {
+			return nil, err
+		}
+		forwardBody, forwardContentType, err = rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	attempt := newOpenAIUpstreamAttempt()
 	attemptCtx := ctx
 	if account != nil && account.Platform == PlatformOpenAI {
@@ -701,9 +769,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	}
 	var firstTokenMs *int
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
-		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime)
+		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponseForRequest(resp, c, startTime, parsed, requiresCodexDirectImages(upstreamModel))
 		if err != nil {
-			if streamCount > 0 {
+			if streamCount > 0 || hasOpenAIImagesUsage(streamUsage) {
 				return &OpenAIForwardResult{
 					RequestID:                  resp.Header.Get("x-request-id"),
 					AttemptID:                  attempt.ID,
@@ -747,10 +815,13 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		}, nil
 	} else {
 		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(ctx, resp, c, account, parsed, upstreamModel)
-		if err != nil {
+		if err != nil && nonStreamCount == 0 && !hasOpenAIImagesUsage(nonStreamUsage) {
 			return nil, annotateOpenAIImagesAttemptError(err, attempt, attemptCtx)
 		}
 		usage = nonStreamUsage
+		if err != nil {
+			imageCount = nonStreamCount
+		}
 		if nonStreamCount > 0 {
 			imageCount = nonStreamCount
 		}
@@ -770,7 +841,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			ImageSize:                  parsed.SizeTier,
 			ImageInputSize:             parsed.Size,
 			ImageOutputSizes:           nonStreamSizes,
-		}, nil
+		}, err
 	}
 }
 
@@ -783,6 +854,9 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	token string,
 	endpoint string,
 ) (*http.Request, error) {
+	if account != nil && account.IsOpenAIOAuthLike() && requiresCodexDirectImages(gjson.GetBytes(body, "model").String()) {
+		return s.buildOpenAIImagesNativeOAuthRequest(ctx, c, account, body, token, endpoint)
+	}
 	targetURL := openAIImagesGenerationsURL
 	if endpoint == openAIImagesEditsEndpoint {
 		targetURL = openAIImagesEditsURL
@@ -929,9 +1003,16 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(ctx contex
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
+	usage, _ := extractOpenAIUsageFromJSONBytes(body)
+	if requiresCodexDirectImages(upstreamModel) {
+		usage, _ = nativeOpenAIImagesUsage(body)
+	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
 	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, body, upstreamModel, false); failoverErr != nil {
-		return OpenAIUsage{}, 0, nil, failoverErr
+		return usage, 0, nil, failoverErr
+	}
+	if requiresCodexDirectImages(upstreamModel) {
+		body = backfillNativeImagesSizes(body)
 	}
 	imageCount := extractOpenAIImageCountFromJSONBytes(body)
 	if openAIPassthroughResponseIsUnsafe(body) || imageCount == 0 {
@@ -941,24 +1022,40 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(ctx contex
 			Message:      safeUpstreamErrorMessage,
 		}
 		annotateOpenAIRaceRetryRule(account, failoverErr, 0)
-		return OpenAIUsage{}, 0, nil, failoverErr
+		return usage, 0, nil, failoverErr
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
 		contentType = responseheaders.SafeContentType(resp.Header.Get("Content-Type"), contentType)
 	}
-	c.Data(resp.StatusCode, contentType, body)
 
-	usage, _ := extractOpenAIUsageFromJSONBytes(body)
+	if parsed.Stream && requiresCodexDirectImages(upstreamModel) {
+		if err := writeOpenAIImagesJSONAsCompleted(c, body, parsed); err != nil {
+			return usage, imageCount, collectOpenAIResponseImageOutputSizesFromJSONBytes(body), err
+		}
+	} else {
+		c.Data(resp.StatusCode, contentType, body)
+	}
+
 	return usage, imageCount, collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
+func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponseForRequest(
 	resp *http.Response,
 	c *gin.Context,
 	startTime time.Time,
-) (OpenAIUsage, int, []string, *int, error) {
+	request *OpenAIImagesRequest,
+	nativeModels ...bool,
+) (retUsage OpenAIUsage, retCount int, retSizes []string, retTTFT *int, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.cfg, true, false)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+		}
+		guard.Finish()
+	}()
+
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "text/event-stream")
 	c.Status(resp.StatusCode)
@@ -969,6 +1066,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		return OpenAIUsage{}, 0, nil, nil, fmt.Errorf("streaming is not supported by response writer")
 	}
 
+	native := len(nativeModels) > 0 && nativeModels[0]
 	usage := OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
@@ -1015,6 +1113,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 
 		if !bytes.Equal(bytes.TrimSpace(dataBytes), []byte("[DONE]")) && gjson.ValidBytes(dataBytes) {
 			mergeOpenAIUsage(&usage, dataBytes)
+			if native {
+				if u, ok := nativeOpenAIImagesUsage(dataBytes); ok {
+					usage = u
+				}
+			}
 			imageCounter.AddSSEData(dataBytes)
 		}
 		if upstreamErr := openAIImagesUpstreamErrorFromSSEPayload(dataBytes); upstreamErr != nil {
@@ -1095,7 +1198,23 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				return errors.New(safeUpstreamErrorMessage)
 			}
 			mergeOpenAIUsage(&usage, body)
+			if native {
+				if u, ok := nativeOpenAIImagesUsage(body); ok {
+					usage = u
+				}
+				body = backfillNativeImagesSizes(body)
+			}
 			imageCounter.AddJSONResponse(body)
+			if native {
+				parsed := request
+				if parsed == nil {
+					parsed = &OpenAIImagesRequest{Stream: true}
+				}
+				if err := writeOpenAIImagesJSONAsCompleted(c, body, parsed); err != nil {
+					return err
+				}
+				return nil
+			}
 			if writeDownstream(body) && firstTokenMs == nil {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
@@ -1136,11 +1255,16 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	}
 	events := make(chan readEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.cfg)
 	sendEvent := func(ev readEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -1191,6 +1315,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				finalErr := finalizeStream()
 				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finalErr
@@ -1287,7 +1414,11 @@ func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
 	if dst == nil {
 		return
 	}
-	if parsed, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+	parsed, ok := extractOpenAIUsageFromJSONBytes(body)
+	if gjson.GetBytes(body, "usage.input_tokens_details.cached_tokens_details").Exists() {
+		parsed, ok = nativeOpenAIImagesUsage(body)
+	}
+	if ok {
 		if parsed.InputTokens > 0 {
 			dst.InputTokens = parsed.InputTokens
 		}
@@ -1299,6 +1430,12 @@ func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
 		}
 		if parsed.ImageOutputTokens > 0 {
 			dst.ImageOutputTokens = parsed.ImageOutputTokens
+		}
+		if parsed.ImageInputTokens > 0 {
+			dst.ImageInputTokens = parsed.ImageInputTokens
+		}
+		if parsed.ImageCacheReadTokens > 0 {
+			dst.ImageCacheReadTokens = parsed.ImageCacheReadTokens
 		}
 	}
 }

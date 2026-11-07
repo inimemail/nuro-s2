@@ -355,7 +355,7 @@
       </div>
 
       <!-- Degraded error (non-403, non-401) -->
-      <div v-else-if="usageInfo?.error" class="space-y-1">
+      <div v-else-if="usageInfo?.error && !usageInfo?.antigravity_quota_groups?.length && !hasAntigravityQuotaFromAPI" class="space-y-1">
         <span class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
           {{ usageErrorLabel }}
         </span>
@@ -373,6 +373,13 @@
       <!-- Error state -->
       <div v-else-if="error" class="text-xs text-red-500">
         {{ error }}
+      </div>
+
+      <div v-else-if="usageInfo?.antigravity_quota_groups?.length" class="space-y-1.5">
+        <AntigravityQuotaWindows :groups="usageInfo.antigravity_quota_groups" :sources="usageInfo.antigravity_quota_sources" />
+        <div v-if="aiCreditsDisplay" class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
+        </div>
       </div>
 
       <!-- Usage data from API -->
@@ -788,6 +795,7 @@ import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
+import AntigravityQuotaWindows from './AntigravityQuotaWindows.vue'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'

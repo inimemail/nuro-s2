@@ -42,7 +42,8 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 		}
 	}
 
-	raw, err := readRequestBodyChunks(req.Body, capHint)
+	scope := BodyReservationFromContext(req.Context())
+	raw, err := readRequestBodyChunks(req.Body, capHint, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +53,7 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 		return raw, nil
 	}
 
-	decoded, err := decompressRequestBody(enc, raw)
+	decoded, err := decompressRequestBody(enc, raw, scope)
 	if err != nil {
 		return nil, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
 	}
@@ -66,7 +67,11 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 
 // Grow in bounded chunks; never allocate an untrusted Content-Length eagerly.
 // Assemble only once so large inline images don't repeatedly double a buffer.
-func readRequestBodyChunks(reader io.Reader, capacity int) ([]byte, error) {
+func readRequestBodyChunks(reader io.Reader, capacity int, scopes ...*BodyReservation) ([]byte, error) {
+	var scope *BodyReservation
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	if capacity < requestBodyReadInitCap {
 		capacity = requestBodyReadInitCap
 	}
@@ -76,6 +81,9 @@ func readRequestBodyChunks(reader io.Reader, capacity int) ([]byte, error) {
 	var chunks [][]byte
 	total, emptyReads := 0, 0
 	for {
+		if err := scope.Reserve(int64(capacity)); err != nil {
+			return nil, err
+		}
 		chunk := make([]byte, capacity)
 		n := 0
 		var err error
@@ -106,6 +114,9 @@ func readRequestBodyChunks(reader io.Reader, capacity int) ([]byte, error) {
 			if len(chunks) == 1 {
 				return chunks[0], nil
 			}
+			if err := scope.Reserve(int64(total)); err != nil {
+				return nil, err
+			}
 			body := make([]byte, total)
 			offset := 0
 			for _, part := range chunks {
@@ -124,35 +135,79 @@ func ReadLenientJSONRequestBodyWithPrealloc(req *http.Request, maxNormalizedByte
 	if err != nil {
 		return nil, err
 	}
+	scope := BodyReservationFromContext(req.Context())
+	if scope != nil {
+		// Only reserve normalization storage if a raw control byte may require a copy.
+		for _, b := range body {
+			if isJSONControlByte(b) {
+				if err := scope.Reserve(int64(len(body)) * 6); err != nil {
+					return nil, err
+				}
+				break
+			}
+		}
+	}
 	return NormalizeLenientJSONRequestBody(body, maxNormalizedBytes)
 }
 
-func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
+func decompressRequestBody(encoding string, raw []byte, scopes ...*BodyReservation) ([]byte, error) {
+	var scope *BodyReservation
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	window := int64(64 << 10)
+	if encoding == "zstd" {
+		window = 8 << 20
+	}
+	if err := scope.Reserve(window); err != nil {
+		return nil, err
+	}
 	switch encoding {
 	case "zstd":
-		dec, err := zstd.NewReader(bytes.NewReader(raw))
+		dec, err := zstd.NewReader(bytes.NewReader(raw), zstd.WithDecoderMaxWindow(8<<20), zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			return nil, err
 		}
 		defer dec.Close()
-		return io.ReadAll(io.LimitReader(dec, maxDecompressedBodySize))
+		return readDecompressedBody(dec, scope)
 	case "gzip", "x-gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = gr.Close() }()
-		return io.ReadAll(io.LimitReader(gr, maxDecompressedBodySize))
+		return readDecompressedBody(gr, scope)
 	case "deflate":
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = zr.Close() }()
-		return io.ReadAll(io.LimitReader(zr, maxDecompressedBodySize))
+		return readDecompressedBody(zr, scope)
 	default:
 		return nil, errors.New("unsupported Content-Encoding")
 	}
+}
+
+func readDecompressedBody(r io.Reader, scopes ...*BodyReservation) ([]byte, error) {
+	var scope *BodyReservation
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	var body []byte
+	var err error
+	if scope == nil {
+		body, err = io.ReadAll(io.LimitReader(r, maxDecompressedBodySize+1))
+	} else {
+		body, err = readRequestBodyChunks(io.LimitReader(r, maxDecompressedBodySize+1), requestBodyReadInitCap, scope)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxDecompressedBodySize {
+		return nil, &http.MaxBytesError{Limit: maxDecompressedBodySize}
+	}
+	return body, nil
 }
 
 // NormalizeLenientJSONRequestBody escapes raw control bytes that broken

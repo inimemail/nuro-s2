@@ -634,17 +634,20 @@ type PricingConfig struct {
 }
 
 type ServerConfig struct {
-	Host                    string    `mapstructure:"host"`
-	Port                    int       `mapstructure:"port"`
-	Mode                    string    `mapstructure:"mode"`                      // debug/release
-	FrontendURL             string    `mapstructure:"frontend_url"`              // 前端基础 URL，用于生成邮件中的外部链接
-	ReadHeaderTimeout       int       `mapstructure:"read_header_timeout"`       // 读取请求头超时（秒）
-	MaxHeaderBytes          int       `mapstructure:"max_header_bytes"`          // 请求头最大字节数（HTTP/2 映射为 header-list 上限）
-	IdleTimeout             int       `mapstructure:"idle_timeout"`              // 空闲连接超时（秒）
-	GracefulShutdownTimeout int       `mapstructure:"graceful_shutdown_timeout"` // drain 后等待现有流的最长时间（秒）
-	TrustedProxies          []string  `mapstructure:"trusted_proxies"`           // 可信代理列表（CIDR/IP）
-	MaxRequestBodySize      int64     `mapstructure:"max_request_body_size"`     // 全局最大请求体限制
-	H2C                     H2CConfig `mapstructure:"h2c"`                       // HTTP/2 Cleartext 配置
+	RequestBodyMemoryBudget  int64     `mapstructure:"request_body_memory_budget"`
+	RequestReadIdleTimeout   int       `mapstructure:"request_read_idle_timeout"`
+	ResponseWriteIdleTimeout int       `mapstructure:"response_write_idle_timeout"`
+	Host                     string    `mapstructure:"host"`
+	Port                     int       `mapstructure:"port"`
+	Mode                     string    `mapstructure:"mode"`                      // debug/release
+	FrontendURL              string    `mapstructure:"frontend_url"`              // 前端基础 URL，用于生成邮件中的外部链接
+	ReadHeaderTimeout        int       `mapstructure:"read_header_timeout"`       // 读取请求头超时（秒）
+	MaxHeaderBytes           int       `mapstructure:"max_header_bytes"`          // 请求头最大字节数（HTTP/2 映射为 header-list 上限）
+	IdleTimeout              int       `mapstructure:"idle_timeout"`              // 空闲连接超时（秒）
+	GracefulShutdownTimeout  int       `mapstructure:"graceful_shutdown_timeout"` // drain 后等待现有流的最长时间（秒）
+	TrustedProxies           []string  `mapstructure:"trusted_proxies"`           // 可信代理列表（CIDR/IP）
+	MaxRequestBodySize       int64     `mapstructure:"max_request_body_size"`     // 全局最大请求体限制
+	H2C                      H2CConfig `mapstructure:"h2c"`                       // HTTP/2 Cleartext 配置
 }
 
 // H2CConfig HTTP/2 Cleartext 配置
@@ -1062,6 +1065,11 @@ type GatewayConfig struct {
 	NonStreamKeepaliveInterval int `mapstructure:"nonstream_keepalive_interval"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
+	// Opt-in non-frozen SSE framing/queue limits. Zero preserves the existing path.
+	SSEMaxLineBytes  int   `mapstructure:"sse_max_line_bytes"`
+	SSEMaxEventBytes int   `mapstructure:"sse_max_event_bytes"`
+	SSEMaxEventLines int   `mapstructure:"sse_max_event_lines"`
+	SSEQueueMaxBytes int64 `mapstructure:"sse_queue_max_bytes"`
 
 	// 是否记录上游错误响应体摘要（避免输出请求内容）
 	LogUpstreamErrorBody bool `mapstructure:"log_upstream_error_body"`
@@ -2272,6 +2280,9 @@ func setDefaults() {
 	viper.SetDefault("server.idle_timeout", 120) // 120秒空闲超时
 	viper.SetDefault("server.graceful_shutdown_timeout", 5)
 	viper.SetDefault("server.trusted_proxies", []string{})
+	viper.SetDefault("server.request_body_memory_budget", int64(0))
+	viper.SetDefault("server.request_read_idle_timeout", 0)
+	viper.SetDefault("server.response_write_idle_timeout", 0)
 	viper.SetDefault("server.max_request_body_size", int64(256*1024*1024))
 	// H2C 默认配置
 	viper.SetDefault("server.h2c.enabled", false)
@@ -2819,6 +2830,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.low_latency_stream_headers", false)
 	viper.SetDefault("gateway.nonstream_keepalive_interval", 0)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
+	viper.SetDefault("gateway.sse_max_line_bytes", 0)
+	viper.SetDefault("gateway.sse_max_event_bytes", 0)
+	viper.SetDefault("gateway.sse_max_event_lines", 0)
+	viper.SetDefault("gateway.sse_queue_max_bytes", int64(0))
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout", 100*time.Millisecond)
@@ -3078,6 +3093,13 @@ func (c *Config) Validate() error {
 		if len(c.WebAuthn.RPOrigins) == 0 {
 			return fmt.Errorf("webauthn.rp_origins must contain at least one origin when passkeys are enabled")
 		}
+	}
+	if c.Gateway.SSEMaxLineBytes < 0 || c.Gateway.SSEMaxEventBytes < 0 || c.Gateway.SSEMaxEventLines < 0 || c.Gateway.SSEQueueMaxBytes < 0 {
+		return fmt.Errorf("gateway SSE resource limits must be non-negative")
+	}
+
+	if c.Server.RequestBodyMemoryBudget < 0 || c.Server.RequestReadIdleTimeout < 0 || c.Server.RequestReadIdleTimeout > 86400 || c.Server.ResponseWriteIdleTimeout < 0 || c.Server.ResponseWriteIdleTimeout > 86400 {
+		return fmt.Errorf("server resource limits must be nonnegative and idle timeouts at most 86400 seconds")
 	}
 	if c.Server.ReadHeaderTimeout < 1 || c.Server.ReadHeaderTimeout > 60 {
 		return fmt.Errorf("server.read_header_timeout must be between 1 and 60 seconds")

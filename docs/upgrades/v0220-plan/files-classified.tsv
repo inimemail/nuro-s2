@@ -1,0 +1,460 @@
+status	upstream_path	local_exists	local_target	category	topics	decision	scope_in_expanded_plan
+M	.github/workflows/backend-ci.yml	是	.github/workflows/backend-ci.yml	3+5	T10	本地工具链/CI发布门禁更完整；不复制Node20→24或无关忽略项	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	.github/workflows/release.yml	是	.github/workflows/release.yml	3+5	T10	本地工具链/CI发布门禁更完整；不复制Node20→24或无关忽略项	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	.github/workflows/security-scan.yml	是	.github/workflows/security-scan.yml	3+5	T10	本地工具链/CI发布门禁更完整；不复制Node20→24或无关忽略项	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	.gitignore	是	.gitignore	3+5	T06,T12,T16	本地工具链/CI发布门禁更完整；不复制Node20→24或无关忽略项	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	README.md	是	README.md	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	README_CN.md	是	README_CN.md	5	T03,T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	README_JA.md	是	README_JA.md	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	assets/partners/logos/aigocode-dark.png	否	不新建；按本行决策保留当前实现	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	assets/partners/logos/aigocode.png	是	assets/partners/logos/aigocode.png	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+D	assets/partners/logos/apimart.jpg	否	不新建；按本行决策保留当前实现	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	assets/partners/logos/marucode.jpg	否	不新建；按本行决策保留当前实现	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	assets/partners/logos/massivetokens.jpg	否	不新建；按本行决策保留当前实现	5	T18	推广与README变动不影响升级功能，不同步	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/cmd/server/VERSION	是	backend/cmd/server/VERSION	4	T18	当前不改；实施验收后与前端一起改为0.2.20-nuro.1	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/cmd/server/wire.go	是	backend/cmd/server/wire.go	1+2+4	T06	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/cmd/server/wire_gen.go	是	backend/cmd/server/wire_gen.go	1+2+4+5	T06,T12	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；资源限制拆分：入口采纳，drain/session 冲突不采纳；管理 MCP/OAuth 新权限面暂不引入	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/cmd/server/wire_gen_test.go	是	backend/cmd/server/wire_gen_test.go	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/go.mod	是	backend/go.mod	1+2+5	T10,T12,T16	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；必要安全依赖修复；管理 MCP/OAuth 新权限面暂不引入；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/go.sum	是	backend/go.sum	1+2+5	T10,T12,T16	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；必要安全依赖修复；管理 MCP/OAuth 新权限面暂不引入；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/config/config.go	是	backend/internal/config/config.go	1+2+4+5	T05,T06,T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/config/config_test.go	是	backend/internal/config/config_test.go	1+2+4	T05,T06	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/config/mcp_config_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/config/openai_transport_error_cooldown_test.go	否	不新建；按本行决策保留当前实现	4	T21	不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/account_handler.go	是	backend/internal/handler/admin/account_handler.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/admin_service_stub_test.go	是	backend/internal/handler/admin/admin_service_stub_test.go	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/admin/audit_log_handler.go	是	backend/internal/handler/admin/audit_log_handler.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_accounts.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_accounts_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_commit_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_group_models.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/custom_admin_key_idempotency_scope_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/custom_admin_key_openai.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/custom_admin_key_permissions_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_proxies.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/custom_admin_key_statistics.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/custom_admin_key_statistics_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_users.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_key_users_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/custom_admin_keys.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/email_blacklist_handler_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/admin/idempotency_helper.go	是	backend/internal/handler/admin/idempotency_helper.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/openai_oauth_handler.go	是	backend/internal/handler/admin/openai_oauth_handler.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/openai_referral_handler.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/scoped_admin_content_response.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/scoped_admin_subscription_response.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/scoped_admin_subscription_response_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/scoped_admin_usage_response.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/setting_handler_email_blacklist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/admin/setting_handler_update.go	否	不新建；按本行决策保留当前实现	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/admin/user_handler.go	是	backend/internal/handler/admin/user_handler.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/admin/user_handler_email_blacklist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/dto/settings.go	是	backend/internal/handler/dto/settings.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/gateway_handler.go	是	backend/internal/handler/gateway_handler.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/gateway_handler_chat_completions.go	是	backend/internal/handler/gateway_handler_chat_completions.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/gateway_handler_responses.go	是	backend/internal/handler/gateway_handler_responses.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/gateway_systemone.go	是	backend/internal/handler/gateway_systemone.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/gemini_cached_contents_handler.go	是	backend/internal/handler/gemini_cached_contents_handler.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/gemini_v1beta_handler.go	是	backend/internal/handler/gemini_v1beta_handler.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/grok_audio.go	是	backend/internal/handler/grok_audio.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/handler/grok_audio_body_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T05,T06	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/grok_media.go	是	backend/internal/handler/grok_media.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/handler.go	是	backend/internal/handler/handler.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/image_task_handler.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/image_task_handler_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/handler/mcp_oauth_handler.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/mcp_oauth_handler_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/openai_alpha_search.go	是	backend/internal/handler/openai_alpha_search.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_automation_bootstrap_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/handler/openai_body_limit_passthrough_rule_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_chat_completions.go	是	backend/internal/handler/openai_chat_completions.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_cyber_allowlist_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/openai_embeddings.go	是	backend/internal/handler/openai_embeddings.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_gateway_count_tokens.go	是	backend/internal/handler/openai_gateway_count_tokens.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_gateway_cyber_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/handler/openai_gateway_handler.go	是	backend/internal/handler/openai_gateway_handler.go	1+2+3+4+5	T05,T06,T14,T16,T17	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳；图片尺寸分流触及冻结 scheduler，本次不实施；小规模性能思路可借鉴；不引入 alpha JSON 流水线；保留本地隔离/缓存身份和cyber机制	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/openai_images.go	是	backend/internal/handler/openai_images.go	1+2+4	T05,T06,T14	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳；图片尺寸分流触及冻结 scheduler，本次不实施	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/handler/openai_images_size_routing_test.go	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/openai_request_body_memory_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/ops_error_logger.go	是	backend/internal/handler/ops_error_logger.go	1	T01	OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/ops_error_logger_test.go	是	backend/internal/handler/ops_error_logger_test.go	1	T01	测试用例按本地接口改写，不复制上游架构；OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/request_body_limit.go	是	backend/internal/handler/request_body_limit.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/request_body_limit_test.go	是	backend/internal/handler/request_body_limit_test.go	1+2+4	T05,T06	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/request_body_read_log.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/request_body_read_log_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/setting_handler.go	是	backend/internal/handler/setting_handler.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/handler/usage_record_async_boundary_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/handler/usage_record_context_reuse_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/handler/wire.go	是	backend/internal/handler/wire.go	5	T12	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/managementmcp/auth.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/managementmcp/catalog.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/managementmcp/catalog_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/managementmcp/server.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/managementmcp/server_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/middleware/rate_limiter.go	是	backend/internal/middleware/rate_limiter.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/middleware/rate_limiter_test.go	是	backend/internal/middleware/rate_limiter_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/pkg/adminaccess/catalog.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/pkg/adminaccess/catalog_permissions_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/pkg/adminaccess/catalog_statistics_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/pkg/adminaccess/full_access_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/pkg/adminaccess/policy.go	是	backend/internal/pkg/adminaccess/policy.go	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/pkg/antigravity/attribution_test.go	是	backend/internal/pkg/antigravity/attribution_test.go	4	T19	不更换 system 稳定前缀的 AG 身份重写	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/pkg/antigravity/gemini_types.go	是	backend/internal/pkg/antigravity/gemini_types.go	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/antigravity/quota_summary.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/antigravity/quota_summary_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/antigravity/request_transformer.go	是	backend/internal/pkg/antigravity/request_transformer.go	1+4	T04,T19	Responses/Gemini/AG/Grok 协议兼容；不更换 system 稳定前缀的 AG 身份重写	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/antigravity/request_transformer_test.go	是	backend/internal/pkg/antigravity/request_transformer_test.go	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/antigravity/stream_response_shape_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/antigravity/stream_transformer.go	是	backend/internal/pkg/antigravity/stream_transformer.go	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/antigravity/tool_result_images_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/anthropic_to_responses.go	是	backend/internal/pkg/apicompat/anthropic_to_responses.go	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/anthropic_to_responses_response.go	是	backend/internal/pkg/apicompat/anthropic_to_responses_response.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/chatcompletions_anthropic_bridge.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go	是	backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go	1+2+4	T04,T06	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/chatcompletions_to_responses.go	是	backend/internal/pkg/apicompat/chatcompletions_to_responses.go	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/apicompat/responses_message_serialization_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/apicompat/responses_reasoning.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/apicompat/responses_reasoning_content_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/responses_stream_event_wire.go	是	backend/internal/pkg/apicompat/responses_stream_event_wire.go	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/responses_to_anthropic.go	是	backend/internal/pkg/apicompat/responses_to_anthropic.go	1+2+4	T04,T06	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/responses_to_chatcompletions.go	是	backend/internal/pkg/apicompat/responses_to_chatcompletions.go	1+2+4	T04,T06	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/apicompat/stream_accumulation_memory_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/apicompat/stream_string_buffer.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/apicompat/types.go	是	backend/internal/pkg/apicompat/types.go	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/gemini/function_response.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/gemini/function_response_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/googleapi/status.go	是	backend/internal/pkg/googleapi/status.go	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/googleapi/status_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/httputil/body.go	是	backend/internal/pkg/httputil/body.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/body_budget.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4+5	T06,T16	资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/body_budget_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4+5	T06,T16	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/body_read_error.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/body_read_error_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/read_timeout.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/read_timeout_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/upstream_drain.go	否	不新建；按本行决策保留当前实现	4	T06	不替换本地 late-usage drain / settlement / WAL；可借鉴取消测试但不采纳180s截断	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/pkg/httputil/upstream_drain_test.go	否	不新建；按本行决策保留当前实现	4	T06	不替换本地 late-usage drain / settlement / WAL；可借鉴取消测试但不采纳180s截断	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/pkg/httputil/write_timeout.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/httputil/write_timeout_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/pkg/openai/codex_gpt61_terra.json	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/openai/constants.go	是	backend/internal/pkg/openai/constants.go	1+4	T02,T03	Terra 能力/校验/订阅计费；不改缓存身份；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/pkg/openai/constants_test.go	是	backend/internal/pkg/openai/constants_test.go	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/repository/account_repo.go	是	backend/internal/repository/account_repo.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/api_key_repo.go	是	backend/internal/repository/api_key_repo.go	3+4	T17	保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/api_key_repo_profit_projection_integration_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/custom_admin_key_group_capacity.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_key_group_models.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/custom_admin_key_permissions_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_key_scope.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_key_scope_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_keys.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_keys_postgres_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/custom_admin_keys_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/fixtures_integration_test.go	是	backend/internal/repository/fixtures_integration_test.go	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/gateway_cache.go	是	backend/internal/repository/gateway_cache.go	3+4	T17	保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/gateway_cache_cyber_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；本地cyber策略结构不同，不移入上游前缀存储/阻断机制；仅借鉴同类反例测试	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/http_upstream.go	是	backend/internal/repository/http_upstream.go	4	T06	冻结文件：本次绝不修改/覆盖；相关补丁跳过，在非冻结调用点评估可分离部分	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/http_upstream_drain_test.go	否	不新建；按本行决策保留当前实现	4	T06	不替换本地 late-usage drain / settlement / WAL；可借鉴取消测试但不采纳180s截断	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/mcp_oauth.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/mcp_oauth_integration_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/mcp_oauth_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/scheduler_cache.go	是	backend/internal/repository/scheduler_cache.go	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/scheduler_cache_unit_test.go	是	backend/internal/repository/scheduler_cache_unit_test.go	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/repository/user_repo.go	是	backend/internal/repository/user_repo.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/repository/user_repo_email_blacklist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/repository/user_repo_email_blacklist_integration_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/repository/wire.go	是	backend/internal/repository/wire.go	5	T12	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/http.go	是	backend/internal/server/http.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/admin_auth.go	是	backend/internal/server/middleware/admin_auth.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/api_key_auth.go	是	backend/internal/server/middleware/api_key_auth.go	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/api_key_auth_google.go	是	backend/internal/server/middleware/api_key_auth_google.go	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/api_key_auth_test.go	是	backend/internal/server/middleware/api_key_auth_test.go	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/audit_log.go	是	backend/internal/server/middleware/audit_log.go	3+5	T12,T13	管理 MCP/OAuth 新权限面暂不引入；保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/audit_log_test.go	是	backend/internal/server/middleware/audit_log_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/cors.go	是	backend/internal/server/middleware/cors.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/cors_test.go	是	backend/internal/server/middleware/cors_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/custom_admin_key_rate_limit_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/custom_admin_keys_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/group_model_allowlist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/panel_rate_limit.go	是	backend/internal/server/middleware/panel_rate_limit.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/request_body_limit.go	是	backend/internal/server/middleware/request_body_limit.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/server/middleware/request_body_memory.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/server/middleware/request_body_memory_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T05,T06	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/server/middleware/request_body_read_failure.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/middleware/step_up.go	是	backend/internal/server/middleware/step_up.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/middleware/step_up_test.go	是	backend/internal/server/middleware/step_up_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/request_body_read_timeout_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/router.go	是	backend/internal/server/router.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/routes/admin.go	是	backend/internal/server/routes/admin.go	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/server/routes/custom_admin_key_access_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/custom_admin_key_full_access_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/custom_admin_key_statistics_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/routes/gateway.go	是	backend/internal/server/routes/gateway.go	1+2+4	T05,T06	鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/server/routes/mcp.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/mcp_oauth_sdk_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/mcp_oauth_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/mcp_rate_limit_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/server/routes/mcp_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/server/routes/user.go	是	backend/internal/server/routes/user.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/account_quota_service_account_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/account_test_service.go	是	backend/internal/service/account_test_service.go	1+4	T03,T04,T14	GPT Image 2.6 原生协议及价格；Responses/Gemini/AG/Grok 协议兼容；图片尺寸分流触及冻结 scheduler，本次不实施	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/account_test_service_antigravity_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/account_test_service_openai_image_test.go	是	backend/internal/service/account_test_service_openai_image_test.go	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/account_usage_service.go	是	backend/internal/service/account_usage_service.go	1+2+3+5	T08,T13	被动周用量/Kimi并发403/AG模型冷却和额度展示；保留本地 scoped 安全实现；不引入全权模式	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/account_usage_service_setup_token_weekly_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/admin_service.go	是	backend/internal/service/admin_service.go	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/admin_user_email_blacklist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/admin_user_email_blacklist_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/anthropic_messages_endpoint_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/anthropic_messages_url.go	否	backend/internal/service/gateway_service.go 等现有 Messages URL 构造点（手工抽取 helper）	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/anthropic_messages_url_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_compat.go	是	backend/internal/service/antigravity_gateway_compat.go	1+4	T04,T19	Responses/Gemini/AG/Grok 协议兼容；不更换 system 稳定前缀的 AG 身份重写	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_compat_stream.go	是	backend/internal/service/antigravity_gateway_compat_stream.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_compat_test.go	是	backend/internal/service/antigravity_gateway_compat_test.go	4	T19	不更换 system 稳定前缀的 AG 身份重写	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/antigravity_gateway_gemini.go	否	backend/internal/service/antigravity_gateway_service.go（本地聚合实现）	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_retry.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_service.go	是	backend/internal/service/antigravity_gateway_service.go	1+2+4	T08,T19	被动周用量/Kimi并发403/AG模型冷却和额度展示；不更换 system 稳定前缀的 AG 身份重写	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_streaming.go	否	backend/internal/service/antigravity_gateway_service.go（本地聚合实现）	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_gateway_upstream.go	否	backend/internal/service/antigravity_gateway_service.go（本地聚合实现）	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/antigravity_gemini_response_schema_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_internal500_penalty.go	是	backend/internal/service/antigravity_internal500_penalty.go	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/antigravity_internal500_scope_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/antigravity_quota_fetcher.go	是	backend/internal/service/antigravity_quota_fetcher.go	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/antigravity_quota_groups_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/antigravity_tool_result_images_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/api_key_auth_cache.go	是	backend/internal/service/api_key_auth_cache.go	1+3+4	T07,T17	RPM 空值覆盖快照；减少重复 DB；保留本地隔离/缓存身份和cyber机制	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/api_key_auth_cache_impl.go	是	backend/internal/service/api_key_auth_cache_impl.go	1+3+4	T07,T17	RPM 空值覆盖快照；减少重复 DB；保留本地隔离/缓存身份和cyber机制	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/api_key_service.go	是	backend/internal/service/api_key_service.go	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/api_key_service_cache_test.go	是	backend/internal/service/api_key_service_cache_test.go	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/audit_log.go	是	backend/internal/service/audit_log.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/auth_email_oauth_auto.go	是	backend/internal/service/auth_email_oauth_auto.go	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/auth_email_oauth_blacklist_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/auth_registration_email_blacklist_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/auth_service.go	是	backend/internal/service/auth_service.go	2+5	T11,T12	已纳入E05的注册邮箱黑名单，默认空；管理 MCP/OAuth 新权限面暂不引入	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/balance_notify_check_test.go	是	backend/internal/service/balance_notify_check_test.go	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/balance_notify_service.go	是	backend/internal/service/balance_notify_service.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/bedrock_stream.go	是	backend/internal/service/bedrock_stream.go	1+2+4	T06,T22	资源限制拆分：入口采纳，drain/session 冲突不采纳；Bedrock 分配前帧长度校验	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/bedrock_stream_test.go	是	backend/internal/service/bedrock_stream_test.go	1	T22	测试用例按本地接口改写，不复制上游架构；Bedrock 分配前帧长度校验	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/billing_cache_service.go	是	backend/internal/service/billing_cache_service.go	1+2+4	T06,T07	资源限制拆分：入口采纳，drain/session 冲突不采纳；RPM 空值覆盖快照；减少重复 DB	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/billing_cache_service_rpm_test.go	是	backend/internal/service/billing_cache_service_rpm_test.go	1	T07	测试用例按本地接口改写，不复制上游架构；RPM 空值覆盖快照；减少重复 DB	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/billing_notification_worker.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/billing_notification_worker_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/billing_service.go	是	backend/internal/service/billing_service.go	1+4	T02,T03	Terra 能力/校验/订阅计费；不改缓存身份；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/custom_admin_key_accounts.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/custom_admin_key_full_access_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/custom_admin_key_openai_options.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/custom_admin_key_permissions_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/custom_admin_key_statistics.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/custom_admin_key_statistics_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/custom_admin_keys.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/digest_session_store.go	是	backend/internal/service/digest_session_store.go	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/digest_session_store_test.go	是	backend/internal/service/digest_session_store_test.go	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/domain_constants.go	是	backend/internal/service/domain_constants.go	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_anthropic_passthrough.go	否	backend/internal/service/gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4	T04,T06	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gateway_cache_control_paths_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_claude_oauth_body.go	否	backend/internal/service/gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4+5	T06,T16	资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_forward_as_chat_completions.go	是	backend/internal/service/gateway_forward_as_chat_completions.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_forward_as_responses.go	是	backend/internal/service/gateway_forward_as_responses.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_forward_compat_stream.go	是	backend/internal/service/gateway_forward_compat_stream.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_request.go	是	backend/internal/service/gateway_request.go	1+2+4+5	T06,T16	资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gateway_request_reuse_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4+5	T06,T16	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gateway_request_scalar_memory_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_service_benchmark_test.go	是	backend/internal/service/gateway_service_benchmark_test.go	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gateway_thinking_filter_precheck_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_upstream_request.go	否	backend/internal/service/gateway_service.go 或本地已有兼容模块；按函数移植	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_upstream_response.go	否	backend/internal/service/gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gateway_usage_billing.go	否	backend/internal/service/gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gateway_usage_quota_worker_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gemini_chat_completions_compat_service.go	是	backend/internal/service/gemini_chat_completions_compat_service.go	1+2+4+5	T04,T06,T16	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gemini_compat_thinking_test.go	是	backend/internal/service/gemini_compat_thinking_test.go	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gemini_messages_compat_service.go	是	backend/internal/service/gemini_messages_compat_service.go	1+2+4+5	T04,T06,T16	Responses/Gemini/AG/Grok 协议兼容；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gemini_messages_compat_service_test.go	是	backend/internal/service/gemini_messages_compat_service_test.go	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/gemini_native_response_signal_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gemini_sse_line_limit_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/gemini_text_delta_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/grok_quota_service.go	是	backend/internal/service/grok_quota_service.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/grok_sse_transport_config_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/group_capacity_service.go	是	backend/internal/service/group_capacity_service.go	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/mcp_oauth_service.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/mcp_oauth_service_test.go	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_account_scheduler.go	是	backend/internal/service/openai_account_scheduler.go	4	T14,T17	冻结文件：本次绝不修改/覆盖；相关补丁跳过，在非冻结调用点评估可分离部分	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_apikey_responses_probe.go	是	backend/internal/service/openai_apikey_responses_probe.go	1+4	T05	鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_apikey_responses_probe_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T05	测试用例按本地接口改写，不复制上游架构；鉴权/上传错误/强制路由探测/413优先级	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_codex_model_metadata.go	否	backend/internal/service/openai_codex_models_service.go::convertOpenAIModelListToCodexManifest/adjustAPIKeyCodexModelsManifest	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_codex_models_service.go	是	backend/internal/service/openai_codex_models_service.go	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_compact_body_signal.go	是	backend/internal/service/openai_compact_body_signal.go	2+5	T16	小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_compact_body_signal_test.go	是	backend/internal/service/openai_compact_body_signal_test.go	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_compat_prompt_cache_key.go	是	backend/internal/service/openai_compat_prompt_cache_key.go	4	T02	不扩大Terra自动注入key范围，保留本地缓存身份	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_cyber_session_block.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+4	T17	本地cyber策略结构不同，不移入上游前缀存储/阻断机制；仅借鉴同类反例测试	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_cyber_session_block_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；本地cyber策略结构不同，不移入上游前缀存储/阻断机制；仅借鉴同类反例测试	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_cyber_transcript.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+4	T17	本地cyber策略结构不同，不移入上游前缀存储/阻断机制；仅借鉴同类反例测试	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_first_output_timeout_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_anthropic_native_pump.go	是	backend/internal/service/openai_gateway_anthropic_native_pump.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_gateway_buffered_reasoning_content_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_cc_pipeline.go	否	backend/internal/service/openai_gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_chat_completions.go	是	backend/internal/service/openai_gateway_chat_completions.go	1+2+4	T02,T06	Terra 能力/校验/订阅计费；不改缓存身份；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_chat_completions_anthropic_native.go	是	backend/internal/service/openai_gateway_chat_completions_anthropic_native.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_chat_completions_raw.go	是	backend/internal/service/openai_gateway_chat_completions_raw.go	4	T02	冻结文件：本次绝不修改/覆盖；相关补丁跳过，在非冻结调用点评估可分离部分	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_gateway_chat_completions_test.go	是	backend/internal/service/openai_gateway_chat_completions_test.go	1+4	T02	测试用例按本地接口改写，不复制上游架构；Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_cn_fixes_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_forward.go	否	backend/internal/service/openai_gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4+5	T01,T06,T16	OAuth 非流式和 instructions 回显；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok.go	是	backend/internal/service/openai_gateway_grok.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_model_input.go	否	backend/internal/service/openai_gateway_grok.go/WS bridge 现有请求转换点；可新增独立无状态 helper	1	T04	Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_model_input_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_sse_filter.go	是	backend/internal/service/openai_gateway_grok_sse_filter.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_sse_filter_test.go	是	backend/internal/service/openai_gateway_grok_sse_filter_test.go	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_test.go	是	backend/internal/service/openai_gateway_grok_test.go	1	T04	测试用例按本地接口改写，不复制上游架构；Responses/Gemini/AG/Grok 协议兼容	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_tool_protocol.go	否	backend/internal/service/openai_gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_grok_tool_protocol_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_messages.go	是	backend/internal/service/openai_gateway_messages.go	1+2+4	T02,T06	Terra 能力/校验/订阅计费；不改缓存身份；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_messages_anthropic_native.go	是	backend/internal/service/openai_gateway_messages_anthropic_native.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_messages_chat_fallback.go	是	backend/internal/service/openai_gateway_messages_chat_fallback.go	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_passthrough.go	否	backend/internal/service/openai_gateway_service.go::forwardOpenAIPassthrough	1+2+4	T01,T06	OAuth 非流式和 instructions 回显；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_request_body.go	否	backend/internal/service/openai_gateway_service.go 或本地已有兼容模块；按函数移植	1+2+4+5	T01,T02,T06,T16	OAuth 非流式和 instructions 回显；Terra 能力/校验/订阅计费；不改缓存身份；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_response_handling.go	否	backend/internal/service/openai_gateway_service.go::handleNonStreamingResponsePassthrough/handlePassthroughSSEToJSON/handleSSEToJSON	1+2+4	T01,T06	OAuth 非流式和 instructions 回显；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_responses_anthropic_native.go	是	backend/internal/service/openai_gateway_responses_anthropic_native.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_responses_chat_fallback.go	是	backend/internal/service/openai_gateway_responses_chat_fallback.go	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_scheduling.go	否	不新建；按本行决策保留当前实现	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_gateway_service.go	是	backend/internal/service/openai_gateway_service.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_service_hotpath_test.go	是	backend/internal/service/openai_gateway_service_hotpath_test.go	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gateway_usage.go	否	backend/internal/service/openai_gateway_service.go::长上下文订阅豁免与 usage 结算	1+4	T02	Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_gpt61_terra_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T02	测试用例按本地接口改写，不复制上游架构；Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_image_dimensions.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1	T03	GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_image_size_routing.go	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/openai_image_size_routing_test.go	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_images.go	是	backend/internal/service/openai_images.go	1+2+4	T03,T06	GPT Image 2.6 原生协议及价格；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_images26_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_images_direct.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1	T03	GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_images_direct_payload_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_images_direct_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_images_model_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_images_responses.go	是	backend/internal/service/openai_images_responses.go	1+2+4	T03,T06	GPT Image 2.6 原生协议及价格；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_images_stream_limit_error_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_messages_continuation.go	是	backend/internal/service/openai_messages_continuation.go	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_messages_digest_session.go	是	backend/internal/service/openai_messages_digest_session.go	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/openai_oauth_passthrough_non_stream_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T01	测试用例按本地接口改写，不复制上游架构；OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_passthrough_normalization_test.go	是	backend/internal/service/openai_passthrough_normalization_test.go	1	T01	测试用例按本地接口改写，不复制上游架构；OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_privacy_gate_ctx_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_quota_service.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_referral_service.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地 scoped 安全实现；不引入全权模式	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/openai_request_patches_benchmark_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_request_patches_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4+5	T06,T16	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_responses_instructions_echo.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1	T01	OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_responses_instructions_echo_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1	T01	测试用例按本地接口改写，不复制上游架构；OAuth 非流式和 instructions 回显	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_responses_orphan_precheck.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4+5	T06,T16	资源限制拆分：入口采纳，drain/session 冲突不采纳；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_responses_orphan_precheck_benchmark_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/openai_responses_orphan_precheck_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2+5	T16	测试用例按本地接口改写，不复制上游架构；小规模性能思路可借鉴；不引入 alpha JSON 流水线	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_sse_data.go	是	backend/internal/service/openai_sse_data.go	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_subscription_long_context_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+4	T02	测试用例按本地接口改写，不复制上游架构；Terra 能力/校验/订阅计费；不改缓存身份	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_upstream_transport_error.go	是	backend/internal/service/openai_upstream_transport_error.go	4	T21	不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_upstream_transport_error_handle_test.go	否	不新建；按本行决策保留当前实现	4	T21	不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_ws_http_bridge.go	是	backend/internal/service/openai_ws_http_bridge.go	1+2+3+4	T06,T17	资源限制拆分：入口采纳，drain/session 冲突不采纳；保留本地隔离/缓存身份和cyber机制	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_ws_http_bridge_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+4	T17	测试用例按本地接口改写，不复制上游架构；保留本地隔离/缓存身份和cyber机制	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/openai_ws_v2/passthrough_relay.go	是	backend/internal/service/openai_ws_v2/passthrough_relay.go	1	T20	WS 每轮真实首 Token 时间	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/openai_ws_v2/passthrough_relay_test.go	是	backend/internal/service/openai_ws_v2/passthrough_relay_test.go	1	T20	测试用例按本地接口改写，不复制上游架构；WS 每轮真实首 Token 时间	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/pricing_service.go	是	backend/internal/service/pricing_service.go	1	T03	GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/ratelimit_cn_concurrency_403_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/ratelimit_cn_providers.go	否	backend/internal/service/ratelimit_service.go::handle403	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/ratelimit_service.go	是	backend/internal/service/ratelimit_service.go	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/ratelimit_service_cn_quota_403_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/ratelimit_weekly_usage_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/registration_email_blacklist.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/registration_email_blacklist_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/session_memory_cache.go	否	不新建；按本行决策保留当前实现	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/session_memory_cache_test.go	否	不新建；按本行决策保留当前实现	4	T06	保留当前会话key/TTL/continuation命中，不引入16384条/32MiB LRU提前淘汰	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/setting_public.go	否	不新建；按本行决策保留当前实现	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/setting_service.go	是	backend/internal/service/setting_service.go	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/setting_service_public_test.go	是	backend/internal/service/setting_service_public_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/service/settings_view.go	是	backend/internal/service/settings_view.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/internal/service/sse_large_image_compat_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/sse_transport_limits.go	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	backend/internal/service/sse_transport_limits_test.go	否	按主题对应本地测试文件补用例；不强制创建同名测试	1+2+4	T06	测试用例按本地接口改写，不复制上游架构；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/user.go	是	backend/internal/service/user.go	1	T07	RPM 空值覆盖快照；减少重复 DB	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	backend/internal/service/wire.go	是	backend/internal/service/wire.go	5	T12	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/web/embed_on.go	是	backend/internal/web/embed_on.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/internal/web/embed_test.go	是	backend/internal/web/embed_test.go	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	backend/migrations/249_mcp_oauth.sql	否	不新建；按本行决策保留当前实现	4	T12	本地249已占用且为冻结历史迁移；MCP本次不引入，无迁移	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	backend/resources/model-pricing/model_prices_and_context_window.json	是	backend/resources/model-pricing/model_prices_and_context_window.json	1	T03	GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	deploy/.env.example	是	deploy/.env.example	4+5	T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	deploy/EDGE_SECURITY.md	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T05,T06	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	deploy/config.example.yaml	是	deploy/config.example.yaml	1+2+4+5	T05,T06,T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；鉴权/上传错误/强制路由探测/413优先级；资源限制拆分：入口采纳，drain/session 冲突不采纳；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	deploy/docker-compose.dev.yml	是	deploy/docker-compose.dev.yml	4+5	T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	deploy/docker-compose.local.yml	是	deploy/docker-compose.local.yml	4+5	T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	deploy/docker-compose.standalone.yml	是	deploy/docker-compose.standalone.yml	4+5	T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	deploy/docker-compose.yml	是	deploy/docker-compose.yml	4+5	T12,T21	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；管理 MCP/OAuth 新权限面暂不引入；不引入绕开现有健康策略的 transport cooldown 开关	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	docs/admin-api-keys.md	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	docs/agent-resource-safety.md	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2+4	T06	资源限制拆分：入口采纳，drain/session 冲突不采纳	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	docs/mcp.md	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	docs/moego-json-batching.md	否	不新建；按本行决策保留当前实现	5	T06,T16	不引入moego alpha及对应文档	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/package.json	是	frontend/package.json	1+3+5	T04,T10,T13	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；Responses/Gemini/AG/Grok 协议兼容；必要安全依赖修复；保留本地 scoped 安全实现；不引入全权模式	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/pnpm-lock.yaml	是	frontend/pnpm-lock.yaml	1+3+5	T04,T10,T13	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；Responses/Gemini/AG/Grok 协议兼容；必要安全依赖修复；保留本地 scoped 安全实现；不引入全权模式	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/api/__tests__/admin.emailBlacklist.spec.ts	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/api/__tests__/client.spec.ts	是	frontend/src/api/__tests__/client.spec.ts	1+2	T09	测试用例按本地接口改写，不复制上游架构；Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/api/admin/adminAccessKeys.ts	是	frontend/src/api/admin/adminAccessKeys.ts	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/api/admin/settings.ts	是	frontend/src/api/admin/settings.ts	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/api/admin/users.ts	是	frontend/src/api/admin/users.ts	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/api/client.ts	是	frontend/src/api/client.ts	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/api/mcp.ts	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/AccountUsageCell.vue	是	frontend/src/components/account/AccountUsageCell.vue	1+2	T08	被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/components/account/BulkEditAccountModal.vue	是	frontend/src/components/account/BulkEditAccountModal.vue	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/CreateAccountModal.vue	是	frontend/src/components/account/CreateAccountModal.vue	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/EditAccountModal.vue	是	frontend/src/components/account/EditAccountModal.vue	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/components/account/OpenAIImageSizeTiersField.vue	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/__tests__/AccountUsageCell.spec.ts	是	frontend/src/components/account/__tests__/AccountUsageCell.spec.ts	1+2	T08	测试用例按本地接口改写，不复制上游架构；被动周用量/Kimi并发403/AG模型冷却和额度展示	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/components/account/__tests__/BulkEditAccountModal.spec.ts	是	frontend/src/components/account/__tests__/BulkEditAccountModal.spec.ts	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/__tests__/CreateAccountModal.spec.ts	是	frontend/src/components/account/__tests__/CreateAccountModal.spec.ts	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/account/__tests__/EditAccountModal.spec.ts	是	frontend/src/components/account/__tests__/EditAccountModal.spec.ts	4	T14	图片尺寸分流触及冻结 scheduler，本次不实施	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/components/account/__tests__/OpenAIImageSizeTiersField.spec.ts	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/components/account/openaiImageSizeTiers.ts	否	不新建；按本行决策保留当前实现	4	T14	尺寸分流依赖冻结scheduler和sticky时机，不实施，不增加配置/UI	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/admin/settings/AdminAccessKeysSettings.vue	是	frontend/src/components/admin/settings/AdminAccessKeysSettings.vue	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/components/admin/settings/RegistrationEmailBlacklistEditor.vue	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/components/admin/settings/__tests__/AdminAccessKeysSettings.i18n.spec.ts	否	按主题对应本地测试文件补用例；不强制创建同名测试	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/admin/settings/__tests__/AdminAccessKeysSettings.spec.ts	是	frontend/src/components/admin/settings/__tests__/AdminAccessKeysSettings.spec.ts	3+5	T13	测试用例按本地接口改写，不复制上游架构；保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/components/admin/settings/__tests__/RegistrationEmailBlacklistEditor.spec.ts	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/components/icons/Icon.vue	是	frontend/src/components/icons/Icon.vue	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/keys/UseKeyModal.vue	是	frontend/src/components/keys/UseKeyModal.vue	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/components/keys/__tests__/UseKeyModal.spec.ts	是	frontend/src/components/keys/__tests__/UseKeyModal.spec.ts	1+2	T09	测试用例按本地接口改写，不复制上游架构；Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/components/layout/AppSidebar.vue	是	frontend/src/components/layout/AppSidebar.vue	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/layout/__tests__/AppSidebar.spec.ts	是	frontend/src/components/layout/__tests__/AppSidebar.spec.ts	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/components/payment/__tests__/SubscriptionPlanCard.spec.ts	是	frontend/src/components/payment/__tests__/SubscriptionPlanCard.spec.ts	1	T10	测试用例按本地接口改写，不复制上游架构；必要安全依赖修复	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/composables/__tests__/useModelWhitelist.spec.ts	是	frontend/src/composables/__tests__/useModelWhitelist.spec.ts	1	T03	测试用例按本地接口改写，不复制上游架构；GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/composables/useAdminAccessKeyPermissions.ts	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/composables/useModelWhitelist.ts	是	frontend/src/composables/useModelWhitelist.ts	1	T03	GPT Image 2.6 原生协议及价格	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/en/admin/accounts.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	1+2+4	T08,T14	被动周用量/Kimi并发403/AG模型冷却和额度展示；图片尺寸分流触及冻结 scheduler，本次不实施	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/en/admin/settings.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/en/adminAccessKeys.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/i18n/locales/en/common.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/en/dashboard.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/en/index.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/i18n/locales/en/mcp.ts	否	frontend/src/i18n/locales/en.ts（只移植已接受主题的文案）	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/i18n/locales/zh/admin/accounts.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	1+2+4	T08,T14	被动周用量/Kimi并发403/AG模型冷却和额度展示；图片尺寸分流触及冻结 scheduler，本次不实施	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/zh/admin/settings.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/zh/adminAccessKeys.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	3+5	T13	保留本地精确scope/路由拒绝/事务锁/幂等/outbox；不新增全权、统计或OAuth权限；已有权限文案可局部借鉴	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/i18n/locales/zh/common.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/zh/dashboard.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/i18n/locales/zh/index.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/i18n/locales/zh/mcp.ts	否	frontend/src/i18n/locales/zh.ts（只移植已接受主题的文案）	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/router/__tests__/mcp-route.spec.ts	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/router/index.ts	是	frontend/src/router/index.ts	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/stores/app.ts	是	frontend/src/stores/app.ts	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/types/index.ts	是	frontend/src/types/index.ts	1+2+5	T08,T12	共享文件逐hunk处理：仅接受主题；排除MCP/full-access/尺寸路由/alpha重构；被动周用量/Kimi并发403/AG模型冷却和额度展示；管理 MCP/OAuth 新权限面暂不引入	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/utils/__tests__/ccswitchImport.spec.ts	是	frontend/src/utils/__tests__/ccswitchImport.spec.ts	1+2	T09	测试用例按本地接口改写，不复制上游架构；Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/utils/__tests__/featureFlags.spec.ts	否	不新建；按本行决策保留当前实现	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/utils/__tests__/registrationEmailBlacklist.spec.ts	否	按主题对应本地测试文件补用例；不强制创建同名测试	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/utils/ccswitchImport.ts	是	frontend/src/utils/ccswitchImport.ts	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/utils/codexAuthConfig.ts	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/utils/featureFlags.ts	是	frontend/src/utils/featureFlags.ts	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/utils/registrationEmailBlacklist.ts	否	本地无同名文件；仅接受主题可新增小helper，关联调用点见主方案K/N，禁止照搬	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/views/admin/AuditLogView.vue	是	frontend/src/views/admin/AuditLogView.vue	5	T12	管理 MCP/OAuth 新权限面暂不引入	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/views/admin/SettingsView.vue	是	frontend/src/views/admin/SettingsView.vue	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/views/admin/__tests__/SettingsView.spec.ts	是	frontend/src/views/admin/__tests__/SettingsView.spec.ts	2	T11	测试用例按本地接口改写，不复制上游架构；已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/src/views/auth/EmailVerifyView.vue	是	frontend/src/views/auth/EmailVerifyView.vue	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/views/auth/MCPOAuthAuthorizeView.vue	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/views/auth/RegisterView.vue	是	frontend/src/views/auth/RegisterView.vue	2	T11	已纳入E05的注册邮箱黑名单，默认空	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/views/auth/__tests__/MCPLoginRedirect.spec.ts	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/views/auth/__tests__/MCPOAuthAuthorizeView.spec.ts	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+A	frontend/src/views/user/MCPView.vue	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/views/user/UsageView.vue	是	frontend/src/views/user/UsageView.vue	1+2	T09	Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+A	frontend/src/views/user/__tests__/MCPView.spec.ts	否	不新建；按本行决策保留当前实现	5	T12	MCP新增业务/授权面，本次不引入，包括关联测试和SDK依赖	保留本地或排除；用户本轮扩大建议项不解除本行保护/冲突裁决
+M	frontend/src/views/user/__tests__/UsageView.spec.ts	是	frontend/src/views/user/__tests__/UsageView.spec.ts	1+2	T09	测试用例按本地接口改写，不复制上游架构；Codex 导出和 CSV；不自动启用新工具	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用
+M	frontend/vite.config.ts	是	frontend/vite.config.ts	1	T10	必要安全依赖修复	纳入已接受主题的手工hunk；任何冻结/身份/drain/权限冲突部分仍排除，不整文件应用

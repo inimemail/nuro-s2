@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +16,9 @@ func BindErrorPassthroughService(c *gin.Context, svc *ErrorPassthroughService) {
 		return
 	}
 	c.Set(errorPassthroughServiceContextKey, svc)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), errorPassthroughRequestKey{}, svc))
+	}
 }
 
 func getBoundErrorPassthroughService(c *gin.Context) *ErrorPassthroughService {
@@ -80,4 +85,22 @@ func applyErrorPassthroughRule(
 	// 与现有 failover 场景保持一致：命中规则时统一返回 upstream_error。
 	errType = "upstream_error"
 	return status, errType, errMsg, true
+}
+
+type errorPassthroughRequestKey struct{}
+
+// Rules can select the final response for a 413 before failover, but never
+// change attempt execution certainty or grant permission to replay.
+func matchesOpenAI413Rule(ctx context.Context, c *gin.Context, platform string, status int, body []byte) bool {
+	if status != http.StatusRequestEntityTooLarge {
+		return false
+	}
+	var svc *ErrorPassthroughService
+	if ctx != nil {
+		svc, _ = ctx.Value(errorPassthroughRequestKey{}).(*ErrorPassthroughService)
+	}
+	if svc == nil {
+		svc = getBoundErrorPassthroughService(c)
+	}
+	return svc != nil && svc.MatchRule(platform, status, body) != nil
 }

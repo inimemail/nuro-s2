@@ -94,6 +94,10 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
+	if mode, _ := account.Extra[openai_compat.ExtraKeyResponsesMode].(string); openai_compat.NormalizeResponsesSupportMode(mode) != openai_compat.ResponsesSupportModeAuto {
+		return
+	}
+
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
 		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d", accountID)

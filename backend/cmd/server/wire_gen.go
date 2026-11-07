@@ -95,7 +95,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService, serviceUserPlatformQuotaRepository)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageLogRepository := repository.NewUsageLogRepository(client, db)
-	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)
+	usageService := service.ProvideUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator, configConfig)
 	opsRepository := repository.NewOpsRepository(db)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)
 	gatewayCache := repository.NewGatewayCache(redisClient)
@@ -280,7 +280,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	openAIImageTaskRepository := repository.NewOpenAIImageTaskRepository(db)
 	seedanceTaskRepository := repository.NewSeedanceTaskRepository(db)
 	seedanceService := service.NewSeedanceService(seedanceTaskRepository, openAIGatewayService, apiKeyService)
-	openAIGatewayHandler := handler.NewOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, securityauditService, openAIImageTaskRepository, imageStorageSettingService, redisClient, configConfig, seedanceService, opsService)
+	bodyBudget := service.ProvideRequestBodyBudget(configConfig)
+	openAIGatewayHandler := handler.ProvideOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, securityauditService, openAIImageTaskRepository, imageStorageSettingService, redisClient, configConfig, seedanceService, opsService, bodyBudget)
 	batchImageRepository := repository.NewBatchImageRepository(db)
 	batchImageQueue := repository.NewBatchImageQueue(redisClient, configConfig)
 	batchImageModelPricingResolver := service.ProvideBatchImageModelPricingResolver(modelPricingResolver)
@@ -311,7 +312,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	auditLogMiddleware := middleware.NewAuditLogMiddleware(auditLogService)
 	stepUpAuthMiddleware := middleware.NewStepUpAuthMiddleware(totpService, userService)
 	engine := server.ProvideRouter(configConfig, handlers, jwtAuthMiddleware, adminAuthMiddleware, apiKeyAuthMiddleware, auditLogMiddleware, stepUpAuthMiddleware, apiKeyService, subscriptionService, opsService, settingService, redisClient, securityauditService)
-	httpServer := server.ProvideHTTPServer(configConfig, engine)
+	httpServer := server.ProvideHTTPServerWithBodyBudget(configConfig, engine, bodyBudget)
 	opsMetricsCollector := service.ProvideOpsMetricsCollector(opsRepository, settingRepository, accountRepository, concurrencyService, db, redisClient, configConfig)
 	opsAggregationService := service.ProvideOpsAggregationService(opsRepository, settingRepository, db, redisClient, configConfig)
 	opsAlertEvaluatorService := service.ProvideOpsAlertEvaluatorService(opsService, opsRepository, emailService, redisClient, configConfig)
@@ -405,6 +406,9 @@ func provideCleanup(
 	geminiCache *service.GeminiCachedContentService,
 ) func() {
 	return func() {
+		if openAIGateway != nil {
+			openAIGateway.StopBillingNotifications()
+		}
 		if geminiCache != nil {
 			geminiCache.Stop()
 		}

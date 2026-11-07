@@ -1,0 +1,41 @@
+sha	subject	topic	category	combined_paths
+a3298b46ebe239fb0720b068a1eb3383955bdac2	Merge pull request #7979 from ShuminFu/fix/oauth-passthrough-non-stream-7978	T01	1	backend/internal/service/openai_gateway_passthrough.go,backend/internal/service/openai_gateway_response_handling.go
+f532737de2bf63f3806e592914c2c9675b48ce84	Merge branch 'main' into codex/management-mcp	T12	5	backend/go.mod,backend/go.sum,backend/internal/config/config.go
+7386bc6ae0659f192199067fc5060d2ad33622fe	Merge pull request #8389 from StarryKira/codex/management-mcp	MERGE	5	
+4a4a83ee5ec86b19d3a2dd9b6471de5128963bec	Merge pull request #8476 from lyen1688/fix/admin-key-permissions-8473	MERGE	5	
+45b51a8ac4e2096fa440788953b2038226bfc739	Merge pull request #8465 from wucm667/fix/issue-8461-grok-message-input	MERGE	5	
+ccc2c161b5121d16fede588004ed05eb92d96f1b	Merge pull request #8503 from wucm667/fix/issue-8502-kimi-concurrency-cooldown	MERGE	5	
+393167ea9a444f9f22972453686b53e993f90cd4	Merge pull request #8436 from feeeei/fix/usage-export-rate-limit	MERGE	5	
+e320a1500be3eb546f85ab29876e38f9841c51df	Merge pull request #8318 from wucm667/fix/issue-8313-antigravity-system-identity	T19	4	backend/internal/service/antigravity_gateway_compat.go
+ee74473e038b5c956897cda7aeb9903f3fa3138a	Merge pull request #8499 from feeeei/fix/openai-passthrough-instructions-echo	MERGE	5	
+6f92090d7f540efd88cd4b81e651120cb36e3ff5	Merge pull request #8462 from feeeei/feat/openai-image-size-tier-routing	MERGE	5	
+b9d6ff5ca2b2d34afcc4f6281de7beddd63f9959	Merge pull request #8504 from feeeei/feat/registration-email-blacklist	MERGE	5	
+503617a82fa5b58e4bb1954fb98d4494233d9193	Merge pull request #8484 from StarryKira/codex/backend-resource-safety	MERGE	5	
+8e92c892b47f3f934f18ce63da4c4dcb75f0b6bd	Merge pull request #8495 from FeeiCN/patch-1	MERGE	5	
+7f07bca99bd5ee14306f325772f2c72aa203d222	Merge main and resolve Codex export model default	T09	1+2	frontend/src/i18n/locales/en/dashboard.ts,frontend/src/i18n/locales/zh/dashboard.ts
+9432aa05fc21e3fe3bd042268d11158c7c1a2561	Merge pull request #8549 from Wei-Shaw/fix/issue-8519-cyber-transcript-overflow	MERGE	5	
+c5ca149a3d856d92fa0b61bea276338be718c5db	Merge pull request #8543 from wucm667/feat/issue-8541-openai-transport-cooldown	MERGE	5	
+0eee80ba87aa4f3aff7282bf1695aa6dc0471c36	Merge pull request #8518 from StarryKira/codex/json-hotpath-performance	MERGE	5	
+b7c0e9c90b6e7d81b9f8eae05887d92d8e5bc33a	Merge remote-tracking branch 'upstream/main' into fix/responses-message-content	MERGE	5	
+f9d1b10c2c3778161348e49378d12d9aac1aa71a	Merge remote-tracking branch 'upstream/main' into fix/gemini-tool-response-media	T04	1	backend/internal/pkg/antigravity/request_transformer.go,backend/internal/service/antigravity_gateway_compat.go,backend/internal/service/gemini_chat_completions_compat_service.go,backend/internal/service/gemini_messages_compat_service.go
+fdfadb244212f4fe80b6b8e289bf2be9d5e5d790	Merge upstream main; classify WithBodyReadTimeout failures	T05	1+4	backend/internal/handler/gateway_handler.go,backend/internal/handler/gateway_handler_chat_completions.go,backend/internal/handler/gateway_handler_responses.go,backend/internal/handler/gateway_systemone.go,backend/internal/handler/gemini_cached_contents_handler.go,backend/internal/handler/gemini_v1beta_handler.go,backend/internal/handler/grok_audio.go,backend/internal/handler/grok_media.go,backend/internal/handler/image_task_handler.go,backend/internal/handler/openai_alpha_search.go,backend/internal/handler/openai_chat_completions.go,backend/internal/handler/openai_embeddings.go,backend/internal/handler/openai_gateway_count_tokens.go,backend/internal/handler/openai_gateway_handler.go,backend/internal/handler/openai_images.go,backend/internal/handler/request_body_limit.go,backend/internal/handler/request_body_limit_test.go,backend/internal/handler/request_body_read_log.go,backend/internal/handler/request_body_read_log_test.go,backend/internal/pkg/httputil/body.go,backend/internal/pkg/httputil/body_read_error.go,backend/internal/server/middleware/group_model_allowlist.go,backend/internal/server/middleware/request_body_memory.go,backend/internal/server/middleware/request_body_memory_test.go,backend/internal/server/middleware/request_body_read_failure.go,backend/internal/server/request_body_read_timeout_test.go,backend/internal/server/routes/gateway.go
+b6283399860c0d854f34c58717597f45a3d1afcc	Merge pull request #8563 from r266-tech/codex/buffered-reasoning-content	MERGE	5	
+2ee66a660f2e5ff2a3762677ab070744d53adb22	Merge pull request #8429 from lkon2112/fix/responses-message-content	MERGE	5	
+c70ef412e33f45a14eff16f5010efa6e8c4546ae	Merge pull request #8531 from william-drakemond/pr/antigravity-test-prompt	MERGE	5	
+c86645c3b6d0f1e54654da7d824ac95b2d802533	Merge pull request #8521 from william-drakemond/pr/antigravity-internal500-scope	MERGE	5	
+1209e71e6d29f01494fdc3e7dce04659c385b21d	Merge pull request #8437 from m11y/fix/error-passthrough-before-body-limit-failover	T05	1+4	backend/internal/handler/openai_gateway_handler.go
+9aaa72cabdf7b3b8866d7b84cc0dd3d36049c119	Merge pull request #8430 from lkon2112/fix/gemini-tool-response-media	MERGE	5	
+0ff31d7a99c1c6f514e48955fab109705e2c8ed6	Merge pull request #8557 from hansnow/codex/gpt-image-26	T18	5	README_CN.md
+72c2acdcb92af7bded126cd41db45f7347494054	Merge pull request #8457 from cyhhao/fix/request-body-read-timeout	T05	1+4	backend/internal/handler/openai_gateway_handler.go
+3c46c128330a8b4ad65025decf90d56155a08cc6	Merge pull request #8522 from william-drakemond/pr/antigravity-quota-summary	MERGE	5	
+66ea4d311f44158d869892b097da69859d4563d3	Merge pull request #8553 from Yajun312890225/codex/fix-claude-setup-token-weekly-usage	T08	1+2	backend/internal/service/account_usage_service.go
+52c83021e3c4d0e2021b2c1b2240888976106089	Merge pull request #8441 from mordekasiser/codex/fix-antigravity-direct-response	MERGE	5	
+38029f3d2138047263ac2c1fcca9d1eaa7ea0bc6	Merge pull request #8432 from 111pointer111/fix/gpt-image-account-test-response-format	T03	1	backend/internal/service/account_test_service.go
+e479d5d24955c1b5bd440727a2f29703ef26184f	Merge pull request #8445 from folltoshe/fix/openai-responses-probe-forced-mode	MERGE	5	
+ec5ee14ca546c71b4c8cdb191a29905c9715c25f	Merge pull request #8520 from qsy4/fix/openai-ws-per-turn-first-token	MERGE	5	
+a2f7c12cddb186ead273d55fbc1813825afd70c8	Merge pull request #8464 from kiuber/fix/ws-http-bridge-codex-fingerprint	T17	3+4	backend/internal/service/openai_ws_http_bridge.go
+c0a3ce60b6f3f816bdf0d3df28d3df1e0d3576e8	Merge pull request #8471 from qsy4/fix/auth-client-gone-malformed-key	MERGE	5	
+2fcd47aa134d689ead51874745114aa9628830e4	Merge pull request #8409 from unique01082/fix/antigravity-response-json-schema	MERGE	5	
+2c93aea9f712c7e9396060acbeb9215d2c1883b0	Merge pull request #8420 from wozhenbang2004/fix/cloudflare-rest-messages-beta	T04	1	backend/internal/service/account_test_service.go,backend/internal/service/gateway_anthropic_passthrough.go
+d22e0724d6a28435bcf21280333e89883d069a5e	Merge pull request #8380 from danvilig/codex/improve-codex-native-tools-export	MERGE	5	
+dab829a4e9b7d1cc307189aea8b0319eb29e29d0	Merge pull request #8365 from lyy0709/codex/gpt61-terra-followup	T02	1+4	backend/internal/pkg/openai/constants.go,backend/internal/service/billing_service.go,backend/internal/service/openai_codex_models_service.go,backend/internal/service/openai_gateway_chat_completions.go,backend/internal/service/openai_gateway_messages.go,backend/internal/service/openai_gateway_request_body.go

@@ -113,6 +113,11 @@ func (s *AuthService) existsByEmailOrAlias(ctx context.Context, email string) (b
 }
 
 func (s *AuthService) createUserWithEmailAliasGuard(ctx context.Context, user *User) error {
+	if s.settingService != nil {
+		if err := s.settingService.CheckRegistrationEmailBlacklist(ctx, user.Email); err != nil {
+			return err
+		}
+	}
 	if repo, ok := s.userRepo.(emailAliasGuardUserRepository); ok {
 		return repo.CreateWithEmailAliasGuard(ctx, user)
 	}

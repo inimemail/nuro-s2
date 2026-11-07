@@ -648,8 +648,25 @@ func extractProjectIDFromOnboardResponse(resp map[string]any) string {
 
 // ModelQuotaInfo 模型配额信息
 type ModelQuotaInfo struct {
-	RemainingFraction float64 `json:"remainingFraction"`
-	ResetTime         string  `json:"resetTime,omitempty"`
+	RemainingFraction        float64 `json:"remainingFraction"`
+	RemainingFractionUnknown bool    `json:"-"`
+	ResetTime                string  `json:"resetTime,omitempty"`
+}
+
+// Preserve absent/null quota as unknown without changing existing literal callers.
+func (q *ModelQuotaInfo) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		RemainingFraction *float64 `json:"remainingFraction"`
+		ResetTime         string   `json:"resetTime"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*q = ModelQuotaInfo{ResetTime: wire.ResetTime, RemainingFractionUnknown: wire.RemainingFraction == nil}
+	if wire.RemainingFraction != nil {
+		q.RemainingFraction = *wire.RemainingFraction
+	}
+	return nil
 }
 
 // ModelInfo 模型信息

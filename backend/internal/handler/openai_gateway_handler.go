@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
@@ -64,6 +65,7 @@ type OpenAIGatewayHandler struct {
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	imageTaskRepo            service.OpenAIImageTaskRepository
+	requestBodyBudget        *pkghttputil.BodyBudget
 	imageStorageSettings     *service.ImageStorageSettingService
 	imageTaskStore           *openAIImageTaskStore
 	imageTaskWorkerStop      chan struct{}
@@ -297,6 +299,26 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
+func ProvideOpenAIGatewayHandler(
+	gatewayService *service.OpenAIGatewayService,
+	concurrencyService *service.ConcurrencyService,
+	billingCacheService *service.BillingCacheService,
+	apiKeyService *service.APIKeyService,
+	usageRecordWorkerPool *service.UsageRecordWorkerPool,
+	errorPassthroughService *service.ErrorPassthroughService,
+	contentModerationService *service.ContentModerationService,
+	promptAuditService *securityaudit.Service,
+	imageTaskRepo service.OpenAIImageTaskRepository,
+	imageStorage *service.ImageStorageSettingService,
+	redisClient *redis.Client,
+	cfg *config.Config,
+	seedance *service.SeedanceService,
+	opsService *service.OpsService,
+	bodyBudget *pkghttputil.BodyBudget,
+) *OpenAIGatewayHandler {
+	return NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, promptAuditService, imageTaskRepo, imageStorage, redisClient, cfg, seedance, opsService, bodyBudget)
+}
+
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
 	concurrencyService *service.ConcurrencyService,
@@ -312,6 +334,7 @@ func NewOpenAIGatewayHandler(
 	cfg *config.Config,
 	seedance *service.SeedanceService,
 	opsService *service.OpsService,
+	bodyBudgets ...*pkghttputil.BodyBudget,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 3
@@ -320,6 +343,12 @@ func NewOpenAIGatewayHandler(
 		if cfg.Gateway.MaxAccountSwitches > 0 {
 			maxAccountSwitches = cfg.Gateway.MaxAccountSwitches
 		}
+	}
+	var bodyBudget *pkghttputil.BodyBudget
+	if len(bodyBudgets) > 0 {
+		bodyBudget = bodyBudgets[0]
+	} else if cfg != nil && cfg.Server.RequestBodyMemoryBudget > 0 {
+		bodyBudget = pkghttputil.NewBodyBudget(cfg.Server.RequestBodyMemoryBudget)
 	}
 	h := &OpenAIGatewayHandler{
 		opsService:               opsService,
@@ -334,6 +363,7 @@ func NewOpenAIGatewayHandler(
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval, cfg),
 		imageLimiter:             &imageConcurrencyLimiter{},
 		imageTaskRepo:            imageTaskRepo,
+		requestBodyBudget:        bodyBudget,
 		imageTaskStore:           newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention),
 		imageTaskWorkerStop:      make(chan struct{}),
 		imageTaskWorkerDone:      make(chan struct{}),
@@ -406,7 +436,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 
@@ -1357,7 +1388,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.anthropicErrorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.anthropicErrorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	if len(body) == 0 {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/bits"
 	"strings"
 	"sync"
 	"time"
@@ -102,8 +103,10 @@ type BillingCache interface {
 // ModelPricing 模型价格配置（per-token价格，与LiteLLM格式一致）
 type ModelPricing struct {
 	CacheStoragePricePerTokenHour      float64
-	InputPricePerToken                 float64  // 每token输入价格 (USD)
-	InputPricePerTokenPriority         float64  // priority service tier 下每token输入价格 (USD)
+	InputPricePerToken                 float64 // 每token输入价格 (USD)
+	InputPricePerTokenPriority         float64 // priority service tier 下每token输入价格 (USD)
+	ImageCacheReadPricePerToken        float64
+	ImageCacheReadPriceExplicit        bool
 	ImageInputPricePerToken            float64  // 图片输入 token 价格 (USD)，为 0 时回退到 InputPricePerToken
 	OutputPricePerToken                float64  // 每token输出价格 (USD)
 	OutputPricePerTokenPriority        float64  // priority service tier 下每token输出价格 (USD)
@@ -161,6 +164,7 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
 // UsageTokens 使用的token数量
 type UsageTokens struct {
 	InputTokens           int
+	ImageCacheReadTokens  int
 	ImageInputTokens      int
 	OutputTokens          int
 	CacheCreationTokens   int
@@ -869,6 +873,9 @@ func (s *BillingService) initFallbackPricing() {
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
+	if requiresCodexDirectImages(strings.ToLower(model)) {
+		return &ModelPricing{InputPricePerToken: 5e-6, CacheReadPricePerToken: 1.25e-6, ImageInputPricePerToken: 8e-6, ImageCacheReadPricePerToken: 2e-6, ImageCacheReadPriceExplicit: true, ImageOutputPricePerToken: 30e-6}
+	}
 	modelLower := normalizeAntigravityClaudeTierAlias(strings.ToLower(model))
 	if strings.Contains(modelLower, "gemini-4-argon-cyber") {
 		return s.fallbackPrices["gemini-4-argon-cyber-permissive"]
@@ -1162,6 +1169,8 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 				LongContextInputMultiplier:         litellmPricing.LongContextInputCostMultiplier,
 				LongContextOutputMultiplier:        litellmPricing.LongContextOutputCostMultiplier,
 				ImageInputPricePerToken:            litellmPricing.InputCostPerImageToken,
+				ImageCacheReadPricePerToken:        litellmPricing.CacheReadInputImageTokenCost,
+				ImageCacheReadPriceExplicit:        litellmPricing.ImageCacheReadPriceExplicit,
 				ImageOutputPricePerToken:           litellmPricing.OutputCostPerImageToken,
 				PricingOverride:                    litellmPricing.PricingOverride,
 				PricingOverrideInput:               litellmPricing.PricingOverrideInput,
@@ -1213,6 +1222,10 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 	if channelPricing.CacheReadPrice != nil {
 		pricing.CacheReadPricePerToken = *channelPricing.CacheReadPrice
 		pricing.CacheReadPricePerTokenPriority = *channelPricing.CacheReadPrice
+		// The channel exposes one cached-input rate. Its explicit override
+		// applies to image cache tokens too, including a deliberately free 0.
+		pricing.ImageCacheReadPricePerToken = *channelPricing.CacheReadPrice
+		pricing.ImageCacheReadPriceExplicit = true
 	}
 	if channelPricing.ImageInputPrice != nil {
 		pricing.ImageInputPricePerToken = *channelPricing.ImageInputPrice
@@ -1380,6 +1393,7 @@ func (s *BillingService) computeTokenBreakdown(
 	}
 	outputPrice := pricing.OutputPricePerToken
 	cacheReadPrice := pricing.CacheReadPricePerToken
+	imageCacheReadPrice := pricing.ImageCacheReadPricePerToken
 	cacheCreationPrice := pricing.CacheCreationPricePerToken
 	cacheCreationMultiplier := 1.0
 	tierMultiplier := 1.0
@@ -1417,6 +1431,7 @@ func (s *BillingService) computeTokenBreakdown(
 		// 缓存读取本质上是输入侧的复用，应与 input 一同应用长上下文倍率；
 		// 否则 cache hit 越多，少计的费用越多（见 #2293）。
 		cacheReadPrice *= pricing.LongContextInputMultiplier
+		imageCacheReadPrice *= pricing.LongContextInputMultiplier
 		// 缓存创建（cache_write）也是输入侧操作，三档价格（标准 / 5m / 1h）
 		// 都通过 computeCacheCreationCost 直接读取 pricing.*，不会经过这里
 		// 的倍率修改，因此显式向下传一个倍率，避免长上下文场景下被漏乘。
@@ -1457,6 +1472,9 @@ func (s *BillingService) computeTokenBreakdown(
 	bd.CacheCreationCost = s.computeCacheCreationCost(pricing, tokens, cacheCreationPrice, cacheCreationMultiplier)
 
 	bd.CacheReadCost = float64(tokens.CacheReadTokens) * cacheReadPrice
+	if n := min(max(tokens.ImageCacheReadTokens, 0), max(tokens.CacheReadTokens, 0)); n > 0 && (pricing.ImageCacheReadPricePerToken > 0 || pricing.ImageCacheReadPriceExplicit) {
+		bd.CacheReadCost = float64(tokens.CacheReadTokens-n)*cacheReadPrice + float64(n)*imageCacheReadPrice
+	}
 
 	if tierMultiplier != 1.0 {
 		bd.InputCost *= tierMultiplier
@@ -1801,6 +1819,16 @@ func (s *BillingService) CalculateCostWithLongContext(model string, tokens Usage
 		}
 	}
 	outRangeImageInputTokens := imageInputTokens - inRangeImageInputTokens
+	// Cached image tokens are a subset of cached input. Preserve that subset
+	// across the same split; assigning it all to the first range misprices the
+	// cached images beyond the threshold. Use an exact, overflow-safe ratio.
+	imageCacheTokens := min(max(tokens.ImageCacheReadTokens, 0), max(tokens.CacheReadTokens, 0))
+	inRangeImageCacheTokens := 0
+	if imageCacheTokens > 0 {
+		hi, lo := bits.Mul64(uint64(imageCacheTokens), uint64(inRangeCacheTokens))
+		count, _ := bits.Div64(hi, lo, uint64(tokens.CacheReadTokens))
+		inRangeImageCacheTokens = int(count)
+	}
 
 	// 范围内部分：正常计费
 	inRangeTokens := UsageTokens{
@@ -1812,6 +1840,7 @@ func (s *BillingService) CalculateCostWithLongContext(model string, tokens Usage
 		CacheCreation5mTokens: tokens.CacheCreation5mTokens,
 		CacheCreation1hTokens: tokens.CacheCreation1hTokens,
 		ImageOutputTokens:     tokens.ImageOutputTokens,
+		ImageCacheReadTokens:  inRangeImageCacheTokens,
 	}
 	inRangeCost, err := s.CalculateCost(model, inRangeTokens, rateMultiplier)
 	if err != nil {
@@ -1820,9 +1849,10 @@ func (s *BillingService) CalculateCostWithLongContext(model string, tokens Usage
 
 	// 范围外部分：× extraMultiplier 计费
 	outRangeTokens := UsageTokens{
-		InputTokens:      outRangeInputTokens,
-		ImageInputTokens: outRangeImageInputTokens,
-		CacheReadTokens:  outRangeCacheTokens,
+		InputTokens:          outRangeInputTokens,
+		ImageInputTokens:     outRangeImageInputTokens,
+		CacheReadTokens:      outRangeCacheTokens,
+		ImageCacheReadTokens: imageCacheTokens - inRangeImageCacheTokens,
 	}
 	outRangeCost, err := s.CalculateCost(model, outRangeTokens, rateMultiplier*extraMultiplier)
 	if err != nil {

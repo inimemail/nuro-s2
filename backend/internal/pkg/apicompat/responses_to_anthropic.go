@@ -29,12 +29,7 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string) *AnthropicRespo
 	for _, item := range resp.Output {
 		switch item.Type {
 		case "reasoning":
-			summaryText := ""
-			for _, s := range item.Summary {
-				if s.Type == "summary_text" && s.Text != "" {
-					summaryText += s.Text
-				}
-			}
+			summaryText := responsesReasoningText(item)
 			if summaryText != "" || strings.TrimSpace(item.EncryptedContent) != "" {
 				blocks = append(blocks, AnthropicContentBlock{
 					Type:      "thinking",

@@ -451,7 +451,8 @@ func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endp
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	if len(body) == 0 {
@@ -460,6 +461,9 @@ func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endp
 	}
 	parsed, err := h.parseImageTaskRequestForValidation(c, endpoint, body)
 	if err != nil {
+		if h.writeImageTaskBudgetError(c, err) {
+			return
+		}
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -636,7 +640,8 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	if len(body) == 0 {
@@ -658,6 +663,9 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 
 	parsed, err := h.parseImageTaskRequestForValidation(c, endpoint, body)
 	if err != nil {
+		if h.writeImageTaskBudgetError(c, err) {
+			return
+		}
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -673,8 +681,11 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 		capturePromptAuditRequest(c, apiKey, subject, service.ContentModerationProtocolOpenAIImages, parsed.Model, parsed.ModerationBody())
 	}
 
-	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"))
+	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"), pkghttputil.BodyReservationFromContext(c.Request.Context()))
 	if err != nil {
+		if h.writeImageTaskBudgetError(c, err) {
+			return
+		}
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -735,8 +746,11 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "taskid is required when taskrun is true")
 		return true
 	}
-	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"))
+	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"), pkghttputil.BodyReservationFromContext(c.Request.Context()))
 	if err != nil {
+		if h.writeImageTaskBudgetError(c, err) {
+			return true
+		}
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return true
 	}
@@ -855,11 +869,19 @@ func (h *OpenAIGatewayHandler) writeImageTaskFinalResponse(c *gin.Context, task 
 func (h *OpenAIGatewayHandler) parseImageTaskRequestForValidation(c *gin.Context, endpoint string, body []byte) (*service.OpenAIImagesRequest, error) {
 	rec := httptest.NewRecorder()
 	taskCtx, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(c.Request.Method, endpoint, bytes.NewReader(body))
+	req := httptest.NewRequest(c.Request.Method, endpoint, bytes.NewReader(body)).WithContext(c.Request.Context())
 	req.Header = c.Request.Header.Clone()
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 	taskCtx.Request = req
 	return h.gatewayService.ParseOpenAIImagesRequest(taskCtx, body)
+}
+
+func (h *OpenAIGatewayHandler) writeImageTaskBudgetError(c *gin.Context, err error) bool {
+	if !errors.Is(err, pkghttputil.ErrBodyBudgetExceeded) {
+		return false
+	}
+	h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Request body capacity is temporarily exhausted")
+	return true
 }
 
 func (h *OpenAIGatewayHandler) submitPersistentImageTask(
@@ -888,7 +910,7 @@ func (h *OpenAIGatewayHandler) submitPersistentImageTask(
 		UserConcurrency: subject.Concurrency,
 		Endpoint:        endpoint,
 		Model:           model,
-		RequestBody:     append([]byte(nil), body...),
+		RequestBody:     body,
 		RequestHeaders:  requestHeaders,
 	}
 	stored, created, err := h.imageTaskRepo.SubmitWithinLimit(c.Request.Context(), task, maxQueue)
@@ -1003,8 +1025,11 @@ func (h *OpenAIGatewayHandler) persistentImageTaskWorker(workerID string) {
 		default:
 		}
 
-		task, err := h.imageTaskRepo.ClaimNext(context.Background(), workerID, h.imageTaskLockTimeout())
+		scope := h.requestBodyBudget.Scope()
+		taskCtx := pkghttputil.WithBodyReservation(context.Background(), scope)
+		task, err := h.imageTaskRepo.ClaimNext(taskCtx, workerID, h.imageTaskLockTimeout())
 		if err != nil {
+			scope.Release()
 			select {
 			case <-h.imageTaskWorkerStop:
 				return
@@ -1013,6 +1038,7 @@ func (h *OpenAIGatewayHandler) persistentImageTaskWorker(workerID string) {
 			}
 		}
 		if task == nil {
+			scope.Release()
 			select {
 			case <-h.imageTaskWorkerStop:
 				return
@@ -1020,7 +1046,8 @@ func (h *OpenAIGatewayHandler) persistentImageTaskWorker(workerID string) {
 				continue
 			}
 		}
-		h.executePersistentImageTask(task)
+		h.executePersistentImageTaskWithContext(taskCtx, task)
+		scope.Release()
 	}
 }
 
@@ -1045,7 +1072,7 @@ func (h *OpenAIGatewayHandler) persistentImageTaskJanitor() {
 	}
 }
 
-func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIImageTask) {
+func (h *OpenAIGatewayHandler) executePersistentImageTaskWithContext(parent context.Context, task *service.OpenAIImageTask) {
 	if task == nil || h.imageTaskRepo == nil {
 		return
 	}
@@ -1054,7 +1081,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 			_ = h.imageTaskRepo.MarkError(context.Background(), task.DBID, http.StatusInternalServerError, sanitizeOpenAIImageTaskErrorMessage(fmt.Sprintf("image task panic: %v", r)), nil)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(cloneImageTaskContext(context.Background(), nil, task.ID), h.imageTaskTimeout())
+	ctx, cancel := context.WithTimeout(pkghttputil.WithBodyReservation(cloneImageTaskContext(parent, nil, task.ID), pkghttputil.BodyReservationFromContext(parent)), h.imageTaskTimeout())
 	defer cancel()
 
 	apiKey, err := h.apiKeyService.GetByID(ctx, task.APIKeyID)
@@ -1139,7 +1166,10 @@ func (h *OpenAIGatewayHandler) startImageTaskWorker(
 	headers := c.Request.Header.Clone()
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	baseCtx := cloneImageTaskContext(c.Request.Context(), apiKey, taskID)
+	baseCtx = pkghttputil.WithBodyReservation(baseCtx, pkghttputil.BodyReservationFromContext(c.Request.Context()))
+	releaseBody := pkghttputil.BodyReservationFromContext(c.Request.Context()).Detach()
 	go func() {
+		defer releaseBody()
 		defer func() {
 			if r := recover(); r != nil {
 				h.ensureImageTaskStore().markError(ownerID, taskID, http.StatusInternalServerError, sanitizeOpenAIImageTaskErrorMessage(fmt.Sprintf("image task panic: %v", r)), nil)
@@ -1314,7 +1344,12 @@ func extractOpenAIImageTaskIDFromMultipart(body []byte, boundary string) (string
 	}
 }
 
-func stripOpenAIImageTaskFields(body []byte, contentType string) ([]byte, error) {
+func stripOpenAIImageTaskFields(body []byte, contentType string, scopes ...*pkghttputil.BodyReservation) ([]byte, error) {
+	if len(scopes) > 0 {
+		if err := scopes[0].Reserve(int64(len(body)) * 4); err != nil {
+			return nil, err
+		}
+	}
 	mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
 		boundary := strings.TrimSpace(params["boundary"])

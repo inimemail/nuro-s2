@@ -17,7 +17,7 @@ build-backend:
 
 # 编译前端（需要已安装依赖）
 build-frontend:
-	@pnpm --dir frontend run build
+	@cd frontend && corepack pnpm run build
 
 # 编译 datamanagementd（宿主机数据管理进程）
 build-datamanagementd:
@@ -30,18 +30,18 @@ test-backend:
 	@$(MAKE) -C backend test
 
 test-frontend:
-	@pnpm --dir frontend run lint:check
-	@pnpm --dir frontend run typecheck
+	@cd frontend && corepack pnpm run lint:check
+	@cd frontend && corepack pnpm run typecheck
 	@$(MAKE) test-frontend-critical
 
 test-frontend-critical:
-	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
+	@cd frontend && corepack pnpm exec vitest run $(FRONTEND_CRITICAL_VITEST)
 
 test-frontend-full:
-	@pnpm --dir frontend run lint:check
-	@pnpm --dir frontend run typecheck
-	@pnpm --dir frontend run test:run
-	@pnpm --dir frontend run build
+	@cd frontend && corepack pnpm run lint:check
+	@cd frontend && corepack pnpm run typecheck
+	@cd frontend && corepack pnpm run test:run
+	@cd frontend && corepack pnpm run build
 
 test-rust:
 	@cd edge-rs && cargo fmt --check && cargo check --locked && cargo test --locked && cargo test --release --locked && cargo clippy --all-targets --locked -- -D warnings
@@ -51,3 +51,8 @@ test-datamanagementd:
 
 secret-scan:
 	@python3 tools/secret_scan.py
+
+# Full upgrade gates; requires the declared toolchain and isolated integration services.
+.PHONY: check-upgrade
+check-upgrade:
+	@python3 tools/check_upgrade.py $(UPGRADE_CHECK_ARGS)

@@ -55,11 +55,7 @@ func ResponsesToChatCompletions(resp *ResponsesResponse, model string) *ChatComp
 				},
 			})
 		case "reasoning":
-			for _, s := range item.Summary {
-				if s.Type == "summary_text" && s.Text != "" {
-					reasoningText += s.Text
-				}
-			}
+			reasoningText += responsesReasoningText(item)
 		case "web_search_call":
 			// silently consumed — results already incorporated into text output
 		}
@@ -511,6 +507,7 @@ type BufferedResponseAccumulator struct {
 	text                 strings.Builder
 	refusal              strings.Builder
 	reasoning            strings.Builder
+	rawReasoning         strings.Builder
 	funcCalls            []bufferedFuncCall
 	outputIndexToFuncIdx map[int]int
 }
@@ -548,16 +545,16 @@ func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) 
 				_, _ = a.funcCalls[idx].Args.WriteString(event.Delta)
 			}
 		}
-	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-		if event.Delta != "" {
-			_, _ = a.reasoning.WriteString(event.Delta)
-		}
+	case "response.reasoning_summary_text.delta":
+		_, _ = a.reasoning.WriteString(event.Delta)
+	case "response.reasoning_text.delta":
+		_, _ = a.rawReasoning.WriteString(event.Delta)
 	}
 }
 
 // HasContent reports whether any content has been accumulated.
 func (a *BufferedResponseAccumulator) HasContent() bool {
-	return a.text.Len() > 0 || a.refusal.Len() > 0 || len(a.funcCalls) > 0 || a.reasoning.Len() > 0
+	return a.text.Len() > 0 || a.refusal.Len() > 0 || len(a.funcCalls) > 0 || a.reasoning.Len() > 0 || a.rawReasoning.Len() > 0
 }
 
 // BuildOutput constructs a []ResponsesOutput from the accumulated delta
@@ -569,12 +566,16 @@ func (a *BufferedResponseAccumulator) BuildOutput() []ResponsesOutput {
 		out = append(out, ResponsesOutput{Type: "message", Role: "assistant", Content: []ResponsesContentPart{{Type: "refusal", Refusal: a.refusal.String()}}})
 	}
 
-	if a.reasoning.Len() > 0 {
+	reasoning := a.reasoning.String()
+	if reasoning == "" {
+		reasoning = a.rawReasoning.String()
+	}
+	if reasoning != "" {
 		out = append(out, ResponsesOutput{
 			Type: "reasoning",
 			Summary: []ResponsesSummary{{
 				Type: "summary_text",
-				Text: a.reasoning.String(),
+				Text: reasoning,
 			}},
 		})
 	}

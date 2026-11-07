@@ -54,7 +54,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 	if len(body) == 0 {
@@ -70,6 +71,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 	parsed, err := h.gatewayService.ParseOpenAIImagesRequest(c, body)
 	if err != nil {
+		if errors.Is(err, pkghttputil.ErrBodyBudgetExceeded) {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Request body capacity is temporarily exhausted")
+			return
+		}
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -330,6 +335,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					zap.Int("image_count", result.ImageCount),
 					zap.Error(err),
 				)
+				if !result.ClientDisconnect && !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+					h.ensureForwardErrorResponse(c, streamStarted)
+				}
 			} else {
 				var imageUpstreamErr *service.OpenAIImagesUpstreamError
 				if errors.As(err, &imageUpstreamErr) {
@@ -384,6 +392,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						return
 					}
 					continue
+				}
+				if errors.Is(err, pkghttputil.ErrBodyBudgetExceeded) {
+					h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Request body capacity is temporarily exhausted")
+					return
 				}
 				h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)

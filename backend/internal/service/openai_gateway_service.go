@@ -246,6 +246,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 type OpenAIUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
+	ImageCacheReadTokens     int `json:"image_cache_read_tokens,omitempty"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
@@ -4225,6 +4226,9 @@ func (s *OpenAIGatewayService) classifyOpenAIPoolFailover(ctx context.Context, a
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIAccountResponse(ctx context.Context, account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if account != nil && matchesOpenAI413Rule(ctx, nil, account.Platform, statusCode, upstreamBody) {
+		return false
+	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}
@@ -4559,6 +4563,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	originalBody := body
+	rememberOpenAIResponsesInstructions(c, body)
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
 	if err := validateGPT61SolRequestBody(body, reqModel); err != nil {
@@ -5528,6 +5533,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(attemptCtx, c)
+		syncOpenAIResponsesInstructions(c, body)
 		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -5931,7 +5937,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if normalized {
 			body = normalizedBody
 		}
-		reqStream = gjson.GetBytes(body, "stream").Bool()
+		// Compact has its own established non-streaming/bridge contract.
+		if isOpenAIResponsesCompactPath(c) {
+			reqStream = gjson.GetBytes(body, "stream").Bool()
+		}
 	}
 
 	if account != nil && account.IsOpenAIResponsesPassthroughCompatEnabled() && isOpenAIResponsesRequestPath(c) {
@@ -6097,6 +6106,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		attempt := newOpenAIUpstreamAttempt()
 		attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
 		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(attemptCtx, c)
+		syncOpenAIResponsesInstructions(c, body)
 		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -6235,7 +6245,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				}
 			}
 
-			if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, respBody) || shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
+			if !matchesOpenAI413Rule(ctx, c, account.Platform, resp.StatusCode, respBody) && (isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, respBody) || shouldFailoverOpenAIPassthroughResponse(resp.StatusCode)) {
 				if !httpCodexAutoResetRetryTried && resp.StatusCode == http.StatusTooManyRequests {
 					if s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody) {
 						httpCodexAutoResetRetryTried = true
@@ -6654,6 +6664,13 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		if status, typ, msg, matched := applyErrorPassthroughRule(c, account.Platform, resp.StatusCode, body, resp.StatusCode, "upstream_error", safeUpstreamErrorMessage); matched {
+			MarkResponseCommitted(c)
+			c.JSON(status, gin.H{"error": gin.H{"type": typ, "message": msg}})
+			return fmt.Errorf("upstream 413 passthrough rule matched")
+		}
+	}
 	// Do not relay an upstream error body or its response headers. A proxy/CDN
 	// error page may disclose the configured upstream hostname, URL, provider,
 	// or request diagnostics. Successful passthrough responses remain opaque;
@@ -7957,6 +7974,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				trimmedData = string(normalizedData)
 				line = "data: " + trimmedData
 			}
+			if restored := restoreOpenAIResponsesInstructions(c, dataBytes, "response.instructions"); !bytes.Equal(restored, dataBytes) {
+				dataBytes = restored
+				trimmedData = string(restored)
+				line = "data: " + trimmedData
+			}
 			if restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes); restoreErr == nil && !bytes.Equal(restoredData, dataBytes) {
 				dataBytes = restoredData
 				trimmedData = string(restoredData)
@@ -8280,7 +8302,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 
 	// Some compatible upstreams answer a non-streaming request with SSE. Detect
 	// that wire format before applying the JSON envelope safety check.
-	if isEventStreamResponse(resp.Header) {
+	if isEventStreamResponse(resp.Header) || (account != nil && account.IsOpenAIOAuthLike() && strings.TrimSpace(resp.Header.Get("Content-Type")) == "" && bodyHasSSEFraming(body)) {
 		return s.handlePassthroughSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 	}
 	if openAIResponseTerminalEventTypeFromBody(body) == "response.failed" {
@@ -8362,6 +8384,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel, originalModel); normalized {
 		body = normalizedBody
 	}
+	body = restoreOpenAIResponsesInstructions(c, body, "instructions")
 	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -8555,6 +8578,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
+	body = restoreOpenAIResponsesInstructions(c, body, "instructions")
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -8894,16 +8918,7 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
-	if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, body) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			ProxyID:   opsUpstreamProxyID(account),
-			ProxyName: opsUpstreamProxyName(account),
-			Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
-			UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
-			Kind: "failover", Message: upstreamMsg, Detail: upstreamDetail,
-		})
-		return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, body, upstreamMsg, false)
-	}
+
 	if decision := s.handleOpenAICyberPolicyEvent(c, account, false, resp.Header.Get("x-request-id"), body, requestBody); decision.Matched {
 		statusCode := resp.StatusCode
 		if statusCode < 400 {
@@ -8956,6 +8971,16 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, upstreamMsg)
 	}
 
+	if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, body) {
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:   opsUpstreamProxyID(account),
+			ProxyName: opsUpstreamProxyName(account),
+			Platform:  account.Platform, AccountID: account.ID, AccountName: account.Name,
+			UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+			Kind: "failover", Message: upstreamMsg, Detail: upstreamDetail,
+		})
+		return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, body, upstreamMsg, false)
+	}
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -9802,6 +9827,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				data = string(normalizedData)
 				line = "data: " + data
 			}
+			if restored := restoreOpenAIResponsesInstructions(c, dataBytes, "response.instructions"); !bytes.Equal(restored, dataBytes) {
+				dataBytes = restored
+				data = string(restored)
+				line = "data: " + data
+			}
 			if restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes); restoreErr == nil && !bytes.Equal(restoredData, dataBytes) {
 				dataBytes = restoredData
 				data = string(restoredData)
@@ -10618,6 +10648,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		contentType = responseheaders.SafeContentType(resp.Header.Get("Content-Type"), contentType)
 	}
 
+	body = restoreOpenAIResponsesInstructions(c, body, "instructions")
 	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -10742,6 +10773,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
+	body = restoreOpenAIResponsesInstructions(c, body, "instructions")
 	body = ensureOpenAIResponseObjectCreatedAt(body)
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -11813,12 +11845,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// Calculate cost
 	tokens := UsageTokens{
-		InputTokens:         actualInputTokens,
-		ImageInputTokens:    result.Usage.ImageInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
+		InputTokens:          actualInputTokens,
+		ImageInputTokens:     max(0, result.Usage.ImageInputTokens-result.Usage.ImageCacheReadTokens),
+		ImageCacheReadTokens: result.Usage.ImageCacheReadTokens,
+		OutputTokens:         result.Usage.OutputTokens,
+		CacheCreationTokens:  result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:      result.Usage.CacheReadInputTokens,
+		ImageOutputTokens:    result.Usage.ImageOutputTokens,
 	}
 
 	// Get rate multiplier
@@ -11868,7 +11901,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 	longContextBillingEnabled := billingAccount.IsOpenAILongContextBillingEnabled()
-	if billingAccount.IsOpenAIOAuthLike() && openai.IsGPT61SolModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model)) {
+	if billingAccount.IsOpenAIOAuthLike() && (openai.IsGPT61SolModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model)) || openai.IsGPT61TerraModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model))) {
 		// Only the official model surcharge is gated here. Custom intervals
 		// and channel/time/reasoning multipliers retain their existing paths.
 		longContextBillingEnabled = false
@@ -13544,4 +13577,13 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
 		return "max"
 	}
 	return normalizeOpenAIReasoningEffort(raw)
+}
+
+// StopBillingNotifications is called before parallel email cleanup. Mandatory
+// usage/settlement producers retain their existing shutdown path; late reminders
+// are best effort and rejected after Stop.
+func (s *OpenAIGatewayService) StopBillingNotifications() {
+	if s != nil && s.balanceNotifyService != nil {
+		s.balanceNotifyService.Stop()
+	}
 }

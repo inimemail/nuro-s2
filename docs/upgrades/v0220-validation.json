@@ -1,0 +1,2332 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-11-07T17:32:54.588999+00:00",
+  "release_ready": false,
+  "baseline_head": "f78ae396d799f06aea66bb02dcf383858ea2c1db",
+  "branch": "codex/upgrade-v0220",
+  "upstream": {
+    "from": "v0.2.19@dece26153621959ccd7635814f4b2d08304e681a",
+    "to": "v0.2.20@dab829a4e9b7d1cc307189aea8b0319eb29e29d0"
+  },
+  "version": {
+    "backend": "0.2.19-nuro.1",
+    "frontend": "0.2.19-nuro.1",
+    "target_after_release_gates": "0.2.20-nuro.1",
+    "reason_held": "Plan Q requires complete release gates; existing full lint failures and release validation remain open"
+  },
+  "protection": {
+    "manifest": "docs/upgrades/v0219-protected.json",
+    "manifest_sha256": "0f94f6c6f18def14ed8e75c4a01dbc183d8d12ac691bad64671e6534593eae22",
+    "frozen_files_unchanged": 20,
+    "historical_migrations_unchanged": 283,
+    "rust_source_changed": false
+  },
+  "evidence_scope": "Full Go default/unit/race preceded final protocol tests and stream echo deduplication. Final service unit, final integration, targeted race and build/vet supplement those runs. Counts include subtests. Report complete_run=false correctly denotes selected stages, not complete release approval. Latest review changes only the native SVG boundary, deployment script and their tests; review_closeout records post-change race/vet/deploy/lint verification. Historical deploy recovery PASS is superseded by strengthened assertions. Latest 2026-11-08 review fixes message content loss and CSV leading-whitespace formulas; latest_review records post-fix complete default/unit/build/vet, integration, frontend, deploy and apicompat race evidence, supplemented by the earlier-in-turn broad race. Latest user decision removes the added deployment recovery workflow for local deployment. Historical recovery reports remain historical only; local_deployment_scope_override describes the current implementation and checks. Final review adds LAN HTTP UUID compatibility and billable image failure response fixes. final_review records post-fix complete Go/frontend, handler race, contracts/deploy and unchanged full-lint baseline.",
+  "reports": [
+    {
+      "report": "/private/tmp/nuro-v0220-closeout-go/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "go-default",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 102.7,
+          "log": "/private/tmp/nuro-v0220-closeout-go/go-default.log",
+          "tests": {
+            "pass": 8452,
+            "fail": 0,
+            "skip": 7
+          }
+        },
+        {
+          "name": "go-unit",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=unit",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 128.88,
+          "log": "/private/tmp/nuro-v0220-closeout-go/go-unit.log",
+          "tests": {
+            "pass": 13404,
+            "fail": 0,
+            "skip": 11
+          }
+        },
+        {
+          "name": "go-build",
+          "command": [
+            "go",
+            "build",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 9.81,
+          "log": "/private/tmp/nuro-v0220-closeout-go/go-build.log"
+        },
+        {
+          "name": "go-vet",
+          "command": [
+            "go",
+            "vet",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 2.57,
+          "log": "/private/tmp/nuro-v0220-closeout-go/go-vet.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-final-race/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "go-race",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-race",
+            "-tags=unit",
+            "./internal/service/...",
+            "./internal/repository/...",
+            "./internal/pkg/..."
+          ],
+          "exit_code": 0,
+          "seconds": 208.56,
+          "log": "/tmp/nuro-v0220-final-race/go-race.log",
+          "tests": {
+            "pass": 10893,
+            "fail": 0,
+            "skip": 7
+          }
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-closeout-integration2/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "docker-preflight",
+          "command": [
+            "docker",
+            "info"
+          ],
+          "exit_code": 0,
+          "seconds": 0.08,
+          "log": "/private/tmp/nuro-v0220-closeout-integration2/docker-preflight.log"
+        },
+        {
+          "name": "edge-fixture",
+          "command": [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "edge-rs/Cargo.toml",
+            "--release",
+            "--locked"
+          ],
+          "exit_code": 0,
+          "seconds": 0.22,
+          "log": "/private/tmp/nuro-v0220-closeout-integration2/edge-fixture.log"
+        },
+        {
+          "name": "go-integration",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=integration",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 33.56,
+          "log": "/private/tmp/nuro-v0220-closeout-integration2/go-integration.log",
+          "tests": {
+            "pass": 9039,
+            "fail": 0,
+            "skip": 2
+          }
+        },
+        {
+          "name": "integration-required",
+          "command": [
+            "python3",
+            "tools/check_go_test_results.py",
+            "/private/tmp/nuro-v0220-closeout-integration2/go-integration.log",
+            "--require-test",
+            "TestGeminiCachePostgresTransactions",
+            "--require-test",
+            "TestScopedAdminPostgresTransactions",
+            "--require-test",
+            "TestUpgradeV0219MigrationContracts",
+            "--require-test",
+            "TestConcurrencyCacheSuite/TestGetAccountsLoadBatch",
+            "--require-test",
+            "TestEdgeStreamRealRustTransportRecovery",
+            "--require-test",
+            "TestEdgeWSRealRustHealthSettlement",
+            "--require-test",
+            "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+            "--require-test",
+            "TestRegistrationBlacklistTransactions",
+            "--require-test",
+            "TestRegistrationBlacklistPreviewPagination",
+            "--require-test",
+            "TestRegistrationBlacklistAuditFailureAndConcurrentIdempotency",
+            "--require-test",
+            "TestUsageExportPostgresKeysetBoundaryAndFilters",
+            "--require-test",
+            "TestImageTaskPostgresBudgetAdmissionBeforeClaim"
+          ],
+          "exit_code": 0,
+          "seconds": 0.15,
+          "log": "/private/tmp/nuro-v0220-closeout-integration2/integration-required.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-final-frontend/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "frontend",
+          "command": [
+            "make",
+            "test-frontend-full"
+          ],
+          "exit_code": 0,
+          "seconds": 58.51,
+          "log": "/tmp/nuro-v0220-final-frontend/frontend.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-final-deploy/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "syntax-deploy-nuro.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy-nuro.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/tmp/nuro-v0220-final-deploy/syntax-deploy-nuro.sh.log"
+        },
+        {
+          "name": "syntax-single-host-autoscaler.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/single-host-autoscaler.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/tmp/nuro-v0220-final-deploy/syntax-single-host-autoscaler.sh.log"
+        },
+        {
+          "name": "syntax-install-datamanagementd.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/install-datamanagementd.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/tmp/nuro-v0220-final-deploy/syntax-install-datamanagementd.sh.log"
+        },
+        {
+          "name": "deploy-credentials",
+          "command": [
+            "bash",
+            "tools/test_deploy_admin_bootstrap.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 2.23,
+          "log": "/tmp/nuro-v0220-final-deploy/deploy-credentials.log"
+        },
+        {
+          "name": "deploy-recovery",
+          "command": [
+            "bash",
+            "tools/test_deploy_upgrade_recovery.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 5.81,
+          "log": "/tmp/nuro-v0220-final-deploy/deploy-recovery.log"
+        },
+        {
+          "name": "datamanagement",
+          "status": "NOT_APPLICABLE",
+          "reason": "Optional component source is absent from this repository; no test pass claimed"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed",
+      "evidence_correction": "Historical run: recovery assertions could ignore failure under macOS Bash 3.2. Do not use its recovery PASS as sufficient evidence; superseded by review-deploy with explicit assertion exits and root/nested-link/retry/image-identity regressions.",
+      "superseded_deployment_scope": "Historical evidence for the now-removed recovery workflow; current deployment evidence is in local_deployment_scope_override."
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-final-security2/report.json",
+      "complete_run": false,
+      "success": false,
+      "results": [
+        {
+          "name": "secret-scan",
+          "command": [
+            "python3",
+            "tools/secret_scan.py"
+          ],
+          "exit_code": 0,
+          "seconds": 1.18,
+          "log": "/tmp/nuro-v0220-final-security2/secret-scan.log"
+        },
+        {
+          "name": "golangci",
+          "command": [
+            "golangci-lint",
+            "run",
+            "./..."
+          ],
+          "exit_code": 1,
+          "seconds": 3.69,
+          "log": "/tmp/nuro-v0220-final-security2/golangci.log"
+        },
+        {
+          "name": "govulncheck",
+          "command": [
+            "govulncheck",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 23.22,
+          "log": "/tmp/nuro-v0220-final-security2/govulncheck.log"
+        },
+        {
+          "name": "pnpm-audit-capture",
+          "command": [
+            "corepack",
+            "pnpm",
+            "audit",
+            "--prod",
+            "--json"
+          ],
+          "exit_code": 1,
+          "seconds": 2.51,
+          "log": "/tmp/nuro-v0220-final-security2/pnpm-audit-capture.log",
+          "stderr_log": "/tmp/nuro-v0220-final-security2/pnpm-audit-capture.stderr.log",
+          "accepted_exit_codes": [
+            0,
+            1
+          ],
+          "status": "CAPTURED"
+        },
+        {
+          "name": "pnpm-audit-policy",
+          "command": [
+            "python3",
+            "tools/check_pnpm_audit_exceptions.py",
+            "--audit",
+            "/tmp/nuro-v0220-final-security2/pnpm-audit-capture.log",
+            "--exceptions",
+            ".github/audit-exceptions.yml"
+          ],
+          "exit_code": 0,
+          "seconds": 0.04,
+          "log": "/tmp/nuro-v0220-final-security2/pnpm-audit-policy.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review-deploy/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "syntax-deploy-nuro.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy-nuro.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review-deploy/syntax-deploy-nuro.sh.log"
+        },
+        {
+          "name": "syntax-single-host-autoscaler.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/single-host-autoscaler.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review-deploy/syntax-single-host-autoscaler.sh.log"
+        },
+        {
+          "name": "syntax-install-datamanagementd.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/install-datamanagementd.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review-deploy/syntax-install-datamanagementd.sh.log"
+        },
+        {
+          "name": "deploy-credentials",
+          "command": [
+            "bash",
+            "tools/test_deploy_admin_bootstrap.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 1.02,
+          "log": "/private/tmp/nuro-v0220-review-deploy/deploy-credentials.log"
+        },
+        {
+          "name": "deploy-recovery",
+          "command": [
+            "bash",
+            "tools/test_deploy_upgrade_recovery.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 3.25,
+          "log": "/private/tmp/nuro-v0220-review-deploy/deploy-recovery.log"
+        },
+        {
+          "name": "datamanagement",
+          "status": "NOT_APPLICABLE",
+          "reason": "Optional component source is absent from this repository; no test pass claimed"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed",
+      "superseded_deployment_scope": "Historical evidence for the now-removed recovery workflow; current deployment evidence is in local_deployment_scope_override."
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-go/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "go-default",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 87.37,
+          "log": "/private/tmp/nuro-v0220-review2-go/go-default.log",
+          "tests": {
+            "pass": 8461,
+            "fail": 0,
+            "skip": 7
+          }
+        },
+        {
+          "name": "go-unit",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=unit",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 131.57,
+          "log": "/private/tmp/nuro-v0220-review2-go/go-unit.log",
+          "tests": {
+            "pass": 13420,
+            "fail": 0,
+            "skip": 11
+          }
+        },
+        {
+          "name": "go-build",
+          "command": [
+            "go",
+            "build",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 2.62,
+          "log": "/private/tmp/nuro-v0220-review2-go/go-build.log"
+        },
+        {
+          "name": "go-vet",
+          "command": [
+            "go",
+            "vet",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 2.52,
+          "log": "/private/tmp/nuro-v0220-review2-go/go-vet.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-race/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "go-race",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-race",
+            "-tags=unit",
+            "./internal/service/...",
+            "./internal/repository/...",
+            "./internal/pkg/..."
+          ],
+          "exit_code": 0,
+          "seconds": 186.24,
+          "log": "/private/tmp/nuro-v0220-review2-race/go-race.log",
+          "tests": {
+            "pass": 10921,
+            "fail": 0,
+            "skip": 7
+          }
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-integration-fixed/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "docker-preflight",
+          "command": [
+            "docker",
+            "info"
+          ],
+          "exit_code": 0,
+          "seconds": 0.05,
+          "log": "/private/tmp/nuro-v0220-review2-integration-fixed/docker-preflight.log"
+        },
+        {
+          "name": "edge-fixture",
+          "command": [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "edge-rs/Cargo.toml",
+            "--release",
+            "--locked"
+          ],
+          "exit_code": 0,
+          "seconds": 0.27,
+          "log": "/private/tmp/nuro-v0220-review2-integration-fixed/edge-fixture.log"
+        },
+        {
+          "name": "go-integration",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=integration",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 16.47,
+          "log": "/private/tmp/nuro-v0220-review2-integration-fixed/go-integration.log",
+          "tests": {
+            "pass": 9048,
+            "fail": 0,
+            "skip": 2
+          }
+        },
+        {
+          "name": "integration-required",
+          "command": [
+            "python3",
+            "tools/check_go_test_results.py",
+            "/private/tmp/nuro-v0220-review2-integration-fixed/go-integration.log",
+            "--require-test",
+            "TestGeminiCachePostgresTransactions",
+            "--require-test",
+            "TestScopedAdminPostgresTransactions",
+            "--require-test",
+            "TestUpgradeV0219MigrationContracts",
+            "--require-test",
+            "TestConcurrencyCacheSuite/TestGetAccountsLoadBatch",
+            "--require-test",
+            "TestEdgeStreamRealRustTransportRecovery",
+            "--require-test",
+            "TestEdgeWSRealRustHealthSettlement",
+            "--require-test",
+            "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+            "--require-test",
+            "TestRegistrationBlacklistTransactions",
+            "--require-test",
+            "TestRegistrationBlacklistPreviewPagination",
+            "--require-test",
+            "TestRegistrationBlacklistAuditFailureAndConcurrentIdempotency",
+            "--require-test",
+            "TestUsageExportPostgresKeysetBoundaryAndFilters",
+            "--require-test",
+            "TestImageTaskPostgresBudgetAdmissionBeforeClaim"
+          ],
+          "exit_code": 0,
+          "seconds": 0.12,
+          "log": "/private/tmp/nuro-v0220-review2-integration-fixed/integration-required.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-deploy/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "syntax-deploy-nuro.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy-nuro.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/private/tmp/nuro-v0220-review2-deploy/syntax-deploy-nuro.sh.log"
+        },
+        {
+          "name": "syntax-single-host-autoscaler.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/single-host-autoscaler.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review2-deploy/syntax-single-host-autoscaler.sh.log"
+        },
+        {
+          "name": "syntax-install-datamanagementd.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/install-datamanagementd.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review2-deploy/syntax-install-datamanagementd.sh.log"
+        },
+        {
+          "name": "deploy-credentials",
+          "command": [
+            "bash",
+            "tools/test_deploy_admin_bootstrap.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 1.99,
+          "log": "/private/tmp/nuro-v0220-review2-deploy/deploy-credentials.log"
+        },
+        {
+          "name": "deploy-recovery",
+          "command": [
+            "bash",
+            "tools/test_deploy_upgrade_recovery.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 7.6,
+          "log": "/private/tmp/nuro-v0220-review2-deploy/deploy-recovery.log"
+        },
+        {
+          "name": "datamanagement",
+          "status": "NOT_APPLICABLE",
+          "reason": "Optional component source is absent from this repository; no test pass claimed"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed",
+      "superseded_deployment_scope": "Historical evidence for the now-removed recovery workflow; current deployment evidence is in local_deployment_scope_override."
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-contracts/report.json",
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "protected",
+          "command": [
+            "python3",
+            "tools/check_upgrade_contracts.py"
+          ],
+          "exit_code": 0,
+          "seconds": 9.55,
+          "log": "/private/tmp/nuro-v0220-review2-contracts/protected.log"
+        },
+        {
+          "name": "tool-tests",
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tools",
+            "-p",
+            "test_*.py"
+          ],
+          "exit_code": 0,
+          "seconds": 0.98,
+          "log": "/private/tmp/nuro-v0220-review2-contracts/tool-tests.log"
+        },
+        {
+          "name": "diff",
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 0,
+          "seconds": 0.18,
+          "log": "/private/tmp/nuro-v0220-review2-contracts/diff.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "report": "/private/tmp/nuro-v0220-review2-integration/report.json",
+      "complete_run": false,
+      "success": false,
+      "results": [
+        {
+          "name": "docker-preflight",
+          "command": [
+            "docker",
+            "info"
+          ],
+          "exit_code": 0,
+          "seconds": 0.13,
+          "log": "/private/tmp/nuro-v0220-review2-integration/docker-preflight.log"
+        },
+        {
+          "name": "edge-fixture",
+          "command": [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "edge-rs/Cargo.toml",
+            "--release",
+            "--locked"
+          ],
+          "exit_code": 0,
+          "seconds": 0.41,
+          "log": "/private/tmp/nuro-v0220-review2-integration/edge-fixture.log"
+        },
+        {
+          "name": "go-integration",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=integration",
+            "./..."
+          ],
+          "exit_code": 1,
+          "seconds": 93.44,
+          "log": "/private/tmp/nuro-v0220-review2-integration/go-integration.log",
+          "tests": {
+            "pass": 9013,
+            "fail": 3,
+            "skip": 2
+          }
+        },
+        {
+          "name": "integration-required",
+          "command": [
+            "python3",
+            "tools/check_go_test_results.py",
+            "/private/tmp/nuro-v0220-review2-integration/go-integration.log",
+            "--require-test",
+            "TestGeminiCachePostgresTransactions",
+            "--require-test",
+            "TestScopedAdminPostgresTransactions",
+            "--require-test",
+            "TestUpgradeV0219MigrationContracts",
+            "--require-test",
+            "TestConcurrencyCacheSuite/TestGetAccountsLoadBatch",
+            "--require-test",
+            "TestEdgeStreamRealRustTransportRecovery",
+            "--require-test",
+            "TestEdgeWSRealRustHealthSettlement",
+            "--require-test",
+            "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+            "--require-test",
+            "TestRegistrationBlacklistTransactions",
+            "--require-test",
+            "TestRegistrationBlacklistPreviewPagination",
+            "--require-test",
+            "TestRegistrationBlacklistAuditFailureAndConcurrentIdempotency",
+            "--require-test",
+            "TestUsageExportPostgresKeysetBoundaryAndFilters",
+            "--require-test",
+            "TestImageTaskPostgresBudgetAdmissionBeforeClaim"
+          ],
+          "exit_code": 1,
+          "seconds": 0.12,
+          "log": "/private/tmp/nuro-v0220-review2-integration/integration-required.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed",
+      "setup_failure": "Quoted dbname did not satisfy existing literal safety assertion; no assertion changes. Replaced by integration-fixed full rerun. Fixture password redacted in failed go-integration log."
+    },
+    {
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "syntax-deploy-nuro.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy-nuro.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-deploy-nuro.sh.log"
+        },
+        {
+          "name": "syntax-single-host-autoscaler.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/single-host-autoscaler.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-single-host-autoscaler.sh.log"
+        },
+        {
+          "name": "syntax-install-datamanagementd.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/install-datamanagementd.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-install-datamanagementd.sh.log"
+        },
+        {
+          "name": "deploy-credentials",
+          "command": [
+            "bash",
+            "tools/test_deploy_admin_bootstrap.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.93,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert/deploy-credentials.log"
+        },
+        {
+          "name": "datamanagement",
+          "status": "NOT_APPLICABLE",
+          "reason": "Optional component source is absent from this repository; no test pass claimed"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "protected",
+          "command": [
+            "python3",
+            "tools/check_upgrade_contracts.py"
+          ],
+          "exit_code": 0,
+          "seconds": 2.83,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/protected.log"
+        },
+        {
+          "name": "tool-tests",
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tools",
+            "-p",
+            "test_*.py"
+          ],
+          "exit_code": 0,
+          "seconds": 0.47,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/tool-tests.log"
+        },
+        {
+          "name": "diff",
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 0,
+          "seconds": 0.07,
+          "log": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/diff.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "go-default",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 35.33,
+          "log": "/private/tmp/nuro-v0220-review3-go/go-default.log",
+          "tests": {
+            "pass": 8462,
+            "fail": 0,
+            "skip": 7
+          }
+        },
+        {
+          "name": "go-unit",
+          "command": [
+            "go",
+            "test",
+            "-json",
+            "-tags=unit",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 42.77,
+          "log": "/private/tmp/nuro-v0220-review3-go/go-unit.log",
+          "tests": {
+            "pass": 13421,
+            "fail": 0,
+            "skip": 11
+          }
+        },
+        {
+          "name": "go-build",
+          "command": [
+            "go",
+            "build",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 3.5,
+          "log": "/private/tmp/nuro-v0220-review3-go/go-build.log"
+        },
+        {
+          "name": "go-vet",
+          "command": [
+            "go",
+            "vet",
+            "./..."
+          ],
+          "exit_code": 0,
+          "seconds": 1.17,
+          "log": "/private/tmp/nuro-v0220-review3-go/go-vet.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "protected",
+          "command": [
+            "python3",
+            "tools/check_upgrade_contracts.py"
+          ],
+          "exit_code": 0,
+          "seconds": 5.23,
+          "log": "/private/tmp/nuro-v0220-review3-contracts/protected.log"
+        },
+        {
+          "name": "tool-tests",
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tools",
+            "-p",
+            "test_*.py"
+          ],
+          "exit_code": 0,
+          "seconds": 0.68,
+          "log": "/private/tmp/nuro-v0220-review3-contracts/tool-tests.log"
+        },
+        {
+          "name": "diff",
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "exit_code": 0,
+          "seconds": 0.08,
+          "log": "/private/tmp/nuro-v0220-review3-contracts/diff.log"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    },
+    {
+      "complete_run": false,
+      "success": true,
+      "results": [
+        {
+          "name": "syntax-deploy-nuro.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy-nuro.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/private/tmp/nuro-v0220-review3-deploy/syntax-deploy-nuro.sh.log"
+        },
+        {
+          "name": "syntax-single-host-autoscaler.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/single-host-autoscaler.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.01,
+          "log": "/private/tmp/nuro-v0220-review3-deploy/syntax-single-host-autoscaler.sh.log"
+        },
+        {
+          "name": "syntax-install-datamanagementd.sh",
+          "command": [
+            "bash",
+            "-n",
+            "deploy/install-datamanagementd.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 0.0,
+          "log": "/private/tmp/nuro-v0220-review3-deploy/syntax-install-datamanagementd.sh.log"
+        },
+        {
+          "name": "deploy-credentials",
+          "command": [
+            "bash",
+            "tools/test_deploy_admin_bootstrap.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 1.81,
+          "log": "/private/tmp/nuro-v0220-review3-deploy/deploy-credentials.log"
+        },
+        {
+          "name": "datamanagement",
+          "status": "NOT_APPLICABLE",
+          "reason": "Optional component source is absent from this repository; no test pass claimed"
+        }
+      ],
+      "limitations": "Performance, two-replica recovery and visual/manual review require separate evidence; no deployment performed"
+    }
+  ],
+  "final_service_unit": {
+    "command": "GOTOOLCHAIN=go1.27.3 go test -count=1 -json -tags=unit ./internal/service",
+    "exit_code": 0,
+    "tests": {
+      "pass": 9122,
+      "skip": 1
+    },
+    "skips": [
+      "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference"
+    ],
+    "log": "/private/tmp/nuro-v0220-closeout-service-unit.jsonl"
+  },
+  "final_build_vet": {
+    "commands": [
+      "GOTOOLCHAIN=go1.27.3 go build ./...",
+      "GOTOOLCHAIN=go1.27.3 go vet ./..."
+    ],
+    "cwd": "backend",
+    "exit_code": 0,
+    "tool_session_id": 72893,
+    "note": "Final sequential invocation completed with empty output; observed tool exit code 0"
+  },
+  "targeted_race": {
+    "exit_code": 0,
+    "logs": [
+      "/private/tmp/nuro-v0220-protocol-closeout4.log",
+      "/private/tmp/nuro-v0220-cost-closeout.log"
+    ]
+  },
+  "rust": {
+    "debug_tests": 243,
+    "release_tests": 243,
+    "checks": [
+      "fmt",
+      "check",
+      "debug tests",
+      "release tests",
+      "clippy"
+    ],
+    "log": "/private/tmp/nuro-v0220-rust-final1.log"
+  },
+  "tools_tests": {
+    "passed": 35,
+    "log": "/private/tmp/nuro-v0220-closeout-tools.log",
+    "note": "PASS/FAIL stage output inside this log is generated by runner unit fixtures, not the actual security-stage result"
+  },
+  "component_visual_check": {
+    "combinations": 12,
+    "scope": "Local component mock fixture; zh/en, light/dark, 375/768/1440. Preview/confirmation, overflow, translation key leakage and browser errors checked. Temporary fixture/server removed. Not full-site or real-device acceptance.",
+    "raw_report": "/private/tmp/nuro-v0220-closeout-ui.json",
+    "raw_field_note": "translated=false in raw report means no untranslated upgradeBlacklist./upgradeQuota. keys leaked"
+  },
+  "lint": {
+    "passed": false,
+    "baseline_count": 563,
+    "current_count": 563,
+    "added": 0,
+    "removed": 0,
+    "by_linter": {
+      "depguard": 17,
+      "errcheck": 300,
+      "gofmt": 3,
+      "gosec": 10,
+      "govet": 3,
+      "ineffassign": 21,
+      "staticcheck": 89,
+      "unused": 120
+    },
+    "comparison_key": [
+      "normalized filename",
+      "linter",
+      "message",
+      "source lines"
+    ],
+    "baseline": "/private/tmp/nuro-v0220-lint-baseline-all.json",
+    "current": "/private/tmp/nuro-v0220-review3-lint.json",
+    "latest_exit_code": 1,
+    "comparison": "/private/tmp/nuro-v0220-review3-lint-comparison.json"
+  },
+  "security_limits": [
+    "Audit policy passed with existing exceptions; not zero dependency advisories",
+    "govulncheck found no affected call paths; indirect modules may still have advisories"
+  ],
+  "open_release_gates": [
+    "Existing 563 full golangci-lint failures",
+    "Same-source 128/256/512+ concurrency TTFT/RSS/GC/WAL and recovery comparison",
+    "Real mixed-replica recovery, provider protocol, accounting reconciliation, staging/canary/drain/rollback",
+    "Linux multi-architecture paired image build, digest/provenance and release rehearsal",
+    "Full-site backend/frontend integration and real-device visual acceptance"
+  ],
+  "not_performed": [
+    "commit",
+    "push",
+    "deploy",
+    "live blacklist disabling",
+    "production data access"
+  ],
+  "source_identity": {
+    "algorithm": "SHA256 of sorted path + NUL + content SHA256 + newline",
+    "file_count": 3412,
+    "aggregate_sha256": "e1e50e532f7ee716be6a7e7e8da664e55f1f7ee9e7eeb05702582e39c7c1a62c",
+    "scope": "Git tracked and nonignored untracked regular files under backend/frontend/edge-rs/deploy/tools/.github plus Makefile, deploy-nuro.sh and .gitignore. Docs and ignored build output excluded.",
+    "changed_file_sha256": {
+      ".gitignore": "6c702b067cf72983ca31a8b2dc5f9c22d79d35a9a59e60310318eb5f8ac3f2f0",
+      "Makefile": "be33858ae6be62b994d316df539389e2387795205aff7ce6d9cd3c774de7f707",
+      "backend/cmd/server/wire.go": "20ca06ad94f32654f86bd957bdc5deaf240ed5d78c8e7a6d9463ab41cc0acbe1",
+      "backend/cmd/server/wire_gen.go": "ae87044469773cd5cdb3ab073229ec54fea6f9fe1210562b12697087f1897662",
+      "backend/go.mod": "549c8be57f6befe7ebc7d1a9780c5a0e7e8376957b658f54d2496d5392ccb383",
+      "backend/go.sum": "8cf2942ccb12a63bc6a85400eec4e070d092453a82b7e467100f2a3582e9499d",
+      "backend/internal/config/config.go": "0298dcbb2585b8127919cf7ecd61288225bff5f7652b52b7ce45daf6d35bf452",
+      "backend/internal/handler/admin/registration_blacklist_users.go": "05abfe3ac32df54cfdf86fa62921139dd29c039d7c7bb21ea8436edd60ebf9a9",
+      "backend/internal/handler/admin/registration_blacklist_users_test.go": "560f783b09e0855f1c7440608894943b3d985eba6b5cda2e98adc53392ade843",
+      "backend/internal/handler/admin/setting_handler.go": "8fc7f5d8fd26afdab44a514050d33273697f3daef2667b5d1043bf69a200135c",
+      "backend/internal/handler/dto/settings.go": "c2af5d666dce527b10482a2f955805df9d328f81778b6d068f7507d05486b3dc",
+      "backend/internal/handler/gateway_handler.go": "9e88a2303c3dd20141988b29d03ba3c6dd2e2eaf167bd4c1c045ed1f40fc3a75",
+      "backend/internal/handler/gateway_handler_chat_completions.go": "a810a8854c81f635fc1607bb47756000748f4d82f71f0cf866d46a96180e7267",
+      "backend/internal/handler/gateway_handler_responses.go": "3f3b92e9dca5dd3c07efd397bd4a8ac626c3910eeb5ed00c2d7e593d481750e0",
+      "backend/internal/handler/gateway_systemone.go": "5ab5efd19beaec7edf653aaf9909c8691af03e51809f6f49ae3db25e933fe5b4",
+      "backend/internal/handler/gemini_v1beta_handler.go": "164abecf158c8c67be256573ba564f1c1e8fcd7f5452d8a4852df225f3cb7dc2",
+      "backend/internal/handler/grok_audio.go": "1f1f534b11da58e0b1047e2a7746ef673e9e07d54541a30e45ba3c83653fbeb0",
+      "backend/internal/handler/grok_media.go": "5631eed4604f1437532223884bfd098ea519ac997cbab6aa0ec171fac8d86688",
+      "backend/internal/handler/openai_alpha_search.go": "7a185b98c0c0b94d3bc1e355e10b68d0d1236967c658a5f8df2403028d343066",
+      "backend/internal/handler/openai_chat_completions.go": "2e2fa40dafc5b59adbbef57c43aca6c15b15a8389d87408184af6f1420c1bf14",
+      "backend/internal/handler/openai_embeddings.go": "89defe0c2ac28e339bdcd84a5c38be6ffa5c728ce1df2301c28b8b99f4dd77a8",
+      "backend/internal/handler/openai_gateway_count_tokens.go": "76b8f3ebb1db5b221880b542fbaadbf0883d4e70e5cda8d71cb95dbb9cd9b687",
+      "backend/internal/handler/openai_gateway_handler.go": "1caf95b68b5e1f210080992e991c2e6e1861c52283ea7e045b3cbf2b04f55f67",
+      "backend/internal/handler/openai_image_budget_test.go": "fd791ae18bf3642fadd7ab258520f31cfb7d3b6f7f176b627b4efd40bbf0b693",
+      "backend/internal/handler/openai_image_tasks.go": "c6834b92b612434b2b1122466edb06e0f80aca5157e363b7aaa114cec15a7d05",
+      "backend/internal/handler/openai_images.go": "f7f1d0c284f438bec29cf6f309b04ea54912c0f916d0e8ff0f5d68c6befcde7d",
+      "backend/internal/handler/openai_images_controls_test.go": "fff12b744b21a404bd23e3daa81d8bf4a3b28d6eaadfe42f6626c536626c04c3",
+      "backend/internal/handler/request_body_limit.go": "8e542e71cd8d26d183b006eab7c0c1fed4dc0d490f826e5e54267d3c08c5e5da",
+      "backend/internal/handler/request_body_read_error_test.go": "2e7e0180970ceb513c4e9a298fcc4afdda6f4fd54ab72824cc398b913aecdd45",
+      "backend/internal/handler/usage_handler.go": "b83aa9c6c4bb814bb8fc1500e6b3e4a7f550f0598884592b6ec5b043ca582f4e",
+      "backend/internal/handler/wire.go": "f4e968da43cd271517e0b672d3cbe4fa99520e7ca0bc168621f301682b06564f",
+      "backend/internal/pkg/antigravity/client.go": "c74941a0171b6874338e1b15fd1fe1ad3290413ff3a56946616fd00a6a8ed677",
+      "backend/internal/pkg/antigravity/gemini_types.go": "74ce8063c24725918ec4465cabdabc24183a2b800569c604bdab4da31a5641ed",
+      "backend/internal/pkg/antigravity/quota_summary.go": "9409a71e14042eb3ae8a4770bcf8e53e0e6e49643ae85d702c66f85bdd4c97f9",
+      "backend/internal/pkg/antigravity/request_transformer.go": "16d888ba15e26dde00713b075a1a11a12e66ef6df6ddc2098df8d474d7991bfe",
+      "backend/internal/pkg/antigravity/stream_transformer.go": "ea08a907d1b684111455a2b23d1dbec2daf6c974975194d5b7f1ccacbd1bfc2a",
+      "backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go": "a5ddcdfcf431005b4644e8d8c52ab15936e7af1b621872625b01ac0fdff8be4e",
+      "backend/internal/pkg/apicompat/responses_reasoning.go": "45ae6b5cd72807f26b600be11add0d785ddabcbad5db8753703a215ea472f55f",
+      "backend/internal/pkg/apicompat/responses_stream_event_wire_test.go": "955ade51750305a20b3f4b783750c5ed20a78583ec7f8092350bcc76d6670359",
+      "backend/internal/pkg/apicompat/responses_to_anthropic.go": "c32de6ba384c756fdeccd94f3ae49d8f515ab95d2a91e45d810e369d4c7496e3",
+      "backend/internal/pkg/apicompat/responses_to_chatcompletions.go": "38e93ef12b244764e5abae6a69c4dd795a3f9c0b28a2103b8c33d7d9331ae6a6",
+      "backend/internal/pkg/apicompat/types.go": "ed100e4bec786ad97fcc6487202dc082e849d76f0addf61a6375d3cfe0841a8e",
+      "backend/internal/pkg/gemini/function_response.go": "3ecec4b80430bc07f709942eceae54efa048475470622a2ba984ede3d8c34b58",
+      "backend/internal/pkg/googleapi/status.go": "c5ceee8fc4628d5061002b39847be244482ac7d05638ea2e824869752ec50c9a",
+      "backend/internal/pkg/httputil/body.go": "d8b869782be1040b01adfc6ee4bed9e9356ca1ff7f623da7ca7b91b403cae219",
+      "backend/internal/pkg/httputil/body_budget.go": "436c967d96689b84be75bf55a7a3647f3ae5c184e411f4b6924a5b610b3198e3",
+      "backend/internal/pkg/httputil/body_budget_test.go": "abc6578ee3754fea1fde2b5904b21a09c3628fea8e671cf0f66269c0ffe91ef9",
+      "backend/internal/pkg/httputil/idle_deadline.go": "b9f743289cecdef49e694ff30821e48490776e0f28391d7ce5279065802a61c7",
+      "backend/internal/pkg/httputil/idle_deadline_test.go": "61d8adb988ce70c38d39469473e7db550f58bf8497e0b44a61966d967c7ec3c1",
+      "backend/internal/pkg/openai/constants.go": "4265fccfc487e9c97ed3b3c54feb70627ac0013d93221035ea601e1c265f0019",
+      "backend/internal/pkg/ssebudget/reader.go": "c929b2ad2549f721bbbf3b2ceedc9678b5b9e27592acb72748cb3249269f0516",
+      "backend/internal/pkg/ssebudget/reader_test.go": "71028985f7406564f37e1d678fc69ed3081813ee7154f13443b53f608c00d074",
+      "backend/internal/repository/openai_image_task_budget_integration_test.go": "fb8f719a87104eb9794c22520aa9a178bd467b049240a0ba0f4d47aff9d4d5cd",
+      "backend/internal/repository/openai_image_task_repo.go": "92fec032ee6e41dd59a5185e697d351dfd920d29c6c366f84ec503daf079cd78",
+      "backend/internal/repository/registration_blacklist_users.go": "bc16ee37fad4dec29595b7204a5c389589bc047f59f08ccbb68d2b4a693a0599",
+      "backend/internal/repository/registration_blacklist_users_integration_test.go": "762131c136e565b31f206ae58e4e2c5095649d416b5e49b7de45806fab4075c4",
+      "backend/internal/repository/usage_log_export.go": "2f6bd242900331f48651549391becf4ef54518e56a7e181bda721e16336e78ee",
+      "backend/internal/repository/usage_log_export_integration_test.go": "9e5b4b499e8fe142b7719e833908f84eefd73321c09128785063b58252b5b0a4",
+      "backend/internal/server/api_contract_test.go": "b79348fa4224453955d5a0e8abd39a2aa5a66c2b5c285930e88087f6ed9688e8",
+      "backend/internal/server/http.go": "ebd57a5659dbd9b3abe378f8d9f6ce0ee9512cc80a244f95cfd85233ec284047",
+      "backend/internal/server/middleware/api_key_auth.go": "cfebd489708ca20fa6672ce3f802b46db19a80c0cdd46bd9b2c951a719fad31a",
+      "backend/internal/server/middleware/api_key_auth_google.go": "df9fd899da163e6a26d80fd30a8e810117ac2f178835870444162e4954519e5a",
+      "backend/internal/server/routes/admin.go": "24b30683cbdaecd6fc7f5cf5f5213538d69ceb2ab2a63bd5a15cd0b51a7a08df",
+      "backend/internal/service/account_test_service.go": "a44d2b6411735ebb159c0da86e3bb388d54bc244b8e55d22541ffeaa3a668b20",
+      "backend/internal/service/account_usage_service.go": "b3fe82a224d88605b3cde9a4b5c2fe9c40c53415c42060500ebf5a1411910bb4",
+      "backend/internal/service/anthropic_messages_url.go": "f54f00a1416b3cc0b53318f92a9194db8d8e8a5dd0fe7953e236a6359e634f87",
+      "backend/internal/service/anthropic_messages_url_test.go": "58677caa806a9a655355ba8f8d93e4ef3311bc77866c7359419bdf7c3f9e460a",
+      "backend/internal/service/antigravity_gateway_service.go": "31a4c853f88c7ac1cd9a26cb837c3bdd4b21437351920d885fda979c60d35a14",
+      "backend/internal/service/antigravity_internal500_penalty.go": "bc6e85553054b1eee6c1e33af118bdf0646b8f7ed787303f3aaaee1c63b037fc",
+      "backend/internal/service/antigravity_quota_fetcher.go": "e87d4b0e9f966f90c7166f1edfb1febc6d4d9ff4f04c53e9451c1cb8d33cd405",
+      "backend/internal/service/antigravity_quota_groups.go": "10419df99e8d17b4afdb96daf78060ee454995d603c2ea82d536a2b5a0d4f215",
+      "backend/internal/service/antigravity_quota_refresh_test.go": "d29b230ef8108d511975ada46a9be118770e9df094b7a5f3529e8a6a4bee1dc2",
+      "backend/internal/service/antigravity_response_schema.go": "74ecce0db94596d17ee27880503d34d5e21110071a20950c5169ddc7c53f066b",
+      "backend/internal/service/antigravity_usage_snapshot.go": "4b5daa5851b163dd4aab2c0e32a561c07d773f3e45dba62aa988e3e3f9cb54d4",
+      "backend/internal/service/antigravity_usage_snapshot_test.go": "ebbc2b4ba35cebe58bb1777ceabf5e6609dfeccbbe8d898f932feb2d2c74f4ce",
+      "backend/internal/service/api_key_auth_cache.go": "3f3f72cf2e04bad4abb8b628d9c57ca7e9ca5da99525acab8d418c04af67c62d",
+      "backend/internal/service/api_key_auth_cache_impl.go": "a91de0980948de55cfd0afcbfd3ba8d6234d2caada90953140f22bd1c729a4c3",
+      "backend/internal/service/auth_service.go": "9893d942627d6ee012e4975d710263f42356446293a631c5376a94e43d060e5b",
+      "backend/internal/service/balance_notify_check_test.go": "f794b17c0f84d7aa6a6b4e3e77c3e0643e2348a1e05e11d2992e9a2e5711474b",
+      "backend/internal/service/balance_notify_service.go": "490e7dd34984ec0cc1eed29e5b5ea919b6ca0a26833d93e5b9912bb39dbdcd1b",
+      "backend/internal/service/balance_notify_worker.go": "7019ab38d55e6a21f81e8ad884ac28ca1253656c1db432901586fa59b22f8eca",
+      "backend/internal/service/balance_notify_worker_test.go": "65b6d37ca37f9e251c95407f7edb8a50a3c5b83206070ec72cbf718fefe0c22b",
+      "backend/internal/service/bedrock_stream.go": "d93be8d713feb2874d710c4e89bae8ebc1edfc9e995ef222c7d9258fcceb6e7a",
+      "backend/internal/service/bedrock_stream_test.go": "f71b765bdc2d8851c1098823a4cdaaf20e49d0d21fbcf50c5f8e73d26b0d662b",
+      "backend/internal/service/billing_cache_service.go": "5b3a8645dddc34f7eb2364f5f3c0fd853ed15178a28f535d8f3c78e78f0fcb95",
+      "backend/internal/service/billing_cache_service_rpm_test.go": "ae4a20d859bc4b8dc549fd063a50f422ba00feb31316e13f8e2296c4df94e435",
+      "backend/internal/service/billing_service.go": "b0966b503233b23d044958e237acad8a75fdbfc0b63c52781b01f2a560355e6a",
+      "backend/internal/service/email_notification_context.go": "19930f11771712afdbbd1917ebb68b7876a2362fbc8b0ebb49242abadc8044f8",
+      "backend/internal/service/error_passthrough_runtime.go": "26fb02c3ba63873427fd24eb927425a02ec1a6734f46f91b4f8ae7aa342138c7",
+      "backend/internal/service/gateway_service.go": "09fe23679a7e603fb40678f1fe013e62c725f880b1dc345e609213bf774542df",
+      "backend/internal/service/gemini_chat_completions_compat_service.go": "b970083102cdf6ad400ed99b849430e064d5340e31b8167642d104c3ad420087",
+      "backend/internal/service/gemini_messages_compat_service.go": "d9988b549ed0dcef5cd393fbbcc5bd3547d48c6634b144e2968bb4066dec027f",
+      "backend/internal/service/gemini_text_accumulator.go": "9e51eaf5522802664c6c6420d26f1e5156c33980d7e12c62ecd0bd60223f45c6",
+      "backend/internal/service/gemini_text_accumulator_test.go": "69a872dbce56c95b14855e4957d40a46142a673627d8d947d8fd94da9f586b05",
+      "backend/internal/service/image_output_accounting.go": "1680ef2f8f73ac513d8bf202e865cbf9588cb71d485cab4d742632ce21865c8f",
+      "backend/internal/service/model_pricing_resolver.go": "1525cd796e2f660c2ab4603d8cb81f93973d2028c88c74cbfd2d54a5f2ed8254",
+      "backend/internal/service/notification_email_service.go": "15cb383de524a2ebb088dc8ce4b2de130b49fbd6e3c7871bdea62e03d61d3f16",
+      "backend/internal/service/openai_apikey_responses_probe.go": "eeaec5cfee9ba6092013e687918f438be993ab91fc021a86d3a170d54dd8f633",
+      "backend/internal/service/openai_codex_models_service.go": "9cf87bd9c8fefd3d94f15160dc709ed1e284c00f1d30338876b90014c709c32f",
+      "backend/internal/service/openai_codex_version_sync_service.go": "76a616799bb431237552dc82c3c3fc73110289aaca6b36026ccf842bfdfc695d",
+      "backend/internal/service/openai_compat_model.go": "e33ef2b13f719b8c137fa8ac7d45d2be721900442cc8f8cdeb20bb8f417c850c",
+      "backend/internal/service/openai_gateway_service.go": "d8856daae33523c3ac84907b103e3f7c7fe89eb42c44b4b76952180a26ba9022",
+      "backend/internal/service/openai_gpt6_sampling.go": "b23706f0fb624ce827c4bd0bbc4804f8f496b244a8b2115a60169eca2e13bf88",
+      "backend/internal/service/openai_images.go": "4fa12e378d5621342c852cdd0cde94073f0b0bcf91f80a5655756057e2a86ea4",
+      "backend/internal/service/openai_images_native.go": "8c9a5c20d0a9103276b3a84546aa76c866bf9a111dadf4b45d7000533134975f",
+      "backend/internal/service/openai_images_native_test.go": "54d2176c522dfd33fb708208f8d3c477cd3728a8086c5978467d33666a3538bb",
+      "backend/internal/service/openai_images_responses.go": "915502bbc8b6e4272545b05e118dda277decad78ad6bb59f3411de99dfea6b71",
+      "backend/internal/service/openai_responses_instructions_echo.go": "51015ad2a09cd85f8ce7c2e47d2de6d05f25c9b94d2a6282aa76f27eb3143871",
+      "backend/internal/service/openai_terra_codex_capabilities.go": "fbec0943a47e72771d018766dafc3d889d65d882428060b4cf7af9926ec0393e",
+      "backend/internal/service/openai_v0220_protocol_test.go": "91dc8c00e03645af69b134d9fed4494aa73be95be1a355ef27ad50ef15f8f023",
+      "backend/internal/service/openai_ws_v2/passthrough_relay.go": "82809072ef647016d14f9ebe944caabbcd8d185b85077ec31cccaea41fa464f1",
+      "backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go": "ee1e14b6b848c1507e6652a88098830d957c294e8ad47d5991101a097973ac04",
+      "backend/internal/service/pricing_service.go": "f3292c68761b07c089f3c515853b4e47a14e9a26b1cccf7f1bf43232b108d836",
+      "backend/internal/service/pricing_service_test.go": "f2660a7fc0ce6884972dec5c41b2ace2741361e33623826d988a0552bea2cd90",
+      "backend/internal/service/ratelimit_service.go": "5406b9ce3c4238cfcbc608b313673ac685ac919828bf8faf52ff32b0a9bc827c",
+      "backend/internal/service/ratelimit_service_401_test.go": "aaf8144b869262a91f47cf4623217e4b78228d77798d891a8cb1395201515771",
+      "backend/internal/service/ratelimit_service_403_test.go": "127758efe8ca0d1f38e49b6eb25752bab34390a50cdfcedc6f62a0b6599d8878",
+      "backend/internal/service/registration_blacklist_users.go": "52258b28cc862d5e062a3321c478d647e88fde92705989681f5806fd40914dd6",
+      "backend/internal/service/registration_email_alias.go": "ac16458e6d87e960e2fe6a6ddb6d578f2a849aff50ffdeaf2eed5fb98384c18b",
+      "backend/internal/service/registration_email_blacklist.go": "65fd8c667d40dfd87e35be6d5289f4490a097382b652cbea4d0a95f7776e4466",
+      "backend/internal/service/registration_email_blacklist_test.go": "1bf96813afc90a74cb94f18c4dd88b0fd31e402f81fb3c2e9242fe98c3607414",
+      "backend/internal/service/setting_service.go": "785533fc50645c377be6b4392e6548f2a1c5dad946b23efe1f153aed52119ef8",
+      "backend/internal/service/settings_view.go": "3f0623db2ede841aa22ec6f5b9fc3d2bdf016468b04cda643e99f918d18f3b60",
+      "backend/internal/service/stream_resource_budget.go": "4c34674c2bde107422871368efa4e600a5d6a8d78413a0e7ba4f1e29fc4b5d12",
+      "backend/internal/service/stream_resource_budget_test.go": "5df4b03136e072b1318a5a43e5fea1e38f20a616aee1f2a749bda914e06e7658",
+      "backend/internal/service/usage_export.go": "05eaf1776320a16399782a85b5d6e5b5bff318d1565a859eb185e281d32ac531",
+      "backend/internal/service/usage_export_test.go": "f746642c967597b67205c0ad44a28df853b6e6ad774ed5aeef747d71b1988acb",
+      "backend/internal/service/usage_service.go": "3a5a22c6f1cd1d14009fc5b29e52221a058506c3255821142bf9a6443d55f9bc",
+      "backend/internal/service/user.go": "5c8201e4721e3933518426406b4619f374f0cefadec8edff103bd244ff9b8494",
+      "backend/internal/service/wire.go": "800abf0782150867036f995e80432e556b41b47fb996d11f669a33489e97562b",
+      "backend/resources/model-pricing/model_prices_and_context_window.json": "658c3bab477aff2e97156597080754f50ab6473bea5d531cd8f958b38b431209",
+      "deploy-nuro.sh": "93833f2743921101d43b4b5b3ddfc8501e02075c70762f06e098f79d7746b47c",
+      "deploy/.env.example": "2097c5ff122d51f7ba85de336a004796f8a6353228da6d72487b4938b6362355",
+      "deploy/config.example.yaml": "7e030194b45f7725fd3c98db7236c7f067f5a4bd69ad78c0fb4572123b8e5a2b",
+      "deploy/docker-compose.dev.yml": "2a342f9f57da30045308d0320f5057ad8c2dcceee80907ea04a5528fea4c1699",
+      "deploy/docker-compose.local.yml": "c574f735a95f5ca33a1fed823d36e7eb0d36d019c68f6092e77542c0fe6aa88a",
+      "deploy/docker-compose.standalone.yml": "f3caa68bdb22943e441ccaffb3f8b39d5d5edb27cdb4b872eb0a97ea3c3a0a38",
+      "deploy/docker-compose.yml": "399e9e191711a9e79bfa2b439f1bedbbdf8c4e705c35b5364c29a9a6ae58e175",
+      "frontend/package.json": "f77f3890d3e1ba4db212d107cfa873c678a17626573f768ac3b69bf58cb915b1",
+      "frontend/pnpm-lock.yaml": "b03310ed18a05a4edf2a2dce77f8b5ed75a027a76f574bdb3230eeeeee3cf543",
+      "frontend/src/api/admin/settings.ts": "7b9610540deed4186ee9f286e01c9b036df2db317164a082fb52a483f276473a",
+      "frontend/src/api/client.ts": "b073f52d858ba8125c1908dfbf8289b9b00768862a62240974cd9bb1da0a6298",
+      "frontend/src/api/usage.ts": "64076ca8d78eb1753a5bae75eca30a0faa0df4c2ac9f20dcea1e3051e304e3c2",
+      "frontend/src/components/account/AccountUsageCell.vue": "37b2b0871d0fbd891446631f14262ece8a2089e2f55e104a9f71189ed690d41c",
+      "frontend/src/components/account/AntigravityQuotaWindows.vue": "eb35c0dc6c782e85f51d04961220c7c7f0e53477b19ba7e5ef97b7c022a15960",
+      "frontend/src/components/account/__tests__/AntigravityQuotaWindows.spec.ts": "83c09a074654286e597aecc1f195cd8acf945a585fb4fd0fc1c3f0aecb8daf16",
+      "frontend/src/components/keys/UseKeyModal.vue": "2f8299bd2c73994ffff45d2e0ddf1f04892b76aff7e0b04b9738c0f07cb8656a",
+      "frontend/src/components/keys/__tests__/UseKeyModal.spec.ts": "9d1fc50055a2dcb20ef7ce0605e44e0b2457ad94d81135d6aaf99f027db5389d",
+      "frontend/src/components/settings/RegistrationEmailBlacklist.vue": "a0ed8e62ae0560501ac985dbc102f0c05aa22ed73e69de5efb14ff4f10ca7253",
+      "frontend/src/components/settings/__tests__/RegistrationEmailBlacklist.spec.ts": "3da32f4589e5b8b03a0b006f812cc506bd1ba5bb73bb6d4c631fe9e9e20d6fca",
+      "frontend/src/composables/useModelWhitelist.ts": "6c11dbf398a8ad6f67c4117c4731779d2bb8780ffbf667e32a88794a7537c473",
+      "frontend/src/i18n/locales/en.ts": "f76970e88d96a3a662e7f166763a8aa16ce735bd9d5be7483868a5bb3060b8df",
+      "frontend/src/i18n/locales/zh.ts": "61f6b89528ec9dba36349608f502de057772f7e7bbaa15d5abd41ec79896444b",
+      "frontend/src/types/index.ts": "41c1cf95759c68fc284366e6284c75cc498aac8f929c2e9446b7ca9bb4bfc56d",
+      "frontend/src/utils/__tests__/ccswitchImport.spec.ts": "9f515c787b8b932a6faa89461c6edd934d879a66edc56647dcc27d904750026c",
+      "frontend/src/utils/__tests__/codexExport.spec.ts": "946443966f6a8130cbea28d7fd5bb605eebb6a8843a5edced3047fdf247f8559",
+      "frontend/src/utils/__tests__/usageExport.spec.ts": "c00718c5e2395367d3be2fe119152561490c0372b23d987698e2d2f443ae1b5f",
+      "frontend/src/utils/ccswitchImport.ts": "1e7433a7ca1d48265f54d35909e649993d420f3176c7124d46470a4631aa22d7",
+      "frontend/src/utils/codexExport.ts": "85d1b60fb1505acbf83220d2ba6ffd5fa001fc8b37e905d696375ab1354d2735",
+      "frontend/src/utils/usageExport.ts": "8be40589fe528d0ef50f2af9f11f4f76d221d5f060d3386af5d7e17b47e0d420",
+      "frontend/src/views/admin/SettingsView.vue": "97f6676ee78dde19714fde6782767f887240474bbfcd93db01e1a440d2e1467f",
+      "frontend/src/views/user/KeysView.vue": "13fa5a7d7fdf2e26a636205ef316448cc568c035f319c1fd24884f01e35e8083",
+      "frontend/src/views/user/UsageView.vue": "7b803f683ad117d09ec2536ac9ac4a2bdc21ac25cd735ad495c7e02f1eea01d3",
+      "frontend/src/views/user/__tests__/UsageView.spec.ts": "d771f4fddbd7933158c2790896287966c3a1bca770c43ae163cb17bec12b8eca",
+      "tools/check_upgrade.py": "fc8925f8afc0283d60c258b0bc743290c00de3b14ba578f7349edb3cc0a57076",
+      "tools/test_check_upgrade.py": "d04093e1fd29fc8815b0e353bb41f8ace747b6f644f0194b828eff9364b49f96"
+    }
+  },
+  "local_embed_dist": {
+    "file_count": 195,
+    "aggregate_sha256": "d86e37aede98f822097004df253556c03642a23cd501bd85df613f9c14966f68",
+    "algorithm": "SHA256 of sorted paths relative to backend/internal/web/dist + NUL + content SHA256 + newline",
+    "ignored": true,
+    "release_artifact": false
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-go/report.json",
+      "bytes": 1313,
+      "sha256": "4f7eb528ff5797efe8c53a587b46727f4d6fc24ba53d7c04ef72dd909df704d8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-go/go-default.log",
+      "bytes": 11361745,
+      "sha256": "f80db8772ed8b3c53f9af027c92cf10a48f368617f0ebfa93629598fc75f6a65"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-go/go-unit.log",
+      "bytes": 16967336,
+      "sha256": "688d9bf81fb922c0bde03c9d99e6459e0ca5b4833c46a388ad01b0ceb9398004"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-go/go-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-go/go-vet.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-race/report.json",
+      "bytes": 635,
+      "sha256": "d00440104e65d3177b777ce6e8f8bdd22a5c632450ccbee32b3ee36dfaf76a77"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-race/go-race.log",
+      "bytes": 13939866,
+      "sha256": "7edb51ba6b014735bf613a6de3a9bb4c1960ba3583f2394bb98252365bc9f986"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-integration2/report.json",
+      "bytes": 2447,
+      "sha256": "b563643dd8d1487879063f2438163e6ea6a87278a9ff22a27de9d8c6fd503fef"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-integration2/docker-preflight.log",
+      "bytes": 5625,
+      "sha256": "e2898a429dfbc8afff2f1585d9034c9a84e601d289c267cb3904a5b113a43847"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-integration2/edge-fixture.log",
+      "bytes": 62,
+      "sha256": "c663462ee6e8bd687c13f4f43386d516f3f0bb8fc1cb3522d98b83bf3664d8fd"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-integration2/go-integration.log",
+      "bytes": 11952421,
+      "sha256": "d5391cacc0b2345aaa13706e728585e962dec427408a41dd5a5dac45388f1d6e"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-integration2/integration-required.log",
+      "bytes": 42,
+      "sha256": "ca0ce67e0e4881d4b6cc34e1afcbd579442a7c3e1044848fbe0222381e35880d"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-frontend/report.json",
+      "bytes": 413,
+      "sha256": "af3f2746a090efe3bc03f6426a468f64d84272c554cef541008b1a1061db7409"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-frontend/frontend.log",
+      "bytes": 102891,
+      "sha256": "4515ab6678e941b7da2bc6c3e77988256b770f7156282a56fc7ac22e43391ed9"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/report.json",
+      "bytes": 1704,
+      "sha256": "19376268828a9be70d6a60a125efb7a98c031ea5ba5604662ac3860a0795a1ef"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/syntax-deploy-nuro.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/syntax-single-host-autoscaler.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/syntax-install-datamanagementd.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/deploy-credentials.log",
+      "bytes": 404,
+      "sha256": "495624654112148e2b3067c4e446121554ffc23f14a26bd9c5e6be3d37fcfea2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-deploy/deploy-recovery.log",
+      "bytes": 1269,
+      "sha256": "288c498ebee314c2a8ff551832f8845caf3ca32521bb9c1e5d60adbad1bb8631"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/report.json",
+      "bytes": 1730,
+      "sha256": "d40d1efc470f89b702e90df909633feb0ea32de4e1215bf664b48c9526328b92"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/secret-scan.log",
+      "bytes": 73,
+      "sha256": "4f82caf3324dfbb02353afb3579bb1e48e938bbcae2b7a3a8c4846fe87bce0c4"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/golangci.log",
+      "bytes": 34798,
+      "sha256": "7c59b6e442c4fb0e2ee87c22567365ab29df6d14079d632c05e0e5fc9bc5452c"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/govulncheck.log",
+      "bytes": 301,
+      "sha256": "52604a19f2ee49d4c00f69121de4de4a9ee147363d16b663450a66c1c7e5de00"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/pnpm-audit-capture.log",
+      "bytes": 57895,
+      "sha256": "a779a9d4bbed54b79ef46023250c2a9354dc67a66291fd355b52d16e2a34aabb"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/pnpm-audit-capture.stderr.log",
+      "bytes": 301,
+      "sha256": "4a03d572d8a8f844009dd8f07ef82f8c8560dcb8e7d6ca6252780cdf8a67d948"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-final-security2/pnpm-audit-policy.log",
+      "bytes": 28,
+      "sha256": "7317bb48272e4bf48d788d5961e93a088c63cd270828b0ddbebcba4b62a59ed0"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-service-unit.jsonl",
+      "bytes": 12150566,
+      "sha256": "112f279eb7ced1a660ebaf98b8dca0eae6d0a9d2bbc987a25d9b87a750014e89"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-protocol-closeout4.log",
+      "bytes": 57,
+      "sha256": "a14491741443e29739a9a0a7cea64d3c0d6fd3a94c7a9152612efcc297cea5ef"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-cost-closeout.log",
+      "bytes": 57,
+      "sha256": "ca9e3c7460a071c54a0ca8d63370e09209693f1ce8bf773216b4ed38faf80e56"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-rust-final1.log",
+      "bytes": 38799,
+      "sha256": "1efc3f05ce497bca3112983499c04412c6d79e1c5ceda2d187ecdc72538b7cc8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-tools.log",
+      "bytes": 1675,
+      "sha256": "3e594c86efd0a402e3773f55dfab3f868c55a0c776dd70e4d8013161c1cf5663"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-ui.json",
+      "bytes": 2997,
+      "sha256": "3554e7b72ec822ccc9efde8fede2d165bd662bea106ddb1e90759b778ee8bf91"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-ui.log",
+      "bytes": 105,
+      "sha256": "2f44a4f51da5c89fd132fd6d9bf5c51bf2d42fe62dab86580ed531f28836479f"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-ui.cjs",
+      "bytes": 2101,
+      "sha256": "81271fdb6c633b1b041b355693be1f27a425ffe72634bd326b8318de66b1b96d"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-lint-baseline-all.json",
+      "bytes": 203104,
+      "sha256": "4cc3847506e1b1cd8b36257873cd5b0a90612685a32a716678bf68d288da4d8f"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-final-lint.json",
+      "bytes": 203106,
+      "sha256": "a0cf30a113b78f1d0f5e2443839f014ee8025d9874ac144be976785f57544dbe"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-closeout-final-lint.log",
+      "bytes": 109966,
+      "sha256": "210f6ac5c2129632ca8503468cfb8b566fb5650c41156b714536a10b2561a670"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-light-375.png",
+      "bytes": 68600,
+      "sha256": "9b84296942f09eb08ca17d980f3fd774dd494ba4fa04931e504aa7eac569bc5d"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-light-768.png",
+      "bytes": 71361,
+      "sha256": "c0b92db1f6202d3444b263fe4ad835c4cde8cfb72e8d90ffbd232a073d853caa"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-light-1440.png",
+      "bytes": 77563,
+      "sha256": "6e5b690965330d71f99ca70f1075a40fa11e6901059e21988c6f17484a8f4a60"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-dark-375.png",
+      "bytes": 70929,
+      "sha256": "fc9b346fa38925a4dfac8fa4b9022ce94143aaa45621586c689bfd62d7443035"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-dark-768.png",
+      "bytes": 73785,
+      "sha256": "07b632cfdca14afa34f52be38ed54aa2c06382aac6fe64577bc0921fcaebdb87"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-zh-dark-1440.png",
+      "bytes": 80032,
+      "sha256": "c3287f6282bfae22ee8843fb2788d35cf11ae37d9093ce13211be11359623dd2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-light-375.png",
+      "bytes": 66624,
+      "sha256": "871635eda5a79cac3b4ebc8c5c4fb342ac45149fecc1759c1c60a54b5cf98ef6"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-light-768.png",
+      "bytes": 72463,
+      "sha256": "b4e43714299b003f6064a23a0213f945e77aa8e7ef08d9c9109cfb13ee9e8102"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-light-1440.png",
+      "bytes": 74748,
+      "sha256": "bd3232b9c4000dddef99c45732f1b772d113d1f7ba3bf323c880353b7e513659"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-dark-375.png",
+      "bytes": 68270,
+      "sha256": "914908259818c2af6ce9d51096630da7e5ba0e52740754c0dd442b5d7784b69b"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-dark-768.png",
+      "bytes": 75524,
+      "sha256": "8cb4582c611fe3e81fb08337ff0200ca047af5008b457aa046202b9488478aa2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-ui-en-dark-1440.png",
+      "bytes": 78721,
+      "sha256": "dde070ff1587a4f6abd93d5ea34bc0a8f7f969f8b0c9fca27f8d892cc6e772a1"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/report.json",
+      "bytes": 1746,
+      "sha256": "783f97a242c3172350d2e96228dba77ecb0219aa3130a1ceae50e7c68103efa8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/syntax-deploy-nuro.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/syntax-single-host-autoscaler.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/syntax-install-datamanagementd.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/deploy-credentials.log",
+      "bytes": 404,
+      "sha256": "495624654112148e2b3067c4e446121554ffc23f14a26bd9c5e6be3d37fcfea2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-deploy/deploy-recovery.log",
+      "bytes": 1508,
+      "sha256": "a6941488873be7be45599dacd96ff213631eddda54b4e98bd730ebb2caaa8baa"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-images-race.jsonl",
+      "bytes": 54370,
+      "sha256": "90604ec154560062d72cca0c1ee2f226b942248f12a50bd2d0f1b05dd943f82e"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-vet.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-recovery-before5.log",
+      "bytes": 1170,
+      "sha256": "2fa9eab33cc6003f15b72e5f81da0561a56ad6a512654690511e39a9a1715f71"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-recovery-retry-before.log",
+      "bytes": 660,
+      "sha256": "ebb090afc36c3fa258a3920d752fbd60540d436562443e6cdcbe6b015c6604ce"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-svg-before.log",
+      "bytes": 2555,
+      "sha256": "dc7000569b4c3cbfeee892692c7d41d3fa8d45a6672737a6af399ee611a498d0"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-lint.json",
+      "bytes": 203106,
+      "sha256": "a0cf30a113b78f1d0f5e2443839f014ee8025d9874ac144be976785f57544dbe"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-lint-comparison.json",
+      "bytes": 70,
+      "sha256": "5e65a1fb8b9d7a093dde88aa851514fe1746ea714532ed7366782cd0a21b8415"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-contracts.log",
+      "bytes": 132,
+      "sha256": "df2ceda48e6d4664b3469350c56268d4bdad0dfcc4a8a24f2d577ee3dbcfced8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-secrets.log",
+      "bytes": 73,
+      "sha256": "e0db2c25a1e90856bf140fe025e49f7435d9b1856c4594fb05285c3c73847205"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-diffcheck.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review-recovery-syntax.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-go/report.json",
+      "bytes": 1309,
+      "sha256": "0efa94d69245addb52aebb3547e6674372013663ed50964de4c8213e8d4317a0"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-go/go-default.log",
+      "bytes": 11383825,
+      "sha256": "977f318ea9139a2acbee539f199f20f85baa3596f6b7422a3ca86b144e52c23b"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-go/go-unit.log",
+      "bytes": 17000218,
+      "sha256": "5d06e121571d0c9867637438bd49e6de07077730f6a7e8557201aaa6528f04d6"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-go/go-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-go/go-vet.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-race/report.json",
+      "bytes": 645,
+      "sha256": "c1ea67dc4ac0c943bba3b193958939efe998a8513f222857cd64cdb83a2aa96e"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-race/go-race.log",
+      "bytes": 13992269,
+      "sha256": "64e93653563f8fc9c81f6fcba2b624d23785663f037ac29f5bf62fe764432131"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration-fixed/report.json",
+      "bytes": 2467,
+      "sha256": "ef8d2cc98318b5f885945a61f64d42080fa97b9b3d2b5aa912c4562e9f908383"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration-fixed/docker-preflight.log",
+      "bytes": 5625,
+      "sha256": "41d4ebf1be022b0183704917bf61c0129565bee2eb2289d9f0c84904cf90af64"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration-fixed/edge-fixture.log",
+      "bytes": 62,
+      "sha256": "d1235ea4563620b53ef5bdd2da5f595fec9d54f9efb48376378c20547dd95e57"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration-fixed/go-integration.log",
+      "bytes": 11951787,
+      "sha256": "03a880bbb27671a62718f1cce821778c317604f32b86d541e45ab9e980531130"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration-fixed/integration-required.log",
+      "bytes": 42,
+      "sha256": "ca0ce67e0e4881d4b6cc34e1afcbd579442a7c3e1044848fbe0222381e35880d"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/report.json",
+      "bytes": 1751,
+      "sha256": "e59096ac5b87f4a74e0515198b24a20666f9ed74970056cd337c13d2d80b9f23"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/syntax-deploy-nuro.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/syntax-single-host-autoscaler.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/syntax-install-datamanagementd.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/deploy-credentials.log",
+      "bytes": 404,
+      "sha256": "495624654112148e2b3067c4e446121554ffc23f14a26bd9c5e6be3d37fcfea2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-deploy/deploy-recovery.log",
+      "bytes": 1508,
+      "sha256": "ab24194832d0e9feec66392efa25634217628655bea50bcce54a73673c4d84ce"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-contracts/report.json",
+      "bytes": 989,
+      "sha256": "8d97b6aa5d78e9715b218a4068141937ca45bfac58ed8660776996f501811d92"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-contracts/protected.log",
+      "bytes": 132,
+      "sha256": "df2ceda48e6d4664b3469350c56268d4bdad0dfcc4a8a24f2d577ee3dbcfced8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-contracts/tool-tests.log",
+      "bytes": 1675,
+      "sha256": "240471a39a9af439025545747c8b8a24860423d01315e3c955a8956ee970f696"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-contracts/diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration/report.json",
+      "bytes": 2438,
+      "sha256": "6b61a93b7fb9229439836e9472afda1642db3eab55f69af669aa4d5e2a50f3d6"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration/docker-preflight.log",
+      "bytes": 5625,
+      "sha256": "ed4ad7351e21553cbd0f74b343b044fdb5b646a8e6c8108f2a622c5027c19548"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration/edge-fixture.log",
+      "bytes": 62,
+      "sha256": "a2f9f7889e88ba38ddcfecdb5afc8516742ad9186965960a94adbbe4ac21b5ad"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration/go-integration.log",
+      "bytes": 11921634,
+      "sha256": "c74678a7cc051423f3018144446e82ff9324390c0bf5dc5dbc2e9c5cc64707f7"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-integration/integration-required.log",
+      "bytes": 378,
+      "sha256": "daf70e94003d9aeb650289983f0af57213b148118e910e3cc954cac1599260c4"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-apicompat-race.jsonl",
+      "bytes": 302944,
+      "sha256": "e5a05b347f5269f3812f52dad36751fbaedb3ab9c5d011f9a396e6587a7c667f"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-frontend.log",
+      "bytes": 103428,
+      "sha256": "95316fd21839534eca93b818785a04dc9cf8fab03ffc0f8fb576564643b030a8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-frontend-final-lint.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-message-before.log",
+      "bytes": 1750,
+      "sha256": "e524f46037bbdff4b9d2fbbacae4ca44af716878ad49856da3c3aaa6b96b6da7"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-csv-before.log",
+      "bytes": 4055,
+      "sha256": "f1528b3bc01e7caa291ca97d61c2afcd8087f72149f5446e76c276e28b7e1958"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-lint.json",
+      "bytes": 203106,
+      "sha256": "a0cf30a113b78f1d0f5e2443839f014ee8025d9874ac144be976785f57544dbe"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-lint-comparison.json",
+      "bytes": 70,
+      "sha256": "5e65a1fb8b9d7a093dde88aa851514fe1746ea714532ed7366782cd0a21b8415"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review2-secrets.log",
+      "bytes": 73,
+      "sha256": "e0db2c25a1e90856bf140fe025e49f7435d9b1856c4594fb05285c3c73847205"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/deploy-credentials.log",
+      "bytes": 404,
+      "sha256": "495624654112148e2b3067c4e446121554ffc23f14a26bd9c5e6be3d37fcfea2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/report.json",
+      "bytes": 1514,
+      "sha256": "9c68e7d989911cf9a966ce49d82bd6481f9495815e680e135e49587843949e03"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/scope-and-source-guard.log",
+      "bytes": 706,
+      "sha256": "668739a4ccd2871fa6b4d004d9282d192b40b7ff37a2286085740c7fb878ca0f"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/secret-scan.log",
+      "bytes": 73,
+      "sha256": "27860dab39f5e6380a2df569ad637aec5ee0828850b313dab91d2f2562cd0403"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-deploy-nuro.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-install-datamanagementd.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert/syntax-single-host-autoscaler.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/protected.log",
+      "bytes": 132,
+      "sha256": "df2ceda48e6d4664b3469350c56268d4bdad0dfcc4a8a24f2d577ee3dbcfced8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/report.json",
+      "bytes": 1025,
+      "sha256": "b43551c628710fe1e5c2127ddc3fda810d80c77260bc73a84d6c15d0c9cf3350"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-local-deploy-revert-contracts/tool-tests.log",
+      "bytes": 1675,
+      "sha256": "5a2e0411e883f8259a9784830597ad8c9ea61a7b587fdbe9f06bc3976d641d2f"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-blacklist-after.log",
+      "bytes": 318,
+      "sha256": "c4b2555f45499f6f9f464c5fc80f06e88343ac7ab01101258d7cfdf9f3f4c5e0"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-blacklist-before.log",
+      "bytes": 2123,
+      "sha256": "263c4dbdbdb7ac55f0dc1658ae52606411ed0f3deec7aec1c0d8773898eae886"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-contracts/diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-contracts/protected.log",
+      "bytes": 132,
+      "sha256": "df2ceda48e6d4664b3469350c56268d4bdad0dfcc4a8a24f2d577ee3dbcfced8"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-contracts/report.json",
+      "bytes": 989,
+      "sha256": "b5118900d8d94ddc9bb2b0ea639218ea2712cf092435904a1cdd6ca3404235c2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-contracts/tool-tests.log",
+      "bytes": 1675,
+      "sha256": "67592fb32168b07f843c11a9ee611e8733797acda2167fdc3f74bf18ea203c33"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-deploy/deploy-credentials.log",
+      "bytes": 404,
+      "sha256": "495624654112148e2b3067c4e446121554ffc23f14a26bd9c5e6be3d37fcfea2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-deploy/report.json",
+      "bytes": 1496,
+      "sha256": "74c634e03a5bde3c75efc4c424691af8bf9350205c497fe9970c90774fb57026"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-deploy/syntax-deploy-nuro.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-deploy/syntax-install-datamanagementd.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-deploy/syntax-single-host-autoscaler.sh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-frontend.log",
+      "bytes": 103460,
+      "sha256": "c5336ab9f8ade8cfbbdbff711d7000735ed95055c1a0e34422a0a709e91788c4"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-go/go-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-go/go-default.log",
+      "bytes": 11390286,
+      "sha256": "bb3ed8979df143217c1e69e33ee2682f3f87585bd30b3d94f0c85c61d0c2bb29"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-go/go-unit.log",
+      "bytes": 17007116,
+      "sha256": "3db3d884351aa888806dff03b804444c11c5dafa01bb8733d762e8e4b8233923"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-go/go-vet.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-go/report.json",
+      "bytes": 1307,
+      "sha256": "9f9228ac0b0f6df0440a6ea0852551ce713650d6fba5d70734a1e342eda4ba5e"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-handler-race.jsonl",
+      "bytes": 1740844,
+      "sha256": "c4713c519dc12a9260b2da1e7033b81cab23d6dc9714701352089264e494ea27"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-image-after.log",
+      "bytes": 57,
+      "sha256": "b37f06c905c4bf723488d0c2ba735ff7e4ec89c8dbc44a1d43e1943f27cf2665"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-image-before.log",
+      "bytes": 1266,
+      "sha256": "18979d2431bbf61e403414f0d12dbc3386a76c6eff714054ffd598ef1debe04e"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-lint-comparison.json",
+      "bytes": 70,
+      "sha256": "5e65a1fb8b9d7a093dde88aa851514fe1746ea714532ed7366782cd0a21b8415"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-lint.json",
+      "bytes": 203106,
+      "sha256": "a0cf30a113b78f1d0f5e2443839f014ee8025d9874ac144be976785f57544dbe"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-lint.log",
+      "bytes": 127,
+      "sha256": "8598f449118ea794389adfef9a50f47d201030d79f440d1aa5d68f85b50c3cd2"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-secret-scan.log",
+      "bytes": 73,
+      "sha256": "27860dab39f5e6380a2df569ad637aec5ee0828850b313dab91d2f2562cd0403"
+    },
+    {
+      "path": "/private/tmp/nuro-v0220-review3-final-integrity.json",
+      "bytes": 210,
+      "sha256": "87bccc041f96a5ca5178de1883bb465dc8071770ad81b005c05cecf432748537"
+    }
+  ],
+  "artifact_retention": "Logs and screenshots are local temporary artifacts, not bundled or guaranteed persistent; hashes allow verification while available.",
+  "final_repository_checks": {
+    "protected_contracts": "PASS: 20 frozen files and 283 historical migrations unchanged",
+    "secret_scan": "PASS: 3476 repository files checked offline; no high-confidence findings",
+    "diff_whitespace": "PASS",
+    "shell_syntax": "PASS: deploy-nuro.sh, deploy/single-host-autoscaler.sh and deploy/install-datamanagementd.sh; removed recovery test no longer applies",
+    "documentation_links": "PASS: file paths checked; archived :line references refer to implementation-before lines",
+    "validation_artifact_hashes": "PASS",
+    "changed_source_hashes": "PASS"
+  },
+  "review_closeout": {
+    "scope": "Review of all current unstaged implementation using the existing complete package/integration/frontend/Rust evidence, with deployment recovery and SVG parser fixes verified after this review. No production, provider requests, commit or push.",
+    "fixes": [
+      "Restore tracked nested .pnpm-store entries and validate the clean staged managed checkout before swapping source.",
+      "Validate rollback-tag image ID before restore or finalize; reject a repointed tag.",
+      "Allow same-package retry after source/config restore and transient container start failure, only while recorded restored source stays unchanged; preserve first failed tree.",
+      "Require EOF after a single SVG options JSON object for multipart requests; reject trailing values and garbage.",
+      "Make standalone deployment regression assertions exit explicitly under macOS Bash 3.2."
+    ],
+    "images_race": {
+      "command": "GOTOOLCHAIN=go1.27.3 go test -json -race -count=1 -tags=unit ./internal/service -run 'Test(NativeImages|OpenAIImages)'",
+      "cwd": "backend",
+      "exit_code": 0,
+      "tests": {
+        "pass": 28
+      },
+      "log": "/private/tmp/nuro-v0220-review-images-race.jsonl"
+    },
+    "service_vet": {
+      "command": "GOTOOLCHAIN=go1.27.3 go vet ./internal/service/...",
+      "cwd": "backend",
+      "exit_code": 0,
+      "log": "/private/tmp/nuro-v0220-review-vet.log"
+    },
+    "deployment": {
+      "report": "/private/tmp/nuro-v0220-review-deploy/report.json",
+      "exit_code": 0,
+      "scope": "Local fake Docker and temporary shallow Git repositories; no deployment"
+    },
+    "regression_before_fix": [
+      {
+        "log": "/private/tmp/nuro-v0220-review-recovery-before5.log",
+        "exit_code": 1,
+        "reason": "Strengthened assertions expose the nested tracked store restoration defect"
+      },
+      {
+        "log": "/private/tmp/nuro-v0220-review-recovery-retry-before.log",
+        "exit_code": 1,
+        "reason": "Retry after container failure was rejected after source had been restored"
+      },
+      {
+        "log": "/private/tmp/nuro-v0220-review-svg-before.log",
+        "exit_code": 1,
+        "reason": "Multipart SVG accepted second objects, scalars and trailing garbage"
+      }
+    ],
+    "lint_comparison": "/private/tmp/nuro-v0220-review-lint-comparison.json",
+    "note": "No later Go/TypeScript/Rust production changes beyond the SVG parser; earlier broad suite results retain their original scope and are supplemented, not relabeled as rerun.",
+    "changed_since_previous_snapshot": {
+      "backend/internal/service/openai_images_native.go": {
+        "previous": "a593eecceff585bcef214ba1c0ead3e781137962901165e1f656b91f2ebbbe71",
+        "current": "8c9a5c20d0a9103276b3a84546aa76c866bf9a111dadf4b45d7000533134975f"
+      },
+      "backend/internal/service/openai_images_native_test.go": {
+        "previous": "84ce995d58b50b4d322d6ad70966a046ac5704b0b88900c6429b574272315a2d",
+        "current": "54d2176c522dfd33fb708208f8d3c477cd3728a8086c5978467d33666a3538bb"
+      },
+      "deploy-nuro.sh": {
+        "previous": "de67f712630aefec9d6fb3b75ad9f26a25e89a38fd951da641462b8218a4dc33",
+        "current": "52bedd4b8a86f694d3895f95b02ecba67b8139a40fb50caf7aedf35a62f2586f"
+      },
+      "tools/test_deploy_upgrade_recovery.sh": {
+        "previous": "65240d9ca829008fd408e54ddc76aece46f18057da4cec6ccab902d24995fdfb",
+        "current": "f3bb1918aa4b05ed90ec1ad9a1912b2314accd90e64b781145c52a87135a2097"
+      }
+    },
+    "deployment_scope_note": "Recovery workflow subsequently removed at user request; current deployment validation is in local_deployment_scope_override. Other implementation checks retain their recorded scope."
+  },
+  "latest_review": {
+    "local_date": "2026-11-08",
+    "timezone": "Asia/Shanghai",
+    "scope": "All current changed implementation: protocol serialization and conversion, billing/presentation boundary, auth/RPM, blacklist transactions, export filters/cursors, notification cancellation, AG shared snapshots, body/async-image budgets and deployment recovery.",
+    "fixes": [
+      "Preserve refusal and image/file payloads while emitting empty Responses message content arrays; keep default typed fields instead of reusing the text-only SSE projection.",
+      "Treat CSV cells starting with newline or whitespace-prefixed formula markers as literal text without removing their original characters."
+    ],
+    "post_fix_reports": [
+      "/private/tmp/nuro-v0220-review2-go/report.json",
+      "/private/tmp/nuro-v0220-review2-integration-fixed/report.json",
+      "/private/tmp/nuro-v0220-review2-deploy/report.json",
+      "/private/tmp/nuro-v0220-review2-contracts/report.json"
+    ],
+    "broad_race": {
+      "report": "/private/tmp/nuro-v0220-review2-race/report.json",
+      "note": "Started before the serialization fix. The post-fix full apicompat race below supplements it; do not claim a final-source full-race rerun."
+    },
+    "apicompat_race": {
+      "command": "GOTOOLCHAIN=go1.27.3 go test -json -race -count=1 -tags=unit ./internal/pkg/apicompat",
+      "cwd": "backend",
+      "exit_code": 0,
+      "tests": {
+        "pass": 321
+      },
+      "log": "/private/tmp/nuro-v0220-review2-apicompat-race.jsonl"
+    },
+    "frontend": {
+      "command": "make test-frontend-full",
+      "exit_code": 0,
+      "test_files": 196,
+      "tests": 1225,
+      "checks": [
+        "lint:check",
+        "typecheck",
+        "full vitest",
+        "production embed build"
+      ],
+      "log": "/private/tmp/nuro-v0220-review2-frontend.log",
+      "final_changed_file_lint": {
+        "exit_code": 0,
+        "log": "/private/tmp/nuro-v0220-review2-frontend-final-lint.log"
+      },
+      "visual": "No layout/style changes this review; prior fixture visual evidence retains its original limited scope."
+    },
+    "regression_before_fix": [
+      {
+        "log": "/private/tmp/nuro-v0220-review2-message-before.log",
+        "exit_code": 1,
+        "reason": "Round-trip message marshal lost the refusal field; post-fix test also verifies image/file fields and usage in sync and response.completed envelopes."
+      },
+      {
+        "log": "/private/tmp/nuro-v0220-review2-csv-before.log",
+        "exit_code": 1,
+        "reason": "Leading newline formula lacked literal-cell prefix."
+      }
+    ],
+    "lint_comparison": "/private/tmp/nuro-v0220-review2-lint-comparison.json",
+    "previous_embed_identity": {
+      "file_count": 195,
+      "aggregate_sha256": "16937113b9c6083357c7ec6c7e1f92afe77f1e9a29d093983e77706a27bd79bf",
+      "ignored": true,
+      "release_artifact": false
+    },
+    "limits": "Original lint failures, dependency audit exceptions and unexecuted performance/mixed-replica/release/real-device gates remain; no production or real-provider requests, commit, push, version bump or deployment.",
+    "changed_since_previous_review": {
+      "backend/internal/pkg/apicompat/responses_stream_event_wire_test.go": {
+        "previous": null,
+        "current": "955ade51750305a20b3f4b783750c5ed20a78583ec7f8092350bcc76d6670359"
+      },
+      "backend/internal/pkg/apicompat/types.go": {
+        "previous": "ce4388ed6b86a3f8183030b70461c67ebd1e7481336627ac59264d4add348b62",
+        "current": "ed100e4bec786ad97fcc6487202dc082e849d76f0addf61a6375d3cfe0841a8e"
+      },
+      "frontend/src/views/user/UsageView.vue": {
+        "previous": "d948109d35f337868268ad39298874dfbd75fd879c3d10e92a5981983219d8b6",
+        "current": "7b803f683ad117d09ec2536ac9ac4a2bdc21ac25cd735ad495c7e02f1eea01d3"
+      },
+      "frontend/src/views/user/__tests__/UsageView.spec.ts": {
+        "previous": "d540529b26644c9961b2cdb46e78573e9596b039112e526e39781feca15adcd2",
+        "current": "d771f4fddbd7933158c2790896287966c3a1bca770c43ae163cb17bec12b8eca"
+      }
+    },
+    "deployment_scope_note": "Recovery workflow subsequently removed at user request; current deployment validation is in local_deployment_scope_override. Other implementation checks retain their recorded scope."
+  },
+  "local_deployment_scope_override": {
+    "local_date": "2026-11-08",
+    "decision": "User requested removal of the added recovery workflow for local deployment. Overrides archived plan O07; removal is intentional, not an incomplete plan item.",
+    "removed": [
+      "Private upgrade recovery packages and recovery state",
+      "Automatic source/config restoration and added autoscaler-failure rollback",
+      "Explicit finalize-upgrade and recover-upgrade commands",
+      "Exclusive recovery test and runner invocation"
+    ],
+    "retained": [
+      "Exact baseline upgrade_service including its original startup-failure image rollback",
+      "Dirty managed-source checks before forced Git overwrite",
+      "New optional resource configuration wiring, default 0",
+      "All other upgrade source changes and protected custom features"
+    ],
+    "verification": {
+      "baseline_upgrade_service": "identical",
+      "unrelated_source_hashes": "unchanged",
+      "managed_source_guard": "PASS: clean/unmanaged accepted; modified/staged/untracked refused in temporary Git fixture",
+      "actual_deployment": false,
+      "deployment_stage": "PASS: 3 syntax checks and original deployment credential regressions",
+      "contracts_stage": "PASS: 20 protected files, 283 historical migrations, 35 tool tests, diff whitespace"
+    },
+    "reports": [
+      "/private/tmp/nuro-v0220-local-deploy-revert/report.json",
+      "/private/tmp/nuro-v0220-local-deploy-revert-contracts/report.json"
+    ],
+    "logs": [
+      "/private/tmp/nuro-v0220-local-deploy-revert/scope-and-source-guard.log",
+      "/private/tmp/nuro-v0220-local-deploy-revert/secret-scan.log"
+    ],
+    "previous_source_identity_changes": {
+      "deploy-nuro.sh": {
+        "previous": "52bedd4b8a86f694d3895f95b02ecba67b8139a40fb50caf7aedf35a62f2586f",
+        "current": "93833f2743921101d43b4b5b3ddfc8501e02075c70762f06e098f79d7746b47c"
+      },
+      "tools/check_upgrade.py": {
+        "previous": "6aecb0ee421365d2b04b0dd20ce5e185324ec0b16ae6280589d67f380f15a753",
+        "current": "fc8925f8afc0283d60c258b0bc743290c00de3b14ba578f7349edb3cc0a57076"
+      },
+      "tools/test_deploy_upgrade_recovery.sh": {
+        "previous": "f3bb1918aa4b05ed90ec1ad9a1912b2314accd90e64b781145c52a87135a2097",
+        "current": null
+      }
+    }
+  },
+  "final_review": {
+    "local_date": "2026-11-08",
+    "scope": "All current unstaged upgrade implementation and protected call boundaries; user-requested complex deployment recovery removal preserved.",
+    "fixes": [
+      "Support valid UUID v4 batch IDs using getRandomValues when randomUUID is unavailable on LAN HTTP; retain the ID for retry and only publish an actionable preview after ID generation.",
+      "Emit a sanitized image failure response when a partial billable result has not already communicated the error; preserve mandatory usage recording and no-replay handling."
+    ],
+    "regression_before_fix": [
+      {
+        "log": "/private/tmp/nuro-v0220-review3-blacklist-before.log",
+        "exit_code": 1,
+        "failure": "Preview fails when randomUUID is absent"
+      },
+      {
+        "log": "/private/tmp/nuro-v0220-review3-image-before.log",
+        "exit_code": 1,
+        "failure": "Billable image failure returns empty HTTP 200 instead of 502"
+      }
+    ],
+    "post_fix_reports": [
+      "/private/tmp/nuro-v0220-review3-go/report.json",
+      "/private/tmp/nuro-v0220-review3-contracts/report.json",
+      "/private/tmp/nuro-v0220-review3-deploy/report.json"
+    ],
+    "handler_race": {
+      "command": "GOTOOLCHAIN=go1.27.3 go test -json -race -tags=unit ./internal/handler/... ./internal/pkg/httputil/... ./internal/pkg/ssebudget/...",
+      "cwd": "backend",
+      "log": "/private/tmp/nuro-v0220-review3-handler-race.jsonl",
+      "exit_code": 0,
+      "tests": {
+        "pass": 1547,
+        "fail": 0,
+        "skip": 4
+      }
+    },
+    "frontend": {
+      "command": "make test-frontend-full",
+      "log": "/private/tmp/nuro-v0220-review3-frontend.log",
+      "exit_code": 0,
+      "test_files": 196,
+      "tests": 1226,
+      "lint_typecheck_build": "PASS"
+    },
+    "lint": {
+      "passed": false,
+      "counts": {
+        "baseline": 563,
+        "current": 563,
+        "added": 0,
+        "removed": 0
+      },
+      "current": "/private/tmp/nuro-v0220-review3-lint.json",
+      "comparison": "/private/tmp/nuro-v0220-review3-lint-comparison.json"
+    },
+    "protected_contracts": "PASS: 20 frozen files and 283 historical migrations unchanged; manifest unchanged",
+    "changed_since_previous_review": {
+      "backend/internal/handler/openai_images.go": {
+        "previous": "c8da5096483a7c25ab196cdc1105186ad71239e650fc24b16c1f235dee2c66ac",
+        "current": "f7f1d0c284f438bec29cf6f309b04ea54912c0f916d0e8ff0f5d68c6befcde7d"
+      },
+      "backend/internal/handler/openai_images_controls_test.go": {
+        "previous": null,
+        "current": "fff12b744b21a404bd23e3daa81d8bf4a3b28d6eaadfe42f6626c536626c04c3"
+      },
+      "frontend/src/components/settings/RegistrationEmailBlacklist.vue": {
+        "previous": "281f3475ef937ad600cf4f4c5d2f768cc75a47e9d2d4f01ca29c0b75891ef800",
+        "current": "a0ed8e62ae0560501ac985dbc102f0c05aa22ed73e69de5efb14ff4f10ca7253"
+      },
+      "frontend/src/components/settings/__tests__/RegistrationEmailBlacklist.spec.ts": {
+        "previous": "90fc7852370808126526cfcca6225020960636a4506143227d82707787859d23",
+        "current": "3da32f4589e5b8b03a0b006f812cc506bd1ba5bb73bb6d4c631fe9e9e20d6fca"
+      }
+    },
+    "previous_embed_identity": {
+      "file_count": 195,
+      "aggregate_sha256": "98b858e2f4509a0add15c572445d3b3b1b50f03b1e6c12a3947ac3215df7ff70",
+      "algorithm": "SHA256 of sorted paths relative to backend/internal/web/dist + NUL + content SHA256 + newline",
+      "ignored": true,
+      "release_artifact": false
+    },
+    "limits": "No DB, Rust or deploy script changes in this review; previous full integration/Rust/broad service race evidence retains its original scope, not claimed as rerun. Existing lint and unexecuted performance/mixed-replica/release/device gates remain; no production/provider requests, deployment, commit, push or version bump.",
+    "final_integrity_report": "/private/tmp/nuro-v0220-review3-final-integrity.json"
+  }
+}

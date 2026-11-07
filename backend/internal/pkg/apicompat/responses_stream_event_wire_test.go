@@ -65,6 +65,38 @@ func TestWire_MessageItemContentAlwaysArray(t *testing.T) {
 	require.True(t, ok, "content must be an array")
 }
 
+func TestResponsesOutputMessageMarshalPreservesContent(t *testing.T) {
+	for _, content := range [][]ResponsesContentPart{
+		nil,
+		{},
+		{{Type: "refusal", Refusal: "Cannot fulfill this request"}},
+		{{Type: "output_text", Text: ""}},
+		{{Type: "input_image", ImageURL: "data:image/png;base64,fixture"}, {Type: "input_file", Filename: "fixture.txt", FileData: "data:text/plain;base64,fixture", FileID: "file_fixture"}},
+	} {
+		item := ResponsesOutput{Type: "message", ID: "msg_fixture", Role: "assistant", Status: "completed", Content: content}
+		response := &ResponsesResponse{ID: "resp_fixture", Status: "completed", Output: []ResponsesOutput{item}, Usage: &ResponsesUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}
+		for _, envelope := range []any{response, ResponsesStreamEvent{Type: "response.completed", Response: response}} {
+			raw, err := json.Marshal(envelope)
+			require.NoError(t, err)
+			var decoded ResponsesResponse
+			if _, event := envelope.(ResponsesStreamEvent); event {
+				var decodedEvent ResponsesStreamEvent
+				require.NoError(t, json.Unmarshal(raw, &decodedEvent))
+				require.NotNil(t, decodedEvent.Response)
+				decoded = *decodedEvent.Response
+			} else {
+				require.NoError(t, json.Unmarshal(raw, &decoded))
+			}
+			require.Len(t, decoded.Output, 1)
+			if content == nil {
+				item.Content = []ResponsesContentPart{}
+			}
+			require.Equal(t, item, decoded.Output[0])
+			require.Equal(t, response.Usage, decoded.Usage)
+		}
+	}
+}
+
 // TestWire_ReasoningItemSummaryAlwaysArray guards summary:[] presence.
 func TestWire_ReasoningItemSummaryAlwaysArray(t *testing.T) {
 	m := marshalEvent(t, ResponsesStreamEvent{

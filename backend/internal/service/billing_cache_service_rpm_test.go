@@ -251,3 +251,26 @@ func TestBillingCacheService_CheckRPM_NilUserIsNoop(t *testing.T) {
 	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userCalls))
 	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls))
 }
+
+func TestRPMCachedAbsenceIsScopedAndDoesNotDisableGlobalLimit(t *testing.T) {
+	cache := &userRPMCacheStub{userCounts: []int{1, 2}}
+	repo := &rpmOverrideRepoStub{}
+	svc := newBillingServiceForRPM(t, cache, repo)
+	user := &User{ID: 1, RPMLimit: 1, UserGroupRPMOverrideGroupID: 10}
+	require.NoError(t, svc.checkRPM(context.Background(), user, &Group{ID: 10}))
+	require.ErrorIs(t, svc.checkRPM(context.Background(), user, &Group{ID: 10}), ErrUserRPMExceeded)
+	require.Zero(t, atomic.LoadInt32(&repo.calls))
+	user.RPMLimit = 0
+	require.NoError(t, svc.checkRPM(context.Background(), user, &Group{ID: 11}))
+	require.EqualValues(t, 1, atomic.LoadInt32(&repo.calls))
+}
+
+func TestRPMDoesNotReuseAnotherGroupsOverride(t *testing.T) {
+	zero := 0
+	cache := &userRPMCacheStub{userGroupCounts: []int{2}}
+	repo := &rpmOverrideRepoStub{}
+	svc := newBillingServiceForRPM(t, cache, repo)
+	user := &User{ID: 1, UserGroupRPMOverrideGroupID: 10, UserGroupRPMOverride: &zero}
+	require.ErrorIs(t, svc.checkRPM(context.Background(), user, &Group{ID: 11, RPMLimit: 1}), ErrGroupRPMExceeded)
+	require.EqualValues(t, 1, atomic.LoadInt32(&repo.calls))
+}

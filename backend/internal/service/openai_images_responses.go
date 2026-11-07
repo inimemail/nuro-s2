@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -355,12 +356,16 @@ func openAIImageOutputMIMEType(outputFormat string) string {
 		return "image/jpeg"
 	case "webp":
 		return "image/webp"
+	case "gif":
+		return "image/gif"
+	case "svg":
+		return "image/svg+xml"
 	default:
 		return "image/png"
 	}
 }
 
-func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
+func openAIImageUploadToDataURL(upload OpenAIImagesUpload, scopes ...*pkghttputil.BodyReservation) (string, error) {
 	if len(upload.Data) == 0 {
 		return "", fmt.Errorf("upload %q is empty", strings.TrimSpace(upload.FileName))
 	}
@@ -368,12 +373,26 @@ func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
 	if contentType == "" {
 		contentType = http.DetectContentType(upload.Data)
 	}
+	if len(scopes) > 0 {
+		// EncodeToString allocates encoding bytes and a string, followed by
+		// the final data URL concatenation. Reserve before any of those.
+		if err := scopes[0].Reserve(3*int64(base64.StdEncoding.EncodedLen(len(upload.Data))) + int64(len(contentType)+13)); err != nil {
+			return "", err
+		}
+	}
 	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(upload.Data), nil
 }
 
 func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel string) ([]byte, error) {
+	if parsed != nil && (parsed.MarkupImageURL != "" || parsed.MarkupUpload != nil || parsed.SVG != nil || parsed.FrameCount != nil || parsed.FrameDurationMS != nil) {
+		return nil, fmt.Errorf("markup, SVG author options and GIF frame controls require the native Images endpoint")
+	}
+
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
+	}
+	if err := reserveOpenAIImagesPayload(parsed); err != nil {
+		return nil, err
 	}
 	prompt := strings.TrimSpace(parsed.Prompt)
 	if prompt == "" {
@@ -387,7 +406,7 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 		}
 	}
 	for _, upload := range parsed.Uploads {
-		dataURL, err := openAIImageUploadToDataURL(upload)
+		dataURL, err := openAIImageUploadToDataURL(upload, parsed.bodyReservation)
 		if err != nil {
 			return nil, err
 		}
@@ -444,7 +463,7 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 
 	maskImageURL := strings.TrimSpace(parsed.MaskImageURL)
 	if parsed.MaskUpload != nil {
-		dataURL, err := openAIImageUploadToDataURL(*parsed.MaskUpload)
+		dataURL, err := openAIImageUploadToDataURL(*parsed.MaskUpload, parsed.bodyReservation)
 		if err != nil {
 			return nil, err
 		}
@@ -1128,7 +1147,15 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	responseFormat string,
 	streamPrefix string,
 	fallbackModel string,
-) (OpenAIUsage, int, []string, *int, error) {
+) (retUsage OpenAIUsage, retCount int, retSizes []string, retTTFT *int, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.cfg, true, false)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+		}
+		guard.Finish()
+	}()
+
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -1375,11 +1402,16 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	}
 	events := make(chan readEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.cfg)
 	sendEvent := func(ev readEvent) bool {
+		if !queueBudget.Acquire(len(ev.line), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.line))
 			return false
 		}
 	}
@@ -1430,6 +1462,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.line))
+			}
 			if !ok {
 				if done, processErr := flushData(); processErr != nil {
 					return usage, imageCount, imageOutputSizes, firstTokenMs, processErr
@@ -1490,6 +1525,15 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	finalModel := strings.TrimSpace(channelMappedModel)
+	if finalModel == "" {
+		finalModel = parsed.Model
+	}
+	finalModel = account.GetMappedModel(finalModel)
+	if requiresCodexDirectImages(finalModel) {
+		return s.forwardOpenAIImagesAPIKey(ctx, c, account, parsed.Body, parsed, channelMappedModel)
+	}
+
 	startTime := time.Now()
 	requestModel := strings.TrimSpace(parsed.Model)
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {

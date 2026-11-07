@@ -289,7 +289,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		failedOutcome = streamRes.failedOutcome
 		neutralOutcome = streamRes.neutralOutcome
 	} else if useUpstreamStream {
-		collected, usageObj, collectedNeutral, collectErr := collectGeminiSSE(resp.Body, account.Type == AccountTypeOAuth, func(payload []byte) { s.observeGeminiCollectedPayload(c, payload) })
+		collected, usageObj, collectedNeutral, collectErr := s.collectGeminiSSEWithResourceLimits(c, resp, account.Type == AccountTypeOAuth, false, func(payload []byte) { s.observeGeminiCollectedPayload(c, payload) })
 		usage = usageObj
 		if collected != nil {
 			if collectedBytes, marshalErr := json.Marshal(collected); marshalErr == nil {
@@ -572,7 +572,19 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	originalModel string,
 	isOAuth bool,
 	includeUsage bool,
-) (*geminiStreamResult, error) {
+) (retResult *geminiStreamResult, retErr error) {
+	guard := newStreamResourceGuard(resp, c, s.cfg, true, false)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+			if retResult != nil {
+				retResult.failedOutcome = true
+				retErr = nil
+			}
+		}
+		guard.Finish()
+	}()
+
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}

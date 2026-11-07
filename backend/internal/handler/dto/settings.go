@@ -30,6 +30,7 @@ type SystemSettings struct {
 	NonOpenAIPool                       service.NonOpenAIPoolSettings `json:"non_openai_pool"`
 	RegistrationEnabled                 bool                          `json:"registration_enabled"`
 	EmailVerifyEnabled                  bool                          `json:"email_verify_enabled"`
+	RegistrationEmailBlacklist          []string                      `json:"registration_email_blacklist"`
 	RegistrationEmailSuffixWhitelist    []string                      `json:"registration_email_suffix_whitelist"`
 	RegistrationEmailDomainQuotaEnabled bool                          `json:"registration_email_domain_quota_enabled"`
 	PromoCodeEnabled                    bool                          `json:"promo_code_enabled"`

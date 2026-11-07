@@ -24,9 +24,10 @@ import (
 )
 
 var (
-	openAIModelDatePattern     = regexp.MustCompile(`-\d{8}$`)
-	openAIModelBasePattern     = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
-	openAIGPT54FallbackPricing = &LiteLLMModelPricing{
+	openAIGPTImage26FallbackPricing = &LiteLLMModelPricing{InputCostPerToken: 5e-6, CacheReadInputTokenCost: 1.25e-6, InputCostPerImageToken: 8e-6, CacheReadInputImageTokenCost: 2e-6, OutputCostPerImageToken: 30e-6, LiteLLMProvider: "openai", Mode: "image_generation", SupportsPromptCaching: true}
+	openAIModelDatePattern          = regexp.MustCompile(`-\d{8}$`)
+	openAIModelBasePattern          = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
+	openAIGPT54FallbackPricing      = &LiteLLMModelPricing{
 		InputCostPerToken:               2.5e-06, // $2.5 per MTok
 		OutputCostPerToken:              1.5e-05, // $15 per MTok
 		CacheReadInputTokenCost:         2.5e-07, // $0.25 per MTok
@@ -197,6 +198,8 @@ type LiteLLMModelPricing struct {
 	CacheCreationInputTokenCostPriority float64 `json:"cache_creation_input_token_cost_priority"`
 	CacheCreationInputTokenCostAbove1hr float64 `json:"cache_creation_input_token_cost_above_1hr"`
 	CacheReadInputTokenCost             float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputImageTokenCost        float64 `json:"cache_read_input_image_token_cost"`
+	ImageCacheReadPriceExplicit         bool    `json:"-"`
 	CacheReadInputTokenCostPriority     float64 `json:"cache_read_input_token_cost_priority"`
 	LongContextInputTokenThreshold      int     `json:"long_context_input_token_threshold,omitempty"`
 	LongContextInputCostMultiplier      float64 `json:"long_context_input_cost_multiplier,omitempty"`
@@ -232,6 +235,7 @@ type LiteLLMRawEntry struct {
 	CacheCreationInputTokenCostPriority *float64 `json:"cache_creation_input_token_cost_priority"`
 	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr"`
 	CacheReadInputTokenCost             *float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputImageTokenCost        *float64 `json:"cache_read_input_image_token_cost"`
 	CacheReadInputTokenCostPriority     *float64 `json:"cache_read_input_token_cost_priority"`
 	LongContextInputTokenThreshold      *int     `json:"long_context_input_token_threshold"`
 	LongContextInputCostMultiplier      *float64 `json:"long_context_input_cost_multiplier"`
@@ -654,6 +658,10 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		}
 		if entry.CacheReadInputTokenCost != nil {
 			pricing.CacheReadInputTokenCost = *entry.CacheReadInputTokenCost
+		}
+		if entry.CacheReadInputImageTokenCost != nil {
+			pricing.CacheReadInputImageTokenCost = *entry.CacheReadInputImageTokenCost
+			pricing.ImageCacheReadPriceExplicit = true
 		}
 		if entry.CacheReadInputTokenCostPriority != nil {
 			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
@@ -1398,6 +1406,9 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 		return openAIGPT54FallbackPricing
 	}
 
+	if requiresCodexDirectImages(model) {
+		return openAIGPTImage26FallbackPricing
+	}
 	if isOpenAIImageGenerationModel(model) {
 		for _, candidate := range []string{"gpt-image-2", "gpt-image-1.5", "gpt-image-1"} {
 			if pricing, ok := s.pricingData[candidate]; ok {

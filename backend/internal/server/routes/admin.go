@@ -314,6 +314,8 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers, s
 		users.GET("/:id/balance-history", h.Admin.User.GetBalanceHistory)
 		users.POST("/:id/replace-group", h.Admin.User.ReplaceGroup)
 		users.GET("/:id/rpm-status", h.Admin.User.GetUserRPMStatus)
+		users.GET("/registration-blacklist/preview", h.Admin.User.PreviewRegistrationBlacklist)
+		users.POST("/registration-blacklist/disable", h.Admin.User.DisableRegistrationBlacklist)
 		users.POST("/batch-concurrency", h.Admin.User.BatchUpdateConcurrency)
 		users.POST("/batch-limits", h.Admin.User.BatchUpdateLimits)
 		users.GET("/:id/platform-quotas", h.Admin.User.GetUserPlatformQuotas)

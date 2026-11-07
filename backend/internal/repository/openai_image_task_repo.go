@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"time"
 
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
+	"strings"
 )
 
 type openAIImageTaskRepository struct {
@@ -156,11 +158,7 @@ func (r *openAIImageTaskRepository) List(ctx context.Context, ownerID string, id
 	return items, missing, nil
 }
 
-func (r *openAIImageTaskRepository) ClaimNext(ctx context.Context, workerID string, lockFor time.Duration) (*service.OpenAIImageTask, error) {
-	if lockFor <= 0 {
-		lockFor = 30 * time.Minute
-	}
-	query := `
+const openAIImageTaskClaimQuery = `
 		WITH next AS (
 			SELECT id
 			FROM openai_image_tasks
@@ -185,6 +183,16 @@ func (r *openAIImageTaskRepository) ClaimNext(ctx context.Context, workerID stri
 			tasks.response_body, tasks.status_code, tasks.error_message, tasks.locked_by, tasks.locked_until,
 			tasks.attempts, tasks.created_at, tasks.updated_at, tasks.started_at, tasks.finished_at
 	`
+
+func (r *openAIImageTaskRepository) ClaimNext(ctx context.Context, workerID string, lockFor time.Duration) (*service.OpenAIImageTask, error) {
+	if lockFor <= 0 {
+		lockFor = 30 * time.Minute
+	}
+	if scope := pkghttputil.BodyReservationFromContext(ctx); scope != nil {
+		return r.claimNextWithBodyBudget(ctx, workerID, lockFor, scope)
+	}
+
+	query := openAIImageTaskClaimQuery
 	task, err := r.scanTask(ctx, query, []any{
 		service.OpenAIImageTaskStatusQueued,
 		service.OpenAIImageTaskStatusRunning,
@@ -377,4 +385,38 @@ func scanOpenAIImageTaskFromScanner(scanner openAIImageTaskScanner, task *servic
 		task.FinishedAt = &finishedAt.Time
 	}
 	return nil
+}
+
+// The opt-in worker path locks metadata first and reserves registered bytea /
+// JSON buffers before retrieving payloads. Admission failure leaves the task
+// queued and does not consume an attempt or start any upstream operation.
+func (r *openAIImageTaskRepository) claimNextWithBodyBudget(ctx context.Context, workerID string, lockFor time.Duration, scope *pkghttputil.BodyReservation) (*service.OpenAIImageTask, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var id, bodyBytes, responseBytes, headerBytes int64
+	err = tx.QueryRowContext(ctx, `SELECT id,octet_length(request_body),COALESCE(octet_length(response_body),0),octet_length(request_headers::text)
+	FROM openai_image_tasks WHERE status=$1 OR (status=$2 AND locked_until IS NOT NULL AND locked_until<NOW())
+	ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1`, service.OpenAIImageTaskStatusQueued, service.OpenAIImageTaskStatusRunning).Scan(&id, &bodyBytes, &responseBytes, &headerBytes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = scope.Reserve(2 * (bodyBytes + responseBytes + headerBytes)); err != nil {
+		return nil, err
+	}
+	update := openAIImageTaskClaimQuery[strings.Index(openAIImageTaskClaimQuery, "UPDATE openai_image_tasks"):]
+	query := "WITH next AS (SELECT $6::bigint AS id WHERE $1::text IS NOT NULL AND $2::text IS NOT NULL) " + update
+	task := &service.OpenAIImageTask{}
+	if err = scanOpenAIImageTask(ctx, tx, query, []any{service.OpenAIImageTaskStatusQueued, service.OpenAIImageTaskStatusRunning, service.OpenAIImageTaskStatusRunning, workerID, int(lockFor.Seconds()), id}, task); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return task, nil
 }

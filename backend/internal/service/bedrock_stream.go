@@ -17,6 +17,7 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ssebudget"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 )
 
@@ -30,7 +31,15 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	account *Account,
 	startTime time.Time,
 	model string,
-) (*streamingResult, error) {
+) (retResult *streamingResult, retErr error) {
+	decoder := newBedrockEventStreamDecoder(resp.Body)
+	guard := newBedrockResourceGuard(decoder, c, s.cfg)
+	defer func() {
+		if guard.Err() != nil {
+			retErr = guard.Err()
+		}
+		guard.Finish()
+	}()
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -53,19 +62,22 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	// 每个帧结构：total_length(4) + headers_length(4) + prelude_crc(4) + headers + payload + message_crc(4)
 	// 但更实用的方式是使用行扫描找 JSON chunks，因为 Bedrock 的响应在二进制帧中。
 	// 我们使用 EventStream decoder 来正确解析。
-	decoder := newBedrockEventStreamDecoder(resp.Body)
-
 	type decodeEvent struct {
 		payload []byte
 		err     error
 	}
 	events := make(chan decodeEvent, 16)
 	done := make(chan struct{})
+	queueBudget := streamResourceQueue(s.cfg)
 	sendEvent := func(ev decodeEvent) bool {
+		if !queueBudget.Acquire(len(ev.payload), done) {
+			return false
+		}
 		select {
 		case events <- ev:
 			return true
 		case <-done:
+			queueBudget.Release(len(ev.payload))
 			return false
 		}
 	}
@@ -108,6 +120,9 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	for {
 		select {
 		case ev, ok := <-events:
+			if ok {
+				queueBudget.Release(len(ev.payload))
+			}
 			if !ok {
 				if !clientDisconnected {
 					flusher.Flush()
@@ -239,8 +254,17 @@ func transformBedrockInvocationMetrics(data []byte) []byte {
 //	[payload: variable]
 //	[message_crc: 4 bytes]
 type bedrockEventStreamDecoder struct {
-	reader *bufio.Reader
+	reader           *bufio.Reader
+	resourceLimit    int
+	resourceExceeded atomic.Bool
 }
+
+func (d *bedrockEventStreamDecoder) Exceeded() bool { return d.resourceExceeded.Load() }
+
+const (
+	bedrockEventStreamMaxHeadersLength = 128 << 10
+	bedrockEventStreamMaxPayloadLength = 16 << 20
+)
 
 func newBedrockEventStreamDecoder(r io.Reader) *bedrockEventStreamDecoder {
 	return &bedrockEventStreamDecoder{
@@ -254,6 +278,9 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 		// 读取 prelude: total_length(4) + headers_length(4) + prelude_crc(4) = 12 bytes
 		prelude := make([]byte, 12)
 		if _, err := io.ReadFull(d.reader, prelude); err != nil {
+			if err == io.EOF && d.Exceeded() {
+				return nil, ssebudget.ErrExceeded
+			}
 			return nil, err
 		}
 
@@ -270,9 +297,35 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 			return nil, fmt.Errorf("invalid eventstream frame: total_length=%d", totalLength)
 		}
 
+		// Validate untrusted lengths before integer conversion, allocation or slicing.
+		if headersLength > bedrockEventStreamMaxHeadersLength || headersLength > totalLength-16 {
+			return nil, fmt.Errorf("invalid eventstream frame: headers_length=%d total_length=%d", headersLength, totalLength)
+		}
+		if totalLength-16-headersLength > bedrockEventStreamMaxPayloadLength {
+			return nil, fmt.Errorf("invalid eventstream frame: payload too large, total_length=%d", totalLength)
+		}
+
 		// 读取 headers + payload + message_crc
 		remaining := int(totalLength) - 12
 		if remaining <= 0 {
+			continue
+		}
+		if d.resourceLimit > 0 && int(totalLength-16-headersLength) > d.resourceLimit {
+			d.resourceExceeded.Store(true)
+			// Validate and discard with fixed scratch storage before allocating
+			// the oversized frame. Later metrics still reach the billing parser.
+			h := crc32.New(crc32IEEETable)
+			_, _ = h.Write(prelude)
+			if _, err := io.CopyN(h, d.reader, int64(remaining-4)); err != nil {
+				return nil, err
+			}
+			var checksum [4]byte
+			if _, err := io.ReadFull(d.reader, checksum[:]); err != nil {
+				return nil, err
+			}
+			if h.Sum32() != bedrockReadUint32(checksum[:]) {
+				return nil, fmt.Errorf("eventstream message CRC mismatch")
+			}
 			continue
 		}
 		data := make([]byte, remaining)

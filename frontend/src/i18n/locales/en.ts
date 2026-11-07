@@ -2,6 +2,10 @@ import geminiCache from './en/geminiCache'
 import batchImage from './en/batchImage'
 
 export default {
+ upgradeBlacklist: {"title": "Registration email blacklist", "help": "One exact email per line, up to 20,000. Comparison ignores +tags; Gmail also ignores dots and treats googlemail.com as gmail.com. Login and delivery addresses stay unchanged. Saving rules only blocks new registrations. Existing users require a separate preview and confirmation. Administrators are excluded.", "placeholder": "name{'@'}example.com\nother{'@'}gmail.com", "preview": "Preview existing users", "saveFirst": "Save these rules before previewing.", "matches": "{count} active users on this page", "next": "Next page", "confirm": "I confirm disabling the users shown on this page. This affects login access; their balances and subscriptions are preserved.", "disable": "Disable this page of users", "empty": "No matching active users.", "failed": "Preview failed. Please try again.", "changed": "The request failed or the preview changed. Refresh before retrying.", "done": "Disabled {count} users. Changes are recorded in the audit log."},
+
+  upgradeExport: { progress: 'Exporting · {count} rows', wait: 'Rate limited. Retrying in {seconds}s…', boundary: 'Exporting the selected range. New records are excluded; records removed during export may be absent.', tooLarge: 'This export is too large for the browser. Select a shorter date range and export in parts.' },
+  upgradeQuota: { partial: 'Some quota data could not be refreshed', stale: 'Last known', unknown: 'Unknown', fiveHour: '5h', weekly: 'Week' },
   accessKeys: {
     "loadMore": "Load older keys",
     "title": "Scoped administrator keys",

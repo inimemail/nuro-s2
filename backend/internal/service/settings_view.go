@@ -12,6 +12,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 type SystemSettings struct {
+	RegistrationEmailBlacklist          []string
 	NonOpenAIPool                       NonOpenAIPoolSettings
 	RegistrationEnabled                 bool
 	EmailVerifyEnabled                  bool

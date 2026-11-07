@@ -7474,7 +7474,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		if err != nil {
 			return nil, err
 		}
-		targetURL = validatedURL + "/v1/messages?beta=true"
+		targetURL = anthropicMessagesURL(validatedURL)
 	}
 
 	// 能力维度 body sanitize：透传路径上 anthropic-beta header 原样透传客户端值，
@@ -8441,7 +8441,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			if err != nil {
 				return nil, err
 			}
-			targetURL = validatedURL + "/v1/messages?beta=true"
+			targetURL = anthropicMessagesURL(validatedURL)
 		}
 	} else if account.IsCustomBaseURLEnabled() {
 		customURL := account.GetCustomBaseURL()
@@ -11170,39 +11170,9 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 
 	// Notification checks run async — all parameters are already captured,
 	// no dependency on the request context or upstream connection.
-	go notifyBalanceLow(p, deps, result)
-	go notifyAccountQuota(p, deps, result)
-}
-
-// notifyBalanceLow sends balance low notification after deduction.
-// When result.NewBalance is available (from DB transaction RETURNING), it is used directly
-// to reconstruct oldBalance, avoiding stale Redis reads and concurrent-deduction races.
-func notifyBalanceLow(p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("panic in notifyBalanceLow", "recover", r)
-		}
-	}()
-	if p.IsSubscriptionBill || p.Cost.ActualCost <= 0 || p.User == nil || deps.balanceNotifyService == nil {
-		slog.Debug("notifyBalanceLow: skipped",
-			"is_subscription", p.IsSubscriptionBill,
-			"actual_cost", p.Cost.ActualCost,
-			"user_nil", p.User == nil,
-			"service_nil", deps.balanceNotifyService == nil,
-		)
-		return
+	if deps.balanceNotifyService != nil {
+		deps.balanceNotifyService.enqueueBillingNotification(p, result)
 	}
-
-	oldBalance := resolveOldBalance(p, result)
-	slog.Debug("notifyBalanceLow: calling CheckBalanceAfterDeduction",
-		"user_id", p.User.ID,
-		"old_balance", oldBalance,
-		"cost", p.Cost.ActualCost,
-		"notify_enabled", p.User.BalanceNotifyEnabled,
-		"threshold", p.User.BalanceNotifyThreshold,
-		"result_has_new_balance", result != nil && result.NewBalance != nil,
-	)
-	deps.balanceNotifyService.CheckBalanceAfterDeduction(context.Background(), p.User, oldBalance, p.Cost.ActualCost)
 }
 
 // resolveOldBalance returns the pre-deduction balance.
@@ -11213,37 +11183,6 @@ func resolveOldBalance(p *postUsageBillingParams, result *UsageBillingApplyResul
 	}
 	// Legacy fallback: snapshot balance from request context
 	return p.User.Balance
-}
-
-// notifyAccountQuota sends account quota threshold notification after increment.
-// When result.QuotaState is available (from DB transaction RETURNING), it is passed directly
-// to avoid a separate DB read that may see stale or concurrently-modified data.
-func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("panic in notifyAccountQuota", "recover", r)
-		}
-	}()
-	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.SupportsAccountQuota() || deps.balanceNotifyService == nil {
-		slog.Debug("notifyAccountQuota: skipped",
-			"total_cost", p.Cost.TotalCost,
-			"account_nil", p.Account == nil,
-			"is_apikey_or_bedrock", p.Account != nil && p.Account.SupportsAccountQuota(),
-			"service_nil", deps.balanceNotifyService == nil,
-		)
-		return
-	}
-	accountCost := p.Cost.TotalCost * p.AccountRateMultiplier
-	var quotaState *AccountQuotaState
-	if result != nil {
-		quotaState = result.QuotaState
-	}
-	slog.Debug("notifyAccountQuota: calling CheckAccountQuotaAfterIncrement",
-		"account_id", p.Account.ID,
-		"account_cost", accountCost,
-		"has_quota_state", quotaState != nil,
-	)
-	deps.balanceNotifyService.CheckAccountQuotaAfterIncrement(context.Background(), p.Account, accountCost, quotaState)
 }
 
 func detachedBillingContext(ctx context.Context) (context.Context, context.CancelFunc) {

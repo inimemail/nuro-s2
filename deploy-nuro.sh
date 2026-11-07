@@ -255,6 +255,17 @@ find_project_root() {
     return 1
 }
 
+# Refuse to overwrite uncommitted changes before forced managed Git updates.
+assert_managed_source_clean() {
+    local dest="$1" dirty
+    [[ -d "$dest/.git" ]] || return 0
+    dirty="$(git -C "$dest" status --porcelain --untracked-files=normal)" || return 1
+    if [[ -n "$dirty" ]]; then
+        err "托管源码目录存在未提交改动，已停止同步：${dest}（请先自行保存改动）"
+        return 1
+    fi
+}
+
 sync_project_source() {
     local workdir="$1"
     local dest="${workdir}/${SOURCE_DIR_NAME}"
@@ -268,6 +279,7 @@ sync_project_source() {
     if [[ -z "${PROJECT_ROOT:-}" && -d "${dest}/.git" ]]; then
         require_cmd git
         info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
+        assert_managed_source_clean "$dest" || return 1
         git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
         git -C "$dest" checkout -f FETCH_HEAD || return 1
         persist_script "$workdir"
@@ -336,6 +348,7 @@ sync_project_source() {
     require_cmd git
     if [[ -d "${dest}/.git" ]]; then
         info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
+        assert_managed_source_clean "$dest" || return 1
         git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
         git -C "$dest" checkout -f FETCH_HEAD || return 1
     else
@@ -742,6 +755,14 @@ BIND_HOST=0.0.0.0
 SERVER_PORT=${host_port}
 SERVER_MODE=release
 SERVER_READ_HEADER_TIMEOUT=10
+# Optional registered-buffer / idle / SSE limits; 0 preserves existing behavior.
+SERVER_REQUEST_BODY_MEMORY_BUDGET=0
+SERVER_REQUEST_READ_IDLE_TIMEOUT=0
+SERVER_RESPONSE_WRITE_IDLE_TIMEOUT=0
+GATEWAY_SSE_MAX_LINE_BYTES=0
+GATEWAY_SSE_MAX_EVENT_BYTES=0
+GATEWAY_SSE_MAX_EVENT_LINES=0
+GATEWAY_SSE_QUEUE_MAX_BYTES=0
 SERVER_MAX_HEADER_BYTES=65536
 SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5
 SERVER_TRUSTED_PROXIES=
@@ -1038,6 +1059,13 @@ services:
       - SERVER_PORT=8080
       - SERVER_MODE=\${SERVER_MODE:-release}
       - SERVER_READ_HEADER_TIMEOUT=\${SERVER_READ_HEADER_TIMEOUT:-10}
+      - SERVER_REQUEST_BODY_MEMORY_BUDGET=\${SERVER_REQUEST_BODY_MEMORY_BUDGET:-0}
+      - SERVER_REQUEST_READ_IDLE_TIMEOUT=\${SERVER_REQUEST_READ_IDLE_TIMEOUT:-0}
+      - SERVER_RESPONSE_WRITE_IDLE_TIMEOUT=\${SERVER_RESPONSE_WRITE_IDLE_TIMEOUT:-0}
+      - GATEWAY_SSE_MAX_LINE_BYTES=\${GATEWAY_SSE_MAX_LINE_BYTES:-0}
+      - GATEWAY_SSE_MAX_EVENT_BYTES=\${GATEWAY_SSE_MAX_EVENT_BYTES:-0}
+      - GATEWAY_SSE_MAX_EVENT_LINES=\${GATEWAY_SSE_MAX_EVENT_LINES:-0}
+      - GATEWAY_SSE_QUEUE_MAX_BYTES=\${GATEWAY_SSE_QUEUE_MAX_BYTES:-0}
       - SERVER_MAX_HEADER_BYTES=\${SERVER_MAX_HEADER_BYTES:-65536}
       - SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=\${SERVER_GRACEFUL_SHUTDOWN_TIMEOUT:-5}
       - SERVER_TRUSTED_PROXIES=\${SERVER_TRUSTED_PROXIES:-}

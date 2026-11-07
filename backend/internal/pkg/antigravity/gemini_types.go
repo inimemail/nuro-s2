@@ -54,6 +54,7 @@ type GeminiFunctionCall struct {
 
 // GeminiFunctionResponse Gemini 函数响应
 type GeminiFunctionResponse struct {
+	Parts    []GeminiPart   `json:"parts,omitempty"`
 	Name     string         `json:"name"`
 	Response map[string]any `json:"response"`
 	ID       string         `json:"id,omitempty"`

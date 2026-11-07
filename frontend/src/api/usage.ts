@@ -366,7 +366,21 @@ export async function getMyErrorDetail(id: number): Promise<UserErrorRequestDeta
   return data
 }
 
+export interface UsageExportPage {
+  items: UsageLog[]
+  has_more: boolean
+  next_cursor: string
+}
+export async function exportPage(
+  params: UsageQueryParams & { sort_by?: string; sort_order?: 'asc' | 'desc'; cursor?: string; timezone?: string },
+  signal: AbortSignal
+): Promise<UsageExportPage> {
+  const { data } = await apiClient.get<UsageExportPage>('/usage', { params: { ...params, export: true }, signal })
+  return data
+}
+
 export const usageAPI = {
+  exportPage,
   list,
   query,
   getStats,

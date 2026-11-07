@@ -54,7 +54,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			h.chatCompletionsErrorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(c.Request, err)
+		h.chatCompletionsErrorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 

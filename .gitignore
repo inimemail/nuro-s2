@@ -156,5 +156,12 @@ __pycache__/
 # Reviewable v0.2.19 implementation and frozen baseline
 !docs/upgrades/v0219-*.md
 !docs/upgrades/v0219-protected.json
+
+# Reviewable v0.2.20 plan and validation evidence
+!docs/upgrades/v0220-implementation.md
+!docs/upgrades/v0220-status.md
+!docs/upgrades/v0220-validation.json
+!docs/upgrades/v0220-plan/
+!docs/upgrades/v0220-plan/**
 # Architecture-specific paired binaries staged only by the release workflow.
 /.release-edge/

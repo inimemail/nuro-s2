@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -48,6 +48,8 @@ func (f *AntigravityQuotaFetcher) CanFetch(account *Account) bool {
 
 // FetchQuota 获取 Antigravity 账户额度信息
 func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Account, proxyURL string) (*QuotaResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	accessToken := account.GetCredential("access_token")
 	projectID := account.GetCredential("project_id")
 
@@ -80,33 +82,67 @@ func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Accou
 		return nil, err
 	}
 
-	// 调用 LoadCodeAssist 获取订阅等级和 AI Credits 余额（非关键路径，失败不影响主流程）
-	tierRaw, tierNormalized, loadResp := f.fetchSubscriptionTier(ctx, client, accessToken)
-
-	// 转换为 UsageInfo
+	// Both optional reads share the caller's original fetch deadline. The client
+	// only holds an http.Client; requests and headers are allocated per call.
+	basicAt := time.Now()
+	var tierRaw, tierNormalized string
+	var loadResp *antigravity.LoadCodeAssistResponse
+	var summary *antigravity.QuotaSummaryResponse
+	var tierErr, summaryErr error
+	var tierAt, summaryAt time.Time
+	var optional sync.WaitGroup
+	optional.Go(func() {
+		loadResp, _, tierErr = client.LoadCodeAssist(ctx, accessToken)
+		if tierErr == nil && loadResp != nil {
+			tierRaw = loadResp.GetTier()
+			tierNormalized = normalizeTier(tierRaw)
+			tierAt = time.Now()
+		}
+	})
+	optional.Go(func() {
+		summary, summaryErr = client.RetrieveUserQuotaSummary(ctx, accessToken, projectID)
+		if summaryErr == nil {
+			summaryAt = time.Now()
+		}
+	})
+	optional.Wait()
 	usageInfo := f.buildUsageInfo(modelsResp, tierRaw, tierNormalized, loadResp)
+	usageInfo.AntigravityQuotaGroups = buildAntigravityQuotaGroups(summary)
+	usageInfo.AntigravityQuotaSources = map[string]*AntigravityQuotaSource{
+		"basic": {UpdatedAt: &basicAt}, "tier": {}, "summary": {},
+	}
+	for key, result := range map[string]struct {
+		at  time.Time
+		err error
+	}{"tier": {tierAt, tierErr}, "summary": {summaryAt, summaryErr}} {
+		source := usageInfo.AntigravityQuotaSources[key]
+		if !result.at.IsZero() {
+			source.UpdatedAt = cloneUsageValue(&result.at)
+		}
+		if result.err != nil {
+			source.Error = "refresh_failed"
+			var status *antigravity.QuotaSummaryHTTPError
+			if (errors.As(result.err, &status) && status.StatusCode == 401) || strings.HasPrefix(result.err.Error(), "loadCodeAssist 失败 (HTTP 401):") {
+				usageInfo.NeedsReauth = true
+				usageInfo.ErrorCode = errorCodeUnauthenticated
+			}
+			if (errors.As(result.err, &status) && status.StatusCode == 403) || strings.HasPrefix(result.err.Error(), "loadCodeAssist 失败 (HTTP 403):") {
+				usageInfo.IsForbidden = true
+				usageInfo.ForbiddenType = forbiddenTypeForbidden
+				usageInfo.ErrorCode = errorCodeForbidden
+			}
+		}
+	}
+	// Optional sources can disagree during a refresh. Reauthentication must
+	// consistently take precedence regardless of map iteration order.
+	if usageInfo.NeedsReauth {
+		usageInfo.ErrorCode = errorCodeUnauthenticated
+	}
 
 	return &QuotaResult{
 		UsageInfo: usageInfo,
 		Raw:       modelsRaw,
 	}, nil
-}
-
-// fetchSubscriptionTier 获取账号订阅等级，失败返回空字符串。
-// 同时返回 LoadCodeAssistResponse，以便提取 AI Credits 余额。
-func (f *AntigravityQuotaFetcher) fetchSubscriptionTier(ctx context.Context, client *antigravity.Client, accessToken string) (raw, normalized string, loadResp *antigravity.LoadCodeAssistResponse) {
-	loadResp, _, err := client.LoadCodeAssist(ctx, accessToken)
-	if err != nil {
-		slog.Warn("failed to fetch subscription tier", "error", err)
-		return "", "", nil
-	}
-	if loadResp == nil {
-		return "", "", nil
-	}
-
-	raw = loadResp.GetTier() // 已有方法：paidTier > currentTier
-	normalized = normalizeTier(raw)
-	return raw, normalized, loadResp
 }
 
 // normalizeTier 将原始 tier 字符串归一化为 FREE/PRO/ULTRA/UNKNOWN
@@ -140,7 +176,7 @@ func (f *AntigravityQuotaFetcher) buildUsageInfo(modelsResp *antigravity.FetchAv
 
 	// 遍历所有模型，填充 AntigravityQuota 和 AntigravityQuotaDetails
 	for modelName, modelInfo := range modelsResp.Models {
-		if modelInfo.QuotaInfo == nil {
+		if modelInfo.QuotaInfo == nil || modelInfo.QuotaInfo.RemainingFractionUnknown || !validAntigravityFraction(modelInfo.QuotaInfo.RemainingFraction) {
 			continue
 		}
 
@@ -177,7 +213,7 @@ func (f *AntigravityQuotaFetcher) buildUsageInfo(modelsResp *antigravity.FetchAv
 	// 同时设置 FiveHour 用于兼容展示（取主要模型）
 	priorityModels := []string{"claude-sonnet-4-20250514", "claude-sonnet-4", "gemini-2.5-pro"}
 	for _, modelName := range priorityModels {
-		if modelInfo, ok := modelsResp.Models[modelName]; ok && modelInfo.QuotaInfo != nil {
+		if modelInfo, ok := modelsResp.Models[modelName]; ok && modelInfo.QuotaInfo != nil && !modelInfo.QuotaInfo.RemainingFractionUnknown && validAntigravityFraction(modelInfo.QuotaInfo.RemainingFraction) {
 			utilization := (1.0 - modelInfo.QuotaInfo.RemainingFraction) * 100
 			progress := &UsageProgress{
 				Utilization: utilization,

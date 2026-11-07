@@ -98,10 +98,11 @@ func TestRateLimitService_HandleUpstreamError_KimiConcurrency403IsRecoverable(t 
 
 	require.True(t, shouldDisable)
 	require.Equal(t, 0, repo.setErrorCalls)
-	require.Equal(t, 1, repo.tempCalls)
-	require.Contains(t, repo.lastTempReason, "cn_concurrency_limit")
+	require.Equal(t, 0, repo.tempCalls)
+	require.Equal(t, 1, repo.rateLimitedCalls)
+	require.WithinDuration(t, time.Now().Add(time.Duration(defaultRateLimit429CooldownSeconds)*time.Second), repo.lastRateLimitedAt, 2*time.Second)
 	require.Len(t, blocker.accounts, 1)
-	require.Equal(t, "cn_concurrency_limit", blocker.reasons[0])
+	require.Equal(t, "429_fallback", blocker.reasons[0])
 }
 
 func TestRateLimitService_HandleUpstreamError_CNNonConcurrency403KeepsLegacyAuthHandling(t *testing.T) {

@@ -19,7 +19,7 @@ describe('ccswitchImport utils', () => {
   }
 
   it('uses the current Codex import model', () => {
-    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-5.5')
+    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-6.1-sol')
   })
 
   it('adds the Codex model parameter for OpenAI imports', () => {

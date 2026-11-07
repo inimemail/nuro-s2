@@ -54,6 +54,7 @@ type UsageStats struct {
 
 // UsageService 使用统计服务
 type UsageService struct {
+	exportCursorKey      []byte
 	usageRepo            UsageLogRepository
 	userRepo             UserRepository
 	entClient            *dbent.Client

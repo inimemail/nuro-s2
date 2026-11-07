@@ -288,6 +288,14 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		role := chatCompletionsBridgeRole(rawString(item["role"]))
 		itemType := rawString(item["type"])
 		switch itemType {
+		case "agent_message":
+			text := agentMessageText(item["content"])
+			if text != "" {
+				content, _ := json.Marshal(text)
+				messages = append(messages, ChatMessage{Role: "user", Content: content})
+			}
+			pendingReasoning, turnReasoning = "", ""
+			continue
 		case "reasoning":
 			if txt := extractResponsesReasoningText(item); txt != "" {
 				pendingReasoning = txt
@@ -1702,4 +1710,26 @@ func nonEmpty(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// Agent envelopes carry ordered plaintext segments on compatible providers.
+func agentMessageText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var parts []map[string]json.RawMessage
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		switch rawString(part["type"]) {
+		case "text", "input_text":
+			_, _ = out.WriteString(rawString(part["text"]))
+		case "encrypted_content":
+			_, _ = out.WriteString(rawString(part["encrypted_content"]))
+		}
+	}
+	return out.String()
 }

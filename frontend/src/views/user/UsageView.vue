@@ -122,7 +122,7 @@
             </div>
 
             <!-- Actions -->
-            <div class="ml-auto flex items-center gap-3">
+            <div class="ml-auto flex max-w-full flex-wrap items-center gap-2 sm:gap-3">
               <button @click="applyFilters" :disabled="loading" class="btn btn-secondary">
                 {{ t('common.refresh') }}
               </button>
@@ -150,8 +150,12 @@
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                   ></path>
                 </svg>
-                {{ exporting ? t('usage.exporting') : t('usage.exportCsv') }}
+                {{ exporting ? t('upgradeExport.progress', { count: exportCount.toLocaleString() }) : t('usage.exportCsv') }}
               </button>
+              <button v-if="exporting" type="button" class="btn btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500" @click="cancelExport">{{ t('common.cancel') }}</button>
+              <p v-if="exporting" class="basis-full text-xs text-gray-500 dark:text-gray-400" role="status" aria-live="polite">
+                {{ exportWaitSeconds ? t('upgradeExport.wait', { seconds: exportWaitSeconds }) : t('upgradeExport.boundary') }}
+              </p>
             </div>
           </div>
         </div>
@@ -642,8 +646,9 @@
 </template>
 
 <script setup lang="ts">
+import { usageExportRetryDelay, waitForUsageExport } from '@/utils/usageExport'
 import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { usageAPI, keysAPI } from '@/api'
@@ -749,6 +754,16 @@ const usageLogs = ref<UsageLog[]>([])
 const apiKeys = ref<ApiKey[]>([])
 const loading = ref(false)
 const exporting = ref(false)
+const exportCount = ref(0)
+const exportWaitSeconds = ref(0)
+let exportController: AbortController | null = null
+let exportObjectURL: string | null = null
+const cancelExport = () => exportController?.abort()
+onUnmounted(() => {
+  abortController?.abort()
+  cancelExport()
+  if (exportObjectURL) URL.revokeObjectURL(exportObjectURL)
+})
 const activeTab = ref<'usage' | 'errors'>('usage')
 const errorRows = ref<UserErrorRequest[]>([])
 const errorLoading = ref(false)
@@ -1131,8 +1146,9 @@ const escapeCSVValue = (value: unknown): string => {
   const str = String(value)
   const escaped = str.replace(/"/g, '""')
 
-  // Prevent formula injection by prefixing dangerous characters with single quote
-  if (/^[=+\-@\t\r]/.test(str)) {
+  // Spreadsheet importers may skip leading whitespace before a formula.
+  // Keep the original cell text, but force these cells to remain literal.
+  if (/^[\t\r\n]/.test(str) || /^[\s\uFEFF]*[=+\-@]/.test(str)) {
     return `"\'${escaped}"`
   }
 
@@ -1145,30 +1161,17 @@ const escapeCSVValue = (value: unknown): string => {
 }
 
 const exportToCSV = async () => {
-  if (pagination.total === 0) {
-    appStore.showWarning(t('usage.noDataToExport'))
-    return
-  }
-
+  if (exporting.value) return
+  const controller = new AbortController()
+  exportController = controller
+  exportCount.value = 0
+  exportWaitSeconds.value = 0
+  const chunks: string[] = ['\uFEFF']
   exporting.value = true
   appStore.showInfo(t('usage.preparingExport'))
 
   try {
-    const allLogs: UsageLog[] = []
-    const pageSize = 100 // Use a larger page size for export to reduce requests
-    const exportParams = buildUsageQueryParams(1, pageSize)
-    const totalRequests = Math.ceil(pagination.total / pageSize)
-
-    for (let page = 1; page <= totalRequests; page++) {
-      const response = await usageAPI.query({ ...exportParams, page })
-      allLogs.push(...response.items)
-    }
-
-    if (allLogs.length === 0) {
-      appStore.showWarning(t('usage.noDataToExport'))
-      return
-    }
-
+    const exportParams = { ...buildUsageQueryParams(1, 1000), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }
     const headers = [
       'Time',
       'API Key Name',
@@ -1191,7 +1194,32 @@ const exportToCSV = async () => {
       'First Token (ms)',
       'Duration (ms)'
     ]
-    const rows = allLogs.map((log) =>
+    chunks.push(headers.map(escapeCSVValue).join(','))
+    let cursor: string | undefined
+    let bytes = 0
+    do {
+      let response: Awaited<ReturnType<typeof usageAPI.exportPage>> | undefined
+      for (let retry = 0; ; retry++) {
+        try {
+          response = await usageAPI.exportPage({ ...exportParams, cursor }, controller.signal)
+          break
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          const failure = error as { status?: number; retryAfter?: string }
+          if (failure.status !== 429 || retry >= 3) throw error
+          let remaining = usageExportRetryDelay(failure.retryAfter, retry)
+          while (remaining > 0) {
+            exportWaitSeconds.value = Math.ceil(remaining / 1000)
+            const step = Math.min(remaining, 1000)
+            await waitForUsageExport(step, controller.signal)
+            remaining -= step
+          }
+          exportWaitSeconds.value = 0
+        }
+      }
+      if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (!response || (response.has_more && (!response.next_cursor || response.next_cursor === cursor))) throw new Error('Invalid export page')
+      const rows = response.items.map((log) =>
       [
         log.created_at,
         log.api_key?.name || '',
@@ -1216,24 +1244,35 @@ const exportToCSV = async () => {
       ].map(escapeCSVValue)
     )
 
-    const csvContent = [
-      headers.map(escapeCSVValue).join(','),
-      ...rows.map((row) => row.join(','))
-    ].join('\n')
-
-    const blob = new Blob(['\uFEFF', csvContent], { type: 'text/csv;charset=utf-8;' })
+      const chunk = rows.map(row => '\n' + row.join(',')).join('')
+      bytes += new TextEncoder().encode(chunk).byteLength
+      // Bound the browser's final in-memory file, never silently truncate it.
+      if (bytes > 128 * 1024 * 1024) throw new Error(t('upgradeExport.tooLarge'))
+      chunks.push(chunk)
+      exportCount.value += response.items.length
+      cursor = response.has_more ? response.next_cursor : undefined
+    } while (cursor)
+    if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError')
+    if (exportCount.value === 0) { appStore.showWarning(t('usage.noDataToExport')); return }
+    const blob = new Blob(chunks, { type: 'text/csv;charset=utf-8;' })
     const url = window.URL.createObjectURL(blob)
+    exportObjectURL = url
     const link = document.createElement('a')
     link.href = url
     link.download = `usage_${exportParams.start_date}_to_${exportParams.end_date}.csv`
     link.click()
-    window.URL.revokeObjectURL(url)
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url)
+      if (exportObjectURL === url) exportObjectURL = null
+    }, 1000)
 
     appStore.showSuccess(t('usage.exportSuccess'))
   } catch (error) {
-    appStore.showError(t('usage.exportFailed'))
-    console.error('CSV Export failed:', error)
+    if (!controller.signal.aborted) appStore.showError(error instanceof Error && error.message === t('upgradeExport.tooLarge') ? error.message : t('usage.exportFailed'))
   } finally {
+    chunks.length = 0
+    exportWaitSeconds.value = 0
+    if (exportController === controller) exportController = null
     exporting.value = false
   }
 }

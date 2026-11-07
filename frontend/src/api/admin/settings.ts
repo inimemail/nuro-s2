@@ -393,6 +393,7 @@ export interface SystemSettings {
   // Registration settings
   registration_enabled: boolean;
   email_verify_enabled: boolean;
+  registration_email_blacklist: string[];
   registration_email_suffix_whitelist: string[];
   registration_email_domain_quota_enabled: boolean;
   promo_code_enabled: boolean;
@@ -730,6 +731,7 @@ export interface UpdateSettingsRequest {
   non_openai_pool?: NonOpenAIPoolSettings;
   registration_enabled?: boolean;
   email_verify_enabled?: boolean;
+  registration_email_blacklist?: string[];
   registration_email_suffix_whitelist?: string[];
   registration_email_domain_quota_enabled?: boolean;
   promo_code_enabled?: boolean;

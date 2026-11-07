@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 	"github.com/google/uuid"
 )
 
@@ -117,7 +118,7 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	allowDummyThought := strings.HasPrefix(targetModel, "gemini-")
 
 	// 1. 构建 contents
-	contents, strippedThinking, err := buildContents(claudeReq.Messages, toolIDToName, isThinkingEnabled, allowDummyThought)
+	contents, strippedThinking, err := buildContents(claudeReq.Messages, toolIDToName, isThinkingEnabled, allowDummyThought, gemini.SupportsMultimodalFunctionResponses(targetModel))
 	if err != nil {
 		return nil, fmt.Errorf("build contents: %w", err)
 	}
@@ -372,7 +373,7 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 }
 
 // buildContents 构建 contents
-func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isThinkingEnabled, allowDummyThought bool) ([]GeminiContent, bool, error) {
+func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isThinkingEnabled, allowDummyThought bool, multimodal ...bool) ([]GeminiContent, bool, error) {
 	var contents []GeminiContent
 	strippedThinking := false
 
@@ -382,7 +383,7 @@ func buildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 			role = "model"
 		}
 
-		parts, strippedThisMsg, err := buildParts(msg.Content, toolIDToName, allowDummyThought)
+		parts, strippedThisMsg, err := buildParts(msg.Content, toolIDToName, allowDummyThought, multimodal...)
 		if err != nil {
 			return nil, false, fmt.Errorf("build parts for message %d: %w", i, err)
 		}
@@ -431,7 +432,7 @@ const DummyThoughtSignature = "skip_thought_signature_validator"
 
 // buildParts 构建消息的 parts
 // allowDummyThought: 只有 Gemini 模型支持 dummy thought signature
-func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDummyThought bool) ([]GeminiPart, bool, error) {
+func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDummyThought bool, multimodal ...bool) ([]GeminiPart, bool, error) {
 	var parts []GeminiPart
 	strippedThinking := false
 
@@ -536,7 +537,12 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 					ID: block.ToolUseID,
 				},
 			})
-			parts = append(parts, extractToolResultInlineParts(block.Content)...)
+			media := extractToolResultInlineParts(block.Content)
+			if len(multimodal) > 0 && multimodal[0] {
+				parts[len(parts)-1].FunctionResponse.Parts = media
+			} else {
+				parts = append(parts, media...)
+			}
 		}
 	}
 

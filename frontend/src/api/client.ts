@@ -53,7 +53,7 @@ apiClient.interceptors.request.use(
       if (!config.params) {
         config.params = {}
       }
-      config.params.timezone = getUserTimezone()
+      config.params.timezone ??= getUserTimezone()
     }
 
     return config
@@ -227,6 +227,7 @@ apiClient.interceptors.response.use(
         error: apiData.error,
         message: apiData.message || apiData.detail || error.message,
         metadata: apiData.metadata,
+        ...(status === 429 ? { retryAfter: error.response.headers['retry-after'] } : {}),
       })
     }
 

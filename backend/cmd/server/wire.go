@@ -119,6 +119,9 @@ func provideCleanup(
 	geminiCache *service.GeminiCachedContentService,
 ) func() {
 	return func() {
+		if openAIGateway != nil {
+			openAIGateway.StopBillingNotifications()
+		}
 		if geminiCache != nil {
 			geminiCache.Stop()
 		}

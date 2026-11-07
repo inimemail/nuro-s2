@@ -34,6 +34,9 @@ func validateGPT61SolRequestBody(body []byte, modelCandidates ...string) error {
 		if err := openai.ValidateGPT61SolModelRequest(model, effort); err != nil {
 			return err
 		}
+		if err := openai.ValidateGPT61TerraModelRequest(model, effort); err != nil {
+			return err
+		}
 	}
 	return nil
 }

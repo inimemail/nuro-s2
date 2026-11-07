@@ -160,6 +160,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		RegistrationEnabled:                                   settings.RegistrationEnabled,
 		EmailVerifyEnabled:                                    settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                      settings.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailBlacklist:                            settings.RegistrationEmailBlacklist,
 		RegistrationEmailDomainQuotaEnabled:                   settings.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                                      settings.PromoCodeEnabled,
 		PasswordResetEnabled:                                  settings.PasswordResetEnabled,
@@ -493,7 +494,8 @@ func loginAgreementDocumentsToService(items []dto.LoginAgreementDocument) []serv
 
 // UpdateSettingsRequest 更新设置请求
 type UpdateSettingsRequest struct {
-	NonOpenAIPool *service.NonOpenAIPoolSettings `json:"non_openai_pool"`
+	RegistrationEmailBlacklist *[]string                      `json:"registration_email_blacklist"`
+	NonOpenAIPool              *service.NonOpenAIPoolSettings `json:"non_openai_pool"`
 	// 注册设置
 	RegistrationEnabled                 bool                         `json:"registration_enabled"`
 	EmailVerifyEnabled                  bool                         `json:"email_verify_enabled"`
@@ -1878,9 +1880,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		// 系统全局 platform quota 默认值（整体替换语义）
 		DefaultPlatformQuotas: req.DefaultPlatformQuotas,
 
-		RegistrationEnabled:                 req.RegistrationEnabled,
-		EmailVerifyEnabled:                  req.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist:    req.RegistrationEmailSuffixWhitelist,
+		RegistrationEnabled:              req.RegistrationEnabled,
+		EmailVerifyEnabled:               req.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist: req.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailBlacklist: func() []string {
+			if req.RegistrationEmailBlacklist != nil {
+				return *req.RegistrationEmailBlacklist
+			}
+			return previousSettings.RegistrationEmailBlacklist
+		}(),
 		RegistrationEmailDomainQuotaEnabled: req.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                    req.PromoCodeEnabled,
 		PasswordResetEnabled:                req.PasswordResetEnabled,
@@ -2586,6 +2594,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEnabled:                                   updatedSettings.RegistrationEnabled,
 		EmailVerifyEnabled:                                    updatedSettings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                      updatedSettings.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailBlacklist:                            updatedSettings.RegistrationEmailBlacklist,
 		RegistrationEmailDomainQuotaEnabled:                   updatedSettings.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                                      updatedSettings.PromoCodeEnabled,
 		PasswordResetEnabled:                                  updatedSettings.PasswordResetEnabled,
@@ -2903,6 +2912,9 @@ func (h *SettingHandler) auditSettingsUpdate(c *gin.Context, before *service.Sys
 
 func diffSettings(before *service.SystemSettings, after *service.SystemSettings, beforeAuthSourceDefaults *service.AuthSourceDefaultSettings, afterAuthSourceDefaults *service.AuthSourceDefaultSettings, req UpdateSettingsRequest) []string {
 	changed := make([]string, 0, 20)
+	if !equalStringSlice(before.RegistrationEmailBlacklist, after.RegistrationEmailBlacklist) {
+		changed = append(changed, "registration_email_blacklist")
+	}
 	if before.RegistrationEnabled != after.RegistrationEnabled {
 		changed = append(changed, "registration_enabled")
 	}

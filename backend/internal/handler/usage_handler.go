@@ -243,6 +243,20 @@ func (h *UsageHandler) List(c *gin.Context) {
 		EndTime:     endTime,
 	}
 
+	if c.Query("export") == "true" {
+		page, err := h.usageService.ExportPage(c.Request.Context(), params, filters, userTZ, c.Query("cursor"))
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		out := make([]dto.UsageLog, 0, len(page.Records))
+		for i := range page.Records {
+			out = append(out, *dto.UsageLogFromService(&page.Records[i]).Localized(c.GetHeader("Accept-Language")))
+		}
+		response.Success(c, gin.H{"items": out, "next_cursor": page.NextCursor, "has_more": page.HasMore})
+		return
+	}
+
 	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)
 	if err != nil {
 		response.ErrorFrom(c, err)

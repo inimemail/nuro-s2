@@ -1,0 +1,102 @@
+{
+  "local_head": "f78ae396d799f06aea66bb02dcf383858ea2c1db",
+  "upstream_v0219": "dece26153621959ccd7635814f4b2d08304e681a",
+  "upstream_v0220": "dab829a4e9b7d1cc307189aea8b0319eb29e29d0",
+  "commits": 112,
+  "merge_commits": 40,
+  "merges_with_combined_paths": 14,
+  "files": 459,
+  "statuses": {
+    "M": 312,
+    "A": 146,
+    "D": 1
+  },
+  "local_absent": 244,
+  "topics": {
+    "T01": {
+      "categories": "1",
+      "decision": "OAuth 非流式和 instructions 回显"
+    },
+    "T02": {
+      "categories": "1+4",
+      "decision": "Terra 能力/校验/订阅计费；不改缓存身份"
+    },
+    "T03": {
+      "categories": "1",
+      "decision": "GPT Image 2.6 原生协议及价格"
+    },
+    "T04": {
+      "categories": "1",
+      "decision": "Responses/Gemini/AG/Grok 协议兼容"
+    },
+    "T05": {
+      "categories": "1+4",
+      "decision": "鉴权/上传错误/强制路由探测/413优先级"
+    },
+    "T06": {
+      "categories": "1+2+4",
+      "decision": "资源限制拆分：入口采纳，drain/session 冲突不采纳"
+    },
+    "T07": {
+      "categories": "1",
+      "decision": "RPM 空值覆盖快照；减少重复 DB"
+    },
+    "T08": {
+      "categories": "1+2",
+      "decision": "被动周用量/Kimi并发403/AG模型冷却和额度展示"
+    },
+    "T09": {
+      "categories": "1+2",
+      "decision": "Codex 导出和 CSV；不自动启用新工具"
+    },
+    "T10": {
+      "categories": "1",
+      "decision": "必要安全依赖修复"
+    },
+    "T11": {
+      "categories": "2",
+      "decision": "已纳入E05的注册邮箱黑名单，默认空"
+    },
+    "T12": {
+      "categories": "5",
+      "decision": "管理 MCP/OAuth 新权限面暂不引入"
+    },
+    "T13": {
+      "categories": "3+5",
+      "decision": "保留本地 scoped 安全实现；不引入全权模式"
+    },
+    "T14": {
+      "categories": "4",
+      "decision": "图片尺寸分流触及冻结 scheduler，本次不实施"
+    },
+    "T16": {
+      "categories": "2+5",
+      "decision": "小规模性能思路可借鉴；不引入 alpha JSON 流水线"
+    },
+    "T17": {
+      "categories": "3+4",
+      "decision": "保留本地隔离/缓存身份和cyber机制"
+    },
+    "T18": {
+      "categories": "5",
+      "decision": "推广/CI重触发/上游版本标签不复制"
+    },
+    "T19": {
+      "categories": "4",
+      "decision": "不更换 system 稳定前缀的 AG 身份重写"
+    },
+    "T20": {
+      "categories": "1",
+      "decision": "WS 每轮真实首 Token 时间"
+    },
+    "T21": {
+      "categories": "4",
+      "decision": "不引入绕开现有健康策略的 transport cooldown 开关"
+    },
+    "T22": {
+      "categories": "1",
+      "decision": "Bedrock 分配前帧长度校验"
+    }
+  },
+  "expanded_scope": "plan-only; safe category-2 suggestions accepted; E01-E08 and O01-O07; protected conflicts remain excluded"
+}

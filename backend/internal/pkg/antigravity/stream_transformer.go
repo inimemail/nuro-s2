@@ -84,17 +84,31 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 		return nil
 	}
 
-	// 解包 v1internal 响应
-	var v1Resp V1InternalResponse
-	if err := json.Unmarshal([]byte(data), &v1Resp); err != nil {
-		// 尝试直接解析为 GeminiResponse
-		var directResp GeminiResponse
-		if err2 := json.Unmarshal([]byte(data), &directResp); err2 != nil {
+	// A direct object decodes into an envelope without error; select by shape.
+	// Embed the direct fields so the outer JSON is decoded only once.
+	var wire struct {
+		GeminiResponse
+		Response geminiStreamResponseField `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &wire); err != nil {
+		return nil
+	}
+	response := wire.GeminiResponse
+	if wire.Response.Present {
+		if !wire.Response.Valid {
 			return nil
 		}
-		v1Resp.Response = directResp
-		v1Resp.ResponseID = directResp.ResponseID
-		v1Resp.ModelVersion = directResp.ModelVersion
+		response = wire.Response.Value
+	}
+	if len(response.Candidates) == 0 && response.UsageMetadata == nil {
+		return nil
+	}
+	v1Resp := V1InternalResponse{Response: response, ResponseID: wire.ResponseID, ModelVersion: wire.ModelVersion}
+	if v1Resp.ResponseID == "" {
+		v1Resp.ResponseID = response.ResponseID
+	}
+	if v1Resp.ModelVersion == "" {
+		v1Resp.ModelVersion = response.ModelVersion
 	}
 
 	geminiResp := &v1Resp.Response
@@ -571,4 +585,22 @@ func (p *StreamingProcessor) formatSSE(eventType string, data any) []byte {
 	}
 
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(jsonData)))
+}
+
+// A value receiver field records explicit null separately from an absent wrapper.
+type geminiStreamResponseField struct {
+	Present, Valid bool
+	Value          GeminiResponse
+}
+
+func (f *geminiStreamResponseField) UnmarshalJSON(data []byte) error {
+	f.Present = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(data, &f.Value); err != nil {
+		return err
+	}
+	f.Valid = true
+	return nil
 }
