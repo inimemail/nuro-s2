@@ -71,8 +71,7 @@ func rejectDuplicateFieldsAtDepth(raw []byte, scope string, depth int) error {
 		return errors.New("request JSON nesting is too deep")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var walk func(*json.Decoder, string) error
-	walk = func(decoder *json.Decoder, currentScope string) error {
+	walk := func(decoder *json.Decoder, currentScope string) error {
 		tok, err := decoder.Token()
 		if err != nil {
 			return errors.New("invalid JSON request")
@@ -224,7 +223,10 @@ func checkKeys(raw []byte, scope string, canonical []string) error {
 		if err != nil {
 			return errors.New("invalid JSON request")
 		}
-		key := t.(string)
+		key, ok := t.(string)
+		if !ok {
+			return errors.New("invalid JSON request")
+		}
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("%s contains duplicate field %q", scope, key)
 		}

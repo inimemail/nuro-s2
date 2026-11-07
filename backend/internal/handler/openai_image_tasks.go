@@ -1454,15 +1454,14 @@ func sanitizeOpenAIImageTaskErrorMessage(_ string) string {
 }
 
 func safeOpenAIImageTaskErrorResponse(statusCode int, message string) []byte {
-	payload := map[string]any{
-		"error": map[string]any{
-			"type":    "upstream_error",
-			"message": sanitizeOpenAIImageTaskErrorMessage(message),
-		},
+	errorPayload := map[string]any{
+		"type":    "upstream_error",
+		"message": sanitizeOpenAIImageTaskErrorMessage(message),
 	}
 	if statusCode > 0 {
-		payload["error"].(map[string]any)["status_code"] = statusCode
+		errorPayload["status_code"] = statusCode
 	}
+	payload := map[string]any{"error": errorPayload}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return []byte(`{"error":{"type":"upstream_error","message":"Upstream request failed"}}`)

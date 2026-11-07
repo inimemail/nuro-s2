@@ -28,7 +28,7 @@ func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]strin
 		}
 
 		fieldType := field.Type
-		for fieldType.Kind() == reflect.Ptr {
+		for fieldType.Kind() == reflect.Pointer {
 			fieldType = fieldType.Elem()
 		}
 		if fieldType.Kind() == reflect.Struct {

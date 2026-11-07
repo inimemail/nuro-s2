@@ -502,6 +502,34 @@ func TestBackupService_CreateBackup_DumpFailure(t *testing.T) {
 	require.Contains(t, record.ErrorMsg, "pg_dump")
 }
 
+func TestBackupService_DumpExitFailureNeverUploads(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background=%t", background), func(t *testing.T) {
+			repo := newMockSettingRepo()
+			seedS3Config(t, repo)
+			exitErr := errors.New("pg_dump exited unsuccessfully")
+			reader := &backupLifecycleReader{Reader: strings.NewReader("partial SQL"), closeErr: exitErr}
+			store := newMockObjectStore()
+			svc := newTestBackupService(repo, &backupLifecycleDumper{reader: reader}, store)
+			var record *BackupRecord
+			if background {
+				record = &BackupRecord{ID: "failed-dump", S3Key: "backups/failed-dump.sql.gz", Status: "running"}
+				svc.executeBackup(context.Background(), record, store)
+			} else {
+				var err error
+				record, err = svc.CreateBackup(context.Background(), "manual", 14)
+				require.ErrorIs(t, err, exitErr)
+			}
+			require.Equal(t, "failed", record.Status)
+			require.Contains(t, record.ErrorMsg, exitErr.Error())
+			require.Equal(t, 1, reader.closeCalls)
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			require.Empty(t, store.objects, "failed pg_dump output must never be uploaded")
+		})
+	}
+}
+
 func TestBackupService_CreateBackup_NoS3Config(t *testing.T) {
 	repo := newMockSettingRepo()
 	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())

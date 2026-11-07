@@ -160,6 +160,7 @@ __pycache__/
 # Reviewable v0.2.20 plan and validation evidence
 !docs/upgrades/v0220-implementation.md
 !docs/upgrades/v0220-status.md
+!docs/upgrades/v0220-lint-cleanup.md
 !docs/upgrades/v0220-validation.json
 !docs/upgrades/v0220-plan/
 !docs/upgrades/v0220-plan/**

@@ -695,7 +695,14 @@ func (s *BackupService) createCompressedBackupFile(ctx context.Context) (string,
 	if err != nil {
 		return "", 0, fmt.Errorf("pg_dump: %w", err)
 	}
-	defer dumpReader.Close()
+	dumpClosed := false
+	defer func() {
+		if !dumpClosed {
+			if err := dumpReader.Close(); err != nil {
+				logger.LegacyPrintf("service.backup", "[Backup] Failed to close aborted dump: %v", err)
+			}
+		}
+	}()
 	f, err := os.CreateTemp("", "sub2api-backup-*.sql.gz")
 	if err != nil {
 		return "", 0, fmt.Errorf("create backup archive: %w", err)
@@ -721,6 +728,15 @@ func (s *BackupService) createCompressedBackupFile(ctx context.Context) (string,
 	if err := f.Close(); err != nil {
 		cleanupBackupFiles(path)
 		return "", 0, fmt.Errorf("close backup archive: %w", err)
+	}
+	// EOF on stdout does not prove pg_dump succeeded. Close waits for its
+	// exit status; reject partial output before either upload path can use it.
+	dumpClosed = true
+	if err := dumpReader.Close(); err != nil {
+		if cleanupErr := cleanupBackupFiles(path); cleanupErr != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] Failed to remove unsuccessful dump archive: %v", cleanupErr)
+		}
+		return "", 0, fmt.Errorf("finish pg_dump: %w", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {

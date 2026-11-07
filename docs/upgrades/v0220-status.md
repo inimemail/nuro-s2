@@ -103,11 +103,15 @@ Gemini 微基准（Apple M4，三次采样中位数，非隔离整机）：delta
 
 修复后本轮完整 Go default 8462 / unit 13421 个 pass、build/vet 通过；handler/admin、httputil 和 ssebudget 的 race 共 1547 pass、0 fail、4 skip。前端 lint/typecheck、196 文件 1226 测试和 production embed build 全通过；脚本语法/引导凭据、35 项工具测试、20 文件/283 迁移冻结契约与 secret scan 通过。完整 Go lint 仍为原基线 563 / 当前 563 / 新增 0 / 减少 0，没有放宽规则。本轮未改数据库、Rust 或部署脚本，沿用之前集成/Rust 证据的原始范围，没有声称本轮重跑；未操作生产、真实供应商或实际部署。当前源码和 embed 指纹、失败反例及后验日志记入验证索引 `final_review`。
 
+2026-11-08 独立 lint 治理：在用户确认后处理实际缺陷和低风险清理，完整 lint 从 563 降至 553 项，减少 10 项、新增 0 项，规则不变，仍未通过。修复备份流忽略 `Close` 返回的 `pg_dump` 退出错误，防止部分导出被标为成功并上传；新增反例先在原实现失败。完整 Go default 8467 / unit 13429 个 pass、0 fail，build/vet 通过；备份相关 race 38 pass、0 fail，20 文件/283 历史迁移保护契约通过。未修改部署、前端、Rust 或保护功能。此次独立证据及保留项见 [lint 治理记录](v0220-lint-cleanup.md)，历史升级验证索引不冒充此次源码的结果。
+
+独立 lint 治理随后再次代码审查：未发现新增业务缺陷，生产逻辑未再修改；补充真实子进程的成功/失败退出与取消回收测试，相关定向 race 104 pass、0 fail。完整 lint 仍为 553 项、新增 0，保护契约再次通过。既有全量 default/unit/build/vet 的 11 份后端源码/测试指纹未变，新增测试另有本轮证据，详见上述 lint 治理记录。
+
 ## 4. 未通过的发布门禁及回滚边界
 
 下列条件不能以单元测试或组件截图替代，尚未验收，因此没有 bump 版本或标记可发布：
 
-1. 原有完整 Go lint 的 563 项失败仍存在，CI 发布会被阻断。修改冻结区或改规则不属于本轮自动解决方式。
+1. 完整 Go lint 仍有 553 项告警，lint CI 检查尚未通过。修改冻结区或放宽规则不属于本轮自动解决方式。
 2. 同源码完整 128/256/512 及更高并发阶梯、三轮 TTFT p50/p95/p99/错误率/FD/RSS/GC/队列/WAL/取消后恢复与基线对照未完成；微基准不能外推。
 3. 真实新旧副本组合、generation fence/故障恢复与全链路账务对账、真实供应商新协议、完整 staging/canary/drain/回滚未验收。
 4. Linux 多架构完整镜像、digest/provenance 与 Go/Edge/前端同版产物的真实发布演练未完成；当前本机 build/真实 Rust fixture 不能替代。

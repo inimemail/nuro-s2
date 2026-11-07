@@ -567,7 +567,7 @@ func TestHasOpenAIHealthProbeAlternativeAccountFiltersCandidates(t *testing.T) {
 
 	t.Run("soft cooling pool account is not available", func(t *testing.T) {
 		poolAlternative := alternative
-		poolAlternative.Credentials = map[string]interface{}{"pool_mode": true}
+		poolAlternative.Credentials = map[string]any{"pool_mode": true}
 		svc := healthProbeAlternativeService([]Account{current, poolAlternative}, nil)
 		svc.openaiPoolSoftCooldownUntil.Store(poolAlternative.ID, time.Now().Add(time.Minute))
 		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))

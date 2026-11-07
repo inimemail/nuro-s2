@@ -343,7 +343,7 @@ func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) 
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
 		Priority: 1,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
 			"upstream_concurrency_race_retry_count":    5,
@@ -372,7 +372,7 @@ func TestPlanSameAccountRetryRejectsDelayEqualToElapsedBudget(t *testing.T) {
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
 			"upstream_concurrency_race_retry_count":    5,
@@ -398,7 +398,7 @@ func TestPlanSameAccountRetryWithMaxElapsedOnlyShortensConfiguredBudget(t *testi
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
 		Priority: 1,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    50,
 			"upstream_concurrency_race_retry_count":    50,
@@ -426,7 +426,7 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
 			"upstream_concurrency_race_retry_count":    5,
@@ -449,7 +449,7 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":             true,
 			"pool_mode_retry_count": 5,
 		},
@@ -471,7 +471,7 @@ func TestPlanSameAccountRetryUsesConfiguredFiftyAttempts(t *testing.T) {
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
 		Status:   service.StatusActive,
-		Credentials: map[string]interface{}{
+		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    50,
 			"upstream_concurrency_race_retry_count":    50,

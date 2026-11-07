@@ -81,7 +81,7 @@ func (h *AccountHandler) DeleteOllamaCloudUsageSession(c *gin.Context) {
 }
 func (h *AccountHandler) SetOllamaCloudUsageAutoRefresh(c *gin.Context) {
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled           bool  `json:"enabled"`
 		RateLimitRecovery *bool `json:"rate_limit_recovery_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || h.ollamaCloudUsage == nil {
