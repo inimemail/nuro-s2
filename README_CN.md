@@ -634,6 +634,10 @@ go generate ./cmd/server
 
 ---
 
+## OpenAI 图片客户端说明
+
+图片实际编码可能与请求的 `output_format` 不同。格式校验、Codex HTTP 状态与代理超时说明见 [OpenAI Images / Codex 使用说明](docs/OPENAI_IMAGES_CODEX.md)。
+
 ## Antigravity 使用说明
 
 Sub2API 支持 [Antigravity](https://antigravity.so/) 账户，授权后可通过专用端点访问 Claude 和 Gemini 模型。

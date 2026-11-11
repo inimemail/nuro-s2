@@ -1,7 +1,7 @@
 {
   "name": "sub2api-frontend",
   "private": true,
-  "version": "0.2.19-nuro.1",
+  "version": "0.2.21-nuro.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

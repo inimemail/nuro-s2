@@ -1109,3 +1109,24 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 	}
 	return events
 }
+
+func TestConvertGeminiNonStreamingExcludesThoughtAndKeepsToolsAndUsage(t *testing.T) {
+	for _, thoughtOnly := range []bool{false, true} {
+		parts := []any{map[string]any{"thought": true, "text": "private reasoning", "thoughtSignature": "opaque"}}
+		if !thoughtOnly {
+			parts = append(parts, map[string]any{"text": "public answer"}, map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{"id": 1}}})
+		}
+		response := map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": parts}, "finishReason": "STOP"}}, "usageMetadata": map[string]any{"promptTokenCount": float64(7), "candidatesTokenCount": float64(3), "thoughtsTokenCount": float64(2)}}
+		body, _ := json.Marshal(response)
+		converted, usage := convertGeminiToClaudeMessage(response, "gemini-3-pro", body, false)
+		encoded, err := json.Marshal(converted)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), "private reasoning")
+		require.NotContains(t, string(encoded), "opaque")
+		require.NotNil(t, usage)
+		if !thoughtOnly {
+			require.Contains(t, string(encoded), "public answer")
+			require.Contains(t, string(encoded), "lookup")
+		}
+	}
+}

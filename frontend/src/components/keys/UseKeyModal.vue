@@ -1297,6 +1297,16 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
           max: { effort: 'max' }
         }
       },
+      'claude-fable-5-2': {
+        name: 'Claude Fable 5.2', limit: { context: 1000000, output: 128000 },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+        options: { thinking: { type: 'adaptive' }, effort: 'high' }
+      },
+      'claude-mythos-5-2': {
+        name: 'Claude Mythos 5.2', limit: { context: 1000000, output: 128000 },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+        options: { thinking: { type: 'adaptive' }, effort: 'high' }
+      },
       'claude-sonnet-5-5': {
         name: 'Claude Sonnet 5.5',
         limit: { context: 1000000, output: 128000 },

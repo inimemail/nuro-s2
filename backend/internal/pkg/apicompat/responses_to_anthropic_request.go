@@ -90,6 +90,9 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 			return nil, fmt.Errorf("%s requires tool_choice auto or none", req.Model)
 		}
 		effort := "medium"
+		if claude.IsClaude52(req.Model) {
+			effort = "high"
+		}
 		if req.Reasoning != nil && req.Reasoning.Effort != "" {
 			effort = req.Reasoning.Effort
 		}
@@ -98,7 +101,18 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		default:
 			return nil, fmt.Errorf("unsupported %s reasoning effort %q", req.Model, effort)
 		}
-		if !claude.IsHaiku55(req.Model) {
+		if claude.IsClaude52(req.Model) {
+			if req.Temperature != nil && *req.Temperature != 1 {
+				return nil, fmt.Errorf("%s supports only temperature=1", req.Model)
+			}
+			if req.TopP != nil && *req.TopP != 0.99 {
+				return nil, fmt.Errorf("%s supports only top_p=0.99", req.Model)
+			}
+			if req.Temperature != nil && req.TopP != nil {
+				return nil, fmt.Errorf("%s does not allow temperature and top_p together", req.Model)
+			}
+		}
+		if !claude.IsHaiku55(req.Model) && !claude.IsClaude52(req.Model) {
 			out.Temperature, out.TopP = nil, nil
 		}
 		out.Thinking = &AnthropicThinking{Type: "adaptive"}

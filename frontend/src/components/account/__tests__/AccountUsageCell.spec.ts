@@ -3,17 +3,25 @@ import { flushPromises, mount } from '@vue/test-utils'
 import AccountUsageCell from '../AccountUsageCell.vue'
 import type { Account } from '@/types'
 
-const { getUsage, queryOpenAIQuota } = vi.hoisted(() => ({
+const { getUsage, queryOpenAIQuota, queryGrokQuota, resetOpenAIQuota, updateCodexAutoResetMode, sendOpenAICodexInvite } = vi.hoisted(() => ({
   getUsage: vi.fn(),
-  queryOpenAIQuota: vi.fn()
+  queryOpenAIQuota: vi.fn(),
+  queryGrokQuota: vi.fn(),
+  resetOpenAIQuota: vi.fn(),
+  updateCodexAutoResetMode: vi.fn(),
+  sendOpenAICodexInvite: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       getUsage,
-      queryOpenAIQuota
-    }
+      queryOpenAIQuota,
+      resetOpenAIQuota,
+      updateCodexAutoResetMode,
+      sendOpenAICodexInvite
+    },
+    grok: { queryQuota: queryGrokQuota }
   }
 }))
 
@@ -915,5 +923,271 @@ describe('AccountUsageCell', () => {
 		expect(wrapper.text()).toContain('0')
 		expect(wrapper.text()).toContain('A $0.00')
 		expect(wrapper.text()).toContain('U $0.00')
+  })
+})
+
+describe('AccountUsageCell request ownership', () => {
+  function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
+  const usage = (value: number) => ({ source: 'passive', five_hour: { utilization: value } })
+  function mountUsage(id: number) { return mount(AccountUsageCell, { props: { account: makeAccount({ id, platform: 'anthropic', type: 'oauth' }) }, global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true } } }) }
+  beforeEach(() => {
+    getUsage.mockReset(); queryOpenAIQuota.mockReset(); queryOpenAIQuota.mockResolvedValue({})
+    queryGrokQuota.mockReset()
+    resetOpenAIQuota.mockReset(); updateCodexAutoResetMode.mockReset(); sendOpenAICodexInvite.mockReset()
+    Object.defineProperty(window, 'matchMedia', { writable: true, value: vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })) })
+  })
+  it('offers one explicit Antigravity force query and keeps last-good quota on failure', async () => {
+    const quota = { antigravity_quota: { 'gemini-3-pro-high': { utilization: 42, reset_time: null } } }
+    let reject!: (error: Error) => void
+    const pending = new Promise<never>((_, fail) => { reject = fail })
+    getUsage.mockResolvedValueOnce(quota).mockReturnValueOnce(pending)
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 99105, platform: 'antigravity', type: 'oauth' }) },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    const button = wrapper.get('[data-testid="ag-usage-query"]')
+    await button.trigger('click')
+    expect(getUsage).toHaveBeenLastCalledWith(99105, 'active', true)
+    expect(button.attributes('disabled')).toBeDefined()
+    await button.trigger('click')
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('.usage-fixture').text()).toBe('42')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      reject(new Error('fixture'))
+      await flushPromises()
+      expect(wrapper.get('.usage-fixture').text()).toBe('42')
+      expect(wrapper.text()).toContain('admin.accounts.usageRefreshFailed')
+      expect(button.attributes('disabled')).toBeUndefined()
+    } finally {
+      consoleError.mockRestore()
+      wrapper.unmount()
+    }
+  })
+  it('keeps last good usage during refresh and ignores passive data after active refresh', async () => {
+    const passive = deferred<ReturnType<typeof usage>>()
+    getUsage.mockResolvedValueOnce(usage(10)).mockReturnValueOnce(passive.promise).mockResolvedValueOnce(usage(80))
+    const wrapper = mountUsage(99101); await flushPromises()
+    await wrapper.setProps({ manualRefreshToken: 1 }); await flushPromises()
+    expect(wrapper.find('.usage-fixture').text()).toBe('10')
+    const active = wrapper.findAll('button').find(button => button.text().includes('activeQuery'))
+    expect(active).toBeDefined(); await active!.trigger('click'); await flushPromises()
+    expect(wrapper.find('.usage-fixture').text()).toBe('80')
+    passive.resolve(usage(20)); await flushPromises(); expect(wrapper.find('.usage-fixture').text()).toBe('80'); wrapper.unmount()
+  })
+  it('refreshes Grok usage after one active probe without admitting duplicate probes', async () => {
+    const probe = deferred<Record<string, never>>()
+    queryGrokQuota.mockReturnValueOnce(probe.promise)
+    getUsage.mockResolvedValueOnce({ grok_request_quota: { limit: 100, remaining: 80 } })
+      .mockResolvedValueOnce({ grok_request_quota: { limit: 100, remaining: 30 } })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 99201, platform: 'grok', type: 'oauth' }) },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    const button = wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!
+    await button.trigger('click')
+    await button.trigger('click')
+    expect(queryGrokQuota).toHaveBeenCalledTimes(1)
+    expect(queryGrokQuota).toHaveBeenCalledWith(99201)
+    expect(wrapper.get('.usage-fixture').text()).toBe('80')
+    probe.resolve({})
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(getUsage).toHaveBeenLastCalledWith(99201, undefined)
+    expect(wrapper.get('.usage-fixture').text()).toBe('30')
+    expect(button.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it('discards a late Codex quota query after replacing the account', async () => {
+    const quota = deferred<{ rate_limit_reset_credits: { available_count: number } }>()
+    getUsage.mockResolvedValueOnce(usage(10)).mockResolvedValueOnce(usage(20)).mockResolvedValue(usage(60))
+    queryOpenAIQuota.mockReturnValueOnce(quota.promise)
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 99202, platform: 'openai', type: 'oauth' }) },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.trigger('click')
+    await flushPromises()
+    expect(queryOpenAIQuota).toHaveBeenCalledWith(99202)
+    await wrapper.setProps({ account: makeAccount({ id: 99203, platform: 'openai', type: 'oauth' }) })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(3)
+    quota.resolve({ rate_limit_reset_credits: { available_count: 99 } })
+    await flushPromises()
+    expect(wrapper.get('.usage-fixture').text()).toBe('60')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.resetCredits 99')
+    wrapper.unmount()
+  })
+  it('does not refresh another Grok account when the old probe finishes', async () => {
+    const probe = deferred<Record<string, never>>()
+    queryGrokQuota.mockReturnValueOnce(probe.promise)
+    getUsage.mockResolvedValueOnce({ grok_request_quota: { limit: 100, remaining: 80 } })
+      .mockResolvedValue({ grok_request_quota: { limit: 100, remaining: 30 } })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 99204, platform: 'grok', type: 'oauth' }) },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true } }
+    })
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.trigger('click')
+    await wrapper.setProps({ account: makeAccount({ id: 99205, platform: 'grok', type: 'oauth' }) })
+    await flushPromises()
+    probe.resolve({}); await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('.usage-fixture').text()).toBe('30')
+    wrapper.unmount()
+  })
+  const codexUsage = (value: number) => ({ ...usage(value), codex_reset_credits_supported: true, codex_reset_credits_available_count: 1 })
+  const mountCodex = (id: number) => mount(AccountUsageCell, {
+    props: { account: makeAccount({ id, platform: 'openai', type: 'oauth' }) },
+    global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div class="usage-fixture">{{utilization}}</div>' }, AccountQuotaInfo: true, Teleport: true } }
+  })
+  it.each(['reset', 'auto-reset'] as const)('discards a late Codex %s result after switching accounts', async (action) => {
+    const response = deferred<ReturnType<typeof codexUsage>>()
+    const id = action === 'reset' ? 99206 : 99208
+    getUsage.mockResolvedValue(codexUsage(10))
+    resetOpenAIQuota.mockReturnValueOnce(response.promise)
+    updateCodexAutoResetMode.mockReturnValueOnce(response.promise)
+    const wrapper = mountCodex(id); await flushPromises()
+    if (action === 'reset') {
+      const button = wrapper.findAll('button').find(item => item.text().trim() === '重置')!
+      await button.trigger('click'); await button.trigger('click')
+      expect(resetOpenAIQuota).toHaveBeenCalledWith(id)
+    } else {
+      await wrapper.findAll('[role="radio"]')[1]!.trigger('click')
+      expect(updateCodexAutoResetMode).toHaveBeenCalledWith(id, 'short')
+    }
+    getUsage.mockResolvedValue(codexUsage(60))
+    await wrapper.setProps({ account: makeAccount({ id: id + 1, platform: 'openai', type: 'oauth' }) })
+    await flushPromises()
+    response.resolve(codexUsage(99)); await flushPromises()
+    expect(wrapper.get('.usage-fixture').text()).toBe('60')
+    expect(queryOpenAIQuota).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it.each(['reset', 'auto-reset'] as const)('preserves successful same-account Codex %s actions', async (action) => {
+    const id = action === 'reset' ? 99210 : 99211
+    getUsage.mockResolvedValue(codexUsage(10))
+    resetOpenAIQuota.mockResolvedValueOnce(codexUsage(25))
+    updateCodexAutoResetMode.mockResolvedValueOnce({ ...codexUsage(25), codex_auto_reset_mode: 'short' })
+    const wrapper = mountCodex(id); await flushPromises()
+    if (action === 'reset') {
+      const button = wrapper.findAll('button').find(item => item.text().trim() === '重置')!
+      await button.trigger('click'); await button.trigger('click'); await flushPromises()
+      expect(resetOpenAIQuota).toHaveBeenCalledOnce()
+      expect(resetOpenAIQuota).toHaveBeenCalledWith(id)
+      expect(queryOpenAIQuota).toHaveBeenCalledWith(id)
+    } else {
+      await wrapper.findAll('[role="radio"]')[1]!.trigger('click'); await flushPromises()
+      expect(updateCodexAutoResetMode).toHaveBeenCalledOnce()
+      expect(updateCodexAutoResetMode).toHaveBeenCalledWith(id, 'short')
+      expect(wrapper.findAll('[role="radio"]')[1]!.attributes('aria-checked')).toBe('true')
+    }
+    expect(wrapper.get('.usage-fixture').text()).toBe('25')
+    wrapper.unmount()
+  })
+  it('requires fresh reset confirmation for a replacement account', async () => {
+    getUsage.mockResolvedValue(codexUsage(10))
+    const wrapper = mountCodex(99212); await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().trim() === '重置')!.trigger('click')
+    expect(wrapper.text()).toContain('确认重置？')
+    await wrapper.setProps({ account: makeAccount({ id: 99213, platform: 'openai', type: 'oauth' }) }); await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().trim() === '重置')!.trigger('click')
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('确认重置？')
+    wrapper.unmount()
+  })
+  it('does not restore spent reset credits from an older same-account quota query', async () => {
+    const oldQuota = deferred<{ rate_limit_reset_credits: { available_count: number } }>()
+    getUsage.mockResolvedValue(codexUsage(10))
+    queryOpenAIQuota.mockReturnValueOnce(oldQuota.promise)
+      .mockResolvedValueOnce({ rate_limit_reset_credits: { available_count: 0 } })
+    resetOpenAIQuota.mockResolvedValueOnce({ ...codexUsage(25), codex_reset_credits_available_count: 0 })
+    const wrapper = mountCodex(99218); await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.trigger('click'); await flushPromises()
+    const resetButton = wrapper.findAll('button').find(item => item.text().trim() === '重置')!
+    await resetButton.trigger('click'); await resetButton.trigger('click'); await flushPromises()
+    expect(resetOpenAIQuota).toHaveBeenCalledWith(99218)
+    expect(queryOpenAIQuota).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 0')
+    oldQuota.resolve({ rate_limit_reset_credits: { available_count: 99 } }); await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 0')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.resetCredits 99')
+    wrapper.unmount()
+  })
+  it.each(['passive', 'active'] as const)('does not overwrite a successful reset with older %s usage', async (source) => {
+    const oldUsage = deferred<ReturnType<typeof codexUsage>>()
+    getUsage.mockResolvedValueOnce(codexUsage(10)).mockReturnValueOnce(oldUsage.promise)
+    resetOpenAIQuota.mockResolvedValueOnce({ ...codexUsage(25), codex_reset_credits_available_count: 0 })
+    queryOpenAIQuota.mockResolvedValue({ rate_limit_reset_credits: { available_count: 0 } })
+    const wrapper = mountCodex(source === 'passive' ? 99219 : 99220); await flushPromises()
+    if (source === 'passive') await wrapper.setProps({ manualRefreshToken: 1 })
+    else await wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.trigger('click')
+    await flushPromises()
+    const resetButton = wrapper.findAll('button').find(item => item.text().trim() === '重置')!
+    await resetButton.trigger('click'); await resetButton.trigger('click'); await flushPromises()
+    expect(wrapper.get('.usage-fixture').text()).toBe('25')
+    oldUsage.resolve(codexUsage(99)); await flushPromises()
+    expect(wrapper.get('.usage-fixture').text()).toBe('25')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 0')
+    expect(wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it('does not overwrite a saved auto-reset mode with older passive usage', async () => {
+    const oldUsage = deferred<ReturnType<typeof codexUsage>>()
+    getUsage.mockResolvedValueOnce(codexUsage(10)).mockReturnValueOnce(oldUsage.promise)
+    updateCodexAutoResetMode.mockResolvedValueOnce({ ...codexUsage(25), codex_auto_reset_mode: 'short' })
+    const wrapper = mountCodex(99221); await flushPromises()
+    await wrapper.setProps({ manualRefreshToken: 1 }); await flushPromises()
+    await wrapper.findAll('[role="radio"]')[1]!.trigger('click'); await flushPromises()
+    oldUsage.resolve(codexUsage(99)); await flushPromises()
+    expect(wrapper.get('.usage-fixture').text()).toBe('25')
+    expect(wrapper.findAll('[role="radio"]')[1]!.attributes('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+  it('discards a quota query even after switching back to the original account', async () => {
+    const quota = deferred<{ rate_limit_reset_credits: { available_count: number } }>()
+    getUsage.mockResolvedValue(codexUsage(10)); queryOpenAIQuota.mockReturnValueOnce(quota.promise)
+    const wrapper = mountCodex(99214); await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().includes('activeQuery'))!.trigger('click'); await flushPromises()
+    await wrapper.setProps({ account: makeAccount({ id: 99215, platform: 'openai', type: 'oauth' }) }); await flushPromises()
+    await wrapper.setProps({ account: makeAccount({ id: 99214, platform: 'openai', type: 'oauth' }) }); await flushPromises()
+    quota.resolve({ rate_limit_reset_credits: { available_count: 99 } }); await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 1')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.resetCredits 99')
+    wrapper.unmount()
+  })
+  it('keeps an old invite response out of the replacement account dialog', async () => {
+    const invite = deferred<{ sent: boolean; message: string }>()
+    getUsage.mockResolvedValue(codexUsage(10)); sendOpenAICodexInvite.mockReturnValueOnce(invite.promise)
+    const wrapper = mountCodex(99216); await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().trim() === '邀请')!.trigger('click'); await flushPromises()
+    await wrapper.get('input[type="email"]').setValue('first@example.com')
+    await wrapper.findAll('button').find(item => item.text().trim() === '发送')!.trigger('click')
+    expect(sendOpenAICodexInvite).toHaveBeenCalledWith(99216, 'first@example.com')
+    await wrapper.setProps({ account: makeAccount({ id: 99217, platform: 'openai', type: 'oauth' }) }); await flushPromises()
+    expect(wrapper.find('input[type="email"]').exists()).toBe(false)
+    await wrapper.findAll('button').find(item => item.text().trim() === '邀请')!.trigger('click'); await flushPromises()
+    await wrapper.get('input[type="email"]').setValue('second@example.com')
+    invite.resolve({ sent: true, message: 'previous-account-invite' }); await flushPromises()
+    expect(wrapper.text()).not.toContain('previous-account-invite')
+    expect((wrapper.get('input[type="email"]').element as HTMLInputElement).value).toBe('second@example.com')
+    wrapper.unmount()
+  })
+  it('ignores a response belonging to a replaced account', async () => {
+    const old = deferred<ReturnType<typeof usage>>()
+    getUsage.mockReturnValueOnce(old.promise).mockResolvedValueOnce(usage(60))
+    const wrapper = mountUsage(99102); await flushPromises()
+    await wrapper.setProps({ account: makeAccount({ id: 99103, platform: 'anthropic', type: 'oauth' }) }); await flushPromises()
+    old.resolve(usage(99)); await flushPromises(); expect(wrapper.find('.usage-fixture').text()).toBe('60'); wrapper.unmount()
+  })
+  it('does not publish a pending result after unmount', async () => {
+    const old = deferred<ReturnType<typeof usage>>()
+    getUsage.mockReturnValueOnce(old.promise)
+    const wrapper = mountUsage(99104); await flushPromises(); wrapper.unmount(); old.resolve(usage(99)); await flushPromises()
+    getUsage.mockResolvedValueOnce(usage(40)); const next = mountUsage(99104); await flushPromises()
+    expect(next.find('.usage-fixture').text()).toBe('40'); next.unmount()
   })
 })

@@ -346,10 +346,13 @@ func (s *BillingService) initFallbackPricing() {
 		CacheCreationPricePerToken: 2.5e-6,
 		CacheCreation5mPrice:       2.5e-6,
 		CacheCreation1hPrice:       4e-6,
-		CacheReadPricePerToken:     0.2e-6,
+		CacheReadPricePerToken:     0.1e-6,
 		SupportsCacheBreakdown:     true,
 	}
 
+	for _, model := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		s.fallbackPrices[model] = &ModelPricing{InputPricePerToken: 8e-6, OutputPricePerToken: 40e-6, CacheCreationPricePerToken: 10e-6, CacheCreation5mPrice: 10e-6, CacheCreation1hPrice: 16e-6, CacheReadPricePerToken: 0.2e-6, SupportsCacheBreakdown: true}
+	}
 	// Claude 3.5 Sonnet
 	s.fallbackPrices["claude-3-5-sonnet"] = &ModelPricing{
 		InputPricePerToken:         3e-6,    // $3 per MTok
@@ -877,6 +880,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return &ModelPricing{InputPricePerToken: 5e-6, CacheReadPricePerToken: 1.25e-6, ImageInputPricePerToken: 8e-6, ImageCacheReadPricePerToken: 2e-6, ImageCacheReadPriceExplicit: true, ImageOutputPricePerToken: 30e-6}
 	}
 	modelLower := normalizeAntigravityClaudeTierAlias(strings.ToLower(model))
+	if claude.IsFable52(modelLower) {
+		return s.fallbackPrices["claude-fable-5-2"]
+	}
+	if claude.IsMythos52(modelLower) {
+		return s.fallbackPrices["claude-mythos-5-2"]
+	}
 	if strings.Contains(modelLower, "gemini-4-argon-cyber") {
 		return s.fallbackPrices["gemini-4-argon-cyber-permissive"]
 	}

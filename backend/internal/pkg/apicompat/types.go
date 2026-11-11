@@ -418,7 +418,9 @@ type ResponsesOutput struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
-	Input     string `json:"input,omitempty"`
+	// Preserve explicit null/[] so sealed arguments cannot appear to be plaintext.
+	EncryptedFunctionArgs json.RawMessage `json:"encrypted_function_args,omitempty"`
+	Input                 string          `json:"input,omitempty"`
 
 	// type=web_search_call
 	Action *WebSearchAction `json:"action,omitempty"`

@@ -176,3 +176,26 @@ func openAICompatAnthropicReasoningEffort(req *apicompat.AnthropicRequest, upstr
 	}
 	return convertedEffort
 }
+
+func validateNonOpenAIMessagesEffort(account *Account, body []byte, models ...string) error {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return validateGPT61SolRequestBody(body, models...)
+	}
+	return nil
+}
+
+// Account aliases must not erase a known client's disabled-thinking semantics
+// before group mappings and final model validation run. Generic models retain
+// the converter's existing behavior.
+func preserveOpenAIMessagesDisabledThinking(out *apicompat.ResponsesRequest, source *apicompat.AnthropicRequest, models ...string) {
+	if source.Thinking == nil || source.Thinking.Type != "disabled" || out.Reasoning == nil {
+		return
+	}
+	for _, model := range models {
+		if openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model) {
+			out.Reasoning.Effort = "none"
+			out.Temperature, out.TopP = source.Temperature, source.TopP
+			return
+		}
+	}
+}

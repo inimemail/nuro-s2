@@ -17,6 +17,30 @@ vi.mock('@/composables/useClipboard', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  it.each(['anthropic', 'antigravity'])('scopes Claude 5.2 OpenCode entries to supported %s providers', async (platform) => {
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-test', baseUrl: 'https://example.com/v1', platform },
+      global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
+    })
+    const tab = wrapper.findAll('button').find(button => button.text().includes('keys.useKeyModal.cliTabs.opencode'))
+    expect(tab).toBeDefined()
+    await tab!.trigger('click')
+    const config = JSON.parse(wrapper.get('pre code').text())
+    const models = config.provider[platform === 'anthropic' ? 'anthropic' : 'antigravity-claude'].models
+    for (const id of ['claude-fable-5-2', 'claude-mythos-5-2']) {
+      if (platform !== 'anthropic') {
+        expect(models[id]).toBeUndefined()
+        continue
+      }
+      expect(models[id]).toMatchObject({
+        limit: { context: 1000000, output: 128000 },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+        options: { thinking: { type: 'adaptive' }, effort: 'high' }
+      })
+    }
+    wrapper.unmount()
+  })
+
   const mountOpenAI = (baseUrl = 'https://example.com/v1', apiKey = 'sk-test') => mount(UseKeyModal, {
     props: { show: true, apiKey, baseUrl, platform: 'openai', groupId: 1 },
     global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }

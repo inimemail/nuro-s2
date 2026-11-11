@@ -8,6 +8,9 @@ import (
 )
 
 func normalizeOpus55Request(body []byte, model string) ([]byte, error) {
+	if claude.IsClaude52(model) {
+		return normalizeClaude52Request(body, model)
+	}
 	if claude.IsHaiku55(model) {
 		return normalizeHaiku55Request(body, model)
 	}
@@ -78,4 +81,26 @@ func normalizeHaiku55Request(body []byte, model string) ([]byte, error) {
 		return sjson.SetBytes(body, "thinking.type", "adaptive")
 	}
 	return body, nil
+}
+
+// Apply the new model policy without changing any existing 5.5 parameter policy.
+func normalizeClaude52Request(body []byte, model string) ([]byte, error) {
+	if thinking := gjson.GetBytes(body, "thinking.type").String(); thinking != "" && thinking != "adaptive" {
+		return nil, fmt.Errorf("%s requires adaptive thinking", model)
+	}
+	if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+		return nil, fmt.Errorf("%s does not support thinking.budget_tokens", model)
+	}
+	if choice := gjson.GetBytes(body, "tool_choice.type").String(); choice == "any" || choice == "tool" {
+		return nil, fmt.Errorf("%s requires tool_choice auto or none", model)
+	}
+	// Sampling validation and adaptive insertion are shared with Haiku, but disabled is rejected above.
+	out, err := normalizeHaiku55Request(body, model)
+	if err != nil {
+		return nil, err
+	}
+	if !gjson.GetBytes(out, "output_config.effort").Exists() {
+		return sjson.SetBytes(out, "output_config.effort", "high")
+	}
+	return out, nil
 }

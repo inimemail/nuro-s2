@@ -17,7 +17,7 @@ class UpgradeRunnerTests(unittest.TestCase):
             self.assertFalse(rust_version_supported(actual, '1.90.0'))
 
     def test_preflight_rejects_each_mismatched_toolchain(self):
-        versions = ['go1.27.3', 'v24.13.0', '9.15.9', 'rustc 1.96.1 (fixture)']
+        versions = ['go1.27.4', 'v24.13.0', '9.15.9', 'rustc 1.96.1 (fixture)']
         with patch('check_upgrade.subprocess.check_output', side_effect=versions):
             self.assertTrue(preflight())
         for index in range(3):
@@ -26,6 +26,10 @@ class UpgradeRunnerTests(unittest.TestCase):
             with self.subTest(tool=index), patch('check_upgrade.subprocess.check_output', side_effect=mismatched) as command:
                 self.assertFalse(preflight())
                 self.assertEqual(command.call_count, index + 1)
+
+        with patch('check_upgrade.subprocess.check_output', return_value='go1.27.3') as command:
+            self.assertFalse(preflight())
+            self.assertEqual(command.call_count, 1)
 
     def test_counts_only_completed_tests(self):
         lines = ['not-json', '[]', json.dumps({'Action': 'pass', 'Package': 'fixture'})]

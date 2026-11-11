@@ -495,9 +495,11 @@ func generateChatCmplID() string {
 // ---------------------------------------------------------------------------
 
 type bufferedFuncCall struct {
-	CallID string
-	Name   string
-	Args   strings.Builder
+	CallID                string
+	Name                  string
+	Namespace             string
+	EncryptedFunctionArgs json.RawMessage
+	Args                  strings.Builder
 }
 
 // BufferedResponseAccumulator collects content from Responses SSE delta events
@@ -508,7 +510,7 @@ type BufferedResponseAccumulator struct {
 	refusal              strings.Builder
 	reasoning            strings.Builder
 	rawReasoning         strings.Builder
-	funcCalls            []bufferedFuncCall
+	funcCalls            []*bufferedFuncCall
 	outputIndexToFuncIdx map[int]int
 }
 
@@ -530,14 +532,37 @@ func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) 
 		if event.Delta != "" {
 			_, _ = a.text.WriteString(event.Delta)
 		}
-	case "response.output_item.added":
+	case "response.output_item.added", "response.output_item.done":
 		if event.Item != nil && (event.Item.Type == "function_call" || event.Item.Type == "custom_tool_call") {
-			idx := len(a.funcCalls)
-			a.outputIndexToFuncIdx[event.OutputIndex] = idx
-			a.funcCalls = append(a.funcCalls, bufferedFuncCall{
-				CallID: event.Item.CallID,
-				Name:   event.Item.Name,
-			})
+			idx, exists := a.outputIndexToFuncIdx[event.OutputIndex]
+			if !exists {
+				idx = len(a.funcCalls)
+				a.outputIndexToFuncIdx[event.OutputIndex] = idx
+				// Builders must stay at a stable address when this slice grows.
+				a.funcCalls = append(a.funcCalls, &bufferedFuncCall{})
+			}
+			call := a.funcCalls[idx]
+			if event.Item.CallID != "" {
+				call.CallID = event.Item.CallID
+			}
+			if event.Item.Name != "" {
+				call.Name = event.Item.Name
+			}
+			if event.Item.Namespace != "" {
+				call.Namespace = event.Item.Namespace
+			}
+			if event.Item.EncryptedFunctionArgs != nil {
+				call.EncryptedFunctionArgs = append(json.RawMessage(nil), event.Item.EncryptedFunctionArgs...)
+			}
+			// The done item is authoritative and may be the only arguments source.
+			arguments := event.Item.Arguments
+			if event.Item.Type == "custom_tool_call" {
+				arguments = event.Item.Input
+			}
+			if arguments != "" || (event.Type == "response.output_item.done" && event.Item.Type == "custom_tool_call") {
+				call.Args.Reset()
+				_, _ = call.Args.WriteString(arguments)
+			}
 		}
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		if event.Delta != "" {
@@ -593,10 +618,12 @@ func (a *BufferedResponseAccumulator) BuildOutput() []ResponsesOutput {
 
 	for i := range a.funcCalls {
 		out = append(out, ResponsesOutput{
-			Type:      "function_call",
-			CallID:    a.funcCalls[i].CallID,
-			Name:      a.funcCalls[i].Name,
-			Arguments: a.funcCalls[i].Args.String(),
+			Type:                  "function_call",
+			Namespace:             a.funcCalls[i].Namespace,
+			EncryptedFunctionArgs: a.funcCalls[i].EncryptedFunctionArgs,
+			CallID:                a.funcCalls[i].CallID,
+			Name:                  a.funcCalls[i].Name,
+			Arguments:             a.funcCalls[i].Args.String(),
 		})
 	}
 

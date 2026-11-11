@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -206,4 +207,31 @@ func TestShouldReportOpenAIWSProxyFailure(t *testing.T) {
 	cyber, _ := gin.CreateTestContext(httptest.NewRecorder())
 	service.MarkOpsCyberPolicy(cyber, service.CyberPolicyMark{Message: "private upstream policy text"})
 	require.False(t, shouldReportOpenAIWSProxyFailure(cyber, errors.New("upstream response failed")))
+}
+
+func TestLaterTurnRetainsWSCloseAndHealthClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	base := errors.New("upstream failure")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "upstream failure", err: base, want: true},
+		{name: "client canceled", err: context.Canceled},
+		{name: "health neutral", err: service.MarkOpenAIWSAccountHealthNeutralError(base)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &service.OpenAIWSLaterTurnError{Cause: tc.err}
+			require.Equal(t, tc.want, shouldReportOpenAIWSProxyFailure(c, err))
+			require.ErrorIs(t, err, tc.err)
+		})
+	}
+	closeErr := service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "client websocket idle timeout", base)
+	err := &service.OpenAIWSLaterTurnError{Cause: closeErr}
+	var actual *service.OpenAIWSClientCloseError
+	require.ErrorAs(t, err, &actual)
+	require.Equal(t, coderws.StatusPolicyViolation, actual.StatusCode())
+	require.Equal(t, "client websocket idle timeout", actual.Reason())
 }

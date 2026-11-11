@@ -47,5 +47,21 @@ func IsHaiku55(model string) bool {
 // IsAdaptiveThinkingModel identifies Claude 5.5 models that require the
 // adaptive-thinking request and Responses conversion rules.
 func IsAdaptiveThinkingModel(model string) bool {
-	return IsOpus55(model) || IsSonnet55(model) || IsHaiku55(model)
+	return IsOpus55(model) || IsSonnet55(model) || IsHaiku55(model) || IsClaude52(model)
+}
+
+func IsFable52(model string) bool  { return normalize52Model(model) == "claude-fable-5-2" }
+func IsMythos52(model string) bool { return normalize52Model(model) == "claude-mythos-5-2" }
+func IsClaude52(model string) bool { return IsFable52(model) || IsMythos52(model) }
+
+func normalize52Model(model string) string {
+	id := strings.ToLower(strings.TrimSpace(model))
+	// Restrict provider spellings to known Claude providers; never substring-match arbitrary aliases.
+	for _, p := range []string{"anthropic/", "bedrock/", "vertex_ai/"} {
+		id = strings.TrimPrefix(id, p)
+	}
+	for _, p := range []string{"jp.", "au.", "us-gov."} {
+		id = strings.TrimPrefix(id, p)
+	}
+	return normalize55Model(id)
 }

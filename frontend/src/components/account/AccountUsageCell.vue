@@ -1,5 +1,9 @@
 <template>
-  <div ref="rootRef" v-if="showUsageWindows">
+  <div ref="rootRef" v-if="showUsageWindows" :aria-busy="loading || activeQueryLoading">
+    <div v-if="usageInfo && (loading || activeQueryLoading || error)" role="status" aria-live="polite" class="mb-1 flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+      <span v-if="loading || activeQueryLoading" class="h-2 w-2 animate-pulse rounded-full bg-primary-500" aria-hidden="true" />
+      {{ error ? t('admin.accounts.usageRefreshFailed') : t('common.loading') }}
+    </div>
     <OllamaCloudUsageCell :account="account" />
     <OpenCodeGoUsageCell v-if="isOpenCodeUsageAccount(account)" :account="account" />
     <CNProviderUsageCell v-else :account="account" />
@@ -11,7 +15,7 @@
       "
     >
       <!-- Loading state -->
-      <div v-if="loading" class="space-y-1.5">
+      <div v-if="loading && !usageInfo" class="space-y-1.5">
         <!-- OAuth: 3 rows, Setup Token: 1 row -->
         <div class="flex items-center gap-1">
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
@@ -33,7 +37,7 @@
       </div>
 
       <!-- Error state -->
-      <div v-else-if="error" class="text-xs text-red-500">
+      <div v-else-if="error && !usageInfo" class="text-xs text-red-500">
         {{ error }}
       </div>
 
@@ -265,7 +269,7 @@
           </div>
         </div>
       </div>
-      <div v-else-if="loading" class="space-y-1.5">
+      <div v-else-if="loading && !usageInfo" class="space-y-1.5">
         <div class="flex items-center gap-1">
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
           <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
@@ -362,7 +366,7 @@
       </div>
 
       <!-- Loading state -->
-      <div v-else-if="loading" class="space-y-1.5">
+      <div v-else-if="loading && !usageInfo" class="space-y-1.5">
         <div class="flex items-center gap-1">
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
           <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
@@ -371,7 +375,7 @@
       </div>
 
       <!-- Error state -->
-      <div v-else-if="error" class="text-xs text-red-500">
+      <div v-else-if="error && !usageInfo" class="text-xs text-red-500">
         {{ error }}
       </div>
 
@@ -428,6 +432,20 @@
         💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
+      <div class="mt-1 flex items-center">
+        <button
+          type="button"
+          data-testid="ag-usage-query"
+          class="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+          :disabled="activeQueryLoading"
+          @click="loadActiveUsage"
+        >
+          <svg class="h-3 w-3" :class="{ 'animate-spin': activeQueryLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m14.836 2A7.5 7.5 0 004.582 9M4.582 9H9m11 11v-5h-.582m0 0A7.5 7.5 0 015.582 16m13.836-1H15" />
+          </svg>
+          {{ activeQueryLoading ? t('common.loading') : t('admin.accounts.usageWindow.activeQuery') }}
+        </button>
+      </div>
     </template>
 
     <!-- Gemini platform: show quota + local usage window -->
@@ -514,14 +532,14 @@
           <div class="h-3 w-8 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
           <div class="h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
         </div>
-        <div v-if="loading" class="space-y-1">
+        <div v-if="loading && !usageInfo" class="space-y-1">
           <div class="flex items-center gap-1">
             <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
             <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
             <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
           </div>
         </div>
-        <div v-else-if="error" class="text-xs text-red-500">
+        <div v-else-if="error && !usageInfo" class="text-xs text-red-500">
           {{ error }}
         </div>
         <!-- Gemini: show daily usage bars when available -->
@@ -548,14 +566,14 @@
 
     <!-- Grok OAuth accounts: passive quota headers + admin-triggered probe -->
     <template v-else-if="account.platform === 'grok' && account.type === 'oauth'">
-      <div v-if="loading" class="space-y-1.5">
+      <div v-if="loading && !usageInfo" class="space-y-1.5">
         <div class="flex items-center gap-1">
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
           <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
         </div>
       </div>
-      <div v-else-if="error" class="text-xs text-red-500">
+      <div v-else-if="error && !usageInfo" class="text-xs text-red-500">
         {{ error }}
       </div>
       <div v-else class="space-y-1">
@@ -826,7 +844,25 @@ const { t } = useI18n()
 const desktopViewportQuery = '(min-width: 768px)'
 
 const unmounted = ref(false)
-onBeforeUnmount(() => { unmounted.value = true })
+let usageGeneration = 0
+// Successful account mutations invalidate older reads without ending their loading lifetime.
+let usageRevision = 0
+let accountGeneration = 0
+let codexResetCreditQueryGeneration = 0
+let codexInviteQueryGeneration = 0
+const usageIdentity = () => `${props.account.id}:${props.account.platform}:${props.account.type}`
+const ownsUsageResult = (generation: number, identity: string) =>
+  !unmounted.value && generation === usageGeneration && identity === usageIdentity()
+// Account actions have a separate lifetime from passive usage refreshes.
+const captureAccountScope = () => {
+  const generation = accountGeneration
+  const identity = usageIdentity()
+  return {
+    accountID: props.account.id,
+    isCurrent: () => !unmounted.value && generation === accountGeneration && identity === usageIdentity()
+  }
+}
+onBeforeUnmount(() => { unmounted.value = true; usageGeneration++; accountGeneration++ })
 
 const loading = ref(false)
 const activeQueryLoading = ref(false)
@@ -1105,7 +1141,11 @@ const mergeUsageInfo = (next: Partial<AccountUsageInfo>) => {
 
 const refreshCodexResetCreditUsage = async () => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
-  const result = await adminAPI.accounts.queryOpenAIQuota(props.account.id)
+  const scope = captureAccountScope()
+  const generation = ++codexResetCreditQueryGeneration
+  const inviteGeneration = ++codexInviteQueryGeneration
+  const result = await adminAPI.accounts.queryOpenAIQuota(scope.accountID)
+  if (!scope.isCurrent() || generation !== codexResetCreditQueryGeneration) return
   const count = result.rate_limit_reset_credits?.available_count
   const expirations = result.rate_limit_reset_credits?.credits
     ?.map((credit) => credit.expires_at?.trim() ?? '')
@@ -1114,13 +1154,16 @@ const refreshCodexResetCreditUsage = async () => {
     codex_reset_credits_supported: true,
     codex_reset_credits_available_count: typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0,
     codex_reset_credit_expirations: expirations,
-    codex_invites: result.invites ?? null
+    ...(inviteGeneration === codexInviteQueryGeneration ? { codex_invites: result.invites ?? null } : {})
   })
 }
 
 const refreshCodexInviteUsage = async () => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
-  const result = await adminAPI.accounts.queryOpenAIQuota(props.account.id)
+  const scope = captureAccountScope()
+  const generation = ++codexInviteQueryGeneration
+  const result = await adminAPI.accounts.queryOpenAIQuota(scope.accountID)
+  if (!scope.isCurrent() || generation !== codexInviteQueryGeneration) return
   mergeUsageInfo({
     codex_invites: result.invites ?? null
   })
@@ -1572,11 +1615,16 @@ const isAnthropicOAuthOrSetupToken = computed(() => {
 })
 
 const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean }) => {
-  if (!shouldFetchUsage.value) return
+  if (!shouldFetchUsage.value || activeQueryLoading.value) return
+  const generation = ++usageGeneration
+  const revision = usageRevision
+  const account = props.account
+  const accountID = account.id
+  const identity = usageIdentity()
 
   // Check cache
   if (!options?.bypassCache) {
-    const cached = _usageCache.get(props.account.id)
+    const cached = _usageCache.get(accountID)
     if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
       usageInfo.value = cached.data
       loading.value = false
@@ -1588,19 +1636,19 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   error.value = null
 
   try {
-    const fetchFn = () => adminAPI.accounts.getUsage(props.account.id, options?.source)
-    const result = await enqueueUsageRequest(props.account, fetchFn)
-    if (!unmounted.value) {
+    const fetchFn = () => adminAPI.accounts.getUsage(accountID, options?.source)
+    const result = await enqueueUsageRequest(account, fetchFn)
+    if (ownsUsageResult(generation, identity) && revision === usageRevision) {
       usageInfo.value = result
-      _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+      _usageCache.set(accountID, { data: result, ts: Date.now() })
     }
   } catch (e: any) {
-    if (!unmounted.value) {
+    if (ownsUsageResult(generation, identity) && revision === usageRevision) {
       error.value = t('common.error')
       console.error('Failed to load usage:', e)
     }
   } finally {
-    if (!unmounted.value) loading.value = false
+    if (ownsUsageResult(generation, identity)) loading.value = false
   }
 }
 
@@ -1655,40 +1703,54 @@ const attachVisibilityObserver = () => {
 }
 
 const loadActiveUsage = async () => {
+  if (activeQueryLoading.value) return
+  const generation = ++usageGeneration
+  const revision = usageRevision
+  const accountID = props.account.id
+  const identity = usageIdentity()
   activeQueryLoading.value = true
+  loading.value = false
+  error.value = null
   try {
-    const result = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    const result = await adminAPI.accounts.getUsage(accountID, 'active', true)
+    if (!ownsUsageResult(generation, identity) || revision !== usageRevision) return
     usageInfo.value = result
-    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    _usageCache.set(accountID, { data: result, ts: Date.now() })
     await refreshCodexResetCreditUsage()
-  } catch (e: any) {
-    console.error('Failed to load active usage:', e)
+  } catch (e: unknown) {
+    if (ownsUsageResult(generation, identity) && revision === usageRevision) {
+      error.value = t('common.error')
+      console.error('Failed to load active usage:', e)
+    }
   } finally {
-    activeQueryLoading.value = false
+    if (ownsUsageResult(generation, identity)) activeQueryLoading.value = false
   }
 }
 
 const consumeCodexResetCredit = async () => {
   if (codexResetCreditLoading.value || !canConsumeCodexResetCredit.value) return
+  const scope = captureAccountScope()
   if (!codexResetConfirming.value) {
     codexResetConfirming.value = true
     window.setTimeout(() => {
-      codexResetConfirming.value = false
+      if (scope.isCurrent()) codexResetConfirming.value = false
     }, 3000)
     return
   }
 
   codexResetCreditLoading.value = true
   try {
-    const result = await adminAPI.accounts.resetOpenAIQuota(props.account.id)
+    const result = await adminAPI.accounts.resetOpenAIQuota(scope.accountID)
+    if (!scope.isCurrent()) return
+    usageRevision++
     usageInfo.value = result
-    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    _usageCache.set(scope.accountID, { data: result, ts: Date.now() })
     await refreshCodexResetCreditUsage()
-    codexResetConfirming.value = false
+    if (scope.isCurrent()) codexResetConfirming.value = false
   } catch (e: any) {
     console.error('Failed to consume Codex reset credit:', e)
   } finally {
-    codexResetCreditLoading.value = false
+    if (scope.isCurrent()) codexResetCreditLoading.value = false
   }
 }
 
@@ -1716,19 +1778,21 @@ const sendCodexInvite = async () => {
   if (codexInviteSending.value) return
   const email = codexInviteEmail.value.trim()
   if (!email) return
+  const scope = captureAccountScope()
   codexInviteSending.value = true
   codexInviteSent.value = false
   codexInviteError.value = ''
   try {
-    const result = await adminAPI.accounts.sendOpenAICodexInvite(props.account.id, email)
+    const result = await adminAPI.accounts.sendOpenAICodexInvite(scope.accountID, email)
+    if (!scope.isCurrent()) return
     codexInviteSent.value = result.sent === true
     codexInviteSuccessMessage.value = result.message || '邀请已发送'
     codexInviteEmail.value = ''
   } catch (e: any) {
     console.error('Failed to send Codex invite:', e)
-    codexInviteError.value = normalizeCodexInviteError(e)
+    if (scope.isCurrent()) codexInviteError.value = normalizeCodexInviteError(e)
   } finally {
-    codexInviteSending.value = false
+    if (scope.isCurrent()) codexInviteSending.value = false
   }
 }
 
@@ -1765,16 +1829,19 @@ const normalizeCodexInviteError = (e: any): string => {
 
 const updateCodexAutoResetMode = async (mode: CodexAutoResetMode) => {
   if (codexAutoResetModeLoading.value) return
+  const scope = captureAccountScope()
   const nextMode: CodexAutoResetMode = canConsumeCodexResetCredit.value ? mode : 'off'
   codexAutoResetModeLoading.value = true
   try {
-    const result = await adminAPI.accounts.updateCodexAutoResetMode(props.account.id, nextMode)
+    const result = await adminAPI.accounts.updateCodexAutoResetMode(scope.accountID, nextMode)
+    if (!scope.isCurrent()) return
+    usageRevision++
     usageInfo.value = result
-    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    _usageCache.set(scope.accountID, { data: result, ts: Date.now() })
   } catch (e: any) {
     console.error('Failed to update Codex auto reset mode:', e)
   } finally {
-    codexAutoResetModeLoading.value = false
+    if (scope.isCurrent()) codexAutoResetModeLoading.value = false
   }
 }
 
@@ -1904,16 +1971,29 @@ const grokLastSeenLabel = computed(() => {
 })
 
 const loadGrokQuotaProbe = async () => {
-  if (props.account.platform !== 'grok' || props.account.type !== 'oauth') return
+  if (props.account.platform !== 'grok' || props.account.type !== 'oauth' || activeQueryLoading.value) return
+  const generation = ++usageGeneration
+  const account = props.account
+  const accountID = account.id
+  const identity = usageIdentity()
   activeQueryLoading.value = true
+  loading.value = false
+  error.value = null
   try {
-    await adminAPI.grok.queryQuota(props.account.id)
-    _usageCache.delete(props.account.id)
-    await loadUsage({ bypassCache: true })
+    await adminAPI.grok.queryQuota(accountID)
+    if (!ownsUsageResult(generation, identity)) return
+    _usageCache.delete(accountID)
+    const result = await enqueueUsageRequest(account, () => adminAPI.accounts.getUsage(accountID, undefined))
+    if (!ownsUsageResult(generation, identity)) return
+    usageInfo.value = result
+    _usageCache.set(accountID, { data: result, ts: Date.now() })
   } catch (e: any) {
-    console.error('Failed to probe Grok quota:', e)
+    if (ownsUsageResult(generation, identity)) {
+      error.value = t('common.error')
+      console.error('Failed to probe Grok quota:', e)
+    }
   } finally {
-    activeQueryLoading.value = false
+    if (ownsUsageResult(generation, identity)) activeQueryLoading.value = false
   }
 }
 
@@ -2016,8 +2096,26 @@ onMounted(() => {
   requestAutoLoad(source)
 })
 
-watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
-  if (!prevKey || nextKey === prevKey) return
+watch(usageIdentity, () => {
+  usageGeneration++
+  accountGeneration++
+  loading.value = false
+  activeQueryLoading.value = false
+  usageInfo.value = null
+  error.value = null
+  codexResetCreditLoading.value = false
+  codexResetConfirming.value = false
+  codexAutoResetModeLoading.value = false
+  showCodexResetCreditDetails.value = false
+  closeCodexInviteDialog()
+  pendingAutoLoad.value = false
+  pendingAutoLoadSource.value = undefined
+  _usageCache.delete(props.account.id)
+  if (shouldAutoLoadUsageOnMount.value) requestAutoLoad(isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined)
+}, { flush: 'sync' })
+
+watch([openAIUsageRefreshKey, usageIdentity], ([nextKey, identity], [prevKey, previousIdentity]) => {
+  if (!prevKey || nextKey === prevKey || identity !== previousIdentity) return
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
 
   _usageCache.delete(props.account.id)

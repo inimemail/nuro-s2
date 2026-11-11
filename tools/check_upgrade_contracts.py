@@ -77,6 +77,7 @@ def check_go_images(root):
     for name, pattern in {
         "Dockerfile": r"^ARG GOLANG_IMAGE=golang:([^\s]+)-alpine$",
         "backend/Dockerfile": r"^FROM golang:([^\s]+)-alpine$",
+        "deploy/Dockerfile": r"^ARG GOLANG_IMAGE=golang:([^\s]+)-alpine$",
     }.items():
         match = re.search(pattern, (root / name).read_text(), re.M)
         if match is None or match.group(1) != go:

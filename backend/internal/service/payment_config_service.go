@@ -306,6 +306,9 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 			return infraerrors.BadRequest("INVALID_BALANCE_RECHARGE_MULTIPLIER", "balance recharge multiplier must be greater than 0")
 		}
 	}
+	if req.BalanceRechargeMultiplier != nil && balanceRechargeMultiplierHasExcessPrecision(*req.BalanceRechargeMultiplier) {
+		return infraerrors.BadRequest("INVALID_BALANCE_RECHARGE_MULTIPLIER", "balance recharge multiplier allows at most 6 decimal places within the safe numeric range")
+	}
 	if req.SubscriptionUSDToCNYRate != nil {
 		v := *req.SubscriptionUSDToCNYRate
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
@@ -345,7 +348,7 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 		m[SettingBalancePayDisabled] = formatBoolOrEmpty(req.BalanceDisabled)
 	}
 	if req.BalanceRechargeMultiplier != nil {
-		m[SettingBalanceRechargeMult] = formatPositiveFloat(req.BalanceRechargeMultiplier)
+		m[SettingBalanceRechargeMult] = formatBalanceRechargeMultiplier(req.BalanceRechargeMultiplier)
 	}
 	if req.SubscriptionUSDToCNYRate != nil {
 		m[SettingSubscriptionUSDToCNYRate] = formatPositiveFloatExact(req.SubscriptionUSDToCNYRate)
@@ -419,6 +422,26 @@ func formatPositiveFloat(v *float64) string {
 		return "" // empty → parsePaymentConfig uses default
 	}
 	return strconv.FormatFloat(*v, 'f', 2, 64)
+}
+
+// Bound scaled values to the exact integer range shared by Go and JavaScript.
+func balanceRechargeMultiplierHasExcessPrecision(v float64) bool {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 9007199254 {
+		return true
+	}
+	// Decimal round-trip avoids overflow and accidentally accepting tiny values rounded to zero.
+	formatted := strconv.FormatFloat(v, 'f', -1, 64)
+	if dot := strings.IndexByte(formatted, '.'); dot >= 0 {
+		return len(formatted)-dot-1 > 6
+	}
+	return false
+}
+
+func formatBalanceRechargeMultiplier(v *float64) string {
+	if v == nil || balanceRechargeMultiplierHasExcessPrecision(*v) {
+		return ""
+	}
+	return strconv.FormatFloat(*v, 'f', -1, 64)
 }
 
 func formatPositiveFloatExact(v *float64) string {

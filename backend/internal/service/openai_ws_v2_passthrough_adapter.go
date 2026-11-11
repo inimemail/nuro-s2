@@ -952,7 +952,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	)
 
 	relayErr := relayExit.Err
-	if !relayExit.WroteDownstream {
+	if turnCount == 0 && !relayExit.WroteDownstream {
 		var rejectedErr *openAIWSRejectedFieldError
 		if errors.As(relayErr, &rejectedErr) && rejectedErr != nil {
 			nextBody, field, changed, rewriteErr := rejectedFieldRetry.Rewrite(
@@ -1001,6 +1001,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// OnTurnComplete. This final callback only releases any outstanding
 		// slots; forwarding result again could duplicate usage accounting.
 		hooks.AfterTurn(turnCount+1, nil, turnErr)
+	}
+	if turnCount > 0 {
+		return &OpenAIWSLaterTurnError{Cause: turnErr}
 	}
 	return turnErr
 }

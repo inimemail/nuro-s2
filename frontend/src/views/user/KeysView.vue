@@ -178,17 +178,19 @@
           </template>
 
           <template #cell-usage="{ row }">
-            <div class="text-sm">
+            <div class="text-sm" :aria-busy="usageStatsLoading">
+              <span v-if="usageStatsLoading" role="status" class="text-xs text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</span>
+              <button v-else-if="usageStatsFailed" type="button" class="mb-1 rounded text-xs text-amber-700 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-amber-400" @click="retryUsageStats">{{ t('keys.usageStatsFailed') }} · {{ t('common.retry') }}</button>
               <div class="flex items-center gap-1.5">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
                 <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.today_actual_cost ?? 0).toFixed(4) }}
+                  {{ usageStats[row.id] ? '$' + usageStats[row.id].today_actual_cost.toFixed(4) : '—' }}
                 </span>
               </div>
               <div class="mt-0.5 flex items-center gap-1.5">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('keys.total') }}:</span>
                 <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.total_actual_cost ?? 0).toFixed(4) }}
+                  {{ usageStats[row.id] ? '$' + usageStats[row.id].total_actual_cost.toFixed(4) : '—' }}
                 </span>
               </div>
               <!-- Quota progress (if quota is set) -->
@@ -1242,6 +1244,33 @@ const submitting = ref(false)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
 const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
+const usageStatsLoading = ref(false)
+const usageStatsFailed = ref(false)
+
+const loadUsageStats = async (keyIds: number[], controller: AbortController) => {
+  const { signal } = controller
+  if (signal.aborted || abortController !== controller) return
+  usageStatsLoading.value = true
+  usageStatsFailed.value = false
+  try {
+    const response = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
+    if (signal.aborted || abortController !== controller) return
+    usageStats.value = response.stats
+  } catch (error) {
+    if (!signal.aborted && abortController === controller && !isAbortError(error)) {
+      usageStatsFailed.value = true
+      console.error('Failed to load usage stats:', error)
+    }
+  } finally {
+    if (!signal.aborted && abortController === controller) usageStatsLoading.value = false
+  }
+}
+
+const retryUsageStats = () => {
+  if (abortController && apiKeys.value.length && !usageStatsLoading.value) {
+    void loadUsageStats(apiKeys.value.map((key) => key.id), abortController)
+  }
+}
 const userGroupRates = ref<Record<number, number>>({})
 
 const pagination = ref({
@@ -1418,6 +1447,7 @@ const loadApiKeys = async () => {
   const controller = new AbortController()
   abortController = controller
   const { signal } = controller
+  usageStatsLoading.value = false
   loading.value = true
   try {
     // Build filters
@@ -1437,26 +1467,19 @@ const loadApiKeys = async () => {
     const response = await keysAPI.list(pagination.value.page, pagination.value.page_size, filters, {
       signal
     })
-    if (signal.aborted) return
+    if (signal.aborted || abortController !== controller) return
     apiKeys.value = response.items
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
-    // Load usage stats for all API keys in the list
+    usageStats.value = {}
+    usageStatsFailed.value = false
+    usageStatsLoading.value = false
     if (response.items.length > 0) {
-      const keyIds = response.items.map((k) => k.id)
-      try {
-        const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
-        if (signal.aborted) return
-        usageStats.value = usageResponse.stats
-      } catch (e) {
-        if (!isAbortError(e)) {
-          console.error('Failed to load usage stats:', e)
-        }
-      }
+      void loadUsageStats(response.items.map((key) => key.id), controller)
     }
   } catch (error) {
-    if (isAbortError(error)) {
+    if (signal.aborted || abortController !== controller || isAbortError(error)) {
       return
     }
     appStore.showError(t('keys.failedToLoad'))
@@ -1928,6 +1951,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  abortController?.abort()
   document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })

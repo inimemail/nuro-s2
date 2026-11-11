@@ -166,3 +166,8 @@ __pycache__/
 !docs/upgrades/v0220-plan/**
 # Architecture-specific paired binaries staged only by the release workflow.
 /.release-edge/
+
+# Reviewable v0.2.21 selective upgrade evidence and image client guidance.
+!docs/OPENAI_IMAGES_CODEX.md
+!docs/upgrades/v0221-status.md
+!docs/upgrades/v0221-validation.json

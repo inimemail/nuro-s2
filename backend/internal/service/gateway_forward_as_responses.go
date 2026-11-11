@@ -176,7 +176,7 @@ func (s *GatewayService) ForwardAsResponses(
 	defer func() { _ = resp.Body.Close() }()
 
 	// 12. Handle error response with failover
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -188,7 +188,11 @@ func (s *GatewayService) ForwardAsResponses(
 			return nil, failoverErr
 		}
 
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		shouldDisable := false
+		if !isAnthropicPoolAccount(account) && s.rateLimitService != nil {
+			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+		}
+		if shouldDisable || s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -202,8 +206,6 @@ func (s *GatewayService) ForwardAsResponses(
 			})
 			if isAnthropicPoolAccount(account) {
 				s.handleFailoverSideEffects(ctx, resp, account, mappedModel)
-			} else if s.rateLimitService != nil {
-				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:   resp.StatusCode,

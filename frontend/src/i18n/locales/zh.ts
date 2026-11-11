@@ -831,6 +831,7 @@ export default {
 
   // API Keys
   keys: {
+    usageStatsFailed: '统计暂不可用',
     title: 'API 密钥',
     description: '管理您的 API 密钥和访问令牌',
     searchPlaceholder: '搜索名称或Key...',
@@ -3543,6 +3544,7 @@ export default {
 
     // Accounts Management
     accounts: {
+      usageRefreshFailed: '刷新失败，显示上次额度',
       refreshProjectPending: '凭据已刷新，但项目 ID 暂未获取到，请稍后重试。',
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
@@ -7317,7 +7319,7 @@ export default {
         maxAmount: '最高金额',
         dailyLimit: '每日限额',
         balanceRechargeMultiplier: '余额充值倍率',
-        balanceRechargeMultiplierHint: '用户每支付 1 CNY 可获得多少 USD 余额',
+        balanceRechargeMultiplierHint: '用户每支付 1 CNY 可获得多少 USD 余额（最多 6 位小数）',
         balanceRechargePreview: '预览：1 CNY = {usd} USD',
         subscriptionUsdToCnyRate: '订阅 USD→CNY 汇率',
         subscriptionUsdToCnyRateHint: '仅订阅订单生效。0 表示关闭换算，CNY 通道按套餐 price 直付；大于 0 时按 price × 汇率收款。',
@@ -7398,6 +7400,8 @@ export default {
         field_accountIdHint: '不涉及多账户、组织级密钥或连接账户收款时可以不填；单账户 Scoped API Key 会默认使用所选账户。',
         field_cid: '支付渠道 ID',
         field_cidAlipay: '支付宝渠道 ID',
+        field_refundSuccessCode: '退款成功码',
+        field_refundSuccessCodeHint: '仅用于退款响应。默认保持 1，支付平台明确要求时才选择 0。',
         field_cidWxpay: '微信渠道 ID',
         stripeWebhookHint: '请在 Stripe Dashboard 中将以下地址配置为 Webhook 端点：',
         stripeWebhookApiVersionHint: 'Webhook 端点的 API 版本请与当前集成的 Stripe SDK 对齐，建议选择 {version}；版本不一致可能导致回调事件解析失败。',

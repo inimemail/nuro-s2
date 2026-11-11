@@ -3031,7 +3031,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	token string,
 	firstClientMessage []byte,
 	hooks *OpenAIWSIngressHooks,
-) error {
+) (returnErr error) {
 	if s == nil {
 		return errors.New("service is nil")
 	}
@@ -3584,6 +3584,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				hooks.AfterTurn(turn, result, bridgeErr)
 			}
 			if bridgeErr != nil {
+				if turn > 1 {
+					return &OpenAIWSLaterTurnError{Cause: bridgeErr}
+				}
 				return bridgeErr
 			}
 			if result == nil {
@@ -4197,6 +4200,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	defer releaseSessionLease()
 
 	turn := 1
+	defer func() {
+		if turn > 1 && returnErr != nil {
+			returnErr = &OpenAIWSLaterTurnError{Cause: returnErr}
+		}
+	}()
 	turnRetry := 0
 	turnPrevRecoveryTried := false
 	rejectedFieldRetry := OpenAIResponsesRejectedFieldRetryState{}

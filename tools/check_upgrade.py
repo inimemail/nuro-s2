@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run upgrade gates without changing toolchains, protected baselines or services.
 
-Use GOTOOLCHAIN=go1.27.3 make check-upgrade. Integration requires Docker and
+Use GOTOOLCHAIN=go1.27.4 make check-upgrade. Integration requires Docker and
 NURO_CACHE_TEST_DSN pointing at an isolated PostgreSQL fixture. --only can run a
 stage during development; its report deliberately never claims full validation.
 """

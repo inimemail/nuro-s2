@@ -1700,10 +1700,14 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 		}
 	}
 
-	// Token轮转：立即使旧Token失效
-	if err := s.refreshTokenCache.DeleteRefreshToken(ctx, tokenHash); err != nil {
-		logger.LegacyPrintf("service.auth", "[Auth] Failed to delete old refresh token: %v", err)
-		// 继续处理，不影响主流程
+	// Validate first (including the local session binding), then consume atomically.
+	// A cache failure must never mint another pair while the old token is reusable.
+	if _, err := s.refreshTokenCache.ConsumeRefreshToken(ctx, tokenHash); err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			return nil, ErrRefreshTokenInvalid
+		}
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to consume old refresh token: %v", err)
+		return nil, ErrServiceUnavailable
 	}
 
 	// 生成新的Token对，保持同一个家族ID

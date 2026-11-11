@@ -31,7 +31,16 @@ func AnthropicToResponsesWithMinOutputTokens(req *AnthropicRequest, minOutputTok
 	return anthropicToResponses(req, false, minOutputTokens)
 }
 
-func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool, minOutputTokens int) (*ResponsesRequest, error) {
+type AnthropicToResponsesOptions struct {
+	MinOutputTokens                int
+	DeferReasoningEffortValidation bool
+}
+
+func AnthropicToResponsesWithOptions(req *AnthropicRequest, options AnthropicToResponsesOptions) (*ResponsesRequest, error) {
+	return anthropicToResponses(req, false, options.MinOutputTokens, options.DeferReasoningEffortValidation)
+}
+
+func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool, minOutputTokens int, deferValidation ...bool) (*ResponsesRequest, error) {
 	if minOutputTokens < 16 {
 		minOutputTokens = DefaultMinMaxOutputTokens
 	}
@@ -98,13 +107,18 @@ func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool, minOut
 		Summary: "auto",
 	}
 
-	if openai.IsGPT6SolOrLunaModelSpelling(req.Model) || openai.IsGPT61SolModelSpelling(req.Model) {
+	if openai.IsGPT6SolOrLunaModelSpelling(req.Model) || openai.IsGPT61SolModelSpelling(req.Model) || openai.IsGPT61TerraModelSpelling(req.Model) {
 		out.Reasoning.Effort = effort
 		if req.Thinking != nil && req.Thinking.Type == "disabled" {
 			out.Reasoning.Effort = "none"
 		}
-		if err := openai.ValidateGPT61SolModelRequest(req.Model, out.Reasoning.Effort); err != nil {
-			return nil, err
+		if len(deferValidation) == 0 || !deferValidation[0] {
+			if err := openai.ValidateGPT61SolModelRequest(req.Model, out.Reasoning.Effort); err != nil {
+				return nil, err
+			}
+			if err := openai.ValidateGPT61TerraModelRequest(req.Model, out.Reasoning.Effort); err != nil {
+				return nil, err
+			}
 		}
 		if out.Reasoning.Effort == "none" {
 			out.Temperature = req.Temperature
@@ -335,7 +349,7 @@ func anthropicAssistantToResponses(raw json.RawMessage, replayToolThinking bool)
 			continue
 		}
 		sig := strings.TrimSpace(b.Signature)
-		if strings.HasPrefix(sig, "gAAAA") {
+		if strings.HasPrefix(sig, "gAAAA") || strings.HasPrefix(sig, "ccswitch-openai-reasoning-v1:") {
 			sig = ""
 		}
 		if sig == "" && (!hasToolCalls || b.Thinking == "") {

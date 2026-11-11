@@ -832,6 +832,7 @@ export default {
 
   // API Keys
   keys: {
+    usageStatsFailed: 'Usage unavailable',
     title: 'API Keys',
     description: 'Manage your API keys and access tokens',
     searchPlaceholder: 'Search name or key...',
@@ -3469,6 +3470,7 @@ export default {
 
     // Accounts
     accounts: {
+      usageRefreshFailed: 'Refresh failed; showing the previous snapshot',
       refreshProjectPending: 'Credentials refreshed, but the project ID is not available yet. Please retry later.',
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
@@ -7173,7 +7175,7 @@ export default {
         maxAmount: 'Maximum Amount',
         dailyLimit: 'Daily Limit',
         balanceRechargeMultiplier: 'Balance Recharge Multiplier',
-        balanceRechargeMultiplierHint: 'How many USD balance the user receives for each 1 CNY paid',
+        balanceRechargeMultiplierHint: 'How many USD balance the user receives for each 1 CNY paid (up to 6 decimal places)',
         balanceRechargePreview: 'Preview: 1 CNY = {usd} USD',
         subscriptionUsdToCnyRate: 'Subscription USD→CNY Rate',
         subscriptionUsdToCnyRateHint: 'Applies only to subscription orders. 0 disables conversion; CNY gateways charge the plan price directly. When set, CNY gateways charge price × rate.',
@@ -7254,6 +7256,8 @@ export default {
         field_accountIdHint: 'Leave this empty unless you use multiple accounts, an organization-level key, or connected-account payments. A single-account scoped API key uses the selected account by default.',
         field_cid: 'Channel ID',
         field_cidAlipay: 'Alipay Channel ID',
+        field_refundSuccessCode: 'Refund success code',
+        field_refundSuccessCodeHint: 'Refund responses only. Keep 1 unless your provider explicitly requires 0.',
         field_cidWxpay: 'WeChat Channel ID',
         stripeWebhookHint: 'Configure the following URL as a Webhook endpoint in Stripe Dashboard:',
         stripeWebhookApiVersionHint: 'Set this Webhook endpoint API version to match the integrated Stripe SDK. Recommended: {version}. A mismatch can cause webhook parsing errors.',

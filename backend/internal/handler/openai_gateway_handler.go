@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -446,6 +447,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	if !utf8.Valid(body) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body must be valid UTF-8")
+		return
+	}
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
 	body, ok = h.normalizeOpenAIResponsesCompactRequest(c, reqLog, body)
@@ -477,6 +482,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	if normalizedBody, changed := normalizeCodexPageContext(body); changed {
+		body = normalizedBody
+	}
 	if normalizedBody, changed := normalizeCodexAutomationBootstrap(body); changed {
 		body = normalizedBody
 	}
@@ -1469,7 +1477,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
-	if apiKey.Group != nil {
+	if apiKey.Group != nil && requestPlatform == service.PlatformOpenAI {
+		c.Request = c.Request.WithContext(service.WithOpenAIReasoningEffortPolicyForMessages(c.Request.Context(), body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit))
+	}
+	if apiKey.Group != nil && requestPlatform != service.PlatformOpenAI {
 		policyBody, changed, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
 		if policyErr != nil {
 			var overLimit *service.ReasoningEffortOverLimitError
@@ -3177,8 +3188,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(requestCtx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+			var laterTurn *service.OpenAIWSLaterTurnError
 			var failoverErr *service.UpstreamFailoverError
-			if errors.As(err, &failoverErr) {
+			// Only a first-turn failure may retry the ingress frame. Later turns
+			// retain the existing close-code, disconnect and health handling below.
+			if !errors.As(err, &laterTurn) && errors.As(err, &failoverErr) {
 				releaseAccountSlot()
 				if failoverErr.RetryableOnSameAccount && openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 					retryDelay := sameAccountRetryDelayForAccount(account)

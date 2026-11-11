@@ -7,6 +7,14 @@ vi.mock('@/api/admin/accounts', () => ({
 import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
+  it('includes Claude 5.2 models without changing the curated OpenAI order', () => {
+    expect(getModelsByPlatform('claude')).toEqual(expect.arrayContaining([
+      'claude-fable-5-2', 'claude-mythos-5-2'
+    ]))
+    expect(getModelsByPlatform('openai').slice(0, 2)).toEqual(['gpt-6.1-sol', 'gpt-6.1-terra'])
+    expect(getModelsByPlatform('antigravity')).not.toContain('claude-fable-5-2')
+  })
+
   it('DeepSeek 模型列表包含 V4 Flash Vision 实验模型', () => {
     expect(getModelsByPlatform('deepseek')).toContain('deepseek-v4-flash-vision-exp')
   })

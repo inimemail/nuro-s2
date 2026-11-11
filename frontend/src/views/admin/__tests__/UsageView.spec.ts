@@ -166,6 +166,9 @@ describe('admin UsageView distribution metric toggles', () => {
     await flushPromises()
     const state = (wrapper.vm as any).$?.setupState
     expect(state.visibleColumns.map((col: { key: string }) => col.key)).toContain('latency')
+    if (saved === null) {
+      expect(state.visibleColumns.map((col: { key: string }) => col.key)).not.toContain('upstream_model_audit')
+    }
     if (saved === JSON.stringify(['latency', 'tps', 'model'])) {
       expect(state.visibleColumns.map((col: { key: string }) => col.key)).not.toContain('model')
     }

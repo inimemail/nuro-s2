@@ -287,6 +287,8 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 
 func prepareNonTransactionalMigration(ctx context.Context, db migrationExecutor, name string) error {
 	switch name {
+	case "257_add_usage_logs_api_key_cost_index_notx.sql":
+		return dropInvalidIndexIfPresent(ctx, db, "idx_usage_logs_api_key_created_cost")
 	case paymentOrdersOutTradeNoUniqueMigration:
 		return preparePaymentOrdersOutTradeNoUniqueMigration(ctx, db)
 	case latestAPIKeyIPIndexMigration:

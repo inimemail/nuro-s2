@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,8 +87,13 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		return fmt.Errorf("count_tokens: missing account")
 	}
 
-	prepared, err := prepareOpenAIInputTokensCountRequest(body, account, defaultMappedModel)
+	prepared, err := prepareOpenAIInputTokensCountRequest(body, account, defaultMappedModel, ctx)
 	if err != nil {
+		var overLimit *ReasoningEffortOverLimitError
+		if errors.As(err, &overLimit) {
+			writeAnthropicCountTokensError(c, http.StatusForbidden, "permission_error", overLimit.Error())
+			return err
+		}
 		writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return err
 	}
@@ -205,6 +211,7 @@ func prepareOpenAIInputTokensCountRequest(
 	body []byte,
 	account *Account,
 	defaultMappedModel string,
+	contexts ...context.Context,
 ) (*openAIInputTokensCountPrepared, error) {
 	var anthropicReq apicompat.AnthropicRequest
 	if err := json.Unmarshal(body, &anthropicReq); err != nil {
@@ -212,19 +219,41 @@ func prepareOpenAIInputTokensCountRequest(
 	}
 
 	originalModel := anthropicReq.Model
-	if err := validateGPT61SolRequestBody(body, originalModel); err != nil {
+	if err := validateNonOpenAIMessagesEffort(account, body, originalModel); err != nil {
 		return nil, err
 	}
 	applyOpenAICompatModelNormalization(&anthropicReq)
 	normalizedModel := anthropicReq.Model
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, strings.TrimSpace(defaultMappedModel))
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if account != nil && account.Platform == PlatformOpenAI {
+		anthropicReq.Model = upstreamModel
+	}
 
-	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
+	responsesReq, err := apicompat.AnthropicToResponsesWithOptions(&anthropicReq, apicompat.AnthropicToResponsesOptions{DeferReasoningEffortValidation: account != nil && account.Platform == PlatformOpenAI})
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic request to responses: %w", err)
 	}
 
+	if account != nil && account.Platform == PlatformOpenAI {
+		responsesReq.Model = upstreamModel
+		preserveOpenAIMessagesDisabledThinking(responsesReq, &anthropicReq, originalModel, normalizedModel, billingModel, upstreamModel)
+		raw, err := json.Marshal(responsesReq)
+		if err != nil {
+			return nil, err
+		}
+		policyCtx := context.Background()
+		if len(contexts) > 0 && contexts[0] != nil {
+			policyCtx = contexts[0]
+		}
+		raw, _, err = applyOpenAIMessagesReasoningEffortPolicy(policyCtx, raw, originalModel, body)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateGPT61SolRequestBody(raw, originalModel, normalizedModel, billingModel, upstreamModel); err != nil {
+			return nil, err
+		}
+	}
 	return &openAIInputTokensCountPrepared{
 		Request: openAIInputTokensCountRequest{
 			Model:        upstreamModel,

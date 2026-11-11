@@ -41,6 +41,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		body = sanitized
 	}
 	beginUpstreamResponseModelObservation(c)
+	// Direct protocols keep the original policy on the original Anthropic fields.
+	if account != nil && account.Platform == PlatformOpenAI && (account.IsAnthropicProtocol() || account.IsAdaptiveAPIProtocol() || (account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra))) {
+		var policyErr error
+		body, _, policyErr = ApplyOpenAIReasoningEffortPolicyFromContext(ctx, body)
+		if policyErr != nil {
+			writeAnthropicError(c, http.StatusForbidden, "permission_error", policyErr.Error())
+			return nil, policyErr
+		}
+	}
 	if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {
 		groupID := getOpenAIGroupIDFromContext(c)
 		if shouldEmulateWebSearchFor(ctx, s.settingService, s.channelService, account, &groupID, body) {
@@ -84,7 +93,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	anthropicDigestReq := cloneAnthropicRequestForDigest(&anthropicReq)
 	originalModel := anthropicReq.Model
-	if err := validateGPT61SolRequestBody(body, originalModel); err != nil {
+	if err := validateNonOpenAIMessagesEffort(account, body, originalModel); err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
@@ -95,7 +104,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// 2. Model mapping
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if err := validateGPT61SolRequestBody(body, originalModel, normalizedModel, billingModel, upstreamModel); err != nil {
+	if err := validateNonOpenAIMessagesEffort(account, body, originalModel, normalizedModel, billingModel, upstreamModel); err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
@@ -150,7 +159,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
 	anthropicReq.Model = upstreamModel
-	responsesReq, err := anthropicToResponses(s.cfg, &anthropicReq)
+	responsesReq, err := apicompat.AnthropicToResponsesWithOptions(&anthropicReq, apicompat.AnthropicToResponsesOptions{MinOutputTokens: configuredMinOutputTokens(s.cfg), DeferReasoningEffortValidation: account.Platform == PlatformOpenAI})
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
 	}
@@ -168,6 +177,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	responsesReq.Model = upstreamModel
 	if responsesReq.Reasoning != nil {
 		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
+	}
+	if account.Platform == PlatformOpenAI {
+		preserveOpenAIMessagesDisabledThinking(responsesReq, &anthropicReq, originalModel, normalizedModel, billingModel, upstreamModel)
 	}
 	if previousResponseID != "" {
 		responsesReq.PreviousResponseID = previousResponseID
@@ -313,6 +325,21 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				}
 				responsesBody = updated
 			}
+		}
+	}
+	if account.Platform == PlatformOpenAI {
+		policyBody, _, err := applyOpenAIMessagesReasoningEffortPolicy(ctx, responsesBody, originalModel, body)
+		if err != nil {
+			writeAnthropicError(c, http.StatusForbidden, "permission_error", err.Error())
+			return nil, err
+		}
+		responsesBody = policyBody
+		if responsesReq.Reasoning != nil {
+			responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
+		}
+		if err := validateGPT61SolRequestBody(responsesBody, originalModel, normalizedModel, billingModel, upstreamModel); err != nil {
+			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
 		}
 	}
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).

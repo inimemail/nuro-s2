@@ -24,6 +24,8 @@ import (
 )
 
 var (
+	claude52FallbackPricing         = &LiteLLMModelPricing{InputCostPerToken: 8e-6, OutputCostPerToken: 40e-6, CacheCreationInputTokenCost: 10e-6, CacheCreationInputTokenCostAbove1hr: 16e-6, CacheReadInputTokenCost: 0.2e-6, LiteLLMProvider: "anthropic", Mode: "chat", SupportsPromptCaching: true}
+	claudeSonnet55FallbackPricing   = &LiteLLMModelPricing{InputCostPerToken: 2e-6, OutputCostPerToken: 10e-6, CacheCreationInputTokenCost: 2.5e-6, CacheCreationInputTokenCostAbove1hr: 4e-6, CacheReadInputTokenCost: 0.1e-6, LiteLLMProvider: "anthropic", Mode: "chat", SupportsPromptCaching: true}
 	openAIGPTImage26FallbackPricing = &LiteLLMModelPricing{InputCostPerToken: 5e-6, CacheReadInputTokenCost: 1.25e-6, InputCostPerImageToken: 8e-6, CacheReadInputImageTokenCost: 2e-6, OutputCostPerImageToken: 30e-6, LiteLLMProvider: "openai", Mode: "image_generation", SupportsPromptCaching: true}
 	openAIModelDatePattern          = regexp.MustCompile(`-\d{8}$`)
 	openAIModelBasePattern          = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
@@ -251,13 +253,16 @@ type LiteLLMRawEntry struct {
 
 // PricingService 动态价格服务
 type PricingService struct {
-	cfg             *config.Config
-	remoteClient    PricingRemoteClient
-	mu              sync.RWMutex
-	pricingData     map[string]*LiteLLMModelPricing
-	lastUpdated     time.Time
-	localHash       string
-	customFilesHash string
+	cfg          *config.Config
+	remoteClient PricingRemoteClient
+	// updateMu serializes background writers; readers never wait on disk/network.
+	updateMu           sync.Mutex
+	pendingPricingBody []byte // guarded by updateMu; retry on the existing sync tick
+	mu                 sync.RWMutex
+	pricingData        map[string]*LiteLLMModelPricing
+	lastUpdated        time.Time
+	localHash          string
+	customFilesHash    string
 
 	// 停止信号
 	stopCh chan struct{}
@@ -386,6 +391,58 @@ func (s *PricingService) validateCustomPricingFiles() error {
 		if err := json.Unmarshal(body, &object); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
+		if object == nil {
+			return fmt.Errorf("%s: pricing file must contain a JSON object", path)
+		}
+		for name, entry := range object {
+			if path == strings.TrimSpace(s.cfg.Pricing.OverrideFile) {
+				err = validatePricingOverrideEntry(entry)
+			} else if name != "sample_spec" {
+				err = validatePricingFallbackEntry(entry)
+			}
+			if err != nil {
+				return fmt.Errorf("%s: model %q: %w", path, name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Validate only fields consumed by pricing; catalog metadata may contain nested costs.
+func validatePricingFallbackEntry(raw json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return fmt.Errorf("entry must be a JSON object")
+	}
+	var entry LiteLLMRawEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return err
+	}
+	prices := map[string]*float64{
+		"cache_storage_cost_per_token_per_hour":     entry.CacheStorageCostPerTokenPerHour,
+		"input_cost_per_token":                      entry.InputCostPerToken,
+		"input_cost_per_token_priority":             entry.InputCostPerTokenPriority,
+		"output_cost_per_token":                     entry.OutputCostPerToken,
+		"output_cost_per_token_priority":            entry.OutputCostPerTokenPriority,
+		"cache_creation_input_token_cost":           entry.CacheCreationInputTokenCost,
+		"cache_creation_input_token_cost_priority":  entry.CacheCreationInputTokenCostPriority,
+		"cache_creation_input_token_cost_above_1hr": entry.CacheCreationInputTokenCostAbove1hr,
+		"cache_read_input_token_cost":               entry.CacheReadInputTokenCost,
+		"cache_read_input_image_token_cost":         entry.CacheReadInputImageTokenCost,
+		"cache_read_input_token_cost_priority":      entry.CacheReadInputTokenCostPriority,
+		"long_context_input_cost_multiplier":        entry.LongContextInputCostMultiplier,
+		"long_context_output_cost_multiplier":       entry.LongContextOutputCostMultiplier,
+		"output_cost_per_image":                     entry.OutputCostPerImage,
+		"output_cost_per_image_token":               entry.OutputCostPerImageToken,
+		"input_cost_per_image_token":                entry.InputCostPerImageToken,
+	}
+	for name, price := range prices {
+		if price != nil && *price < 0 {
+			return fmt.Errorf("field %s must be a non-negative number", name)
+		}
+	}
+	if entry.LongContextInputTokenThreshold != nil && *entry.LongContextInputTokenThreshold < 0 {
+		return fmt.Errorf("field long_context_input_token_threshold must be a non-negative integer")
 	}
 	return nil
 }
@@ -406,9 +463,6 @@ func (s *PricingService) reloadIfCustomFilesChanged() {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Custom pricing file reload failed: %v", err)
 		return
 	}
-	s.mu.Lock()
-	s.customFilesHash = fingerprint
-	s.mu.Unlock()
 	logger.LegacyPrintf("service.pricing", "[Pricing] Custom pricing files reloaded")
 }
 
@@ -471,6 +525,13 @@ func (s *PricingService) checkAndUpdatePricing() error {
 
 // syncWithRemote 与远程同步（基于哈希校验）
 func (s *PricingService) syncWithRemote() error {
+	// Persistence failure must be retried even when the in-memory hash is current.
+	s.updateMu.Lock()
+	err := s.retryPricingPersistenceLocked()
+	s.updateMu.Unlock()
+	if err != nil {
+		return err
+	}
 	// 如果配置了哈希URL，从远程获取哈希进行比对
 	if s.cfg.Pricing.HashURL != "" {
 		remoteHash, err := s.fetchRemoteHash()
@@ -512,6 +573,8 @@ func (s *PricingService) syncWithRemote() error {
 
 // downloadPricingData 从远程下载价格数据
 func (s *PricingService) downloadPricingData() error {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
 	remoteURL, err := s.validatePricingURL(s.cfg.Pricing.RemoteURL)
 	if err != nil {
 		return err
@@ -544,6 +607,10 @@ func (s *PricingService) downloadPricingData() error {
 			remoteHash[:min(8, len(remoteHash))], dataHashStr[:8])
 	}
 
+	fingerprint := s.customPricingFilesFingerprint()
+	if err := s.validateCustomPricingFiles(); err != nil {
+		return err
+	}
 	// 解析JSON数据（使用灵活的解析方式）
 	data, err := s.parsePricingData(body)
 	if err != nil {
@@ -552,29 +619,21 @@ func (s *PricingService) downloadPricingData() error {
 	data = s.mergeFallbackPricingData(data)
 	data = s.mergeOverrideOnlyModels(data)
 
-	// 保存到本地文件
-	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, body, 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
+	// A changing overlay invalidates the whole candidate; retry at the existing tick.
+	if fingerprint != s.customPricingFilesFingerprint() {
+		return fmt.Errorf("custom pricing changed during update")
 	}
-
-	// 使用远程哈希作为同步锚点，防止重复下载
-	// 当远程哈希不可用时，回退到数据本身的哈希
-	syncHash := dataHashStr
-	if remoteHash != "" {
-		syncHash = remoteHash
-	}
-	hashFile := s.getHashFilePath()
-	if err := os.WriteFile(hashFile, []byte(syncHash+"\n"), 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save hash: %v", err)
+	s.pendingPricingBody = append([]byte(nil), body...)
+	if err := s.retryPricingPersistenceLocked(); err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Persistence pending retry: %v", err)
 	}
 
 	// 更新内存数据
 	s.mu.Lock()
 	s.pricingData = data
 	s.lastUpdated = time.Now()
-	s.localHash = syncHash
-	s.customFilesHash = s.customPricingFilesFingerprint()
+	s.localHash = dataHashStr
+	s.customFilesHash = fingerprint
 	s.mu.Unlock()
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded %d models successfully", len(data))
@@ -862,6 +921,21 @@ func (s *PricingService) mergeOverrideOnlyModels(data map[string]*LiteLLMModelPr
 
 // loadPricingData 从本地文件加载价格数据
 func (s *PricingService) loadPricingData(filePath string) error {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	return s.loadPricingDataLocked(filePath)
+}
+
+// Caller holds updateMu, including the startup fallback copy path.
+func (s *PricingService) loadPricingDataLocked(filePath string) error {
+	// Do not replace a newer in-memory update with an older disk file after a failed save.
+	if err := s.retryPricingPersistenceLocked(); err != nil {
+		return err
+	}
+	fingerprint := s.customPricingFilesFingerprint()
+	if err := s.validateCustomPricingFiles(); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("read file failed: %w", err)
@@ -879,17 +953,19 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	hash := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(hash[:])
 
+	info, _ := os.Stat(filePath)
+	updated := time.Now()
+	if info != nil {
+		updated = info.ModTime()
+	}
+	if fingerprint != s.customPricingFilesFingerprint() {
+		return fmt.Errorf("custom pricing changed during load")
+	}
 	s.mu.Lock()
 	s.pricingData = pricingData
-	s.localHash = hashStr
-	s.customFilesHash = s.customPricingFilesFingerprint()
-
-	info, _ := os.Stat(filePath)
-	if info != nil {
-		s.lastUpdated = info.ModTime()
-	} else {
-		s.lastUpdated = time.Now()
-	}
+	s.localHash = hashStr // actual body is authoritative; the sidecar is advisory
+	s.customFilesHash = fingerprint
+	s.lastUpdated = updated
 	s.mu.Unlock()
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from %s", len(pricingData), filePath)
@@ -929,6 +1005,8 @@ func (s *PricingService) mergeFallbackPricingData(data map[string]*LiteLLMModelP
 
 // useFallbackPricing 使用回退价格文件
 func (s *PricingService) useFallbackPricing() error {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
 	fallbackFile := s.cfg.Pricing.FallbackFile
 
 	if _, err := os.Stat(fallbackFile); os.IsNotExist(err) {
@@ -937,18 +1015,25 @@ func (s *PricingService) useFallbackPricing() error {
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Using fallback file: %s", fallbackFile)
 
+	fingerprint := s.customPricingFilesFingerprint()
+	if err := s.validateCustomPricingFiles(); err != nil {
+		return err
+	}
 	// 复制到数据目录
 	data, err := os.ReadFile(fallbackFile)
 	if err != nil {
 		return fmt.Errorf("read fallback failed: %w", err)
 	}
+	if fingerprint != s.customPricingFilesFingerprint() {
+		return fmt.Errorf("custom pricing changed during fallback copy")
+	}
 
 	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, data, 0644); err != nil {
+	if err := writeAtomicPricingFile(pricingFile, data); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to copy fallback: %v", err)
 	}
 
-	return s.loadPricingData(fallbackFile)
+	return s.loadPricingDataLocked(fallbackFile)
 }
 
 // fetchRemoteHash 从远程获取哈希值
@@ -1183,6 +1268,22 @@ func (s *PricingService) extractBaseName(model string) string {
 
 // matchByModelFamily 基于模型系列匹配
 func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
+	for _, entry := range []struct {
+		matches bool
+		name    string
+		price   *LiteLLMModelPricing
+	}{
+		{claude.IsFable52(model), "claude-fable-5-2", claude52FallbackPricing},
+		{claude.IsMythos52(model), "claude-mythos-5-2", claude52FallbackPricing},
+		{claude.IsSonnet55(model), "claude-sonnet-5-5", claudeSonnet55FallbackPricing},
+	} {
+		if entry.matches {
+			if p, ok := s.pricingData[entry.name]; ok {
+				return p
+			}
+			return entry.price
+		}
+	}
 	model = normalizeAntigravityClaudeTierAlias(model)
 	if claude.IsHaiku55(model) {
 		if pricing, ok := s.pricingData["claude-haiku-5-5"]; ok {

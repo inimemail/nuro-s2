@@ -143,15 +143,23 @@ const (
 	openAICodexAutoResetModeLong  = "long"
 )
 
+type antigravityQuotaReader interface {
+	CanFetch(*Account) bool
+	GetProxyURL(context.Context, *Account) string
+	FetchQuota(context.Context, *Account, string) (*QuotaResult, error)
+}
+
 // UsageCache 封装账户使用量相关的缓存
 type UsageCache struct {
-	apiCache          sync.Map           // accountID -> *apiUsageCache
-	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
-	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
-	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
-	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
-	openAIProbeCache  sync.Map           // accountID -> time.Time
-	grokProbeCache    sync.Map           // accountID -> time.Time
+	apiCache           sync.Map           // accountID -> *apiUsageCache
+	windowStatsCache   sync.Map           // accountID -> *windowStatsCache
+	antigravityCache   sync.Map           // accountID -> *antigravityUsageCache
+	apiFlight          singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
+	antigravityForceMu sync.Mutex
+	antigravityForce   map[int64]int      // demand, guarded by antigravityForceMu
+	antigravityFlight  singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	openAIProbeCache   sync.Map           // accountID -> time.Time
+	grokProbeCache     sync.Map           // accountID -> time.Time
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -433,7 +441,7 @@ type AccountUsageService struct {
 	usageLogRepo            UsageLogRepository
 	usageFetcher            ClaudeUsageFetcher
 	geminiQuotaService      *GeminiQuotaService
-	antigravityQuotaFetcher *AntigravityQuotaFetcher
+	antigravityQuotaFetcher antigravityQuotaReader
 	grokQuotaFetcher        *GrokQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	cache                   *UsageCache
@@ -461,12 +469,16 @@ func NewAccountUsageService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAITokenProvider *OpenAITokenProvider,
 ) *AccountUsageService {
+	var quotaReader antigravityQuotaReader
+	if antigravityQuotaFetcher != nil {
+		quotaReader = antigravityQuotaFetcher
+	}
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
 		usageLogRepo:            usageLogRepo,
 		usageFetcher:            usageFetcher,
 		geminiQuotaService:      geminiQuotaService,
-		antigravityQuotaFetcher: antigravityQuotaFetcher,
+		antigravityQuotaFetcher: quotaReader,
 		grokQuotaFetcher:        grokQuotaFetcher,
 		cache:                   cache,
 		identityCache:           identityCache,
@@ -516,7 +528,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
 	if account.Platform == PlatformAntigravity {
-		usage, err := s.getAntigravityUsage(ctx, account)
+		usage, err := s.getAntigravityUsage(ctx, account, forceProbe)
 		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
@@ -1896,17 +1908,47 @@ func (s *AccountUsageService) getGeminiUsage(ctx context.Context, account *Accou
 }
 
 // getAntigravityUsage 获取 Antigravity 账户额度
-func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+type antigravityUsageFlightResult struct {
+	usage   *UsageInfo
+	fetched bool
+}
+
+func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *Account, force ...bool) (*UsageInfo, error) {
 	if s.antigravityQuotaFetcher == nil || !s.antigravityQuotaFetcher.CanFetch(account) {
 		now := time.Now()
 		return &UsageInfo{UpdatedAt: &now}, nil
 	}
 
+	forceProbe := len(force) > 0 && force[0]
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	requestStarted := time.Now()
+	fetchDeadline := requestStarted.Add(30 * time.Second)
+	// One total caller budget, even when a force request joined a cache-only flight.
+	waitCtx, waitCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer waitCancel()
+	if forceProbe {
+		s.cache.antigravityForceMu.Lock()
+		if s.cache.antigravityForce == nil {
+			s.cache.antigravityForce = make(map[int64]int)
+		}
+		s.cache.antigravityForce[account.ID]++
+		s.cache.antigravityForceMu.Unlock()
+		defer func() {
+			s.cache.antigravityForceMu.Lock()
+			s.cache.antigravityForce[account.ID]--
+			if s.cache.antigravityForce[account.ID] == 0 {
+				delete(s.cache.antigravityForce, account.ID)
+			}
+			s.cache.antigravityForceMu.Unlock()
+		}()
+	}
 	// 1. 检查缓存
 	if cached, ok := s.cache.antigravityCache.Load(account.ID); ok {
 		if cache, ok := cached.(*antigravityUsageCache); ok {
 			ttl := antigravityCacheTTL(cache.usageInfo)
-			if time.Since(cache.timestamp) < ttl {
+			if !forceProbe && time.Since(cache.timestamp) < ttl {
 				return cloneAntigravityUsageForPresentation(cache.usageInfo), nil
 			}
 		}
@@ -1914,13 +1956,20 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 
 	// 2. singleflight 防止并发击穿
 	flightKey := fmt.Sprintf("ag-usage:%d", account.ID)
-	result, flightErr, _ := s.cache.antigravityFlight.Do(flightKey, func() (any, error) {
+	fetch := func() (any, error) {
+		s.cache.antigravityForceMu.Lock()
+		mustFetch := forceProbe || s.cache.antigravityForce[account.ID] > 0
+		s.cache.antigravityForceMu.Unlock()
 		// 再次检查缓存（等待期间可能已被填充）
 		if cached, ok := s.cache.antigravityCache.Load(account.ID); ok {
 			if cache, ok := cached.(*antigravityUsageCache); ok {
 				ttl := antigravityCacheTTL(cache.usageInfo)
-				if time.Since(cache.timestamp) < ttl {
-					return cache.usageInfo, nil
+				// A force caller can reuse a real fetch published since it arrived.
+				// This also closes the gap between a cache-only flight completing
+				// and a slower waiter joining the subsequent force flight.
+				fetchedSinceArrival := forceProbe && !cache.timestamp.Before(requestStarted)
+				if (!mustFetch || fetchedSinceArrival) && time.Since(cache.timestamp) < ttl {
+					return antigravityUsageFlightResult{usage: cache.usageInfo, fetched: fetchedSinceArrival}, nil
 				}
 			}
 		}
@@ -1933,11 +1982,14 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		}
 
 		// 使用独立 context，避免调用方 cancel 导致所有共享 flight 的请求失败
-		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		fetchCtx, fetchCancel := context.WithDeadline(context.Background(), fetchDeadline)
 		defer fetchCancel()
 
 		proxyURL := s.antigravityQuotaFetcher.GetProxyURL(fetchCtx, account)
 		fetchResult, err := s.antigravityQuotaFetcher.FetchQuota(fetchCtx, account, proxyURL)
+		if err == nil && (fetchResult == nil || fetchResult.UsageInfo == nil) {
+			err = fmt.Errorf("empty Antigravity quota response")
+		}
 		if err != nil {
 			degraded := buildAntigravityDegradedUsage(err)
 			degraded = mergeAntigravityLastGood(degraded, previous)
@@ -1946,7 +1998,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 				usageInfo: degraded,
 				timestamp: time.Now(),
 			})
-			return degraded, nil
+			return antigravityUsageFlightResult{usage: degraded, fetched: true}, nil
 		}
 
 		fetchResult.UsageInfo = mergeAntigravityLastGood(fetchResult.UsageInfo, previous)
@@ -1955,18 +2007,30 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 			usageInfo: fetchResult.UsageInfo,
 			timestamp: time.Now(),
 		})
-		return fetchResult.UsageInfo, nil
-	})
-
-	if flightErr != nil {
-		return nil, flightErr
+		return antigravityUsageFlightResult{usage: fetchResult.UsageInfo, fetched: true}, nil
 	}
-	usage, ok := result.(*UsageInfo)
-	if !ok || usage == nil {
-		now := time.Now()
-		return &UsageInfo{UpdatedAt: &now}, nil
+	// At most one retry after joining an already-resolving cache-only result.
+	// Pending force demand makes every subsequent shared closure bypass inner cache.
+	for attempt := 0; attempt < 2; attempt++ {
+		ch := s.cache.antigravityFlight.DoChan(flightKey, fetch)
+		select {
+		case <-waitCtx.Done():
+			return nil, waitCtx.Err()
+		case result := <-ch:
+			if result.Err != nil {
+				return nil, result.Err
+			}
+			value, ok := result.Val.(antigravityUsageFlightResult)
+			if !ok || value.usage == nil {
+				return nil, fmt.Errorf("invalid Antigravity usage result")
+			}
+			if forceProbe && !value.fetched {
+				continue
+			}
+			return cloneAntigravityUsageForPresentation(value.usage), nil
+		}
 	}
-	return cloneAntigravityUsageForPresentation(usage), nil
+	return nil, fmt.Errorf("antigravity force refresh did not fetch upstream")
 }
 
 func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {

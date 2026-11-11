@@ -451,6 +451,7 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 		return nil, false, fmt.Errorf("parse content blocks: %w", err)
 	}
 
+	var toolMediaParts []GeminiPart
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
@@ -541,11 +542,12 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			if len(multimodal) > 0 && multimodal[0] {
 				parts[len(parts)-1].FunctionResponse.Parts = media
 			} else {
-				parts = append(parts, media...)
+				toolMediaParts = append(toolMediaParts, media...)
 			}
 		}
 	}
 
+	parts = append(parts, toolMediaParts...)
 	return parts, strippedThinking, nil
 }
 

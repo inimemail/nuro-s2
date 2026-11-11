@@ -32,16 +32,28 @@ class UpgradeFenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_manifest(manifest)
 
-    def test_both_go_images_must_match(self):
+    def test_all_go_images_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "backend").mkdir()
-            (root / "backend/go.mod").write_text("module test\ngo 1.27.3\n")
-            (root / "Dockerfile").write_text("ARG GOLANG_IMAGE=golang:1.27.3-alpine\n")
-            (root / "backend/Dockerfile").write_text("FROM golang:1.27.3-alpine\n")
+            (root / "deploy").mkdir()
+            (root / "backend/go.mod").write_text("module test\ngo 1.27.4\n")
+            images = {
+                "Dockerfile": "ARG GOLANG_IMAGE=golang:1.27.4-alpine\n",
+                "backend/Dockerfile": "FROM golang:1.27.4-alpine\n",
+                "deploy/Dockerfile": "ARG GOLANG_IMAGE=golang:1.27.4-alpine\n",
+            }
+            for name, content in images.items():
+                (root / name).write_text(content)
             self.assertEqual([], check_go_images(root))
-            (root / "backend/Dockerfile").write_text("FROM golang:1.26.1-alpine\n")
-            self.assertEqual(1, len(check_go_images(root)))
+            for name, content in images.items():
+                with self.subTest(image=name):
+                    (root / name).write_text(content.replace("1.27.4", "1.27.3"))
+                    self.assertEqual(
+                        [f"Go/Docker mismatch: {name}; go.mod uses 1.27.4"],
+                        check_go_images(root),
+                    )
+                    (root / name).write_text(content)
 
     def test_changed_missing_and_unsafe_files_fail(self):
         with tempfile.TemporaryDirectory() as directory:

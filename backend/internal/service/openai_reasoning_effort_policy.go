@@ -550,3 +550,73 @@ func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []
 	result, changed, _ := ApplyOpenAIReasoningEffortPolicyWithAction(body, maxEffort, mappings, ReasoningEffortOverLimitDowngrade)
 	return result, changed
 }
+
+// Keep bridge defaults unless the caller explicitly chose effort or disabled thinking.
+func WithOpenAIReasoningEffortPolicyForMessages(ctx context.Context, body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) context.Context {
+	effort := gjson.GetBytes(body, "output_config.effort")
+	if effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" {
+		if gjson.GetBytes(body, "thinking.type").String() != "disabled" {
+			maxEffort = ""
+		}
+		none := make([]ReasoningEffortMapping, 0, len(mappings))
+		for _, mapping := range mappings {
+			if normalizeReasoningEffortMappingSource(mapping.From) == "none" {
+				none = append(none, mapping)
+			}
+		}
+		mappings = none
+	}
+	return WithOpenAIReasoningEffortPolicy(ctx, maxEffort, mappings, overLimit)
+}
+
+// Group model-scoped rules refer to the client's model, before account mapping.
+// Evaluate the converted effort but restore the concrete upstream model afterward.
+func applyOpenAIMessagesReasoningEffortPolicy(ctx context.Context, body []byte, requestModel string, anthropicBody []byte) ([]byte, bool, error) {
+	if ctx == nil {
+		return body, false, nil
+	}
+	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
+	if !ok || (policy.maxEffort == "" && len(policy.mappings) == 0) {
+		return body, false, nil
+	}
+	upstreamModel := gjson.GetBytes(body, "model").String()
+	candidate := body
+	var err error
+	if requestModel != upstreamModel {
+		candidate, err = sjson.SetBytes(candidate, "model", requestModel)
+		if err != nil {
+			return body, false, err
+		}
+	}
+	// The converter maps Anthropic max to xhigh for generic upstream models.
+	// Policies are defined against the client's original effort, so restore it
+	// before matching mappings and applying the group's ceiling.
+	originalEffort := strings.TrimSpace(gjson.GetBytes(anthropicBody, "output_config.effort").String())
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(anthropicBody, "thinking.type").String()), "disabled") {
+		originalEffort = "none"
+	}
+	if originalEffort != "" {
+		candidate, err = sjson.SetBytes(candidate, "reasoning.effort", originalEffort)
+		if err != nil {
+			return body, false, err
+		}
+	}
+	result, changed, err := ApplyOpenAIReasoningEffortPolicyWithAction(candidate, policy.maxEffort, policy.mappings, policy.overLimit)
+	if err != nil || !changed {
+		return body, false, err
+	}
+	if requestModel != upstreamModel {
+		result, err = sjson.SetBytes(result, "model", upstreamModel)
+	}
+	// The converter retains sampling only for disabled thinking. A none mapping
+	// that enables reasoning must use the converter's normal reasoning shape.
+	if err == nil && gjson.GetBytes(body, "reasoning.effort").String() == "none" && gjson.GetBytes(result, "reasoning.effort").String() != "none" {
+		for _, key := range []string{"temperature", "top_p"} {
+			result, err = sjson.DeleteBytes(result, key)
+			if err != nil {
+				return body, false, err
+			}
+		}
+	}
+	return result, err == nil, err
+}
