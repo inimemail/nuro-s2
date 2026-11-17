@@ -1,7 +1,7 @@
 <template>
   <div class="card p-4">
-    <div class="mb-4 flex items-center justify-between gap-3">
-      <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+    <div class="mb-4 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+      <h3 class="shrink-0 text-sm font-semibold text-gray-900 dark:text-white">
         {{ title || t('usage.endpointDistribution') }}
       </h3>
       <div class="flex flex-wrap items-center justify-end gap-2">
@@ -71,12 +71,12 @@
     <div v-if="loading" class="flex h-48 items-center justify-center">
       <LoadingSpinner />
     </div>
-    <div v-else-if="displayEndpointStats.length > 0 && chartData" class="flex items-center gap-6">
-      <div class="h-48 w-48">
+    <div v-else-if="displayEndpointStats.length > 0 && chartData" class="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+      <div class="h-48 w-48 shrink-0 self-center">
         <Doughnut :data="chartData" :options="doughnutOptions" />
       </div>
-      <div class="max-h-48 flex-1 overflow-y-auto">
-        <table class="w-full text-xs">
+      <div class="max-h-48 w-full min-w-0 flex-1 overflow-auto">
+        <table class="w-full min-w-[440px] text-xs">
           <thead>
             <tr class="text-gray-500 dark:text-gray-400">
               <th class="pb-2 text-left">{{ t('usage.endpoint') }}</th>
@@ -84,6 +84,7 @@
               <th class="pb-2 text-right">{{ t('admin.dashboard.tokens') }}</th>
               <th class="pb-2 text-right">{{ t('admin.dashboard.actual') }}</th>
               <th class="pb-2 text-right">{{ t('admin.dashboard.standard') }}</th>
+              <th v-if="showAccountCost" class="pb-2 pl-3 text-right">{{ t('admin.dashboard.accountCost') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -111,9 +112,12 @@
                 <td class="py-1.5 text-right text-gray-400 dark:text-gray-500">
                   ${{ formatCost(item.cost) }}
                 </td>
+                <td v-if="showAccountCost" class="py-1.5 pl-3 text-right tabular-nums text-gray-600 dark:text-gray-400">
+                  {{ item.account_cost == null ? '—' : '$' + formatCost(item.account_cost) }}
+                </td>
               </tr>
               <tr v-if="expandedKey === item.endpoint">
-                <td colspan="5" class="p-0">
+                <td :colspan="showAccountCost ? 6 : 5" class="p-0">
                   <UserBreakdownSubTable
                     :items="breakdownItems"
                     :loading="breakdownLoading"
@@ -174,6 +178,8 @@ const props = withDefaults(
     showSourceToggle: false
   }
 )
+
+const showAccountCost = computed(() => displayEndpointStats.value.some(item => item.account_cost != null))
 
 const emit = defineEmits<{
   'update:metric': [value: DistributionMetric]

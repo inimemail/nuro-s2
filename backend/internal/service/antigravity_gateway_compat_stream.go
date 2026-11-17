@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type antigravityCompatStreamAdapter interface {
@@ -58,7 +59,7 @@ func (a *antigravityChatStreamAdapter) Finalize(writer *antigravityClientWriter)
 }
 
 func (a *antigravityChatStreamAdapter) WriteError(writer *antigravityClientWriter, reason string) {
-	writer.Fprintf("data: {\"error\":{\"message\":%q,\"type\":\"upstream_error\"}}\n\n", reason)
+	writer.Fprintf("data: {\"error\":{\"message\":%q,\"type\":\"upstream_error\"}}\n\ndata: [DONE]\n\n", reason)
 }
 
 func (a *antigravityChatStreamAdapter) emitResponseEvent(event *apicompat.ResponsesStreamEvent, writer *antigravityClientWriter) {
@@ -92,7 +93,20 @@ func (a *antigravityResponsesStreamAdapter) Finalize(writer *antigravityClientWr
 }
 
 func (a *antigravityResponsesStreamAdapter) WriteError(writer *antigravityClientWriter, reason string) {
-	writer.Fprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"message\":%q}}\n\n", reason)
+	if a.anthropicState.CompletedSent {
+		return
+	}
+	id := a.anthropicState.ResponseID
+	if !isSafeCompatResponseID(id) {
+		id = "resp_" + uuid.NewString()
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type": "response.failed", "sequence_number": a.anthropicState.SequenceNumber,
+		"response": map[string]any{"id": id, "object": "response", "status": "failed", "output": []any{}, "error": map[string]string{"code": "upstream_error", "message": reason}},
+	})
+	a.anthropicState.SequenceNumber++
+	a.anthropicState.CompletedSent = true
+	writer.Fprintf("event: response.failed\ndata: %s\n\n", payload)
 }
 
 func (a *antigravityResponsesStreamAdapter) emitResponseEvent(event apicompat.ResponsesStreamEvent, writer *antigravityClientWriter) {
@@ -118,6 +132,7 @@ type antigravityCompatStreamSession struct {
 	firstTokenMs    *int
 	startTime       time.Time
 	meaningfulData  bool
+	visibleContent  bool
 }
 
 // Keep the pre-first-token buffer bounded. An upstream that emits an
@@ -152,7 +167,7 @@ func (s *antigravityCompatStreamSession) consume(line string) {
 }
 
 func (s *antigravityCompatStreamSession) hasMeaningfulData() bool {
-	return s.meaningfulData
+	return s.visibleContent
 }
 
 func (s *antigravityCompatStreamSession) pendingBufferOverflowed() bool {
@@ -213,6 +228,18 @@ func (s *antigravityCompatStreamSession) consumeClaudeData(eventType, payload st
 }
 
 func (s *antigravityCompatStreamSession) emitOrBuffer(event apicompat.AnthropicStreamEvent, payloadBytes int) {
+	if isVisibleAntigravityCompatEvent(&event) {
+		s.visibleContent = true
+		if s.firstTokenMs == nil {
+			ms := int(time.Since(s.startTime).Milliseconds())
+			s.firstTokenMs = &ms
+		}
+	}
+	// Reasoning can be relayed, but a terminal without text/tool/image must not
+	// advertise success before the empty-stream decision at EOF.
+	if !s.visibleContent && (event.Type == "message_stop" || (event.Type == "message_delta" && event.Delta != nil && event.Delta.StopReason != "")) {
+		return
+	}
 	if s.meaningfulData {
 		s.adapter.Emit(&event, s.writer)
 		return
@@ -234,8 +261,6 @@ func (s *antigravityCompatStreamSession) emitOrBuffer(event apicompat.AnthropicS
 	}
 
 	s.meaningfulData = true
-	ms := int(time.Since(s.startTime).Milliseconds())
-	s.firstTokenMs = &ms
 	for i := range s.pendingEvents {
 		s.adapter.Emit(&s.pendingEvents[i], s.writer)
 	}
@@ -246,9 +271,6 @@ func (s *antigravityCompatStreamSession) emitOrBuffer(event apicompat.AnthropicS
 func isMeaningfulAntigravityCompatEvent(event *apicompat.AnthropicStreamEvent) bool {
 	if event == nil {
 		return false
-	}
-	if event.Type == "message_stop" {
-		return true
 	}
 	if event.ContentBlock != nil {
 		block := event.ContentBlock
@@ -263,8 +285,20 @@ func isMeaningfulAntigravityCompatEvent(event *apicompat.AnthropicStreamEvent) b
 		return delta.Text != "" ||
 			delta.PartialJSON != "" ||
 			delta.Thinking != "" ||
-			delta.Signature != "" ||
-			delta.StopReason != ""
+			delta.Signature != ""
+	}
+	return false
+}
+
+func isVisibleAntigravityCompatEvent(event *apicompat.AnthropicStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	if block := event.ContentBlock; block != nil {
+		return block.Type == "tool_use" || block.Text != "" || block.Source != nil
+	}
+	if delta := event.Delta; delta != nil {
+		return delta.Text != "" || delta.PartialJSON != ""
 	}
 	return false
 }
@@ -333,6 +367,10 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 					return session.collectResult(true), nil
 				}
 				if !session.hasMeaningfulData() {
+					if c.Writer.Written() {
+						writeAntigravityCompatStreamError(c, adapter, writer, "empty_stream")
+						return session.collectResult(false), errAntigravityCommittedNoContent
+					}
 					return nil, antigravityCompatEmptyStreamError()
 				}
 				return session.finish(), nil
@@ -353,6 +391,10 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 				return session.collectResult(true), nil
 			}
 			if !session.hasMeaningfulData() {
+				if c.Writer.Written() {
+					writeAntigravityCompatStreamError(c, adapter, writer, "empty_stream")
+					return session.collectResult(false), errAntigravityCommittedNoContent
+				}
 				return nil, antigravityCompatEmptyStreamError()
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (%s)", prefix)
@@ -455,6 +497,10 @@ func (s *AntigravityGatewayService) handleAntigravityCompatReadError(
 		return session.collectResult(true), nil
 	}
 	if !session.hasMeaningfulData() {
+		if c.Writer.Written() {
+			writeAntigravityCompatStreamError(c, session.adapter, session.writer, "empty_stream")
+			return session.collectResult(false), errAntigravityCommittedNoContent
+		}
 		return nil, antigravityCompatEmptyStreamError()
 	}
 	if disconnect, handled := handleStreamReadError(err, clientDisconnected, prefix); handled {
@@ -482,6 +528,13 @@ func writeAntigravityCompatStreamError(
 	writer *antigravityClientWriter,
 	reason string,
 ) {
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return
+	}
+	if sent, _ := c.Get("gateway_error_terminal_sent"); sent == true {
+		return
+	}
+	c.Set("gateway_error_terminal_sent", true)
 	adapter.WriteError(writer, reason)
 	MarkResponseCommitted(c)
 }

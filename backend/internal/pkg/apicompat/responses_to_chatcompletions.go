@@ -16,7 +16,10 @@ import (
 // ResponsesToChatCompletions converts a Responses API response into a Chat
 // Completions response. Text output items are concatenated into
 // choices[0].message.content; function_call items become tool_calls.
-func ResponsesToChatCompletions(resp *ResponsesResponse, model string) *ChatCompletionsResponse {
+func ResponsesToChatCompletions(resp *ResponsesResponse, model string, grok ...bool) *ChatCompletionsResponse {
+	if len(grok) > 0 && grok[0] {
+		resp = withoutGrokServerSearch(resp)
+	}
 	id := resp.ID
 	if id == "" {
 		id = generateChatCmplID()
@@ -119,6 +122,8 @@ func responsesStatusToChatFinishReason(status string, details *ResponsesIncomple
 // ResponsesEventToChatState tracks state for converting a sequence of Responses
 // SSE events into Chat Completions SSE chunks.
 type ResponsesEventToChatState struct {
+	GrokServerSideSearch   bool
+	ignoredServerSearch    map[int]bool
 	ID                     string
 	Model                  string
 	Created                int64
@@ -147,6 +152,10 @@ func NewResponsesEventToChatState() *ResponsesEventToChatState {
 // ResponsesEventToChatChunks converts a single Responses SSE event into zero
 // or more Chat Completions chunks, updating state as it goes.
 func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEventToChatState) []ChatCompletionsChunk {
+	evt = filterGrokSearchEvent(evt, state.GrokServerSideSearch, &state.ignoredServerSearch)
+	if evt == nil {
+		return nil
+	}
 	if state.Finalized {
 		return nil
 	}
@@ -495,10 +504,12 @@ func generateChatCmplID() string {
 // ---------------------------------------------------------------------------
 
 type bufferedFuncCall struct {
+	ServerSideSearch      bool
 	CallID                string
 	Name                  string
 	Namespace             string
 	EncryptedFunctionArgs json.RawMessage
+	EncryptedContent      string
 	Args                  strings.Builder
 }
 
@@ -506,6 +517,7 @@ type bufferedFuncCall struct {
 // so that non-streaming handlers can reconstruct output when the terminal event
 // (response.completed / response.done) carries an empty output array.
 type BufferedResponseAccumulator struct {
+	GrokServerSideSearch bool
 	text                 strings.Builder
 	refusal              strings.Builder
 	reasoning            strings.Builder
@@ -545,11 +557,16 @@ func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) 
 			if event.Item.CallID != "" {
 				call.CallID = event.Item.CallID
 			}
+			// Sparse done items may omit the call ID already supplied by added.
+			call.ServerSideSearch = a.GrokServerSideSearch && IsServerSideSearchCall(event.Item.Type, call.CallID)
 			if event.Item.Name != "" {
 				call.Name = event.Item.Name
 			}
 			if event.Item.Namespace != "" {
 				call.Namespace = event.Item.Namespace
+			}
+			if event.Item.EncryptedContent != "" {
+				call.EncryptedContent = event.Item.EncryptedContent
 			}
 			if event.Item.EncryptedFunctionArgs != nil {
 				call.EncryptedFunctionArgs = append(json.RawMessage(nil), event.Item.EncryptedFunctionArgs...)
@@ -617,10 +634,15 @@ func (a *BufferedResponseAccumulator) BuildOutput() []ResponsesOutput {
 	}
 
 	for i := range a.funcCalls {
+		typ := "function_call"
+		if a.funcCalls[i].ServerSideSearch {
+			typ = "custom_tool_call"
+		}
 		out = append(out, ResponsesOutput{
-			Type:                  "function_call",
+			Type:                  typ,
 			Namespace:             a.funcCalls[i].Namespace,
 			EncryptedFunctionArgs: a.funcCalls[i].EncryptedFunctionArgs,
+			EncryptedContent:      a.funcCalls[i].EncryptedContent,
 			CallID:                a.funcCalls[i].CallID,
 			Name:                  a.funcCalls[i].Name,
 			Arguments:             a.funcCalls[i].Args.String(),

@@ -159,22 +159,25 @@ func (a *Account) VertexProjectID() string {
 
 func (a *Account) VertexLocation(model string) string {
 	if a == nil {
-		return vertexDefaultLocation
+		return a.resolveVertexGeminiLocation(vertexDefaultLocation, model)
+	}
+	if bound := a.GetCredential("_gemini_cache_bound_location"); bound != "" {
+		return bound
 	}
 	if model != "" && a.Credentials != nil {
 		if raw, ok := a.Credentials["vertex_model_locations"].(map[string]any); ok {
 			if loc, ok := raw[model].(string); ok && strings.TrimSpace(loc) != "" {
-				return strings.TrimSpace(loc)
+				return a.resolveVertexGeminiLocation(strings.TrimSpace(loc), model)
 			}
 		}
 	}
 	if v := strings.TrimSpace(a.GetCredential("location")); v != "" {
-		return v
+		return a.resolveVertexGeminiLocation(v, model)
 	}
 	if v := strings.TrimSpace(a.GetCredential("vertex_location")); v != "" {
-		return v
+		return a.resolveVertexGeminiLocation(v, model)
 	}
-	return vertexDefaultLocation
+	return a.resolveVertexGeminiLocation(vertexDefaultLocation, model)
 }
 
 func parseVertexServiceAccountKey(account *Account) (*vertexServiceAccountKey, error) {
@@ -395,10 +398,7 @@ func buildVertexGeminiURL(projectID, location, model, action string, stream bool
 	default:
 		return "", fmt.Errorf("unsupported vertex gemini action: %s", action)
 	}
-	host := fmt.Sprintf("%s-aiplatform.googleapis.com", location)
-	if location == "global" {
-		host = "aiplatform.googleapis.com"
-	}
+	host := vertexAPIHost(location)
 	u := fmt.Sprintf(
 		"https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:%s",
 		host,

@@ -85,6 +85,19 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformAnthropic {
+		originalEffort := gjson.GetBytes(body, "reasoning.effort").String()
+		if originalEffort == "" {
+			originalEffort = gjson.GetBytes(body, "reasoning_effort").String()
+		}
+		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), originalEffort))
+		adjusted, _, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		if policyErr != nil {
+			h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", policyErr.Error())
+			return
+		}
+		body = adjusted
+	}
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
@@ -198,6 +211,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	// 3. Account selection + failover loop
 	fs := NewFailoverState(h.maxAccountSwitches, false)
 
+	var stickyExpected int64
+	stickyObserved := false
+
 	for {
 		retryAccountID := fs.pendingSameAccountRetryID()
 		var selection *service.AccountSelectionResult
@@ -242,6 +258,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 		}
+		if !stickyObserved && selection.StickyObserved {
+			stickyExpected = selection.StickyAccountID
+			stickyObserved = true
+		}
+
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
@@ -300,6 +321,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			result, err = h.gatewayService.ForwardAsResponses(requestCtx, c, account, forwardBody, parsedReq)
 		}
 
+		if service.IsAntigravityCommittedNoContent(err) {
+			_ = h.gatewayService.ReleaseFailedStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
+		}
+
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
@@ -356,8 +381,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		switch {
 		case successfulOutcome:
 			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
-			if sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
-				if bindErr := h.gatewayService.BindStickySession(requestCtx, apiKey.GroupID, sessionHash, account.ID); bindErr != nil {
+			if stickyObserved && sessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
+				if bindErr := h.gatewayService.BindSuccessfulStickySession(requestCtx, apiKey.GroupID, sessionHash, stickyExpected, account.ID); bindErr != nil {
 					reqLog.Warn("gateway.responses.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 				}
 			}
@@ -408,6 +433,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 
 // responsesErrorResponse writes an error in OpenAI Responses API format.
 func (h *GatewayHandler) responsesErrorResponse(c *gin.Context, status int, code, message string) {
+	if service.WriteGatewayCommittedError(c, "responses", code, message) {
+		return
+	}
 	c.JSON(status, gin.H{
 		"error": gin.H{
 			"code":    code,
@@ -419,7 +447,8 @@ func (h *GatewayHandler) responsesErrorResponse(c *gin.Context, status int, code
 // handleResponsesFailoverExhausted writes a failover-exhausted error in Responses format.
 func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
 	if streamStarted {
-		return // Can't write error after stream started
+		service.WriteGatewayCommittedError(c, "responses", "server_error", "All available accounts exhausted")
+		return
 	}
 	statusCode := http.StatusBadGateway
 	if lastErr != nil && lastErr.StatusCode > 0 {

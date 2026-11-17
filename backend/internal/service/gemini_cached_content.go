@@ -230,6 +230,9 @@ func ParseGeminiCacheCreate(body []byte, now time.Time, maxTTL time.Duration) (*
 		return nil, errors.New("cache model is required")
 	}
 	model = strings.TrimPrefix(model, "models/")
+	if gemini4BaseModel(model) != "" {
+		return nil, errors.New("explicit caching is not supported for this model")
+	}
 	if !IsSafeGeminiModelPathSegment(model) || !strings.HasPrefix(model, "gemini-") {
 		return nil, errors.New("invalid cache model")
 	}

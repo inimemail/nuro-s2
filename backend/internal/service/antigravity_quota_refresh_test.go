@@ -85,9 +85,13 @@ func TestAntigravityOptionalRefreshConcurrencyCancellationAndAuth(t *testing.T) 
 			}
 			require.EqualValues(t, 2, peak.Load())
 			if scenario == "cancel" {
+				// Keep handlers blocked until cancellation resolves on the client.
+				// Releasing them here would race a successful response against cancel.
+				defer close(release) // Also release handlers before server.Close.
 				cancel()
+			} else {
+				close(release)
 			}
-			close(release)
 			var result fetched
 			select {
 			case result = <-done:

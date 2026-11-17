@@ -725,7 +725,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID)
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID, account != nil && account.Platform == PlatformGrok)
 	if err != nil {
 		return nil, err
 	}
@@ -772,7 +772,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel),
 		finalResponse.UpstreamServiceTier,
 	)
-	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel, account != nil && account.Platform == PlatformGrok)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -850,8 +850,10 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	resp *http.Response,
 	logPrefix string,
 	requestID string,
+	grok ...bool,
 ) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, error) {
 	acc := apicompat.NewBufferedResponseAccumulator()
+	acc.GrokServerSideSearch = len(grok) > 0 && grok[0]
 	var usage OpenAIUsage
 	if resp == nil || resp.Body == nil {
 		return nil, usage, acc, errors.New("upstream response body is nil")
@@ -1041,6 +1043,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	}
 
 	state := apicompat.NewResponsesEventToAnthropicState()
+	state.GrokServerSideSearch = account != nil && account.Platform == PlatformGrok
 	state.Model = originalModel
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
@@ -1420,6 +1423,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 // writeAnthropicError writes an error response in Anthropic Messages API format.
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
+	if WriteGatewayCommittedError(c, "anthropic", errType, message) {
+		return
+	}
 	c.JSON(statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{

@@ -2,6 +2,7 @@ import geminiCache from './zh/geminiCache'
 import batchImage from './zh/batchImage'
 
 export default {
+  quotaDisplay: { exactModelOnly: '白名单需填写完整模型名；通配符请使用模型映射', unknown: '暂无可靠数据', refresh: '刷新用量', failed: '刷新失败 · 保留上次数据', updated: '上次更新' },
  upgradeBlacklist: {"title": "注册邮箱黑名单", "help": "每行一个精确邮箱，最多 20,000 条。比较时忽略 + 标签；Gmail 还会忽略点号，并将 googlemail.com 视为 gmail.com。登录和收信地址保持原样。保存规则只拦截新注册；禁用已有用户需另行预览和确认，管理员不会被禁用。", "placeholder": "name{'@'}example.com\nother{'@'}gmail.com", "preview": "预览已有用户", "saveFirst": "请先保存规则，再预览命中用户。", "matches": "本页 {count} 位活跃用户", "next": "下一页", "confirm": "我确认禁用本页列出的用户。这会影响登录权限，余额和订阅保留。", "disable": "禁用本页用户", "empty": "没有命中的活跃用户。", "failed": "预览失败，请重试。", "changed": "操作失败或预览已变化，请刷新预览后重试。", "done": "已禁用 {count} 位用户，操作已记录到审计日志。"},
 
   upgradeExport: { progress: '导出中 · {count} 条', wait: '请求受限，{seconds} 秒后重试…', boundary: '按当前筛选导出，不包含后续新增记录；导出期间被清理的记录可能缺失。', tooLarge: '导出文件超出浏览器处理范围，请缩小日期范围，分段导出。' },

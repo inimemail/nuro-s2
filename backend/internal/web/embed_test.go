@@ -305,7 +305,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.True(t, strings.HasSuffix(etag, `"`))
 	})
 
-	t.Run("returns_304_for_matching_etag", func(t *testing.T) {
+	t.Run("nonce_requires_fresh_body_even_with_matching_etag", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
 		}
@@ -316,7 +316,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		// Use a real router for proper 304 handling
 		router := gin.New()
 		router.Use(func(c *gin.Context) {
-			c.Set(middleware.CSPNonceKey, "test-nonce")
+			c.Set(middleware.CSPNonceKey, c.GetHeader("X-Test-Nonce"))
 			c.Next()
 		})
 		router.Use(server.Middleware())
@@ -324,6 +324,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		// First request to populate cache and get ETag
 		w1 := httptest.NewRecorder()
 		req1 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req1.Header.Set("X-Test-Nonce", "nonce-one")
 		router.ServeHTTP(w1, req1)
 		etag := w1.Header().Get("ETag")
 		require.NotEmpty(t, etag)
@@ -332,10 +333,21 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		w2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 		req2.Header.Set("If-None-Match", etag)
+		req2.Header.Set("X-Test-Nonce", "nonce-two")
 		router.ServeHTTP(w2, req2)
 
-		assert.Equal(t, http.StatusNotModified, w2.Code)
-		assert.Empty(t, w2.Body.String())
+		assert.Equal(t, http.StatusOK, w2.Code)
+		assert.Contains(t, w2.Body.String(), `nonce="nonce-two"`)
+		assert.NotContains(t, w2.Body.String(), `nonce="nonce-one"`)
+		assert.Contains(t, w2.Header().Get("Cache-Control"), "no-store")
+
+		// Without a per-request nonce the existing conditional response remains valid.
+		w3 := httptest.NewRecorder()
+		req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req3.Header.Set("If-None-Match", etag)
+		router.ServeHTTP(w3, req3)
+		assert.Equal(t, http.StatusNotModified, w3.Code)
+		assert.Empty(t, w3.Body.String())
 	})
 
 	t.Run("sets_cache_control_header", func(t *testing.T) {
@@ -353,7 +365,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 
 		server.serveIndexHTML(c)
 
-		assert.Equal(t, "no-cache", w.Header().Get("Cache-Control"))
+		assert.Equal(t, "no-store, no-cache, must-revalidate", w.Header().Get("Cache-Control"))
 	})
 
 	t.Run("fallback_on_settings_error", func(t *testing.T) {

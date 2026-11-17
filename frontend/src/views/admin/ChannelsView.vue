@@ -325,7 +325,7 @@
             </div>
 
             <!-- Web Search Emulation (Anthropic only, hidden when global disabled) -->
-            <div v-if="section.platform === 'anthropic' && webSearchGlobalEnabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
+            <div v-if="WEB_SEARCH_EMULATION_PLATFORMS.includes(section.platform) && webSearchGlobalEnabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
               <div class="flex items-center justify-between">
                 <div>
                   <label class="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -626,6 +626,8 @@
 </template>
 
 <script setup lang="ts">
+import { channelBedrockCompatibility, channelFeatureBoolean } from '@/utils/channelFeatures'
+const WEB_SEARCH_EMULATION_PLATFORMS = ['anthropic', 'openai', 'zhipu', 'opencode_go', 'minimax']
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1146,13 +1148,13 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
     }
   }
 
-  // Collect web_search_emulation (only anthropic platform supports it)
+  // Collect web_search_emulation for the supported platforms
   // Always write the key so that disabling in the UI correctly sets platform to false,
   // rather than leaving a stale true value from the cloned features_config.
   const wsEmulation: Record<string, boolean> = {}
   for (const section of form.platforms) {
     if (!section.enabled) continue
-    if (section.platform === 'anthropic') {
+    if (WEB_SEARCH_EMULATION_PLATFORMS.includes(section.platform)) {
       wsEmulation[section.platform] = !!section.web_search_emulation
     }
   }
@@ -1175,18 +1177,7 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
     delete featuresConfig.codex_image_generation_bridge
   }
 
-  const bedrockCCCompat: Record<string, boolean> = {}
-  for (const section of form.platforms) {
-    if (!section.enabled) continue
-    if (section.platform === 'anthropic') {
-      bedrockCCCompat[section.platform] = !!section.bedrock_cc_compat
-    }
-  }
-  if (Object.keys(bedrockCCCompat).length > 0) {
-    featuresConfig.bedrock_cc_compat = bedrockCCCompat
-  } else {
-    delete featuresConfig.bedrock_cc_compat
-  }
+  Object.assign(featuresConfig, channelBedrockCompatibility(featuresConfig, form.platforms))
 
   return { group_ids, model_pricing, model_mapping, features_config: featuresConfig }
 }
@@ -1244,8 +1235,8 @@ function apiToForm(channel: Channel): PlatformSection[] {
     const webSearchEnabled = wsEmulation?.[platform] === true
     const codexImageGenerationBridge = fc?.codex_image_generation_bridge as Record<string, boolean> | undefined
     const codexImageGenerationBridgeEnabled = codexImageGenerationBridge?.[platform] === true
-    const bedrockCCCompat = fc?.bedrock_cc_compat as Record<string, boolean> | undefined
-    const bedrockCCCompatEnabled = bedrockCCCompat?.[platform] === true
+    const bedrockCCCompat = fc?.bedrock_cc_compat
+    const bedrockCCCompatEnabled = platform === 'anthropic' && channelFeatureBoolean(typeof bedrockCCCompat === 'object' && bedrockCCCompat !== null ? (bedrockCCCompat as Record<string, unknown>)[platform] : bedrockCCCompat)
 
     sections.push({
       platform,

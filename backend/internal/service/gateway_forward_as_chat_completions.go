@@ -34,6 +34,8 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
 	ctx = captureClaudeCLIIdentity(ctx)
+	beginUpstreamResponseModelObservation(c)
+	defer auditAnthropicResponseTier(ctx, c, account)
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request
@@ -109,6 +111,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
 	}
 
+	anthropicBody = withChatCompletionsMetadataUserID(body, anthropicBody)
 	anthropicBody = s.applyAnthropicCacheBoostBody(ctx, account, anthropicBody)
 	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
 		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(anthropicBody)
@@ -148,6 +151,19 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 11. Send request
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err == nil && resp != nil && resp.StatusCode == http.StatusUnauthorized && time.Since(startTime) < maxRetryElapsed {
+		if rotated := s.rotatedClaudeAccessToken(ctx, account, token, startTime.Add(maxRetryElapsed)); rotated != "" {
+			_ = resp.Body.Close()
+			retryCtx, release := detachStreamUpstreamContext(ctx, reqStream)
+			retryReq, buildErr := s.buildUpstreamRequest(retryCtx, c, account, anthropicBody, rotated, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+			release()
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			resp, err = s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		}
+	}
+
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -286,6 +302,9 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 			continue
 		}
 
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveAnthropic([]byte(payload))
+		}
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			invalidStream = true
@@ -370,13 +389,15 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:                     requestID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ReasoningEffort:               reasoningEffort,
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -427,16 +448,18 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:        requestID,
-			Usage:            usage,
-			Model:            originalModel,
-			UpstreamModel:    mappedModel,
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
-			FailedOutcome:    !clientDisconnected && anthState.StopReason == "max_tokens",
+			RequestID:                     requestID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			ReasoningEffort:               reasoningEffort,
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
+			FailedOutcome:                 !clientDisconnected && anthState.StopReason == "max_tokens",
 		}
 	}
 
@@ -517,6 +540,9 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			}
 			break
 		}
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveAnthropic([]byte(payload))
+		}
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			invalidStream = true
@@ -591,6 +617,9 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 // the Anthropic-upstream CC forwarding path.
 func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string) {
 	MarkResponseCommitted(c)
+	if WriteGatewayCommittedError(c, "chat", errType, message) {
+		return
+	}
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,

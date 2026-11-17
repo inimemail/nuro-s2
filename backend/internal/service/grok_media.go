@@ -996,7 +996,7 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context,
 		body = nil
 	}
 	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
-	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(grokUpstreamErrorMessage(body)))
 	if upstreamMsg == "" {
 		upstreamMsg = safeUpstreamErrorMessage
 	}

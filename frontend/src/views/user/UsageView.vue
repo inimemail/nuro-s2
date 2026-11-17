@@ -708,6 +708,9 @@ const appStore = useAppStore()
 let abortController: AbortController | null = null
 let errorAbortController: AbortController | null = null
 let usageOverviewSeq = 0
+let overviewController: AbortController | null = null
+let overviewQueryKey = ''
+let overviewDisposed = false
 
 // Tooltip state
 const tooltipVisible = ref(false)
@@ -761,6 +764,10 @@ let exportObjectURL: string | null = null
 const cancelExport = () => exportController?.abort()
 onUnmounted(() => {
   abortController?.abort()
+  errorAbortController?.abort()
+  overviewDisposed = true
+  usageOverviewSeq++
+  overviewController?.abort()
   cancelExport()
   if (exportObjectURL) URL.revokeObjectURL(exportObjectURL)
 })
@@ -973,11 +980,15 @@ const loadApiKeys = async () => {
 }
 
 const loadUsageStats = async () => {
+  if (overviewDisposed) return
   const seq = ++usageOverviewSeq
+  overviewController?.abort()
+  const request = new AbortController()
+  overviewController = request
   chartsLoading.value = true
   try {
     const apiKeyId = filters.value.api_key_id ? Number(filters.value.api_key_id) : undefined
-    const snapshot = await usageAPI.getDashboardSnapshotV2({
+    const params = {
       start_date: filters.value.start_date || startDate.value,
       end_date: filters.value.end_date || endDate.value,
       api_key_id: apiKeyId,
@@ -986,8 +997,17 @@ const loadUsageStats = async () => {
       include_trend: true,
       include_model_stats: true,
       include_group_stats: true,
-    })
-    if (seq !== usageOverviewSeq) return
+    }
+    const queryKey = JSON.stringify(params)
+    if (queryKey !== overviewQueryKey) {
+      usageStats.value = null
+      trendData.value = []
+      requestedModelStats.value = []
+      groupStats.value = []
+      overviewQueryKey = queryKey
+    }
+    const snapshot = await usageAPI.getDashboardSnapshotV2(params, { signal: request.signal })
+    if (seq !== usageOverviewSeq || overviewDisposed || request.signal.aborted) return
     usageStats.value = snapshot.stats || null
     trendData.value = snapshot.trend || []
     requestedModelStats.value = snapshot.models || []
@@ -996,11 +1016,9 @@ const loadUsageStats = async () => {
       account_cost: group.account_cost ?? 0,
     }))
   } catch (error) {
-    if (seq !== usageOverviewSeq) return
+    if (seq !== usageOverviewSeq || overviewDisposed || request.signal.aborted) return
     console.error('Failed to load usage stats:', error)
-    trendData.value = []
-    requestedModelStats.value = []
-    groupStats.value = []
+    appStore.showError(t('usage.errors.failedToLoad'))
   } finally {
     if (seq === usageOverviewSeq) {
       chartsLoading.value = false

@@ -293,3 +293,30 @@ func (c *gatewayCache) MarkLiveCallClosed(ctx context.Context, callHash string, 
 	result, err := markLiveCallClosedScript.Run(ctx, c.rdb, []string{liveCallKey(callHash)}, int64(ttl.Seconds())).Int()
 	return result == 1, err
 }
+
+var compareStickyBindingScript = redis.NewScript(`
+local current = redis.call('GET',KEYS[1])
+if (not current and ARGV[1] == '0') or current == ARGV[1] then
+ redis.call('SET',KEYS[1],ARGV[2],'PX',ARGV[3]); return 1
+end
+return 0
+`)
+
+func (c *gatewayCache) IsSessionAccountNotFound(err error) bool {
+	return errors.Is(err, redis.Nil)
+}
+
+func (c *gatewayCache) CompareAndSetSessionAccountID(ctx context.Context, groupID int64, hash string, expected, accountID int64, ttl time.Duration) (bool, error) {
+	result, err := compareStickyBindingScript.Run(ctx, c.rdb, []string{buildSessionKey(groupID, hash)}, expected, accountID, ttl.Milliseconds()).Int()
+	return result == 1, err
+}
+
+var deleteStickyBindingScript = redis.NewScript(`
+if redis.call('GET',KEYS[1]) == ARGV[1] then return redis.call('DEL',KEYS[1]) end
+return 0
+`)
+
+func (c *gatewayCache) CompareAndDeleteSessionAccountID(ctx context.Context, groupID int64, hash string, accountID int64) (bool, error) {
+	result, err := deleteStickyBindingScript.Run(ctx, c.rdb, []string{buildSessionKey(groupID, hash)}, accountID).Int()
+	return result == 1, err
+}

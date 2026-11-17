@@ -14,6 +14,9 @@ func (s *BillingService) GeminiCacheStoragePrice(model string, at time.Time) (fl
 }
 
 func (s *BillingService) geminiCacheStoragePriceForAccount(model string, at time.Time, account *Account) (float64, string, error) {
+	if gemini4BaseModel(model) != "" {
+		return 0, "", errors.New("explicit caching is not supported for this model")
+	}
 	if s.pricingService != nil {
 		if p := s.pricingService.GetIdentifiedModelPricing(model); p != nil && p.PricingOverrideCacheStorage {
 			if p.CacheStorageCostPerTokenPerHour < 0 || math.IsNaN(p.CacheStorageCostPerTokenPerHour) || math.IsInf(p.CacheStorageCostPerTokenPerHour, 0) {
@@ -44,10 +47,13 @@ func (s *BillingService) geminiCacheStoragePriceForAccount(model string, at time
 	if account != nil && account.IsVertexServiceAccount() {
 		source = "official_vertex"
 	}
-	return rate, source, nil
+	return rate * VertexUpstreamPriceMultiplier(account, model, ""), source, nil
 }
 
 func (s *GeminiCachedContentService) pricingContext(ctx context.Context, key *APIKey, account *Account, model, upstream string, tokens int64, at time.Time) (GeminiCachePricingContext, error) {
+	if gemini4BaseModel(model) != "" || gemini4BaseModel(upstream) != "" {
+		return GeminiCachePricingContext{}, errors.New("explicit caching is not supported for this model")
+	}
 	resolved := s.resolver.Resolve(ctx, PricingInput{Model: model, GroupID: key.GroupID, Group: key.Group})
 	if resolved == nil || resolved.Mode != BillingModeToken {
 		return GeminiCachePricingContext{}, errors.New("cache management requires token pricing")
@@ -62,6 +68,7 @@ func (s *GeminiCachedContentService) pricingContext(ctx context.Context, key *AP
 			pricingAt = gemini36LaunchOfferEnd // Developer API promotion does not imply Vertex eligibility.
 		}
 		pricing = applyGemini36OfficialPricing(model, pricing, pricingAt)
+		pricing = applyVertexDefaultTokenPricing(pricing, VertexUpstreamPriceMultiplier(account, upstream, ""))
 	}
 	storage, source, err := s.billing.geminiCacheStoragePriceForAccount(model, at, account)
 	if resolved.channelPricing != nil && resolved.channelPricing.CacheStoragePrice != nil {
@@ -124,6 +131,7 @@ func (s *GeminiCachedContentService) accountCachePricing(ctx context.Context, ke
 	}
 	if custom == nil {
 		pricing = applyGemini36OfficialPricing(upstream, pricing, pricingAt)
+		pricing = applyVertexDefaultTokenPricing(pricing, VertexUpstreamPriceMultiplier(account, upstream, ""))
 	}
 	storage, source, err := s.billing.geminiCacheStoragePriceForAccount(upstream, at, account)
 	if custom != nil && custom.CacheStoragePrice != nil {

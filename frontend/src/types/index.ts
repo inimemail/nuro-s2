@@ -1226,6 +1226,7 @@ export interface WindowStats {
 
 export interface UsageProgress {
   utilization: number // Percentage (0-100+, 100 = 100%)
+  utilization_unknown?: boolean
   resets_at: string | null
   remaining_seconds: number
   window_minutes?: number
@@ -1865,6 +1866,7 @@ export interface ModelStat {
 }
 
 export interface EndpointStat {
+  account_cost?: number
   endpoint: string
   requests: number
   total_tokens: number

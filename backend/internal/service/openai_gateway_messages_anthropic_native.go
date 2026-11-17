@@ -214,6 +214,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	defer auditAnthropicResponseTier(ctx, c, account)
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
@@ -276,6 +277,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	defer auditAnthropicResponseTier(ctx, c, account)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

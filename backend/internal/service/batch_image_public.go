@@ -1053,6 +1053,15 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 			return nil, ErrBatchImageSettlementPricingMissing
 		}
 		unit = resolvedUnit
+		if provider == "vertex" {
+			if prices, ok := s.Pricing.(*BatchImageModelPricingResolver); ok {
+				location := "global"
+				if s.Config != nil && strings.TrimSpace(s.Config.BatchImage.VertexLocation) != "" {
+					location = strings.TrimSpace(s.Config.BatchImage.VertexLocation)
+				}
+				unit *= prices.vertexRegionalUnitMultiplier(ctx, req.Model, account, location)
+			}
+		}
 	}
 	// 定价不变式：hold 比例不得低于 discount 比例，否则成功率足够高时
 	// actualCost > holdAmount，结算永远失败、冻结余额无法解冻。

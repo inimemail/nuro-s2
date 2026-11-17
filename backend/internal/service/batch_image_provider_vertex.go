@@ -216,6 +216,7 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 	if location == "" {
 		location = account.VertexLocation(input.Model)
 	}
+	location = resolveVertexModelLocation(location, input.Model)
 
 	req := VertexCreateBatchPredictionJobRequest{
 		ProjectID:      projectID,
@@ -572,10 +573,7 @@ func BuildVertexBatchPredictionJobsEndpoint(baseURL, projectID, location string)
 	if strings.TrimSpace(baseURL) != "" {
 		return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/v1/projects/" + url.PathEscape(projectID) + "/locations/" + url.PathEscape(location) + "/batchPredictionJobs", nil
 	}
-	host := fmt.Sprintf("%s-aiplatform.googleapis.com", location)
-	if location == "global" {
-		host = "aiplatform.googleapis.com"
-	}
+	host := vertexAPIHost(location)
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/batchPredictionJobs", host, url.PathEscape(projectID), url.PathEscape(location)), nil
 }
 

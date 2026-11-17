@@ -28,6 +28,7 @@ const (
 	BetaRedactThinking              = "redact-thinking-2026-02-12"
 	BetaContextManagement           = "context-management-2025-06-27"
 	BetaMidConversationOutputConfig = "mid-conversation-output-config-2026-07-01"
+	BetaPerTurnControl              = "per-turn-control-2026-07-01"
 	BetaExtendedCacheTTL            = "extended-cache-ttl-2025-04-11"
 )
 

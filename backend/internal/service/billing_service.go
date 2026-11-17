@@ -102,6 +102,7 @@ type BillingCache interface {
 
 // ModelPricing 模型价格配置（per-token价格，与LiteLLM格式一致）
 type ModelPricing struct {
+	vertexPriceOverrides               map[string]bool
 	CacheStoragePricePerTokenHour      float64
 	InputPricePerToken                 float64 // 每token输入价格 (USD)
 	InputPricePerTokenPriority         float64 // priority service tier 下每token输入价格 (USD)
@@ -879,6 +880,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if requiresCodexDirectImages(strings.ToLower(model)) {
 		return &ModelPricing{InputPricePerToken: 5e-6, CacheReadPricePerToken: 1.25e-6, ImageInputPricePerToken: 8e-6, ImageCacheReadPricePerToken: 2e-6, ImageCacheReadPriceExplicit: true, ImageOutputPricePerToken: 30e-6}
 	}
+	if base := gemini4BaseModel(model); base != "" {
+		return applyGemini4OfficialPricing(base, &ModelPricing{}, time.Now())
+	}
+	if p := qwen3VectorFallback(model); p != nil {
+		return p
+	}
 	modelLower := normalizeAntigravityClaudeTierAlias(strings.ToLower(model))
 	if claude.IsFable52(modelLower) {
 		return s.fallbackPrices["claude-fable-5-2"]
@@ -1181,6 +1188,7 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 				ImageCacheReadPricePerToken:        litellmPricing.CacheReadInputImageTokenCost,
 				ImageCacheReadPriceExplicit:        litellmPricing.ImageCacheReadPriceExplicit,
 				ImageOutputPricePerToken:           litellmPricing.OutputCostPerImageToken,
+				vertexPriceOverrides:               litellmPricing.vertexPriceOverrides,
 				PricingOverride:                    litellmPricing.PricingOverride,
 				PricingOverrideInput:               litellmPricing.PricingOverrideInput,
 				PricingOverrideOutput:              litellmPricing.PricingOverrideOutput,
@@ -1253,6 +1261,7 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 
 // CostInput 统一计费输入
 type CostInput struct {
+	VertexPriceMultiplier     float64
 	Ctx                       context.Context
 	Model                     string
 	GroupID                   *int64 // 用于渠道定价查找
@@ -1351,6 +1360,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 			pricingAt = gemini36LaunchOfferEnd
 		}
 		pricing = applyGemini36OfficialPricing(input.Model, pricing, pricingAt)
+		pricing = applyGemini4OfficialPricing(input.Model, pricing, input.PricingAt)
 	}
 	if resolved.Source != PricingSourceGroup && resolved.Source != PricingSourceChannel && isDeepSeekModel(input.Model) {
 		at := input.PricingAt
@@ -1358,6 +1368,10 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 			at = timezone.Now()
 		}
 		pricing = applyDeepSeekOfficialPeakPricing(input.Model, pricing, at)
+	}
+
+	if useDefaultCatalogPricing {
+		pricing = applyVertexDefaultTokenPricing(pricing, input.VertexPriceMultiplier)
 	}
 
 	// 长上下文定价仅在无区间定价时应用（区间定价已包含上下文分层）
@@ -1577,6 +1591,9 @@ func (s *BillingService) calculatePerRequestCost(resolved *ResolvedPricing, inpu
 		unitPrice = resolved.DefaultPerRequestPrice
 	}
 
+	if resolved.Source != PricingSourceGroup && resolved.Source != PricingSourceChannel {
+		unitPrice *= s.vertexDefaultImagePriceMultiplier(input.Model, input.VertexPriceMultiplier)
+	}
 	totalCost := unitPrice * units
 	actualCost := totalCost * input.RateMultiplier
 
@@ -1633,10 +1650,13 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	}
 	if channelPricing == nil {
 		at := time.Now()
+		eligible := (*bool)(nil)
 		if len(geminiTime) > 0 {
-			at = gemini36PricingAt(geminiTime[0].at, geminiTime[0].eligible)
+			at = geminiTime[0].at
+			eligible = geminiTime[0].eligible
 		}
-		pricing = applyGemini36OfficialPricing(model, pricing, at)
+		pricing = applyGemini36OfficialPricing(model, pricing, gemini36PricingAt(at, eligible))
+		pricing = applyGemini4OfficialPricing(model, pricing, at)
 	}
 	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, longContextBillingEnabled), nil
 }
@@ -1676,6 +1696,9 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceDeepSeekRates bool) *ModelPricing {
 	if pricing == nil {
 		return nil
+	}
+	if forceDeepSeekRates && gemini4BaseModel(model) != "" {
+		return applyGemini4OfficialPricing(model, pricing, time.Now())
 	}
 	if claude.IsAdaptiveThinkingModel(model) {
 		cloned := *pricing

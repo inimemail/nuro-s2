@@ -2,33 +2,42 @@ package service
 
 import (
 	"encoding/json"
+	"github.com/tidwall/gjson"
 	"net/http"
 	"strings"
 )
 
-func isGrokContentPolicyRejection(statusCode int, body []byte) bool {
-	if statusCode != http.StatusForbidden || len(body) == 0 {
+func isGrokContentPolicyRejection(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusForbidden || len(responseBody) == 0 {
 		return false
 	}
-	lower := strings.ToLower(string(body))
-	for _, marker := range []string{"content_policy", "content policy", "content_moderation", "content moderation", "prohibited content", "prompt violates policy", "request blocked by policy", "image is sensitive", "text is sensitive"} {
-		if strings.Contains(lower, marker) {
+	if grokAccountAccessMessage(string(responseBody)) {
+		return false
+	}
+
+	var payload any
+	if json.Unmarshal(responseBody, &payload) == nil {
+		if grokStructuredAccountAccessMarker(payload) {
+			return false
+		}
+		if grokStructuredContentPolicyMarker(payload) {
 			return true
 		}
 	}
-	var payload any
-	if json.Unmarshal(body, &payload) == nil {
-		return grokStructuredContentPolicyMarker(payload)
-	}
-	return false
+
+	return grokContentPolicyMessage(string(responseBody))
 }
 
 func grokStructuredContentPolicyMarker(value any) bool {
 	switch node := value.(type) {
 	case map[string]any:
 		for key, child := range node {
-			if (key == "code" || key == "type" || key == "category" || key == "reason") && isGrokContentPolicyCode(stringValue(child)) {
-				return true
+			normalizedKey := normalizeGrokErrorMarker(key)
+			switch normalizedKey {
+			case "code", "error_code", "type", "category", "reason":
+				if marker, ok := child.(string); ok && isGrokContentPolicyCode(marker) {
+					return true
+				}
 			}
 			if grokStructuredContentPolicyMarker(child) {
 				return true
@@ -45,8 +54,13 @@ func grokStructuredContentPolicyMarker(value any) bool {
 }
 
 func isGrokContentPolicyCode(value string) bool {
-	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "-", "_")) {
-	case "content_filter", "content_policy", "content_policy_violation", "content_moderation", "new_sensitive":
+	switch normalizeGrokErrorMarker(value) {
+	case "content_filter",
+		"content_policy",
+		"content_policy_violation",
+		"content_moderation",
+		"cyber_policy",
+		"new_sensitive":
 		return true
 	default:
 		return false
@@ -55,4 +69,123 @@ func isGrokContentPolicyCode(value string) bool {
 
 func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, body []byte) bool {
 	return !isGrokContentPolicyRejection(statusCode, body) && s.shouldFailoverUpstreamError(statusCode)
+}
+
+func grokStructuredAccountAccessMarker(value any) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			normalizedKey := normalizeGrokErrorMarker(key)
+			switch normalizedKey {
+			case "code", "error_code", "type", "category", "reason":
+				if marker, ok := child.(string); ok && isGrokAccountAccessCode(marker) {
+					return true
+				}
+			}
+			if grokStructuredAccountAccessMarker(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if grokStructuredAccountAccessMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeGrokErrorMarker(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "_")
+	value = strings.ReplaceAll(value, " ", "_")
+	return value
+}
+
+func isGrokAccountAccessCode(value string) bool {
+	switch normalizeGrokErrorMarker(value) {
+	case "account_suspended",
+		"account_disabled",
+		"user_suspended",
+		"user_disabled",
+		"subscription_required",
+		"entitlement_required",
+		"not_entitled",
+		"plan_required":
+		// permission-denied is omitted: xAI reuses it for both entitlement
+		// refusals and request-scoped safety blocks, so the message decides.
+		return true
+	default:
+		return false
+	}
+}
+
+func grokAccountAccessMessage(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	for _, phrase := range []string{
+		"account suspended",
+		"account has been suspended",
+		"account disabled",
+		"account has been disabled",
+		"user suspended",
+		"user has been suspended",
+		"subscription required",
+		"entitlement required",
+		"not entitled",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func grokContentPolicyMessage(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return false
+	}
+
+	// xAI's media safety responses use these exact phrases. They are specific
+	// enough not to classify a generic account-policy or entitlement message.
+	for _, phrase := range []string{
+		"the moderation feature is not available",
+		"image is sensitive",
+		"text is sensitive",
+		"prohibited content",
+		"forbidden content",
+		"content policy violation",
+		"content policy rejection",
+		"content policy rejected",
+		"content moderation rejection",
+		"content moderation rejected",
+		"content moderation blocked",
+		"request blocked by content moderation",
+		"request rejected by content moderation",
+		"request blocked by policy",
+		"request rejected by policy",
+		"request violates policy",
+		"prompt violates content policy",
+		"prompt violates policy",
+		"input violates content policy",
+		"input violates policy",
+		"violates usage guidelines",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func grokUpstreamErrorMessage(body []byte) string {
+	if message := extractUpstreamErrorMessage(body); strings.TrimSpace(message) != "" {
+		return message
+	}
+	if errValue := gjson.GetBytes(body, "error"); errValue.Type == gjson.String {
+		return errValue.String()
+	}
+	return ""
 }

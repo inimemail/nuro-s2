@@ -257,6 +257,15 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 		}
 
+		// Gemini requires a nonempty schema object for array items only.
+		if typ, _ := schemaMap["type"].(string); typ == "array" {
+			if items, ok := schemaMap["items"].(map[string]any); !ok || len(items) == 0 {
+				schemaMap["items"] = map[string]any{"type": "string"}
+			}
+		} else {
+			delete(schemaMap, "items")
+		}
+
 		// 7. [SAFETY] Required 字段对齐
 		if props, ok := schemaMap["properties"].(map[string]any); ok {
 			if req, ok := schemaMap["required"].([]any); ok {

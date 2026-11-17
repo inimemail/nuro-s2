@@ -39,6 +39,8 @@ func (s *GatewayService) ForwardAsResponses(
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
 	ctx = captureClaudeCLIIdentity(ctx)
+	beginUpstreamResponseModelObservation(c)
+	defer auditAnthropicResponseTier(ctx, c, account)
 	startTime := time.Now()
 
 	// Normalize Codex additional_tools and namespace tools only when the request
@@ -154,6 +156,19 @@ func (s *GatewayService) ForwardAsResponses(
 
 	// 11. Send request
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err == nil && resp != nil && resp.StatusCode == http.StatusUnauthorized && time.Since(startTime) < maxRetryElapsed {
+		if rotated := s.rotatedClaudeAccessToken(ctx, account, token, startTime.Add(maxRetryElapsed)); rotated != "" {
+			_ = resp.Body.Close()
+			retryCtx, release := detachStreamUpstreamContext(ctx, reqStream)
+			retryReq, buildErr := s.buildUpstreamRequest(retryCtx, c, account, anthropicBody, rotated, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+			release()
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			resp, err = s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		}
+	}
+
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -399,6 +414,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			continue
 		}
 
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveAnthropic([]byte(payload))
+		}
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("forward_as_responses buffered: failed to parse event",
@@ -501,13 +519,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:                     requestID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ReasoningEffort:               reasoningEffort,
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -557,16 +577,18 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:        requestID,
-			Usage:            usage,
-			Model:            originalModel,
-			UpstreamModel:    mappedModel,
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
-			FailedOutcome:    !clientDisconnected && state.StopReason == "max_tokens",
+			RequestID:                     requestID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			ReasoningEffort:               reasoningEffort,
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
+			FailedOutcome:                 !clientDisconnected && state.StopReason == "max_tokens",
 		}
 	}
 
@@ -636,6 +658,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			}
 			break
 		}
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveAnthropic([]byte(payload))
+		}
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			invalidStream = true
@@ -700,6 +725,7 @@ func writeSafeGatewayStreamFailure(c *gin.Context, responses bool, states ...*ap
 		return
 	}
 	c.Set(failureKey, true)
+	c.Set("gateway_error_terminal_sent", true)
 	payload := `data: {"error":{"type":"upstream_error","message":"Upstream request failed"}}` + "\n\ndata: [DONE]\n\n"
 	if responses {
 		id := "resp_" + uuid.NewString()
@@ -747,6 +773,9 @@ func appendRawJSON(existing json.RawMessage, fragment string) json.RawMessage {
 
 // writeResponsesError writes an error response in OpenAI Responses API format.
 func writeResponsesError(c *gin.Context, statusCode int, code, message string) {
+	if WriteGatewayCommittedError(c, "responses", code, message) {
+		return
+	}
 	MarkResponseCommitted(c)
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{

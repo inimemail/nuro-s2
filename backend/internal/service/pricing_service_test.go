@@ -17,11 +17,11 @@ func TestCanonicalModelPricingSnapshotIncludesV0221Models(t *testing.T) {
 	require.NoError(t, err)
 
 	digest := sha256.Sum256(data)
-	require.Equal(t, "4ed4e249d8b10db4215486f960a53d6ca5427e218cba9326d456756787b852ca", hex.EncodeToString(digest[:]))
+	require.Equal(t, "c05d36f9137b8ab54aa0abb2515123359bb1c2d87c28108d2caa63057b962daf", hex.EncodeToString(digest[:]))
 
 	var entries map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &entries))
-	require.Len(t, entries, 215)
+	require.Len(t, entries, 217)
 }
 
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {

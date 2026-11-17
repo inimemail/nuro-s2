@@ -628,6 +628,9 @@ const (
 )
 
 func maxOutputTokensLimit(model string) int {
+	if isGemini4LevelModel(model) {
+		return 65536
+	}
 	if strings.HasPrefix(model, "claude-") {
 		return maxOutputTokensClaude
 	}
@@ -659,7 +662,10 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	}
 
 	// Thinking 配置
-	if req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
+	if isGemini4LevelModel(req.Model) {
+		config.ThinkingConfig = gemini4ThinkingConfig(req)
+	}
+	if !isGemini4LevelModel(req.Model) && req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
 		config.ThinkingConfig = &GeminiThinkingConfig{
 			IncludeThoughts: true,
 		}

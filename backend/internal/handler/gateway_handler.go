@@ -1187,7 +1187,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 再次命中已经降权的账号。
 			healthFirst := currentAPIKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(currentAPIKey.Group.AccountSchedulingStrategy)
 			if successfulOutcome && sessionKey != "" && (healthFirst || sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
-				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
+				if err := h.gatewayService.BindSuccessfulStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, sessionBoundAccountID, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}

@@ -17,11 +17,12 @@ const (
 // upstreamResponseModelObserver is request-local diagnostic state. It never
 // changes routing, billing, cache behavior, or the downstream response.
 type upstreamResponseModelObserver struct {
-	mu          sync.RWMutex
-	first       string
-	terminal    string
-	serviceTier string
-	conflict    bool
+	mu                   sync.RWMutex
+	first                string
+	terminal             string
+	serviceTier          string
+	anthropicServiceTier string
+	conflict             bool
 }
 
 func (o *upstreamResponseModelObserver) Observe(model string, terminal bool) {
@@ -79,6 +80,7 @@ func (o *upstreamResponseModelObserver) beginTurn() {
 	o.first = ""
 	o.terminal = ""
 	o.serviceTier = ""
+	o.anthropicServiceTier = ""
 	o.conflict = false
 	o.mu.Unlock()
 }
@@ -181,10 +183,19 @@ func ApplyObservedOpenAIServiceTier(c *gin.Context, result *OpenAIForwardResult)
 }
 
 func (o *upstreamResponseModelObserver) ObserveAnthropic(payload []byte) {
-	if o == nil || len(payload) == 0 || !bytes.Contains(payload, []byte(`"model"`)) || !gjson.ValidBytes(payload) {
+	if o == nil || len(payload) == 0 || (!bytes.Contains(payload, []byte(`"model"`)) && !bytes.Contains(payload, []byte(`"service_tier"`))) || !gjson.ValidBytes(payload) {
 		return
 	}
-	o.Observe(firstTrimmedGJSONModel(gjson.GetBytes(payload, "message.model"), gjson.GetBytes(payload, "model")), false)
+	if bytes.Contains(payload, []byte(`"model"`)) {
+		o.Observe(firstTrimmedGJSONModel(gjson.GetBytes(payload, "message.model"), gjson.GetBytes(payload, "model")), false)
+	}
+	tier := firstTrimmedGJSONModel(gjson.GetBytes(payload, "message.usage.service_tier"), gjson.GetBytes(payload, "usage.service_tier"), gjson.GetBytes(payload, "service_tier"))
+	switch strings.ToLower(tier) {
+	case "standard", "priority", "fast", "batch", "auto", "default", "flex":
+		o.mu.Lock()
+		o.anthropicServiceTier = strings.ToLower(tier)
+		o.mu.Unlock()
+	}
 }
 
 func (o *upstreamResponseModelObserver) ObserveGemini(payload []byte) {

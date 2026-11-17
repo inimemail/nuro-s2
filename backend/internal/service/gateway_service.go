@@ -672,6 +672,8 @@ type AccountWaitPlan struct {
 }
 
 type AccountSelectionResult struct {
+	StickyAccountID int64
+	StickyObserved  bool
 	Account         *Account
 	Acquired        bool
 	ReleaseFunc     func()
@@ -1835,15 +1837,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	var stickyAccountID int64
 	var stickySource string
+	stickyObserved := sessionHash == "" || s.cache == nil
 	if prefetch := prefetchedStickyAccountIDFromContext(ctx, groupID); prefetch > 0 {
 		stickyAccountID = prefetch
 		stickySource = "prefetch"
+		stickyObserved = true
 	} else if sessionHash != "" && s.cache != nil {
-		if accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash); err == nil {
+		if accountID, err := s.GetCachedSessionAccountID(ctx, groupID, sessionHash); stickyReadObserved(s.cache, err) {
 			stickyAccountID = accountID
 			stickySource = "cache"
+			stickyObserved = true
 		}
 	}
+
+	ctx = context.WithValue(ctx, stickyObservationKey{}, stickyObservation{stickyAccountID, stickyObserved})
 
 	// [DEBUG-STICKY] 调度器入口日志
 	slog.Info("sticky.scheduler_entry",
@@ -3624,11 +3631,14 @@ func (s *GatewayService) newSelectionResult(ctx context.Context, account *Accoun
 	if err != nil {
 		return nil, err
 	}
+	observation, _ := ctx.Value(stickyObservationKey{}).(stickyObservation)
 	return &AccountSelectionResult{
-		Account:     hydrated,
-		Acquired:    acquired,
-		ReleaseFunc: release,
-		WaitPlan:    waitPlan,
+		StickyAccountID: observation.accountID,
+		StickyObserved:  observation.observed,
+		Account:         hydrated,
+		Acquired:        acquired,
+		ReleaseFunc:     release,
+		WaitPlan:        waitPlan,
 	}, nil
 }
 
@@ -6485,10 +6495,13 @@ func shouldApplyClaudeCodeOAuthMimicry(account *Account, isClaudeCode bool) bool
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
 	ctx = captureClaudeCLIIdentity(ctx)
 	beginUpstreamResponseModelObservation(c)
+	defer auditAnthropicResponseTier(ctx, c, account)
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+
+	ctx = WithGatewaySchedulingModel(ctx, parsed.Model)
 
 	// Web Search 模拟：纯 web_search 请求时，直接调用搜索 API 构造响应
 	if account != nil && s.shouldEmulateWebSearch(ctx, account, parsed.GroupID, parsed.Body) {
@@ -6499,6 +6512,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
 		passthroughOriginalModel := parsed.Model
+		if resolved, ok := ResolvedUpstreamModelFromContext(ctx); ok {
+			ctx = context.WithValue(ctx, compositeContextKey("public_response_model"), parsed.Model)
+			passthroughBody = ReplaceModelInBody(passthroughBody, resolved)
+			passthroughModel = resolved
+		}
 		if passthroughModel != "" {
 			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
 				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
@@ -6514,7 +6532,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		var capabilityErr error
 		passthroughBody, capabilityErr = normalizeOpus55Request(passthroughBody, passthroughModel)
 		if capabilityErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
+			writeAnthropicErrorJSON(c, http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
 			return nil, capabilityErr
 		}
 		return s.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
@@ -6667,7 +6685,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var capabilityErr error
 	body, capabilityErr = normalizeOpus55Request(body, reqModel)
 	if capabilityErr != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
+		writeAnthropicErrorJSON(c, http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
 		return nil, capabilityErr
 	}
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
@@ -6702,6 +6720,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// 重试循环
 	var resp *http.Response
 	retryStart := time.Now()
+	retriedRotatedToken := false
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		// 构建上游请求（每次重试需要重新构建，因为请求体需要重新读取）
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
@@ -6741,7 +6760,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					Reason:         safeErr,
 				})
 			}
-			c.JSON(http.StatusBadGateway, gin.H{
+			writeAnthropicErrorJSON(c, http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
 					"type":    "upstream_error",
@@ -6751,6 +6770,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 		}
 
+		if resp.StatusCode == http.StatusUnauthorized && !retriedRotatedToken && attempt < maxRetryAttempts && time.Since(retryStart) < maxRetryElapsed {
+			if rotated := s.rotatedClaudeAccessToken(ctx, account, token, retryStart.Add(maxRetryElapsed)); rotated != "" {
+				_ = resp.Body.Close()
+				token = rotated
+				retriedRotatedToken = true
+				continue
+			}
+		}
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
 			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -7273,7 +7300,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					Reason:         safeErr,
 				})
 			}
-			c.JSON(http.StatusBadGateway, gin.H{
+			writeAnthropicErrorJSON(c, http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
 					"type":    "upstream_error",
@@ -7724,6 +7751,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
+			if raw, ok := extractAnthropicSSEDataLine(ev.line); ok {
+				upstreamResponseModelObserverFromContext(c).ObserveAnthropic([]byte(raw))
+			}
 			linesToWrite, upstreamError := sanitizeAnthropicUpstreamSSELine(ev.line, &errorEvent)
 			line := ev.line
 			if !upstreamError {
@@ -7751,6 +7781,14 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			if !clientDisconnected {
 				if kiroSSE != nil && !upstreamError {
 					linesToWrite = kiroSSE.normalizeLine(line)
+				}
+				for i, value := range linesToWrite {
+					if raw, ok := extractAnthropicSSEDataLine(value); ok {
+						restored := restoreCompositeAnthropicResponseModel(ctx, []byte(raw), true)
+						if string(restored) != raw {
+							linesToWrite[i] = "data: " + string(restored)
+						}
+					}
 				}
 				for _, lineToWrite := range linesToWrite {
 					restored := string(reverseToolNamesIfPresent(c, []byte(lineToWrite)))
@@ -7957,6 +7995,8 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if !anthropicSuccessJSONResponseIsValid(body) {
 		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, model)
 	}
+	upstreamResponseModelObserverFromContext(c).ObserveAnthropic(body)
+
 	if account != nil && account.IsAnthropicKiroEnabled() {
 		externalModel := anthropicKiroExternalModelFor(model)
 		body = normalizeAnthropicKiroMessagePayloadWithRequestID(body, externalModel, normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
@@ -7975,6 +8015,8 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 		c.Header("x-request-id", gjson.GetBytes(body, "request_id").String())
 	}
 	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
+	body = restoreCompositeAnthropicResponseModel(ctx, body, false)
+
 	body = reverseToolNamesIfPresent(c, body)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
@@ -8221,7 +8263,7 @@ func (s *GatewayService) executeBedrockUpstream(
 					Reason:         safeErr,
 				})
 			}
-			c.JSON(http.StatusBadGateway, gin.H{
+			writeAnthropicErrorJSON(c, http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
 					"type":    "upstream_error",
@@ -8231,6 +8273,17 @@ func (s *GatewayService) executeBedrockUpstream(
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 		}
 
+		if resp.StatusCode >= 500 {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			if isBedrockContentFilterError(resp.StatusCode, body) {
+				return resp, nil
+			}
+		}
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
@@ -8291,6 +8344,27 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	c *gin.Context,
 	account *Account,
 ) (*ForwardResult, error) {
+	modelKey := bedrockSchedulingModelKey(ctx, account, "")
+	if resp.StatusCode >= 400 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if isBedrockContentFilterError(resp.StatusCode, body) {
+			return s.handleErrorResponse(ctx, resp, c, account, modelKey)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, modelKey)
+			}
+			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, body, "")
+		}
+		if resp.StatusCode == 400 || resp.StatusCode == 404 {
+			return s.handleErrorResponse(ctx, resp, c, account, modelKey)
+		}
+	}
 	// retry exhausted + failover
 	if s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -8939,7 +9013,7 @@ func (s *GatewayService) computeFinalCountTokensAnthropicBeta(
 ) (string, bool) {
 	clientBeta := ""
 	if clientHeaders != nil {
-		clientBeta = getHeaderRaw(clientHeaders, "anthropic-beta")
+		clientBeta = countTokensBetaHeader(clientHeaders)
 	}
 
 	if tokenType == "oauth" {
@@ -9657,7 +9731,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		"Upstream request failed",
 	); matched {
 		MarkResponseCommitted(c)
-		c.JSON(status, gin.H{
+		writeAnthropicErrorJSON(c, status, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    errType,
@@ -9682,7 +9756,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	switch resp.StatusCode {
 	case 400:
 		MarkResponseCommitted(c)
-		c.JSON(http.StatusBadRequest, gin.H{
+		writeAnthropicErrorJSON(c, http.StatusBadRequest, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    "invalid_request_error",
@@ -9717,6 +9791,11 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		statusCode = http.StatusBadGateway
 		errType = "upstream_error"
 		errMsg = "Upstream service temporarily unavailable"
+		if account.IsBedrock() && isBedrockContentFilterError(resp.StatusCode, body) {
+			statusCode = http.StatusBadRequest
+			errType = "invalid_request_error"
+			errMsg = "Request blocked by content filtering policy"
+		}
 	default:
 		statusCode = http.StatusBadGateway
 		errType = "upstream_error"
@@ -9725,7 +9804,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	// 返回自定义错误响应
 	MarkResponseCommitted(c)
-	c.JSON(statusCode, gin.H{
+	writeAnthropicErrorJSON(c, statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    errType,
@@ -9900,7 +9979,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		"upstream_error",
 		"Upstream request failed after retries",
 	); matched {
-		c.JSON(status, gin.H{
+		writeAnthropicErrorJSON(c, status, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    errType,
@@ -9919,7 +9998,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	}
 
 	// 返回统一的重试耗尽错误响应
-	c.JSON(http.StatusBadGateway, gin.H{
+	writeAnthropicErrorJSON(c, http.StatusBadGateway, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    "upstream_error",
@@ -10254,9 +10333,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			}
 		}
 
-		if needModelReplace {
+		if needModelReplace && eventType == "message_start" {
 			if msg, ok := event["message"].(map[string]any); ok {
-				if model, ok := msg["model"].(string); ok && model == mappedModel {
+				if model, ok := msg["model"].(string); ok && (model == mappedModel || isCompositeModelResponse(ctx)) {
 					msg["model"] = originalModel
 					eventChanged = true
 				}
@@ -10725,7 +10804,13 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 
 	// 如果有模型映射，替换响应中的model字段
 	if originalModel != mappedModel {
-		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+		if isCompositeModelResponse(ctx) {
+			if m := gjson.GetBytes(body, "model"); m.Type == gjson.String {
+				body, _ = sjson.SetBytes(body, "model", originalModel)
+			}
+		} else {
+			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+		}
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -11270,6 +11355,7 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 
 // recordUsageOpts 内部选项，参数化 RecordUsage 与 RecordUsageWithLongContext 的差异点。
 type recordUsageOpts struct {
+	VertexPriceMultiplier     float64
 	PricingAt                 time.Time
 	GeminiLaunchOfferEligible *bool
 	// Claude Max 策略所需的 ParsedRequest（可选，仅 Claude 路径传入）
@@ -11388,6 +11474,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	options := *opts
 	opts = &options
 	opts.PricingAt = timezone.Now()
+	opts.VertexPriceMultiplier = VertexUpstreamPriceMultiplier(account, firstNonEmpty(result.UpstreamModel, result.Model), "")
 	if account != nil && account.Platform == PlatformGemini {
 		eligible := account.Type == AccountTypeAPIKey && !account.IsThirdPartyGeminiAPIKey()
 		opts.GeminiLaunchOfferEligible = &eligible
@@ -11452,6 +11539,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	accountRateMultiplier := account.BillingRateMultiplier()
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost, opts)
+	if requested := RequestedReasoningEffortFromContext(ctx); requested != nil {
+		usageLog.RequestedReasoningEffort = requested
+	}
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
@@ -11473,7 +11563,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
 				CacheCreationTokens: result.Usage.CacheCreationInputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens,
 				ImageOutputTokens: result.Usage.ImageOutputTokens,
-			}, cost.TotalCost, opts.PricingAt, opts.GeminiLaunchOfferEligible)
+			}, cost.TotalCost, opts.PricingAt, opts.GeminiLaunchOfferEligible, "")
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -11532,9 +11622,13 @@ func (s *GatewayService) calculateRecordUsageCost(
 	if result == nil {
 		return &CostBreakdown{}
 	}
+	if opts == nil {
+		opts = &recordUsageOpts{}
+	}
+
 	// 图片生成计费
 	if result.ImageCount > 0 {
-		cost := s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
+		cost := s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier, opts.VertexPriceMultiplier)
 		return addUsageSurcharge(cost, s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier))
 	}
 
@@ -11571,6 +11665,7 @@ func (s *GatewayService) calculateImageCost(
 	apiKey *APIKey,
 	billingModel string,
 	multiplier float64,
+	regionMultipliers ...float64,
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	resolved := s.resolveChannelPricing(ctx, billingModel, apiKey)
@@ -11619,7 +11714,22 @@ func (s *GatewayService) calculateImageCost(
 			Price4K: apiKey.Group.ImagePrice4K,
 		}
 	}
-	return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, multiplier)
+	cost := s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, multiplier)
+	explicit := false
+	if groupConfig != nil {
+		switch sizeTier {
+		case ImageBillingSize1K:
+			explicit = groupConfig.Price1K != nil
+		case ImageBillingSize2K:
+			explicit = groupConfig.Price2K != nil
+		case ImageBillingSize4K:
+			explicit = groupConfig.Price4K != nil
+		}
+	}
+	if !explicit && len(regionMultipliers) > 0 {
+		applyCostBreakdownMultiplier(cost, s.billingService.vertexDefaultImagePriceMultiplier(billingModel, regionMultipliers[0]))
+	}
+	return cost
 }
 
 // calculateTokenCost 计算 Token 计费：根据 opts 决定走普通/长上下文/渠道统一计费。
@@ -11660,8 +11770,8 @@ func (s *GatewayService) calculateTokenCost(
 			Resolver: s.resolver,
 			Resolved: resolved,
 		})
-	} else if isGemini36FlashPricingModel(billingModel) {
-		cost, err = s.billingService.CalculateCostUnified(CostInput{Ctx: ctx, Model: billingModel, GroupID: apiKey.GroupID, Group: apiKey.Group, Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, Resolver: s.resolver, PricingAt: opts.PricingAt, GeminiLaunchOfferEligible: opts.GeminiLaunchOfferEligible})
+	} else if isGemini36FlashPricingModel(billingModel) || gemini4BaseModel(billingModel) != "" || opts.VertexPriceMultiplier > 1 {
+		cost, err = s.billingService.CalculateCostUnified(CostInput{Ctx: ctx, Model: billingModel, GroupID: apiKey.GroupID, Group: apiKey.Group, Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier, VertexPriceMultiplier: opts.VertexPriceMultiplier, Resolver: s.resolver, PricingAt: opts.PricingAt, GeminiLaunchOfferEligible: opts.GeminiLaunchOfferEligible})
 	} else if opts.LongContextThreshold > 0 && (apiKey.Group == nil || apiKey.Group.LongContextPricingEnabled) {
 		// 长上下文双倍计费（如 Gemini 200K 阈值）
 		cost, err = s.billingService.CalculateCostWithLongContext(
@@ -12269,7 +12379,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	// 同 buildUpstreamRequestAnthropicAPIKeyPassthrough：能力维度 sanitize。
 	clientBeta := ""
 	if c != nil && c.Request != nil {
-		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
+		clientBeta = countTokensBetaHeader(c.Request.Header)
 	}
 	// 账号覆写了 anthropic-beta 时，覆写值即最终上游值：净化以覆写值为准
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
@@ -12304,10 +12414,14 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 				continue
 			}
 			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+			if len(values) > 0 {
+				setHeaderRaw(req.Header, wireKey, values[0])
 			}
 		}
+	}
+
+	if clientBeta != "" {
+		setHeaderRaw(req.Header, "anthropic-beta", clientBeta)
 	}
 
 	req.Header.Del("authorization")
@@ -12441,8 +12555,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		lowerKey := strings.ToLower(key)
 		if allowedHeaders[lowerKey] {
 			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+			if len(values) > 0 {
+				setHeaderRaw(req.Header, wireKey, values[0])
 			}
 		}
 	}

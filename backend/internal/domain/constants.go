@@ -104,6 +104,12 @@ const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 // 当账号未配置 model_mapping 时使用此默认值
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
+	// Carbon bare IDs retain the upstream default thinking level.
+	"gemini-4-carbon":        "gemini-4-carbon",
+	"gemini-4-carbon-low":    "gemini-4-carbon-low",
+	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+	"gemini-4-carbon-high":   "gemini-4-carbon-high",
+	"gemini-4-carbon-tiered": "gemini-4-carbon-tiered",
 	// Gemini 4 Argon tiered models
 	"gemini-4-argon":        "gemini-4-argon-high",
 	"gemini-4-argon-high":   "gemini-4-argon-high",

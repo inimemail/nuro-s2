@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"math"
 	"reflect"
 	"sort"
@@ -2564,6 +2565,11 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 			payload["reason"] = value
 		}
 	}
+	// A unique observation owner fences delayed quota recovery, even when two
+	// limits have identical second-resolution timestamps and reset times.
+	if scope == "claude-fable-5" && payload["reason"] == "anthropic_7d_oi_window_exhausted" {
+		payload["owner_token"] = uuid.NewString()
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -2774,6 +2780,7 @@ func (r *accountRepository) UpdateSessionWindow(ctx context.Context, id int64, s
 func (r *accountRepository) UpdateSessionWindowEnd(ctx context.Context, id int64, end time.Time) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
+		SetSessionWindowStart(end.Add(-5 * time.Hour)).
 		SetSessionWindowEnd(end).
 		Save(ctx)
 	if err != nil {
@@ -4100,4 +4107,26 @@ func (r *accountRepository) ListShadowsByParent(ctx context.Context, parentID in
 		out = append(out, accountEntityToService(m))
 	}
 	return out, nil
+}
+
+// ClearModelRateLimitIfOwned removes one exact observation and no other
+// cooldown/health state. Newer writers always win over delayed recovery.
+func (r *accountRepository) ClearModelRateLimitIfOwned(ctx context.Context, id int64, scope string, expected []byte) error {
+	result, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
+ UPDATE accounts SET extra = extra #- ARRAY['model_rate_limits', $2]::text[], updated_at = NOW()
+ WHERE id = $1 AND deleted_at IS NULL
+ AND extra->'model_rate_limits'->$2 = $3::jsonb
+ AND COALESCE(extra->'model_rate_limits'->$2->>'owner_token', '') <> ''`, id, scope, string(expected))
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count == 0 {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		return err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
 }

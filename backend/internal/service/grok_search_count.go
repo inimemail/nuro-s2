@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/tidwall/gjson"
 )
 
@@ -221,6 +222,9 @@ func isGrokNativeSearchOutputItem(item gjson.Result) bool {
 		return false
 	}
 	itemType := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+	if apicompat.IsServerSideSearchCall(itemType, item.Get("call_id").String()) {
+		return true
+	}
 	switch itemType {
 	case "web_search_call", "x_search_call", "tool_search_call":
 		return true

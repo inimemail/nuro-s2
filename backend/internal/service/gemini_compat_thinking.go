@@ -137,7 +137,7 @@ func geminiThinkingLevelFor(model string, intent claudeThinkingIntent) string {
 	if tier == "minimal" && !isFlash {
 		tier = "low"
 	}
-	if tier == "medium" && !isFlash && !strings.HasPrefix(name, "gemini-3.1-pro") {
+	if tier == "medium" && !isFlash && !strings.HasPrefix(name, "gemini-3.1-pro") && gemini4BaseModel(name) == "" {
 		tier = "high"
 	}
 	return tier

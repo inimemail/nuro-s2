@@ -32,18 +32,18 @@ export interface CNProviderQuotaResult { provider: string; success: boolean; tie
 export interface CNProviderBalanceEntry { currency: string; balance: number }
 export interface CNProviderBalanceResult { provider: string; success: boolean; balance: number; currency?: string; balances?: CNProviderBalanceEntry[]; available?: boolean; error?: string; fetched_at?: number }
 
-export async function getCNProviderQuota(id: number): Promise<CNProviderQuotaResult> {
-  const { data } = await apiClient.get<CNProviderQuotaResult>(`/admin/accounts/${id}/cn-provider-quota`)
+export async function getCNProviderQuota(id: number, options: { signal?: AbortSignal } = {}): Promise<CNProviderQuotaResult> {
+  const { data } = await apiClient.get<CNProviderQuotaResult>(`/admin/accounts/${id}/cn-provider-quota`, options)
   return data
 }
 
-export async function getCNProviderBalance(id: number): Promise<CNProviderBalanceResult> {
-  const { data } = await apiClient.get<CNProviderBalanceResult>(`/admin/accounts/${id}/cn-provider-balance`)
+export async function getCNProviderBalance(id: number, options: { signal?: AbortSignal } = {}): Promise<CNProviderBalanceResult> {
+  const { data } = await apiClient.get<CNProviderBalanceResult>(`/admin/accounts/${id}/cn-provider-balance`, options)
   return data
 }
 
-export async function getOllamaCloudUsage(id: number): Promise<OllamaCloudUsageState> {
-  const { data } = await apiClient.get<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage`)
+export async function getOllamaCloudUsage(id: number, options: { signal?: AbortSignal } = {}): Promise<OllamaCloudUsageState> {
+  const { data } = await apiClient.get<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage`, options)
   return data
 }
 export async function saveOllamaCloudUsageSession(id: number, session: string): Promise<OllamaCloudUsageState> {
@@ -58,8 +58,8 @@ export async function setOllamaCloudUsageAutoRefresh(id: number, enabled: boolea
   const { data } = await apiClient.patch<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/auto-refresh`, { enabled, ...(rateLimitRecovery === undefined ? {} : { rate_limit_recovery_enabled: rateLimitRecovery }) })
   return data
 }
-export async function refreshOllamaCloudUsage(id: number): Promise<OllamaCloudUsageState> {
-  const { data } = await apiClient.post<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/refresh`)
+export async function refreshOllamaCloudUsage(id: number, options: { signal?: AbortSignal } = {}): Promise<OllamaCloudUsageState> {
+  const { data } = await apiClient.post<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage/refresh`, undefined, options)
   return data
 }
 export async function getOllamaCloudUsageSettings(): Promise<OllamaCloudUsageSettings> {

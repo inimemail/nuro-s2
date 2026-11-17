@@ -1,0 +1,1431 @@
+{
+  "base": "c969261a30bdcb6f30c74e0922b77e00141c2a41",
+  "target": "0.2.22-nuro.1",
+  "release_ready": false,
+  "groups": [
+    {
+      "id": "01",
+      "title": "登录身份 nil 防护",
+      "category": "1 必须同步",
+      "shas": [
+        "197109ebc"
+      ],
+      "change": "邮箱身份回填失败时先判空，避免访问 identity.Metadata 导致 panic。",
+      "local": "backend/internal/service/auth_service.go: shouldApplyEmailFirstBindDefaults；auth_service_identity_sync_test.go。",
+      "effect": "仅登录失败支路；网关请求、缓存、隔离、调度、usage 均不变。无新增开关，无请求热路径 I/O。",
+      "tests": "nil identity/metadata、已绑定/未绑定、回填仓库失败；TOTP/管理员 JSON 导入旧权限语义。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/auth_service.go",
+        "TestV0222AuthNilIdentity"
+      ]
+    },
+    {
+      "id": "02",
+      "title": "支付宝退款幂等",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "43511b40e"
+      ],
+      "change": "out_request_no 不再在每次重试时附加当前时间，避免重复退款。",
+      "local": "backend/internal/payment/provider/alipay.go: Refund 及退款查询；本地 payment 退款调用方和 alipay_test.go。",
+      "effect": "本地 PrepareRefund 仅允许 completed/refund_requested/refund_failed，成功部分退款进入终态，当前不支持同单连续成功部分退款；在这一既有契约下用订单号+规范化网关金额（整数分）稳定生成退款号，不新增退款架构/迁移。在ExecuteRefund获取状态所有权的事务中，发出前将规范化网关金额/币种/稳定key写入既有order字段及payment audit；refund_failed重试读取该记录锁定同一金额，未知结果先查询原请求，不改金额重发。旧时间戳请求优先查旧RefundID，无法证明未受理的不以新key重发。未来若支持多次同额部分退款必须改用持久化动作ID，不能沿用该简化键。保留旧退款单查询、余额补偿及 EasyPay 0/1。",
+      "tests": "同动作串行/并行重试、支付成功但本地超时、不同动作同额部分退款、老退款号查询、重复通知；不真实退款。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/payment_refund_identity.go",
+        "backend/internal/service/payment_refund_identity_test.go",
+        "backend/internal/payment/refund_identity_test.go"
+      ]
+    },
+    {
+      "id": "03",
+      "title": "RPM 分组作用域",
+      "category": "3 已有实现，保留",
+      "shas": [
+        "37a0f3870"
+      ],
+      "change": "上游修复分组 RPM override 跨组误用。",
+      "local": "backend/internal/service/billing_cache_service.go: checkRPM；UserGroupRPMOverrideGroupID。",
+      "effect": "本地已匹配当前 group，并保留用户全局 RPM 独立天花板及 nil 缓存语义。不能按上游替换用户全局限制。全部保护边界保持。",
+      "tests": "同用户跨组、override=0/nil、组 RPM 与用户 RPM 同时命中、缓存负结果。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/internal/repository/user_group_rate_repo.go",
+        "backend/internal/repository/upgrade_v0222_transactions_test.go"
+      ]
+    },
+    {
+      "id": "04",
+      "title": "分组价格/RPM 同步事务",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "98a44ba3f"
+      ],
+      "change": "批量同步 rate/RPM 的 UPDATE、DELETE、upsert 放入同一事务，防中途失败留下半更新。",
+      "local": "backend/internal/repository/user_group_rate_repo.go: SyncGroupRateMultipliers、SyncGroupRPMOverrides；提交后现有 billing/auth cache invalidation。",
+      "effect": "仅管理员写路径增加事务；rate 与 RPM 各自只清自己的列，输入去重，事务 commit 后失效缓存。首 Token 无新查询；不改倍率探测、guard、用户全局 RPM。",
+      "tests": "每步注入失败回滚、重复 user/group、空集合、rate 与 RPM 相互保留、事务提交前缓存不失效、并发保存。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/repository/user_group_rate_repo.go",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery"
+      ]
+    },
+    {
+      "id": "05",
+      "title": "Fable 配额与窗口恢复",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "c115dc27a",
+        "fa910c1c3",
+        "c829317fc",
+        "4114fedd1"
+      ],
+      "change": "解析 weekly_scoped 的 Fable/weekly 限额，5h start 与 reset 对齐，跨 5h 保留 weekly，7d_oi 恢复仅解除 Fable 模型限流。",
+      "local": "backend/internal/service/account_usage_service.go: ClaudeUsageResponse、buildUsageInfo、syncActiveToPassive；repository/account_repo.go: UpdateSessionWindowEnd；model_rate_limit.go、ratelimit_service.go。",
+      "effect": "新增单 scope、带所有权/版本条件的清理接口；不调用全账号 clear-error。保留 cooldown generation/reset fence、TTFT、manual/factor。percent=0、surface 空/null 合法；start=end-5h，禁止顺便改账号 status。仅配额刷新/明确失败支路增加必要操作，不给所有请求加控制面。",
+      "tests": "7d_oi/全模型所有权隔离、旧恢复不得清新 cooldown、0/100/null、5h 交界、week reset、Redis 故障、非 Fable no-op。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/anthropic_fable_recovery.go",
+        "backend/internal/repository/account_repo.go",
+        "TestV0222FableMissingUtilizationCannotRecover",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery"
+      ]
+    },
+    {
+      "id": "06",
+      "title": "Anthropic JSON 热路径优化",
+      "category": "5 本轮不导入批量优化",
+      "shas": [
+        "1546c0c18",
+        "71ef57705",
+        "a8481f0de",
+        "203de719c",
+        "4f8e9ae2f"
+      ],
+      "change": "减少 SSE 解码、请求复制和 OAuth 元数据清理的 JSON 工作。",
+      "local": "本地 gateway_service.go、gateway_forward_as_chat_completions.go、gateway_forward_as_responses.go、openai_gateway_service.go；保留现有结构与安全清理。",
+      "effect": "不复制上游拆分文件或把观察/隔离步骤移出链路；当前行为完整保留。可在升级后独立以字节等价和 benchmark 评估，不把本轮修复与优化绑定。",
+      "tests": "保留请求等价/安全清理回归；若以后采纳，必须原字节 no-op、畸形 JSON、escape/UTF8、SSE 未知字段、alloc/TTFT 对比。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "07",
+      "title": "Gemini Carbon 与 Hydrogen",
+      "category": "4 手工适配（新模型）",
+      "shas": [
+        "d70a23f84",
+        "32e70f3d4"
+      ],
+      "change": "新增 Gemini 4 Carbon 完整模型识别/别名/thinking_level/价格；Hydrogen 主要补价格。",
+      "local": "backend/internal/domain/constants.go；pkg/gemini/models.go、pkg/geminicli/models.go；pkg/antigravity/request_transformer.go、gemini_types.go；service/gemini_compat_thinking.go、antigravity_gemini_thinking_variant.go、billing_service.go；resources/model-pricing/model_prices_and_context_window.json。",
+      "effect": "只新增精确模型分支，保留现有别名、Sol/Terra 顺序与所有缓存 key。Carbon implicit cache 支持不代表 explicit cachedContents 支持；不能开放存储计费/创建权限。旧模型路径不变；新模型不新增探针。价格与日期风险见 J。",
+      "tests": "low/medium/high/tiered/无 effort、CLI/AG/原生/CC/Messages、1M context、终态 usage、缓存读取、priority、显式缓存拒绝；模型别名不串价。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/gemini4_pricing.go",
+        "backend/internal/pkg/antigravity/gemini4_thinking_test.go",
+        "TestV0222Gemini4DateAndOverrides",
+        "TestV0222Gemini4DatePricingPreservesPriorityOverrides"
+      ],
+      "limitation": "Carbon价格分界按UTC 2026-12-01；当前能力仅implicit cache。AG仅广告上游有支持证据的Carbon，不广告Hydrogen。"
+    },
+    {
+      "id": "08",
+      "title": "Gemini response_format",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "5846bfbbf"
+      ],
+      "change": "CC 兼容入口转发结构化输出的 MIME/schema，而非静默丢失 response_format。",
+      "local": "backend/internal/service/gemini_chat_completions_compat_service.go 请求构建；拟新增 gemini_compat_response_format.go 与测试。",
+      "effect": "只转换显式 response_format，text/未设置保持当前字节/结构，兼容既有 generationConfig。schema 不写入缓存前缀/工具文本；非法 schema 本地明确报错，不额外请求上游。",
+      "tests": "json_object/json_schema、显式 false、嵌套数组/null、tools 同时存在、原生 generationConfig 优先级、流式/非流式。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/gemini_compat_response_format.go",
+        "TestV0222ResponseFormatValidationAndToolCoexistence"
+      ]
+    },
+    {
+      "id": "09",
+      "title": "发布版本",
+      "category": "4 手工适配",
+      "shas": [
+        "6dd5a045b"
+      ],
+      "change": "目标 tag 的 VERSION 仍为 0.2.21；不能把该值当 v0.2.22 成功标志。",
+      "local": "backend/cmd/server/VERSION；frontend/package.json；本地版本展示/镜像标签/验证文档。",
+      "effect": "实施验收后统一 0.2.22-nuro.1，并记录上游目标 SHA 与本地构建 SHA；现在不改。版本 bump 不触发依赖升级。",
+      "tests": "前后端版本、构建信息、镜像 tag 与实际二进制一致；仅标签变动不算完成升级。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/cmd/server/VERSION",
+        "frontend/package.json"
+      ]
+    },
+    {
+      "id": "10",
+      "title": "赞助商与宣传素材",
+      "category": "5 不同步",
+      "shas": [
+        "530c5e3a4",
+        "9cd1a1eb2"
+      ],
+      "change": "README 赞助商、删除 lanox.jpg、新增 DataEyesAI.png。",
+      "local": "README.md/README_CN.md/README_JA.md、assets/partners/logos。",
+      "effect": "与业务、安全和保护功能无关；保留当前二开品牌与素材。零请求/计费影响。",
+      "tests": "文件分类覆盖即可，无需新增业务测试。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "11",
+      "title": "Codex forks 父缓存 key",
+      "category": "4 保护阻断，不同步",
+      "shas": [
+        "74ba91aa6"
+      ],
+      "change": "将 fork 会话关联到父 prompt cache key。",
+      "local": "上游 openai_codex_account_identity.go；本地无该文件，现有 key 在本地 OpenAI 请求/会话链路管理。",
+      "effect": "改变 key/命名空间/sticky，与明确冻结语义冲突；不得声称本地已有同等修复，也不能从旁新增父 key 覆盖。当前 key、24h 与命中率路径全部保留。",
+      "tests": "对当前 key 稳定性做回归；不为实现此特性解冻文件。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "12",
+      "title": "Grok 专属错误解析与脱敏",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "c8f4264f8",
+        "03a489e43"
+      ],
+      "change": "支持 xAI 平面 code/error，但后续修正为仅 Grok 私有解析，避免共享 extractor 改变其它平台错误分类。",
+      "local": "backend/internal/service/grok_upstream_errors.go、grok_media.go；handler Grok 媒体出口；共享 error_passthrough_runtime.go 不扩大解析。",
+      "effect": "只保留经过白名单规范化的稳定 code 和安全通用消息；不能照搬上游直接透出原 message。屏蔽 URL/域名/平台名/HTML/凭据，保留本地错误规则权限；不能把 model not found 误判为其它平台切号。",
+      "tests": "平面/嵌套/非 JSON、恶意 HTML/URL/Auth、流式已提交、各 Grok 媒体操作；OpenAI/Claude/Gemini 错误 golden 不变。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/grok_upstream_errors.go",
+        "backend/internal/service/grok_error_egress_v156_test.go",
+        "backend/internal/service/grok_billing_error_safety_v156_test.go"
+      ]
+    },
+    {
+      "id": "13",
+      "title": "Antigravity thoughts 与超时锚点",
+      "category": "4 手工适配",
+      "shas": [
+        "e055d7baf"
+      ],
+      "change": "兼容流转发 thoughts；pre-content timeout 从上游 headers 后计算。",
+      "local": "backend/internal/service/antigravity_gateway_compat.go、antigravity_gateway_compat_stream.go。",
+      "effect": "仅 AG 自有计时器；不得重置 OpenAI coordinator 原 deadline，不把 thought/结构事件当下游可见文本或健康成功。不引入跨平台通用 timer。",
+      "tests": "headers 延迟、thought-only、文本后断流、取消、兼容 CC/Responses/Messages，真实 TTFT 与下游 TTFT 分离。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/internal/service/antigravity_gateway_compat_stream.go",
+        "TestV0222AntigravityThoughtOnlyDoesNotAdvertiseSuccess"
+      ]
+    },
+    {
+      "id": "14",
+      "title": "Qwen embedding/reranker 兜底价",
+      "category": "4 手工适配（计费）",
+      "shas": [
+        "43c1ca014",
+        "796455c1c"
+      ],
+      "change": "Qwen3 embedding 与 reranker 8B/4B/0.6B 明确型号补输入 token 兜底价。",
+      "local": "backend/internal/service/billing_service.go、pricing_service.go 的本地 fallback 选择函数和测试。",
+      "effect": "只精确识别系列/档位；输出价 0 合法；渠道/组/override 显式 0 优先，不将 Qwen VL 或未知档位猜成文本 embedding。非 OpenAI，不套用 ABCD/markup。",
+      "tests": "每档价格、大小写/前缀别名、未知档位不猜价、自定义零价、usage 只有 input、实际目录来源诊断。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/gemini4_pricing.go",
+        "TestV0222VectorFallbackExactModels"
+      ]
+    },
+    {
+      "id": "15",
+      "title": "Bedrock 错误分类与真实 usage",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "23ac69a02"
+      ],
+      "change": "区分 Operation not allowed、未开通 use-case、模型限流、内容过滤；中断仍保留已获得的 provider usage。",
+      "local": "backend/internal/service/gateway_service.go: forwardBedrock、handleBedrockUpstreamErrors、partialStreamUsageResult；拟新增 ratelimit_bedrock.go。",
+      "effect": "模型级 cooldown 使用调度的映射后模型 key，不拿 Bedrock URL ID 清错 scope。内容过滤不切号不误封；400/404 需确切语义。非 Bedrock no-op；不泛化 OpenAI unknown 规则。usage 只用真实值，不估算。",
+      "tests": "400 整句、404 前缀、429 model scope、内容过滤、断流前/后真实 usage、重复终态幂等，冷却所有权/并发槽释放。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/ratelimit_bedrock.go",
+        "TestV0222BedrockClassificationIsNarrow"
+      ]
+    },
+    {
+      "id": "16",
+      "title": "排队 ping 关闭与合法 SSE 错误",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "fe40612b8",
+        "1280006a1",
+        "f1013f177"
+      ],
+      "change": "ping=0 可关闭；一旦发过 queue keepalive，失败必须使用对应协议 SSE 终态，不能再混写 JSON；耗尽时保留错误规则。",
+      "local": "backend/internal/handler/gateway_helper.go、user_msg_queue_helper.go、gateway_handler*.go、openai_gateway_handler.go；service/gateway_service.go、openai_gateway_service.go 的 passthrough/compat 出口。",
+      "effect": "构造器 <=0 改为 <0 的狭窄语义；不改默认 ping、100/50/50/5/1000 等待预算。未提交仍可正常 HTTP 错误，已提交只能单一脱敏终态，客户端取消不补终态。无新 timer。",
+      "tests": "ping=-1/0/正值、槽位耗尽、取消、已提交/未提交、SSE 双换行/半帧、Responses/Chat/Messages、error passthrough 耗尽规则与无泄漏。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/handler/user_msg_queue_helper.go",
+        "backend/internal/service/gateway_sse_error.go",
+        "TestV0222CommittedErrorsStayInProtocolAndEmitOnce"
+      ]
+    },
+    {
+      "id": "17",
+      "title": "加密函数调用内容",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "4584dcb39"
+      ],
+      "change": "Responses 流式聚合为非流式输出时，bufferedFuncCall/ProcessEvent/BuildOutput 保留 function call 的 EncryptedContent。",
+      "local": "backend/internal/pkg/apicompat/responses_to_chatcompletions.go: bufferedFuncCall、BufferedResponseAccumulator.ProcessEvent、BuildOutput；其它转换只做续链兼容回归。",
+      "effect": "仅保留结构字段，不日志明文、不改 call_id，不绕过 store=false/强隔离/namespace。无该字段时兼容原行为；不触碰被冻结 raw 文件。",
+      "tests": "双向转换、function/custom/MCP、encrypted-only、未知字段、stream/非 stream、WS 续链、id/call_id 稳定。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/apicompat/responses_to_chatcompletions.go",
+        "TestV0222BufferedToolsKeepOpaqueEncryptedContent"
+      ]
+    },
+    {
+      "id": "18",
+      "title": "分组日汇总非阻塞重建",
+      "category": "5 不同步（基础设施缺失）",
+      "shas": [
+        "829bf2cdb"
+      ],
+      "change": "使用 building_until/build_dirty_from/expired_before 与短发布锁，降低汇总重建/清理阻塞 usage_logs。",
+      "local": "本地无 usage_group_rollup_state、custom_group_usage_rollup_repo.go/custom_group_usage_rollup.go；当前 usage/dashboard 路径保留。",
+      "effect": "上游依赖此前 223 汇总基础设施，本地 223 是调度策略迁移。不能仅重编号 251 SQL，更不能为此重建整套统计链。当前写入/保留期语义不变。",
+      "tests": "SQL 依赖静态检查证明不适用；现有 usage 写入/清理/统计回归。若将来单独引入须全量统计一致性与写锁基准。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "19",
+      "title": "中途 system 转 developer",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "6c79fdfc7"
+      ],
+      "change": "Anthropic/Messages→Responses 中对话中途 system 按 developer 表达。",
+      "local": "backend/internal/pkg/apicompat/anthropic_to_responses.go 的 anthropicMsgToResponsesItems；本地带 replayToolThinking 参数的转换签名保持。",
+      "effect": "只修改中途 system 角色；稳定最前 system/developer 前缀不重排，不改 key/24h。不重建工具身份，不更改历史 thinking 回放选项。",
+      "tests": "首条/连续前缀/中途 system、tool 前后、replayToolThinking 开关、空内容、多模态、原始模型。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/apicompat/anthropic_to_responses.go",
+        "TestV0222MidTurnSystemBecomesDeveloperWithoutReordering"
+      ]
+    },
+    {
+      "id": "20",
+      "title": "客户端断开后的 sticky",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "733722f8c"
+      ],
+      "change": "成功请求即使下游刚断开也可完成 sticky 写入。",
+      "local": "backend/internal/handler/gateway_handler.go、gateway_helper.go 等写入点；本地 openai_sticky_compat.go 的有界写接口。",
+      "effect": "仅成功且账号仍匹配时使用 bounded detached context；CAS/版本避免迟到成功覆盖较新绑定。失败/incomplete/cancelled 不能建 sticky，自适应仅成功后写，strict 既有直接命中保持。首 Token 不增加写入。",
+      "tests": "成功后断开、写超时、旧成功晚于新绑定、跨组隔离、Redis 故障、失败无 sticky、strict/adaptive 差异。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/gateway_sticky_success.go",
+        "backend/internal/service/gateway_sticky_success_test.go",
+        "TestV0222StickyCASPreventsLateWritesAndDeletes"
+      ],
+      "limitation": "CAS比较当前account ID，拒绝不同账号迟到写；相同账号A→B→A的ABA不具备独立generation fence，未修改受保护缓存key格式。"
+    },
+    {
+      "id": "21",
+      "title": "响应模型/档位/原生端点审计",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "d30179f4b",
+        "ac981240c",
+        "6d7e6b9d8",
+        "b9d02c31a",
+        "de34f50c1",
+        "c487b215f",
+        "90f115132"
+      ],
+      "change": "补 Anthropic native、CC fallback、Responses 转换中的真实响应 model/tier 和原生 endpoint 观察。",
+      "local": "本地 gateway_service.go、gateway_forward_as_chat_completions.go、gateway_forward_as_responses.go；openai_gateway_service.go、openai_gateway_*_anthropic_native.go；usage record builder。",
+      "effect": "在 public model 还原前观察 provider 原值，只追加内部审计；不能覆盖请求结算 model/tier 或下游 C/D 副本。日志脱敏，前端上游模型审计仍默认隐藏并保留用户偏好。",
+      "tests": "native/fallback、stream/sync、模型不一致、provider tier 不覆盖账单、Request ID 关联、public alias、unknown envelope。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/anthropic_response_audit.go",
+        "backend/internal/service/upstream_response_model.go",
+        "TestV0222AnthropicTierIsAuditOnly"
+      ]
+    },
+    {
+      "id": "22",
+      "title": "scheduler cooldown membership",
+      "category": "4 保护阻断，不同步",
+      "shas": [
+        "636981b28",
+        "39bac35a3"
+      ],
+      "change": "snapshot 保留暂时冷却账号，cooldown 到期后不用等重建即可重新候选。",
+      "local": "backend/internal/service/scheduler_snapshot_service.go（冻结）；repository/account_repo.go: ListSchedulable*；本地 refreshActiveAccountMetadata。",
+      "effect": "已确认本地 DB load 仍会排除冷却账号；单账号 metadata refresh 不等价 membership 恢复，不能宣称已修复。不放宽所有 repository 查询来绕过冻结边界；保留当前实现，记录已知剩余差异。",
+      "tests": "可新增回归描述冷却期间重建→到期缺席；必须区分已知失败/skip 与修复通过，现有定向失效和多副本 generation 不退化。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "23",
+      "title": "精确白名单拒绝通配符",
+      "category": "4 手工适配（限定 UI）",
+      "shas": [
+        "97705d147",
+        "24d77b330",
+        "346a7dac0",
+        "7e75ee4b6"
+      ],
+      "change": "精确模型白名单控件拒绝新增 *，给出中英文纠错。",
+      "local": "frontend/src/components/account/ModelWhitelistSelector.vue、composables/useModelWhitelist.ts、相关测试；本地扁平 i18n/zh.ts、en.ts。",
+      "effect": "仅控件明确处于精确白名单模式才拒绝；模型映射的 * /最长匹配能力完全保留，不全局清理历史 model_mapping。若共享控件不能安全区分，本轮不启用该限制。无网关 I/O。",
+      "tests": "exact 拒绝/修正后可保存、mapping * 可保存和生效、历史条目可读、不静默批量删、移动端/i18n。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "frontend/src/components/account/ModelWhitelistSelector.vue",
+        "frontend/src/composables/useModelWhitelist.ts",
+        "frontend/src/composables/__tests__/useModelWhitelist.spec.ts"
+      ]
+    },
+    {
+      "id": "24",
+      "title": "Claude 并发 token 轮换 401",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "b0f6f8391"
+      ],
+      "change": "401 可能由另一请求已刷新 token 引起，比较已发 token 与最新缓存 token 后最多重发一次。",
+      "local": "backend/internal/service/gateway_service.go: Forward；gateway_forward_as_chat_completions.go、gateway_forward_as_responses.go。",
+      "effect": "仅401失败支路读缓存，不正常请求预读；复用原 retry budget/deadline/attempt。token 未变不强制刷新，轮换恢复不误封号，不动账号隔离；非 Claude no-op。",
+      "tests": "并发轮换、相同 token 401、重试再401、取消/deadline、APIKey无轮换、无额外余额/usage；缓存故障有界。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/claude_rotated_token.go",
+        "backend/internal/service/upgrade_v0222_rotated_token_test.go"
+      ]
+    },
+    {
+      "id": "25",
+      "title": "国内配额快照 UI 与 critical CI",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "849aa593d",
+        "e95e9eb74"
+      ],
+      "change": "账号 snapshot 更新触发 quota cell 刷新，补 critical 回归。",
+      "local": "本地 frontend/src/components/account/CNProviderUsageCell.vue（不是上游 CNProviderQuotaCell.vue）；AccountUsageCell.vue、Makefile。",
+      "effect": "watch account ID/platform/cn_api_mode/cn_billing_mode/snapshot；generation 或 abort 防旧请求覆盖新账号，卸载取消，force 不复用旧 cache。null/空不 Number(null)=0。保留 balance 和本地缓存；Kimi monthly 正确呈现。后台刷新不进入网关热路径。",
+      "tests": "账号切换/同ID快照更新/模式变更、迟到结果、null/NaN/0、force、卸载、monthly、余额路径；加入本地 critical 清单。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "frontend/src/components/account/CNProviderUsageCell.vue",
+        "frontend/src/components/account/__tests__/QuotaUsageCells.spec.ts",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "26",
+      "title": "Anthropic 兼容 effort 策略",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "d850b8e3a"
+      ],
+      "change": "CC/Responses 兼容 Anthropic 入口也应用既有 reasoning effort policy。",
+      "local": "backend/internal/handler/gateway_handler_chat_completions.go、gateway_handler_responses.go；service/gateway_forward_as_chat_completions.go、gateway_forward_as_responses.go、openai_reasoning_effort_policy.go。",
+      "effect": "复用本地策略解析/拒绝，不重复应用；保留 Sol/Terra none/max、disabled、原始 requested effort 审计与别名还原。只触发相关入口，不加 DB/Redis。",
+      "tests": "group策略、客户端显式/缺失、none/max、别名、超限、转换后实际值与 requested 审计、关闭 no-op。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/handler/upgrade_v0222_effort_test.go",
+        "TestV0222AnthropicEffortPolicyPreservesRequestedAndMapsClientAlias",
+        "backend/internal/service/openai_reasoning_effort_policy_test.go"
+      ]
+    },
+    {
+      "id": "27",
+      "title": "Gemini refetch 保留 last-good",
+      "category": "3 已有实现为主，补差异",
+      "shas": [
+        "177243016"
+      ],
+      "change": "刷新时保留旧 Gemini 用量，不闪空。",
+      "local": "frontend/src/components/account/AccountUsageCell.vue 的请求归属和 last-good 实现。",
+      "effect": "本地已具备0.2.21请求生命周期/last-good，不整段覆盖。仅若某个刷新入口仍清旧值才补缺失；旧账号结果不写新账号。无后端改变。",
+      "tests": "刷新失败旧值与旧时间保留、切号不串值、显式清空与无数据区分、loading 辅助信息。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "frontend/src/components/account/AccountUsageCell.vue",
+        "frontend/src/components/account/__tests__/AccountUsageCell.spec.ts"
+      ]
+    },
+    {
+      "id": "28",
+      "title": "per-turn beta 输出配置",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "bd89d3d94"
+      ],
+      "change": "携 per-turn-control-2026-07-01 beta 时保留消息级 output_config。",
+      "local": "backend/internal/service/gateway_request.go、gateway_service.go 请求清理函数。",
+      "effect": "仅合法 beta 分支；顶层 effort 与强隔离清理顺序保持，不让 metadata.user_id/turn state 被恢复。不影响缓存前缀排序。",
+      "tests": "beta有/无、消息级/顶层并存、畸形字段、CC/Responses转换、强隔离、原字节 no-op。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/claude/constants.go",
+        "TestV0222PerTurnControlBetaPreservesMessageConfig"
+      ]
+    },
+    {
+      "id": "29",
+      "title": "计费测试固定时钟",
+      "category": "2 建议项已纳入",
+      "shas": [
+        "fc8af440e"
+      ],
+      "change": "peak-rate 测试不依赖执行时的真实时区/时刻。",
+      "local": "backend/internal/service/deepseek_pricing_test.go、本地时钟注入接口。",
+      "effect": "只改测试；不要为测试改生产价格时间语义，不改整仓时钟架构。",
+      "tests": "峰/谷边界、时区、固定 UTC 时刻，避免按宿主当前日期产生偶发失败。",
+      "execution_scope": "已纳入；保持本地能力，按追加O01/O02/O07适配",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/pricing_service_test.go",
+        "backend/internal/service/billing_service_unified_test.go"
+      ]
+    },
+    {
+      "id": "30",
+      "title": "OpenAI 配额 freshness 与监控中性",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "e67746254",
+        "c4ff9b90a",
+        "bf3951a59"
+      ],
+      "change": "失败/空刷新不能伪装新快照或把利用率变0；channel monitor 不因配额刷新失败翻为账号故障。",
+      "local": "backend/internal/service/account_usage_service.go: getOpenAIUsage、applyExtraToUsage、hasOpenAIQuotaObservation；UsageProgress.UtilizationUnknown；channel_monitor_quota_fetcher.go；前端 UsageProgressBar/AccountUsageCell。",
+      "effect": "保留旧值旧 timestamp，unknown 明确，不假无限；quota_refresh_failed 是刷新诊断而非健康失败。shadow 保持专属展示；只有可信窗口才更新准入数据，不清已有冷却。",
+      "tests": "token刷新失败/超时/空JSON、合法0、timestamp类型、已过期旧快照、monitor中性、shadow与非OpenAI no-op。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/account_usage_service.go",
+        "backend/internal/service/channel_monitor_quota_fetcher.go",
+        "TestV0222OpenAIQuotaUsesObservationTime"
+      ]
+    },
+    {
+      "id": "31",
+      "title": "透传模型过滤 opt-in",
+      "category": "4 保护阻断，不启用",
+      "shas": [
+        "9d5fb150b",
+        "121a4cca1"
+      ],
+      "change": "新增 openai_passthrough_model_filter，使透传可选择遵守模型映射白名单，并写入快照。",
+      "local": "本地冻结 openai_account_scheduler.go: openAITextRequestModelSupported；Account.IsModelSupported、repository/scheduler_cache.go。",
+      "effect": "本地普通文本透传刻意绕过映射，改 Account.IsModelSupported 无法覆盖真实入口且会误伤图片/shadow/compat。不能只加开关/快照造成功能假象；本轮不引入字段/UI/过滤行为。",
+      "tests": "锁定当前普通透传、compact、retired model、图片池/shadow、映射通配符行为；未来解除保护才完整实现 opt-in。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "32",
+      "title": "账号测试模型默认值",
+      "category": "2 选择性借鉴",
+      "shas": [
+        "734b922bd"
+      ],
+      "change": "上游测试默认改为 Sonnet 4.6。",
+      "local": "backend/internal/pkg/claude/constants.go、service/account_test_service.go。",
+      "effect": "本地已有更高型号支持，不机械降级默认；测试 fixture 使用实际可用/明确指定型号，保留文本测试取消和图片别名能力识别。",
+      "tests": "可取消、等待中状态、超时、APIKey/OAuth、别名映射图片能力、旧默认未静默覆盖用户选择。",
+      "execution_scope": "已纳入；保持本地能力，按追加O01/O02/O07适配",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/internal/service/account_test_service_gemini_test.go",
+        "backend/internal/service/account_test_service_grok_test.go"
+      ]
+    },
+    {
+      "id": "33",
+      "title": "additional_tools 身份和 namespace",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "fd6487758",
+        "8dcdfff22"
+      ],
+      "change": "保留声明 ID，仅将 UUID 风格 at_ ID 规范化，并同步同轮 item_reference。",
+      "local": "backend/internal/service/openai_codex_transform.go、openai_responses_namespace.go、openai_tool_continuation.go；本地 openai_gateway_service.go 请求构建函数。",
+      "effect": "声明 ID 与 call_id 分工保持，不能全部重生 ID；只有 additional_tools 时保留 parallel_tool_calls，store=false 不删声明，function/custom/MCP 续链保持。冻结 raw 路径仅做回归，若必须改它则该分支阻断。",
+      "tests": "UUID/非UUID at_、重复/跨轮ID、namespace、多工具、HTTP bridge去重、WS多轮/二进制、encrypted call。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/openai_additional_tools_identity.go",
+        "TestV0222AdditionalToolIdentityPreservesOpaqueCalls",
+        "TestV0222AdditionalOpaqueDeclarationReference",
+        "TestV0222AdditionalDeclarationCallPrefixIsOpaque"
+      ]
+    },
+    {
+      "id": "34",
+      "title": "Antigravity schema items",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "8480cb0cd"
+      ],
+      "change": "只在选定 array 类型时保留/补 items，避免非数组 schema 被加入 items。",
+      "local": "backend/internal/pkg/antigravity/schema_cleaner.go、request_transformer.go；service/antigravity_gateway_compat.go。",
+      "effect": "保留非空有效 items，非 array 不误加；只 AG schema，不遍历用户文本，不影响 OpenAI 工具/缓存规则。",
+      "tests": "union type、array/object、空/非空items、嵌套nullable、未知schema字段。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/antigravity/schema_cleaner.go",
+        "TestSchemaArrayItemsFallbackDoesNotAttachToObjects"
+      ]
+    },
+    {
+      "id": "35",
+      "title": "CC→Responses strict 缺省 false",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "d085bb1a3"
+      ],
+      "change": "转换 json_schema 时缺省 strict=false，避免下游默认严格拒绝。",
+      "local": "backend/internal/pkg/apicompat/response_format.go 的转换函数、chatcompletions_responses_test.go。",
+      "effect": "仅 CC→Responses 且未给 strict；显式 true/false 保留，不全局更改原生 Responses 或工具 strict。无字段时原行为。",
+      "tests": "缺省/true/false/null、原生入口、nested schema、原始body不被共享修改。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/apicompat/response_format.go",
+        "TestV0222StructuredOutputDefaultStrictIsFalse"
+      ]
+    },
+    {
+      "id": "36",
+      "title": "Kimi monthly 与安全清快照",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "c54ebd4f1",
+        "694d09379"
+      ],
+      "change": "解析新 monthly tiers、有限比例、正确缺席窗口清理。",
+      "local": "backend/internal/service/cn_provider_quota_service.go: parseKimiUsageTiers；account_scheduling_threshold_eval.go；本地 CNProviderUsageCell.vue。",
+      "effect": "比例须有限且0..1，0合法；monthly 多记录取最高利用率和较晚 reset。只有成功并至少一可信窗口才清缺席5h/weekly/monthly；全无解析保留旧值，不能伪造无限。独立 cn_api/cn_billing 模式不变。",
+      "tests": "旧/新计划、0/1/NaN/Inf、月窗口多条、缺失/空/失败、混合reset、旧快照、准入/展示一致。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/cn_provider_quota_service.go",
+        "TestV0222KimiMonthlyAndFiniteObservations",
+        "TestV0222KimiPartialMalformedWindowCannotClearPreviousQuota",
+        "TestV0222QuotaProbeOnlyClearsTrustedKimiSnapshots",
+        "TestV0222KimiLegacyPartialWindowsMustBeValidBeforeClearing",
+        "TestV0222PartialQuotaUpdatesKeepOtherProviderWindows"
+      ]
+    },
+    {
+      "id": "37",
+      "title": "Codex HTTP additional/untrusted context",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "a0a03be96",
+        "b46b3cbab"
+      ],
+      "change": "HTTP Responses 也规范化 Codex additional/untrusted context，测试随命名变化。",
+      "local": "backend/internal/handler/openai_page_context.go: normalizeCodexAutomationBootstrap 及本地相关函数；openai_gateway_handler.go。",
+      "effect": "复用现有 UTF8/escape fast path，不引 unsafe view，不重排稳定前缀；不能让 context 恢复被强隔离删除的会话状态。普通请求无命中原字节返回。",
+      "tests": "HTTP/WS、Unicode/escape/畸形JSON、context标签/普通同名文本、强隔离、tools续链和cache-key快照。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/handler/openai_page_context.go",
+        "backend/internal/handler/openai_page_context_test.go"
+      ]
+    },
+    {
+      "id": "38",
+      "title": "Go 安全工具链",
+      "category": "3 已完成，核对不重复修改",
+      "shas": [
+        "a29321497",
+        "e257b7811",
+        "ddb7eac63"
+      ],
+      "change": "上游多次重复将 Go1.27.3 升至1.27.4 修 GO-2026-6859。",
+      "local": "backend/go.mod；Dockerfile/backend/Dockerfile/deploy/Dockerfile；.github/workflows/*、DEV_GUIDE.md。",
+      "effect": "本地声明和三份Docker已1.27.4，保留已有修复。宿主go1.26.1不能代表发布产物；CI实际选择和二进制buildinfo仍需发布门禁核对。不改业务。",
+      "tests": "Go1.27.4构建、go version -m产物、govulncheck源码/二进制、CI日志版本；不能仅修改版本字符串或声称既有其它advisory清零。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/go.mod",
+        "Dockerfile",
+        ".github/workflows/backend-ci.yml"
+      ]
+    },
+    {
+      "id": "39",
+      "title": "工具 schema 正则兼容",
+      "category": "4 手工适配（高谨慎）",
+      "shas": [
+        "dd6329b98",
+        "e0cf4984f",
+        "af187f9a5",
+        "6613ced57"
+      ],
+      "change": "只清理目标API不支持的schema正则；去掉patternProperties后适当放宽additionalProperties，父patch覆盖子patch避免索引冲突。",
+      "local": "backend/internal/service/openai_responses_tool_schema.go；backend/go.mod 中已存在的 jsonschema-go 仅 direct/indirect 归类按实际import调整。",
+      "effect": "不能把上游关于Python re不支持lookaround的注释当事实（Python支持）；按已复现的目标API限制精准判定。保留additionalProperties schema，不能一律true；只OpenAI工具schema，不动正文/非目标平台。未命中原字节 no-op。",
+      "tests": "正负正则、合法lookaround、不支持语法复现、patternProperties+false/schema、父子重叠patch、fuzz/畸形schema、stream/WS续链、无重复整段解码。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/openai_tool_schema_patterns.go",
+        "TestV0222SchemaRegexPreservesPythonLookaroundAndInstanceData"
+      ]
+    },
+    {
+      "id": "40",
+      "title": "注入设置 HTML 禁缓存",
+      "category": "1 必须同步",
+      "shas": [
+        "f1394a1ab"
+      ],
+      "change": "所有 index/settings 注入路径 no-store；存在nonce时不使用304旧HTML。",
+      "local": "backend/internal/web/embed_on.go；拟新增 html_cache_headers.go；embed_test.go/html_cache_headers_test.go。",
+      "effect": "仅动态HTML，保留带hash静态asset长缓存和CSP nonce。无网关/计费/隔离影响。",
+      "tests": "index/fallback/设置变更/ETag/If-None-Match/nonce、静态asset缓存不退化、未授权页面不泄漏设置。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/web/embed_on.go",
+        "backend/internal/web/embed_test.go"
+      ]
+    },
+    {
+      "id": "41",
+      "title": "WebSearch 账号三态",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "a0340d4dd"
+      ],
+      "change": "所有实际支持渠道开关的平台尊重 account enabled/disabled/inherit 三态。",
+      "local": "backend/internal/service/account.go 的 websearch mode helper；gateway_websearch_emulation.go；本地 ChannelsView平台集合。",
+      "effect": "按本地支持平台枚举，不能跨厂商隐式转发或额外搜索；未配置继续继承，禁用完整no-op。搜索价格/调用数沿现有计费，不影响缓存与健康。",
+      "tests": "每平台 enabled/disabled/inherit、渠道切换、非支持平台、显式0价、搜索计数和一次请求不重复触发。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/account.go",
+        "frontend/src/views/admin/ChannelsView.vue",
+        "backend/internal/service/account_websearch_test.go",
+        "backend/internal/service/channel_websearch_test.go"
+      ]
+    },
+    {
+      "id": "42",
+      "title": "定价启动后台 hash 检查",
+      "category": "2 建议项已纳入（手工）",
+      "shas": [
+        "c45ef4116"
+      ],
+      "change": "已有本地价卡时远程hash检查后台化，减少启动等待。",
+      "local": "backend/internal/service/pricing_service.go 的 Initialize/启动刷新与受控 worker。",
+      "effect": "复用现有下载/重载锁、原子落盘、last-good；使用受管理context/WaitGroup，shutdown有界，不用裸goroutine。无价卡首次启动仍需明确可用回退。没有请求首Token远程查询。",
+      "tests": "慢hash/超时/取消、并行reload、shutdown、坏文件/坏远程、last-good保留、初次无缓存；race。",
+      "execution_scope": "已纳入；保持本地能力，按追加O01/O02/O07适配",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/pricing_service.go",
+        "backend/internal/service/pricing_service_lifecycle_test.go"
+      ]
+    },
+    {
+      "id": "43",
+      "title": "count_tokens header 去重",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "2b86d2f6a"
+      ],
+      "change": "构造count_tokens透传请求时用Set而非重复Add鉴权/版本等单值header。",
+      "local": "backend/internal/service/gateway_service.go: buildCountTokensRequestAnthropicAPIKeyPassthrough、buildCountTokensRequest。",
+      "effect": "只处理应为单值的header；多值beta需规范合并不丢用户合法beta。强隔离header清理不被恢复，不能把client Authorization转发成重复凭据。",
+      "tests": "APIKey/OAuth、重复case header、beta多值、raw passthrough、强隔离、CountTokens不产生虚假usage。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/count_tokens_headers.go",
+        "backend/internal/service/count_tokens_headers_test.go"
+      ]
+    },
+    {
+      "id": "44",
+      "title": "TCP keepalive/TCP_USER_TIMEOUT",
+      "category": "4 保护阻断，不同步",
+      "shas": [
+        "5854a1db4",
+        "94e56dd19"
+      ],
+      "change": "探测死连接约30s；Linux选项不支持时继续dial而不是失败。",
+      "local": "backend/internal/repository/http_upstream.go: defaultPoolSettings（冻结）；上游新增http_upstream_keepalive*.go。",
+      "effect": "必需接入点被冻结，不能只添加未调用helper声称修复。不动现有媒体不限header timeout、H2/TLS/profile pool隔离。此特性仍缺失，不承诺死连接30s检测。",
+      "tests": "保留媒体/普通profile与现有超时回归；未来专案需Linux/非Linux/不支持setsockopt/代理/H2长流和空闲连接测试。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "45",
+      "title": "CC→Anthropic metadata.user_id",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "1f2242436"
+      ],
+      "change": "兼容转换保留客户端metadata.user_id。",
+      "local": "backend/internal/service/gateway_forward_as_chat_completions.go；拟新增 chat_completions_metadata.go；Anthropic native adapter。",
+      "effect": "账号强隔离优先：开启时仍按本地隔离清理，不能经兼容转换恢复标识。未开隔离且合法字段才传；不把user_id引入key/session hash。",
+      "tests": "隔离开关×原生/兼容、合法/非法metadata、共享body无串号、账号切换、无metadata no-op。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/chat_completions_metadata.go",
+        "backend/internal/service/gateway_forward_as_chat_completions.go"
+      ]
+    },
+    {
+      "id": "46",
+      "title": "Composite 对外模型名恢复",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "aee71b85b",
+        "7349750c0"
+      ],
+      "change": "组合路由返回public model；后续收窄SSE仅message_start，防正文工具model被改写。",
+      "local": "backend/internal/service/composite_platform.go（本地仅resolved_upstream context）；gateway_service.go/gateway_upstream_response对应本地函数；openai_gateway_messages*.go。",
+      "effect": "显式路由处保存原public model，只Anthropic同步顶层model/SSE message_start.message.model还原。provider观察先保存真实值；不深度替换任何字符串、工具model或计价model。无额外I/O。",
+      "tests": "sync/SSE、message_delta/tool_json含model、public alias、审计真实模型、未走composite no-op、重试上下文不串路由。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/composite_platform.go",
+        "TestV0222CompositeRestoresOnlyResponseEnvelope"
+      ]
+    },
+    {
+      "id": "47",
+      "title": "实际扣费与账号成本统计分列",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "d05e8ef03"
+      ],
+      "change": "按账号筛选时模型/端点分布仍用actual_cost表示真实扣费，账号成本独立；同时修Gemini quota使用口径。",
+      "local": "backend/internal/handler/usage_handler.go；本地 repository/usage_log_repo.go 对应 stats/trend 查询；pkg/usagestats/usage_log_types.go；service/gemini_quota.go；frontend EndpointDistributionChart.vue、UsageView.vue/types。",
+      "effect": "管理统计查询不改变扣费事务或下游usage；保留本地用户余额、group/channel倍率和account_cost含义。不能全局把实际扣费改成上游成本。首Token无影响。",
+      "tests": "有/无account筛选、订阅/余额、折扣/零价/倍率、模型端点总和、SQL与API与图表一致、用户数据权限和时区。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/repository/usage_log_repo.go",
+        "frontend/src/components/charts/__tests__/EndpointDistributionChart.spec.ts",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery"
+      ]
+    },
+    {
+      "id": "48",
+      "title": "first-output 磁盘 spool 回退",
+      "category": "5 不同步（本地无该层）",
+      "shas": [
+        "82cd13d1e"
+      ],
+      "change": "上游创建临时spool文件失败时回退内存。",
+      "local": "本地无 openai_first_output_timeout.go；已有coordinator/Edge stream session有界缓冲。",
+      "effect": "不为了一个失败回退新增整套磁盘spool；冻结coordinator与Rust session保持。当前首包/背压/内存上限原样。",
+      "tests": "原链路缓冲上限、取消、背压、首包与TTFT回归即可；不伪称采纳了不存在的机制。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "49",
+      "title": "OpenAI 首内容前后错误与 keepalive",
+      "category": "4 手工适配（安全条件）",
+      "shas": [
+        "38eb97bd7",
+        "c1c9d195b",
+        "975b2807d"
+      ],
+      "change": "Messages bridge首内容前正确处理错误；先透传安全keepalive；真实输出后的错误执行账号side-effects并正确结束。",
+      "local": "backend/internal/handler/openai_gateway_handler.go；service/openai_gateway_service.go、openai_gateway_messages.go、openai_gateway_chat_completions.go；openai_attempt.go/现有side-effect入口。",
+      "effect": "没有内容不等于没有执行！pre_send与明确可重试拒绝才沿原预算切号；send_started/unknown 5xx禁止重放，真实输出后只sideeffects+单终态+真实usage。keepalive只允许已知无内容帧，不刷新semantic timer/realTTFT、不标健康成功。若需改冻结Rust/coordinator才能一致，该分支阻断，不能退回额外Go fallback。",
+      "tests": "execution_state全矩阵、旧Edge字段兼容、5xx伪pre_send、同连接补帧/切号一次、结构/role-only/真实tool delta、断流/取消、单终态、sideeffects恰一次、usage必达。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "partial_protected_blocked",
+      "remaining": "仅同步独立错误出口/排队SSE协议修复；relay/coordinator与Rust接入涉及冻结保护，未同步，不能宣称49整项完成。",
+      "evidence": [
+        "backend/internal/service/gateway_sse_error.go",
+        "backend/internal/service/openai_gateway_service.go",
+        "docs/upgrades/v0219-protected.json"
+      ]
+    },
+    {
+      "id": "50",
+      "title": "Ultra Fast 档位与模型计价",
+      "category": "4 条件适配（完整链路门禁）",
+      "shas": [
+        "330198321",
+        "ad9eeedeb",
+        "926d3cd86"
+      ],
+      "change": "新增force_openai_ultrafast，最终模型门控Astra/Sol，优先于Fast但仍服从全局filter/block；支持两开关并存。",
+      "local": "backend/ent/schema/group.go→本地ent生成；group.go/admin_service.go、group_repo/api_key_repo、DTO/auth cache；openai_gateway_service.go的Fast helper；非冻结openai_edge_chat_completions.go的BuildRawChatCompletionsEdgePlan/BuildRawResponsesEdgePlan/BuildChatGPTOAuthResponsesEdgePlan/BuildResponsesWSEdgePlan；billing_service.go；GroupsView.vue。",
+      "effect": "新增默认false，部分更新不抹旧值；Sol/Astra Ultra=6，Terra不支持强制Ultra，双开关不支持模型回落Fast。不能改冻结edge-rs/main、service/openai_edge_rs.go或展示文件。先证明现有Rust透明tier与D/markup固定点结果一致，HTTP/WS逐轮都覆盖；否则整项不开放UI/迁移，只记录阻断，不能半套上线。见I/J/L。",
+      "tests": "Fast/Ultra/客户端/全局policy优先级、Astra及Sol不同拼写/别名、Terra、不支持模型、custom零价、长上下文、A/B/C/D+markup Go/Rust golden、WS跨模型/跨tier、auth缓存部分更新。",
+      "execution_scope": "先完整Go/Rust/WS/展示验证，不解冻；失败阻断新开关",
+      "status": "protected_blocked",
+      "remaining": "现有Go ultrafast为2x，冻结Rust未实现ultrafast6x。不能证明Go/Rust、D、markup、WS逐轮一致，整项不开放UI/迁移/新开关。",
+      "evidence": [
+        "edge-rs/src/main.rs",
+        "backend/internal/service/openai_edge_rs.go",
+        "docs/upgrades/v0219-protected.json"
+      ]
+    },
+    {
+      "id": "51",
+      "title": "按用户 billing lane 批量结算",
+      "category": "5 不同步（复杂度/账务冲突）",
+      "shas": [
+        "2101f4f94"
+      ],
+      "change": "同一用户排队合并扣费，减少余额热点行竞争。",
+      "local": "上游 usage_billing_lane.go、usage_billing_batch_repo.go、wire；本地gateway_usage_billing/usage_billing与WAL/settlement保留。",
+      "effect": "上游pending append无硬容量且调用方等done，排队时间不计执行timeout；直接引入会破坏本地必达usage/幂等/最多3事务重试/drain。拒绝无界队列，不为本地部署改结算架构。",
+      "tests": "现有queue满同步兜底、logicalID幂等、取消/关机/WAL恢复、3次事务上限；仅若以后实测余额热点成为瓶颈再单独设计有界lane。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "52",
+      "title": "整仓 zero-copy/unsafe 变更",
+      "category": "5 不同步",
+      "shas": [
+        "ade20f4e4"
+      ],
+      "change": "用零拷贝JSON view减少读取复制，涉及多条请求/工具/effort路径。",
+      "local": "上游 json_escape_probe.go/openai_call_output_probe.go/bedrock_request.go等；本地已有快速路径保留。",
+      "effect": "扩大alias/切片生命周期和安全审查面，本轮不改热路径实现或搬运重构。安全/协议修复可独立手工实现，不依赖该优化。",
+      "tests": "本轮运行既有等价回归；未来须race/fuzz/共享slice生命周期/取消/并发body读写与bench证明。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "excluded_by_plan"
+    },
+    {
+      "id": "53",
+      "title": "Gemini session hash 与强制缓存计费",
+      "category": "4 保护阻断，保持现状",
+      "shas": [
+        "b6c21cd5e",
+        "8d57f461c"
+      ],
+      "change": "早期改稳定前缀hash并去强制缓存计费；后续已恢复ForceCacheBilling，最终不能按中间提交迁移。",
+      "local": "backend/internal/handler/gemini_v1beta_handler.go；service/gemini_session.go；现有prefix含用户/key/IP/UA/platform/model与内容摘要链。",
+      "effect": "新hash改变会话亲和，明确不采纳。ForceCacheBilling按最终tag仍保留，不能删。当前cache key/session/sticky/换号计费保持，非OpenAI不套ABCD。",
+      "tests": "多用户/组/key/UA/IP隔离、hash稳定、同名工具、failover缓存计费、原生/兼容；最终tag对照而非单commit。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "54",
+      "title": "DeepSeek 显式覆盖价",
+      "category": "3 已有更完整实现，保留",
+      "shas": [
+        "b7878328b"
+      ],
+      "change": "默认官方DeepSeek价不覆盖override_file中显式input/output/cacheRead。",
+      "local": "ModelPricing.PricingOverrideInput/Output/CacheRead；pricing_service.go: pricingOverrideFields/parsePricingData；billing_service.go: applyDeepSeekOfficialPeakPricing。",
+      "effect": "本地逐字段presence已保留显式0且峰值不叠覆盖；渠道/组显式价格和时间段保持，不替换为上游较少字段实现。",
+      "tests": "单字段/零价/空缺、峰谷边界、组/渠道/时间段优先级、价卡重载共享对象不污染。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/internal/service/billing_service_unified_test.go",
+        "backend/internal/service/billing_service_unified_test.go"
+      ]
+    },
+    {
+      "id": "55",
+      "title": "Antigravity 空流释放会话 sticky",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "d3716a173",
+        "5cbcb1b59"
+      ],
+      "change": "已提交但无内容的AG兼容流结束后，解除当前会话指向失败账号的sticky。",
+      "local": "backend/internal/service/antigravity_gateway_compat_stream.go；拟新增 antigravity_compat_committed_no_content.go；handler CC/Responses。",
+      "effect": "必须原子CAS compare-delete，仅会话且值仍为该账号；上游Get后Delete有竞态，不照搬。不能全账号封禁或清其它会话，不扩重放权限，不改变OpenAI unknown规则。",
+      "tests": "旧请求清理与新绑定并发、无内容/有thought/有真实内容、取消、Redis故障有界、跨组/会话隔离、lease释放。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/antigravity_compat_committed_no_content.go",
+        "backend/internal/service/gateway_sticky_success.go",
+        "TestV0222AntigravityThoughtOnlyDoesNotAdvertiseSuccess",
+        "TestV0222StickyCASPreventsLateWritesAndDeletes"
+      ]
+    },
+    {
+      "id": "56",
+      "title": "Vertex 区域端点与定价",
+      "category": "4 手工适配（新能力）",
+      "shas": [
+        "b32ad6dfe",
+        "68071ddde",
+        "2164ea487"
+      ],
+      "change": "支持us/eu端点，模型不支持则global；实际多区域请求默认价增加10%，后续收窄仅默认定价。",
+      "local": "拟新增 service/vertex_locations.go；vertex_service_account.go、gemini_cached_content.go、batch_image_provider_vertex.go、gemini_*_compat_service.go、gemini_models_endpoints.go、upstream_models.go、account_stats_pricing.go、gateway_usage_billing.go；本地monolith对应函数。",
+      "effect": "缓存引用location优先，Express无project仍global；Carbon/Hydrogen当前不在多区白名单。倍率只在真实支持多区ServiceAccount且默认价格来源适用，组/渠道/custom/显式0/time price不二乘；不混入adaptive factor或探测倍率。原region行为/缓存归属不改，见J。",
+      "tests": "us/eu/global/单区host、白名单外模型、缓存引用跨区、Express、默认/自定义/时间价、input/read/write/output长上下文、storage/percall/image独立口径、billing=stats。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/vertex_locations.go",
+        "backend/internal/service/upgrade_v0222_vertex_test.go",
+        "TestV0222VertexRegionalRoutingAndExplicitPrices"
+      ]
+    },
+    {
+      "id": "57",
+      "title": "Gemini 并行工具与终态快照",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "b0d60a8c8",
+        "27a61be4c",
+        "ce026a2cb"
+      ],
+      "change": "区分同名并行tool calls，保留fragmented参数最终完整snapshot（含string args）。",
+      "local": "拟新增 service/gemini_tool_call_boundary.go；gemini_chat_completions_compat_service.go、gemini_messages_compat_service.go。",
+      "effect": "按调用ID/part边界区分，不按name合并；delta/重复snapshot/rewind需分别处理；无ID客观歧义保守不吞独立调用。call_id稳定，不改会话hash或缓存前缀。",
+      "tests": "同名并行/串行、参数交错、字符串/对象、重复/回退snapshot、终态、WS/HTTP工具续链、usage只记一次。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/service/gemini_tool_call_boundary.go",
+        "TestV0222GeminiToolBoundaryPreservesIdenticalIndependentCalls"
+      ],
+      "limitation": "同名不同ID分开；无ID的字符串最终快照与完全相同新调用客观不可区分，保守保留快照，不宣称支持上游缺失身份的任意交错。"
+    },
+    {
+      "id": "58",
+      "title": "scheduler bucket 合并优化",
+      "category": "4 保护阻断，不同步",
+      "shas": [
+        "9c3280098"
+      ],
+      "change": "快照加载与DB回源按bucket合并，减少大组复制。",
+      "local": "冻结 scheduler_snapshot_service.go；本地 scheduler_local_snapshot.go、scheduler_cache.go、Fresh Load/定向失效/RCU链。",
+      "effect": "已有COW/RCU和多副本失效约束，不能搬上游coalesce替代，更不能全局扫描。保留本地语义，不宣称已获得上游同等性能收益。",
+      "tests": "现有snapshot生命周期、定向失效索引、singleflight取消、group变化、race、Redis故障、Fresh Load合并与有限内存。",
+      "execution_scope": "保护阻断，保持原实现",
+      "status": "protected_blocked"
+    },
+    {
+      "id": "59",
+      "title": "scheduler capability 元数据",
+      "category": "3 已有实现，保留",
+      "shas": [
+        "cca745e8b"
+      ],
+      "change": "调度精简快照保留 openai_capabilities，避免缓存往返丢能力。",
+      "local": "backend/internal/repository/scheduler_cache.go: buildSchedulerMetadataAccount→filterSchedulerCredentials（第713行已有openai_capabilities）；Account capability helper。",
+      "effect": "本地已在精简credentials白名单保留openai_capabilities，本轮不改生产实现，只核对/补roundtrip测试。不动冻结scheduler算法，保留manual_upstream_multiplier/adaptive_upstream_multiplier_factor及generation字段，未知字段不扩散credentials。",
+      "tests": "DB→精简Redis→本地snapshot能力一致、旧快照缺字段兼容、manual/factor合法0往返、不产生热路径DB回源。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "retained_verified",
+      "evidence": [
+        "backend/internal/repository/scheduler_cache.go",
+        "TestV0222SchedulerCapabilityRoundtrip"
+      ]
+    },
+    {
+      "id": "60",
+      "title": "渠道 Bedrock boolean",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "5c96ee4d2"
+      ],
+      "change": "渠道Bedrock兼容字段保存为boolean，避免数字/字符串导致后端不认。",
+      "local": "frontend/src/views/admin/ChannelsView.vue 保存payload；本地types/API契约。",
+      "effect": "只修目标字段的归一化；字段缺省保留existing，不能保存其它渠道时批量清flag。后端部分更新语义保持，无新调度/首Token查询。",
+      "tests": "true/false/旧0/1/字符串/缺省、创建/编辑、其它平台flag保留、UI roundtrip。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "frontend/src/utils/channelFeatures.ts",
+        "frontend/src/utils/__tests__/channelFeatures.spec.ts"
+      ]
+    },
+    {
+      "id": "61",
+      "title": "Grok 服务端 search 调用分类",
+      "category": "4 手工适配（必修）",
+      "shas": [
+        "70ad8365d"
+      ],
+      "change": "xAI custom_tool_call 的 xs_/as_ 服务端search不当成客户端工具调用，search计数仍保留。",
+      "local": "pkg/apicompat 拟新增 responses_server_side_search.go；responses_to_anthropic.go、responses_to_chatcompletions.go；service/grok_search_count.go；本地openai_gateway_service兼容响应入口。",
+      "effect": "converter增加显式Grok flag默认false，限定account.IsGrok；真实function/custom/MCP不吞，不修改其它平台。search调用计费去重，不能把Grok search应用OpenAI缓存利润或ABCD。",
+      "tests": "xs_/as_ created/delta/done、重复终态、真实同名前缀工具、非Grok同样payload不变、search费用/工具续链/stream与sync。",
+      "execution_scope": "沿原具体决定与保护契约",
+      "status": "implemented_verified",
+      "evidence": [
+        "backend/internal/pkg/apicompat/responses_server_side_search.go",
+        "backend/internal/service/grok_search_count.go",
+        "TestV0222GrokSearchFilteringIsExplicitAndPreservesClientTools"
+      ]
+    }
+  ],
+  "optimizations": {
+    "O01": "implemented_verified",
+    "O02": "implemented_verified",
+    "O03": "implemented_verified",
+    "O04": "implemented_verified",
+    "O05": "implemented_verified",
+    "O06": "implemented_verified",
+    "O07": "implemented_verified",
+    "O08": "implemented_verified"
+  },
+  "allowed_scope_complete": true,
+  "release_readiness_note": "允许范围已完成；保护阻断/计划排除保持。全量golangci默认截断输出172项；关闭输出截断后与起始HEAD均551项，逐条比较新增/删除0。未做真实部署、线上金丝雀或生产性能对比，不声明全部门禁全绿。",
+  "validation_report": "docs/upgrades/v0222-validation.md",
+  "verification": {
+    "protected_files": 20,
+    "historical_migrations": 283,
+    "frontend_files": 201,
+    "frontend_tests": 1291,
+    "full_lint_baseline": 551,
+    "full_lint_current": 551,
+    "lint_added": 0,
+    "reachable_go_vulnerabilities": 0,
+    "required_module_uncalled_vulnerabilities": 7,
+    "lint_default_reported": 172,
+    "lint_output_caps_disabled_for_comparison": true,
+    "python_tests": 43
+  },
+  "closing_review": {
+    "date": "2026-11-17",
+    "original_files_sha256_matched": 133,
+    "new_findings": [],
+    "production_or_test_code_modified": false,
+    "targeted_go_unit_race": {
+      "passed_test_events": 539,
+      "passed_packages": 7,
+      "skipped_test_events": 1,
+      "skip_reason": "PostgreSQL integration requires isolated DSN; prior integration evidence retained"
+    },
+    "targeted_frontend": {
+      "files": 4,
+      "tests": 47
+    },
+    "contracts_passed": true,
+    "full_gate_rerun": false,
+    "unchanged_source_full_validation": "expanded-review-20261117",
+    "evidence_directory": "closing-review-20261117",
+    "protected_files_modified": false,
+    "production_deployment_performed": false
+  },
+  "expanded_review": {
+    "date": "2026-11-17",
+    "reviewed_uncommitted_files": 133,
+    "production_files_changed": 3,
+    "regression_files_changed": 4,
+    "fixed": [
+      "CN quota UI billing mode precedence and same-account request ownership across probe configuration changes",
+      "buffered Grok server search classification when done omits call_id",
+      "exact JSON numbers preserved during tool schema regex compatibility rewriting"
+    ],
+    "checks_passed": [
+      "Go default and full unit",
+      "service/repository/pkg unit race",
+      "full unit vet and embed build",
+      "frontend lint, typecheck, 201 files / 1291 tests and build",
+      "embed web tests using built frontend",
+      "Python 43 tests",
+      "20 frozen files and 283 historical migrations",
+      "secret scan and git diff --check"
+    ],
+    "full_lint_baseline": 551,
+    "full_lint_current": 551,
+    "lint_added": 0,
+    "lint_removed": 0,
+    "evidence_directory": "expanded-review-20261117",
+    "protected_files_modified": false,
+    "external_integration_rerun": false,
+    "ui_style_modified": false,
+    "production_deployment_performed": false
+  },
+  "final_review": {
+    "date": "2026-11-17",
+    "original_files_sha256_matched": 133,
+    "fixed": [
+      "quota snapshot clearing scope and malformed legacy Kimi windows",
+      "Gemini4 explicit priority price overrides",
+      "opaque additional_tools declaration references starting with call_",
+      "offline SSE transport-progress timing"
+    ],
+    "evidence_directory": "review-20261117",
+    "protected_files_modified": false,
+    "production_deployment_performed": false
+  },
+  "broader_closing_review": {
+    "date": "2026-11-17",
+    "original_files_sha256_matched": 133,
+    "reviewed_uncommitted_files_at_end": 135,
+    "fixed_production_issues": [
+      "Fable cached or invalid window must not authorize recovery",
+      "Redis health subscriber independently initializes mutable maintenance and push state"
+    ],
+    "fixture_correction": "Antigravity cancellation resolves on client before releasing fixture handlers; cleanup releases before server.Close",
+    "production_files_modified": [
+      "backend/internal/service/account_usage_service.go",
+      "backend/internal/service/anthropic_fable_recovery.go",
+      "backend/internal/service/openai_account_health_shared.go"
+    ],
+    "test_files_modified": [
+      "backend/internal/service/upgrade_v0222_errors_test.go",
+      "backend/internal/service/antigravity_quota_refresh_test.go"
+    ],
+    "full_go_unit_after_fable_fix_before_final_redis_fix": {
+      "test_events": {
+        "pass": 13662,
+        "skip": 12
+      },
+      "packages": {
+        "skip": 54,
+        "pass": 52
+      },
+      "skipped_tests": [
+        "TestDingTalkOAuthStart_Disabled",
+        "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+        "TestEdgeWSRealRustHealthSettlement",
+        "TestEdgeStreamRealRustTransportRecovery",
+        "TestDialerBasicConnection",
+        "TestJA3Fingerprint",
+        "TestAllProfiles",
+        "TestGeminiCachePostgresTransactions",
+        "TestScopedAdminPostgresTransactions",
+        "TestUpgradeV0219MigrationContracts",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery",
+        "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference"
+      ]
+    },
+    "final_expanded_go_unit_race": {
+      "test_events": {
+        "pass": 12971,
+        "skip": 12
+      },
+      "packages": {
+        "pass": 37,
+        "skip": 3
+      },
+      "skipped_tests": [
+        "TestDingTalkOAuthStart_Disabled",
+        "TestGeminiCachePostgresTransactions",
+        "TestScopedAdminPostgresTransactions",
+        "TestUpgradeV0219MigrationContracts",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery",
+        "TestDialerBasicConnection",
+        "TestJA3Fingerprint",
+        "TestAllProfiles",
+        "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+        "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+        "TestEdgeWSRealRustHealthSettlement",
+        "TestEdgeStreamRealRustTransportRecovery"
+      ]
+    },
+    "redis_race_repeat_passed": 100,
+    "quota_fixture_race_repeat_test_events_passed": 500,
+    "frontend": {
+      "files": 201,
+      "tests": 1291
+    },
+    "python_tests": 43,
+    "final_production_go_vet": "passed",
+    "final_production_embed_build": "passed",
+    "binary_version": "0.2.22-nuro.1",
+    "go_toolchain": "go1.27.4",
+    "full_lint": {
+      "baseline": 551,
+      "current": 551,
+      "added": [],
+      "removed": []
+    },
+    "contracts": {
+      "protected_files": 20,
+      "historical_migrations": 283,
+      "passed": true
+    },
+    "secret_scan_files": 3550,
+    "full_gate_rerun": false,
+    "external_integration_rerun": false,
+    "production_deployment_performed": false,
+    "protected_files_modified": false,
+    "dependencies_modified": false,
+    "ui_styles_modified": false,
+    "evidence_directory": "broader-closing-review-20261117"
+  },
+  "followup_expanded_review": {
+    "date": "2026-11-17",
+    "original_files_sha256_matched": 135,
+    "reviewed_uncommitted_files_at_end": 135,
+    "fixed_production_issues": [
+      "Antigravity committed stream read errors before visible content retain observed usage, emit one protocol terminal, and reach the existing failed-sticky release path"
+    ],
+    "production_files_modified": [
+      "backend/internal/service/antigravity_gateway_compat_stream.go"
+    ],
+    "test_files_modified": [
+      "backend/internal/service/upgrade_v0222_errors_test.go"
+    ],
+    "regression_before_fix": "8 committed read-error cases reproduced failure; 4 uncommitted cases retained failover",
+    "expanded_go_unit_race_before_fix": {
+      "test_events": {
+        "pass": 12912,
+        "skip": 12
+      },
+      "packages": {
+        "pass": 36,
+        "skip": 3
+      },
+      "skipped_tests": [
+        "TestDingTalkOAuthStart_Disabled",
+        "TestGeminiCachePostgresTransactions",
+        "TestScopedAdminPostgresTransactions",
+        "TestDialerBasicConnection",
+        "TestJA3Fingerprint",
+        "TestAllProfiles",
+        "TestUpgradeV0219MigrationContracts",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery",
+        "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+        "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+        "TestEdgeWSRealRustHealthSettlement",
+        "TestEdgeStreamRealRustTransportRecovery"
+      ]
+    },
+    "final_production_expanded_go_unit_race": {
+      "test_events": {
+        "pass": 12984,
+        "skip": 12
+      },
+      "packages": {
+        "pass": 37,
+        "skip": 3
+      },
+      "skipped_tests": [
+        "TestDingTalkOAuthStart_Disabled",
+        "TestGeminiCachePostgresTransactions",
+        "TestScopedAdminPostgresTransactions",
+        "TestUpgradeV0219MigrationContracts",
+        "TestV0222PostgresGroupTransactionsAndOwnedFableRecovery",
+        "TestDialerBasicConnection",
+        "TestJA3Fingerprint",
+        "TestAllProfiles",
+        "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+        "TestEdgeWSRealRustFailedTurnReportsBeforeClientClose",
+        "TestEdgeWSRealRustHealthSettlement",
+        "TestEdgeStreamRealRustTransportRecovery"
+      ]
+    },
+    "targeted_race_repeat": {
+      "test_events": {
+        "pass": 1700
+      },
+      "packages": {
+        "pass": 1
+      },
+      "skipped_tests": []
+    },
+    "final_test_style_check": "Test-only if/else changed to switch after lint; final targeted race rerun: 13 test events passed",
+    "frontend": {
+      "files": 201,
+      "tests": 1291,
+      "lint": "passed",
+      "typecheck": "passed"
+    },
+    "python_tests": 43,
+    "final_production_go_vet": "passed",
+    "final_production_embed_build": "passed",
+    "binary_version": "0.2.22-nuro.1",
+    "go_toolchain": "go1.27.4",
+    "full_lint": {
+      "baseline": 551,
+      "current": 551,
+      "added": [],
+      "removed": []
+    },
+    "lint_iteration_note": "Initial new regression test produced one QF1003 diagnostic; corrected in the test, final added/removed zero",
+    "contracts": {
+      "protected_files": 20,
+      "historical_migrations": 283,
+      "passed": true
+    },
+    "secret_scan_files": 3550,
+    "full_gate_rerun": false,
+    "external_integration_rerun": false,
+    "production_deployment_performed": false,
+    "protected_files_modified": false,
+    "dependencies_modified": false,
+    "ui_styles_modified": false,
+    "evidence_directory": "followup-expanded-review-20261117"
+  }
+}

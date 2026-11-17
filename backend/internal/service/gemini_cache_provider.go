@@ -80,10 +80,7 @@ func buildGeminiCacheVertexEndpoint(account *Account, path string, body []byte) 
 	if !vertexCacheProjectPattern.MatchString(project) || !vertexLocationPattern.MatchString(location) {
 		return "", errors.New("invalid Vertex cache endpoint")
 	}
-	host := location + "-aiplatform.googleapis.com"
-	if location == "global" {
-		host = "aiplatform.googleapis.com"
-	}
+	host := vertexAPIHost(location)
 	endpoint := "https://" + host + "/v1/projects/" + url.PathEscape(project) + "/locations/" + location + "/" + strings.TrimPrefix(path, "/")
 	if strings.HasPrefix(path, "/projects/") {
 		endpoint = "https://" + host + "/v1" + path

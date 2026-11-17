@@ -29,10 +29,7 @@ func (s *AccountTestService) fetchVertexGeminiUpstreamModels(ctx context.Context
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Failed to get Vertex token", err)
 	}
-	host := location + "-aiplatform.googleapis.com"
-	if location == "global" {
-		host = "aiplatform.googleapis.com"
-	}
+	host := vertexAPIHost(location)
 	return listVertexGeminiPublisherModels(func(pageToken string) ([]byte, error) {
 		params := url.Values{"pageSize": {"300"}}
 		if pageToken != "" {

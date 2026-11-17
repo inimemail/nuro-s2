@@ -27,6 +27,8 @@ var DefaultModels = []Model{
 	{ID: "gemini-3.6-flash", Type: "model", DisplayName: "Gemini 3.6 Flash"},
 	{ID: "gemini-3.7-flash", Type: "model", DisplayName: "Gemini 3.7 Flash"},
 	{ID: "gemini-3.8-flash", Type: "model", DisplayName: "Gemini 3.8 Flash"},
+	{ID: "gemini-4-carbon", Type: "model", DisplayName: "Gemini 4 Carbon"},
+	{ID: "gemini-4-hydrogen", Type: "model", DisplayName: "Gemini 4 Hydrogen"},
 	{ID: "gemini-4-argon", Type: "model", DisplayName: "Gemini 4 Argon"},
 }
 

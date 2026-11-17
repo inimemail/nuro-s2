@@ -14,7 +14,7 @@ var codexSelectedPageName = regexp.MustCompile(`^codex_apps_selected_page_part_(
 // Desktop injects page snapshots as standalone outputs, without a model tool call.
 // Keep them as untrusted user text, including on history replay and mixed bootstrap turns.
 func normalizeCodexPageContext(body []byte) ([]byte, bool) {
-	if (!bytes.Contains(body, []byte("codex_apps_open_page")) && !bytes.Contains(body, []byte("codex_apps_selected_page_part_"))) || !hasUniqueJSONMembers(body) {
+	if (!bytes.Contains(body, []byte("codex_apps_open_page")) && !bytes.Contains(body, []byte("codex_apps_selected_page_part_")) && !bytes.Contains(body, []byte("browser_info")) && !bytes.Contains(body, []byte("goal_objective")) && !bytes.Contains(body, []byte("untrusted_context"))) || !hasUniqueJSONMembers(body) {
 		return body, false
 	}
 	var request map[string]json.RawMessage
@@ -47,7 +47,7 @@ func normalizeCodexPageContext(body []byte) ([]byte, bool) {
 			}
 		}
 		name, output := readString("name"), readString("output")
-		if !validCodexPageContext(name, output) {
+		if !validCodexUntrustedContext(name, output) {
 			continue
 		}
 		if parts := codexSelectedPageName.FindStringSubmatch(name); len(parts) == 3 && parts[2] != "1" && !multipartValidated[i] {
@@ -62,12 +62,16 @@ func normalizeCodexPageContext(body []byte) ([]byte, bool) {
 				multipartValidated[i+n] = true
 			}
 		}
+		text := "<external_" + name + ">" + output + "</external_" + name + ">"
+		if validCodexPageContext(name, output) {
+			text = "<external_" + name + ">\n" + output + "\n</external_" + name + ">"
+		}
 		message := map[string]any{
 			"type": "message",
 			"role": "user",
 			"content": []map[string]string{{
 				"type": "input_text",
-				"text": "<external_" + name + ">\n" + output + "\n</external_" + name + ">",
+				"text": text,
 			}},
 		}
 		encoded, err := json.Marshal(message)
@@ -173,4 +177,13 @@ func validCodexPageSnapshot(text string) bool {
 	}
 	var value string
 	return json.Unmarshal(id, &value) == nil && strings.TrimSpace(value) != ""
+}
+
+func validCodexUntrustedContext(name, output string) bool {
+	switch name {
+	case "browser_info", "goal_objective", "untrusted_context":
+		return strings.TrimSpace(output) != ""
+	default:
+		return validCodexPageContext(name, output)
+	}
 }

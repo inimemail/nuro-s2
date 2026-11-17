@@ -57,6 +57,8 @@ const geminiModels = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3-pro-preview',
+  'gemini-4-carbon',
+  'gemini-4-hydrogen',
   'gemini-4-argon'
 ]
 
@@ -106,6 +108,11 @@ const antigravityModels = [
   'gemini-3.8-flash-medium',
   'gemini-3.8-flash-high',
   'gemini-3.8-flash-tiered',
+  'gemini-4-carbon',
+  'gemini-4-carbon-low',
+  'gemini-4-carbon-medium',
+  'gemini-4-carbon-high',
+  'gemini-4-carbon-tiered',
   // Gemini 4 Argon 系列
   'gemini-4-argon-low',
   'gemini-4-argon-medium',
@@ -364,6 +371,7 @@ const grokPresetMappings = [
 
 // Antigravity 预设映射（支持通配符）
 const antigravityPresetMappings = [
+  { label: '4 Carbon', from: 'gemini-4-carbon', to: 'gemini-4-carbon', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   // Claude 通配符映射
   { label: 'Claude→Sonnet', from: 'claude-*', to: 'claude-sonnet-4-5', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
   { label: 'Fable 5', from: 'claude-fable-5', to: 'claude-fable-5', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },

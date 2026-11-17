@@ -9,17 +9,22 @@ import (
 
 // ClaudeRequest Claude Messages API 请求
 type ClaudeRequest struct {
-	Model       string          `json:"model"`
-	Messages    []ClaudeMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	System      json.RawMessage `json:"system,omitempty"` // string 或 []SystemBlock
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	TopK        *int            `json:"top_k,omitempty"`
-	Tools       []ClaudeTool    `json:"tools,omitempty"`
-	Thinking    *ThinkingConfig `json:"thinking,omitempty"`
-	Metadata    *ClaudeMetadata `json:"metadata,omitempty"`
+	Model        string              `json:"model"`
+	Messages     []ClaudeMessage     `json:"messages"`
+	MaxTokens    int                 `json:"max_tokens,omitempty"`
+	System       json.RawMessage     `json:"system,omitempty"` // string 或 []SystemBlock
+	Stream       bool                `json:"stream,omitempty"`
+	Temperature  *float64            `json:"temperature,omitempty"`
+	TopP         *float64            `json:"top_p,omitempty"`
+	TopK         *int                `json:"top_k,omitempty"`
+	Tools        []ClaudeTool        `json:"tools,omitempty"`
+	Thinking     *ThinkingConfig     `json:"thinking,omitempty"`
+	OutputConfig *ClaudeOutputConfig `json:"output_config,omitempty"`
+	Metadata     *ClaudeMetadata     `json:"metadata,omitempty"`
+}
+
+type ClaudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // ClaudeMessage Claude 消息
@@ -216,6 +221,7 @@ var geminiModels = []modelDef{
 	{ID: "gemini-4-argon-medium", DisplayName: "Gemini 4 Argon (Medium)", CreatedAt: "2026-10-13T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro Preview", CreatedAt: "2025-06-01T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-image", DisplayName: "Gemini 3 Pro Image", CreatedAt: "2025-06-01T00:00:00Z"},
+	{ID: "gemini-4-carbon", DisplayName: "Gemini 4 Carbon", CreatedAt: "2026-11-10T00:00:00Z", IsReasoning: true},
 }
 
 // ========== Claude API 格式 (/v1/models) ==========
@@ -283,7 +289,7 @@ func FallbackGeminiModel(model string) GeminiModel {
 // IsGeminiReasoningModel 判断是否为不支持部分采样参数和强制 ToolConfig 的 Gemini 推理模型。
 func IsGeminiReasoningModel(modelID string) bool {
 	lowerID := strings.ToLower(modelID)
-	if strings.Contains(lowerID, "gemini-pro-agent") || strings.Contains(lowerID, "gemini-4-argon") {
+	if strings.Contains(lowerID, "gemini-pro-agent") || strings.Contains(lowerID, "gemini-4-argon") || isGemini4LevelModel(lowerID) {
 		return true
 	}
 	for _, m := range geminiModels {

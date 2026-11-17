@@ -54,6 +54,32 @@ func (r *BatchImageModelPricingResolver) BatchImageUnitPrice(ctx context.Context
 	return 0, ErrBatchImageSettlementPricingMissing
 }
 
+// Snapshot only a verified default model price surcharge. Existing jobs retain
+// their stored unit prices, and custom pricing resolvers keep their own policy.
+func (r *BatchImageModelPricingResolver) vertexRegionalUnitMultiplier(ctx context.Context, model string, account *Account, location string) float64 {
+	if r == nil || r.Resolver == nil || account == nil {
+		return 1
+	}
+	resolved := r.Resolver.Resolve(ctx, PricingInput{Model: model})
+	if resolved == nil || resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel {
+		return 1
+	}
+	multiplier := VertexUpstreamPriceMultiplier(account, model, resolveVertexModelLocation(location, model))
+	if multiplier == 1 {
+		return 1
+	}
+	if pricing := resolved.BasePricing; pricing != nil {
+		field := "output_cost_per_image"
+		if resolved.Mode == BillingModeToken {
+			field = "output_cost_per_image_token"
+		}
+		if pricing.vertexPriceOverrides[field] {
+			return 1
+		}
+	}
+	return multiplier
+}
+
 type BatchImageSettlementService struct {
 	Repo         BatchImageRepository
 	BillingRepo  UsageBillingRepository

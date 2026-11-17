@@ -294,8 +294,8 @@ export async function getDashboardModels(params?: {
 /**
  * Get combined user dashboard snapshot.
  */
-export async function getDashboardSnapshotV2(params?: UsageSnapshotV2Params): Promise<UsageSnapshotV2Response> {
-  const { data } = await apiClient.get<UsageSnapshotV2Response>('/usage/dashboard/snapshot-v2', { params })
+export async function getDashboardSnapshotV2(params?: UsageSnapshotV2Params, options: { signal?: AbortSignal } = {}): Promise<UsageSnapshotV2Response> {
+  const { data } = await apiClient.get<UsageSnapshotV2Response>('/usage/dashboard/snapshot-v2', { params, ...options })
   return data
 }
 

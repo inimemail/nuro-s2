@@ -405,6 +405,11 @@ func (s *openAIAccountHealthSharedState) runSubscriber() {
 	// suitable for commands, but do not initialize a subscription pool. Keep
 	// these socket/deadline options isolated from scheduling and billing I/O.
 	options := *s.client.Options()
+	// go-redis mutates maintenance mode during connection negotiation. Do not
+	// clone that live config or reuse the parent's push handler registry; the
+	// dedicated client must initialize its own internal negotiation state.
+	options.MaintNotificationsConfig = nil
+	options.PushNotificationProcessor = nil
 	options.ReadTimeout = openAIAccountHealthIOTimeout
 	options.WriteTimeout = openAIAccountHealthIOTimeout
 	options.ContextTimeoutEnabled = true

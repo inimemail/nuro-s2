@@ -30,6 +30,7 @@ func cnQuota403Reset(account *Account, now time.Time) time.Time {
 	for _, window := range []struct{ used, reset string }{
 		{cnExtraSuffix5hUsed, cnExtraSuffix5hReset},
 		{cnExtraSuffixWeeklyUsed, cnExtraSuffixWeeklyReset},
+		{cnExtraSuffixMonthlyUsed, cnExtraSuffixMonthlyReset},
 	} {
 		used, ok := cnParseF64(account.Extra[cnExtraKey(account.Platform, window.used)])
 		reset, resetErr := parseSchedulingTime(cnNormalizeResetTime(account.Extra[cnExtraKey(account.Platform, window.reset)]))
@@ -83,6 +84,13 @@ func cnCodingPlanFrequency429(account *Account, body []byte, now time.Time) bool
 	stamp, err := time.Parse(time.RFC3339, cnNormalizeResetTime(account.Extra[cnExtraKey(account.Platform, cnExtraSuffixUsageUpdated)]))
 	if err != nil || stamp.After(now) || now.Sub(stamp) > 20*time.Minute {
 		return false
+	}
+	// A reported monthly cap must not be ignored when classifying a 429.
+	if raw := account.Extra[cnExtraKey(account.Platform, cnExtraSuffixMonthlyUsed)]; raw != nil {
+		used, ok := cnParseF64(raw)
+		if !ok || used < 0 || used >= 90 {
+			return false
+		}
 	}
 	for _, key := range []string{cnExtraSuffix5hUsed, cnExtraSuffixWeeklyUsed} {
 		used, ok := cnParseF64(account.Extra[cnExtraKey(account.Platform, key)])

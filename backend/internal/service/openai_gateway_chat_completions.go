@@ -669,7 +669,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID)
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID, account != nil && account.Platform == PlatformGrok)
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +719,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		}
 	}
 
-	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel, account != nil && account.Platform == PlatformGrok)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -795,6 +795,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	state := apicompat.NewResponsesEventToChatState()
+	state.GrokServerSideSearch = account != nil && account.Platform == PlatformGrok
 	state.Model = originalModel
 	if requestFirstTokenPlaceholder.ChatID != "" {
 		state.ID = requestFirstTokenPlaceholder.ChatID
@@ -871,6 +872,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		_ = createdChunks
 		chatState := apicompat.NewResponsesEventToChatState()
+		chatState.GrokServerSideSearch = account != nil && account.Platform == PlatformGrok
 		chatState.Model = state.Model
 		if coordinator := openAIPlaceholderCoordinatorFromContext(c); coordinator != nil {
 			snapshot := coordinator.snapshot()

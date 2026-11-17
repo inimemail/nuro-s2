@@ -240,6 +240,14 @@ func anthropicMsgToResponsesItems(m AnthropicMessage, replayToolThinking bool) (
 		return anthropicUserToResponses(m.Content)
 	case "assistant":
 		return anthropicAssistantToResponses(m.Content, replayToolThinking)
+	case "system":
+		items, err := anthropicUserToResponses(m.Content)
+		for i := range items {
+			if items[i].Role == "user" {
+				items[i].Role = "developer"
+			}
+		}
+		return items, err
 	default:
 		return anthropicUserToResponses(m.Content)
 	}

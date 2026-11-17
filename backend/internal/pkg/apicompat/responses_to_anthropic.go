@@ -16,7 +16,10 @@ import (
 // ResponsesToAnthropic converts a Responses API response directly into an
 // Anthropic Messages response. Reasoning output items are mapped to thinking
 // blocks; function_call items become tool_use blocks.
-func ResponsesToAnthropic(resp *ResponsesResponse, model string) *AnthropicResponse {
+func ResponsesToAnthropic(resp *ResponsesResponse, model string, grok ...bool) *AnthropicResponse {
+	if len(grok) > 0 && grok[0] {
+		resp = withoutGrokServerSearch(resp)
+	}
 	out := &AnthropicResponse{
 		ID:    resp.ID,
 		Type:  "message",
@@ -167,8 +170,10 @@ func sanitizeAnthropicToolUseInput(name string, raw string) json.RawMessage {
 // ResponsesEventToAnthropicState tracks state for converting a sequence of
 // Responses SSE events directly into Anthropic SSE events.
 type ResponsesEventToAnthropicState struct {
-	MessageStartSent bool
-	MessageStopSent  bool
+	GrokServerSideSearch bool
+	ignoredServerSearch  map[int]bool
+	MessageStartSent     bool
+	MessageStopSent      bool
 
 	ContentBlockIndex        int
 	ContentBlockOpen         bool
@@ -209,6 +214,10 @@ func ResponsesEventToAnthropicEvents(
 	state *ResponsesEventToAnthropicState,
 ) (events []AnthropicStreamEvent) {
 	if evt == nil || state == nil || state.MessageStopSent {
+		return nil
+	}
+	evt = filterGrokSearchEvent(evt, state.GrokServerSideSearch, &state.ignoredServerSearch)
+	if evt == nil {
 		return nil
 	}
 	// Some compatible upstreams omit response.created. Start the message only

@@ -81,6 +81,7 @@ func GeminiCacheBoundAccount(account *Account, name string) (*Account, error) {
 		copy.Credentials[key] = value
 	}
 	copy.Credentials["location"] = parts[3]
+	copy.Credentials["_gemini_cache_bound_location"] = parts[3]
 	delete(copy.Credentials, "vertex_model_locations")
 	return &copy, nil
 }

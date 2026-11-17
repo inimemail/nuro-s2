@@ -738,7 +738,7 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string)
 }
 
 func stripAnthropicMessageOutputConfigUnlessBeta(body []byte, header string) ([]byte, bool) {
-	if anthropicBetaTokensContains(header, claude.BetaMidConversationOutputConfig) || !bytes.Contains(body, []byte("output_config")) {
+	if anthropicBetaTokensContains(header, claude.BetaMidConversationOutputConfig) || anthropicBetaTokensContains(header, claude.BetaPerTurnControl) || !bytes.Contains(body, []byte("output_config")) {
 		return body, false
 	}
 	messages := gjson.GetBytes(body, "messages")
@@ -1117,7 +1117,7 @@ func NormalizeClaudeOutputEffort(raw string) *string {
 		return nil
 	}
 	switch value {
-	case "low", "medium", "high", "xhigh", "max":
+	case "none", "low", "medium", "high", "xhigh", "max":
 		return &value
 	default:
 		return nil

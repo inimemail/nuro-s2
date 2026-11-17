@@ -89,6 +89,19 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformAnthropic {
+		originalEffort := gjson.GetBytes(body, "reasoning.effort").String()
+		if originalEffort == "" {
+			originalEffort = gjson.GetBytes(body, "reasoning_effort").String()
+		}
+		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), originalEffort))
+		adjusted, _, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
+		if policyErr != nil {
+			h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", policyErr.Error())
+			return
+		}
+		body = adjusted
+	}
 
 	c.Request = c.Request.WithContext(service.WithGeminiCompatibleThinkingRequest(c.Request.Context(), reqModel, body))
 	setOpsRequestContext(c, reqModel, reqStream)
@@ -205,6 +218,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		fs = NewFailoverState(h.maxAccountSwitchesGemini, false)
 	}
 
+	var stickyExpected int64
+	stickyObserved := false
+
 	for {
 		retryAccountID := fs.pendingSameAccountRetryID()
 		var selection *service.AccountSelectionResult
@@ -249,6 +265,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				return
 			}
 		}
+		if !stickyObserved && selection.StickyObserved {
+			stickyExpected = selection.StickyAccountID
+			stickyObserved = true
+		}
+
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
@@ -324,6 +345,10 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			result, err = h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
 		}
 
+		if service.IsAntigravityCommittedNoContent(err) {
+			_ = h.gatewayService.ReleaseFailedStickySession(c.Request.Context(), apiKey.GroupID, selectionSessionHash, account.ID)
+		}
+
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
@@ -379,8 +404,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		switch {
 		case successfulOutcome:
 			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
-			if selectionSessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
-				if bindErr := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, selectionSessionHash, account.ID); bindErr != nil {
+			if stickyObserved && selectionSessionHash != "" && apiKey.Group != nil && service.IsAdaptiveHealthSchedulingStrategy(apiKey.Group.AccountSchedulingStrategy) {
+				if bindErr := h.gatewayService.BindSuccessfulStickySession(c.Request.Context(), apiKey.GroupID, selectionSessionHash, stickyExpected, account.ID); bindErr != nil {
 					reqLog.Warn("gateway.cc.bind_health_first_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))
 				}
 			}
@@ -431,6 +456,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 // chatCompletionsErrorResponse writes an error in OpenAI Chat Completions format.
 func (h *GatewayHandler) chatCompletionsErrorResponse(c *gin.Context, status int, errType, message string) {
+	if service.WriteGatewayCommittedError(c, "chat", errType, message) {
+		return
+	}
 	c.JSON(status, gin.H{
 		"error": gin.H{
 			"type":    errType,
@@ -442,6 +470,7 @@ func (h *GatewayHandler) chatCompletionsErrorResponse(c *gin.Context, status int
 // handleCCFailoverExhausted writes a failover-exhausted error in CC format.
 func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
 	if streamStarted {
+		service.WriteGatewayCommittedError(c, "chat", "server_error", "All available accounts exhausted")
 		return
 	}
 	statusCode := http.StatusBadGateway

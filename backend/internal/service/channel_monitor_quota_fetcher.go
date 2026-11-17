@@ -125,7 +125,7 @@ func (f *ChannelMonitorQuotaFetcher) fetch(ctx context.Context, id int64, now ti
 	}
 	snapshot := &domain.MonitorQuotaSnapshot{Source: "usage", Success: true, FetchedAt: now}
 	appendProgress := func(window, label string, progress *UsageProgress) {
-		if progress == nil {
+		if progress == nil || progress.UtilizationUnknown {
 			return
 		}
 		reset := ""
@@ -145,6 +145,10 @@ func (f *ChannelMonitorQuotaFetcher) fetch(ctx context.Context, id int64, now ti
 		if quota != nil {
 			snapshot.Tiers = append(snapshot.Tiers, domain.MonitorQuotaTier{Window: "total", Label: model, UsedPercent: float64(quota.Utilization), ResetAt: quota.ResetTime})
 		}
+	}
+	if len(snapshot.Tiers) == 0 {
+		snapshot.Success = false
+		snapshot.Error = "quota data unavailable"
 	}
 	return snapshot
 }

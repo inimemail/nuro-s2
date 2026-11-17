@@ -190,6 +190,7 @@ var (
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
+	vertexPriceOverrides                map[string]bool
 	CacheStorageCostPerTokenPerHour     float64 `json:"cache_storage_cost_per_token_per_hour"`
 	PricingOverrideCacheStorage         bool    `json:"-"`
 	InputCostPerToken                   float64 `json:"input_cost_per_token"`
@@ -264,9 +265,13 @@ type PricingService struct {
 	localHash          string
 	customFilesHash    string
 
-	// 停止信号
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	// lifecycleMu also serializes worker registration with Stop's Wait.
+	lifecycleMu   sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	stopped       bool
+	workerStarted bool
+	wg            sync.WaitGroup
 }
 
 // NewPricingService 创建价格服务
@@ -275,13 +280,15 @@ func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *Pr
 		cfg:          cfg,
 		remoteClient: remoteClient,
 		pricingData:  make(map[string]*LiteLLMModelPricing),
-		stopCh:       make(chan struct{}),
 	}
 	return s
 }
 
 // Initialize 初始化价格服务
 func (s *PricingService) Initialize() error {
+	if err := s.serviceContext().Err(); err != nil {
+		return err
+	}
 	// 确保数据目录存在
 	if err := os.MkdirAll(s.cfg.Pricing.DataDir, 0755); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to create data directory: %v", err)
@@ -298,15 +305,35 @@ func (s *PricingService) Initialize() error {
 	// 启动定时更新
 	s.startUpdateScheduler()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
+	s.mu.RLock()
+	count := len(s.pricingData)
+	s.mu.RUnlock()
+	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", count)
 	return nil
 }
 
 // Stop 停止价格服务
 func (s *PricingService) Stop() {
-	close(s.stopCh)
+	s.lifecycleMu.Lock()
+	s.lifecycleContextLocked()
+	s.stopped = true
+	s.cancel()
+	s.lifecycleMu.Unlock()
 	s.wg.Wait()
-	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
+}
+
+// lifecycleContextLocked supports test services constructed without the constructor.
+func (s *PricingService) lifecycleContextLocked() context.Context {
+	if s.ctx == nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+	}
+	return s.ctx
+}
+
+func (s *PricingService) serviceContext() context.Context {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.lifecycleContextLocked()
 }
 
 // startUpdateScheduler 启动定时更新调度器
@@ -326,15 +353,33 @@ func (s *PricingService) startUpdateScheduler() {
 		hashInterval = 10 * time.Minute
 	}
 
+	s.lifecycleMu.Lock()
+	if s.stopped || s.workerStarted {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	ctx := s.lifecycleContextLocked()
+	s.workerStarted = true
 	s.wg.Add(1)
+	s.lifecycleMu.Unlock()
 	go func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(hashInterval)
 		defer ticker.Stop()
 
+		// Local/fallback data is already available; remote startup work uses this
+		// same bounded worker rather than blocking initialization.
+		if remoteEnabled && ctx.Err() == nil {
+			if err := s.syncWithRemote(); err != nil && ctx.Err() == nil {
+				logger.LegacyPrintf("service.pricing", "[Pricing] Startup sync failed: %v", err)
+			}
+		}
 		for {
 			select {
 			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
 				if remoteEnabled {
 					if err := s.syncWithRemote(); err != nil {
 						logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
@@ -343,7 +388,7 @@ func (s *PricingService) startUpdateScheduler() {
 				if customEnabled {
 					s.reloadIfCustomFilesChanged()
 				}
-			case <-s.stopCh:
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -482,49 +527,14 @@ func (s *PricingService) checkAndUpdatePricing() error {
 		return s.downloadPricingData()
 	}
 
-	// 如果配置了哈希URL，通过远程哈希检查是否有更新
-	if s.cfg.Pricing.HashURL != "" {
-		remoteHash, err := s.fetchRemoteHash()
-		if err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash on startup: %v", err)
-			return nil // 已加载本地文件，哈希获取失败不影响启动
-		}
-
-		s.mu.RLock()
-		localHash := s.localHash
-		s.mu.RUnlock()
-
-		if localHash == "" || remoteHash != localHash {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Remote hash differs on startup (local=%s remote=%s), downloading...",
-				localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
-			if err := s.downloadPricingData(); err != nil {
-				logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
-			}
-		}
-		return nil
-	}
-
-	// 没有哈希URL时，基于文件年龄检查
-	info, err := os.Stat(pricingFile)
-	if err != nil {
-		return nil // 已加载本地文件
-	}
-
-	fileAge := time.Since(info.ModTime())
-	maxAge := time.Duration(s.cfg.Pricing.UpdateIntervalHours) * time.Hour
-
-	if fileAge > maxAge {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Local file is %v old, updating...", fileAge.Round(time.Hour))
-		if err := s.downloadPricingData(); err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
-		}
-	}
-
 	return nil
 }
 
 // syncWithRemote 与远程同步（基于哈希校验）
 func (s *PricingService) syncWithRemote() error {
+	if err := s.serviceContext().Err(); err != nil {
+		return err
+	}
 	// Persistence failure must be retried even when the in-memory hash is current.
 	s.updateMu.Lock()
 	err := s.retryPricingPersistenceLocked()
@@ -575,13 +585,16 @@ func (s *PricingService) syncWithRemote() error {
 func (s *PricingService) downloadPricingData() error {
 	s.updateMu.Lock()
 	defer s.updateMu.Unlock()
+	if err := s.serviceContext().Err(); err != nil {
+		return err
+	}
 	remoteURL, err := s.validatePricingURL(s.cfg.Pricing.RemoteURL)
 	if err != nil {
 		return err
 	}
 	logger.LegacyPrintf("service.pricing", "[Pricing] Downloading from %s", remoteURL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(s.serviceContext(), 30*time.Second)
 	defer cancel()
 
 	// 获取远程哈希（用于同步锚点，不作为完整性校验）
@@ -622,6 +635,13 @@ func (s *PricingService) downloadPricingData() error {
 	// A changing overlay invalidates the whole candidate; retry at the existing tick.
 	if fingerprint != s.customPricingFilesFingerprint() {
 		return fmt.Errorf("custom pricing changed during update")
+	}
+	// Stop and candidate publication have a single order. A cancelled fetch can
+	// never publish even when a client ignores cancellation and returns success.
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	s.pendingPricingBody = append([]byte(nil), body...)
 	if err := s.retryPricingPersistenceLocked(); err != nil {
@@ -678,7 +698,13 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if string(overrideObject["cache_storage_cost_per_token_per_hour"]) == "null" {
 			storageOverride = false
 		}
+		regionalOverrides := make(map[string]bool)
+		for _, field := range []string{"input_cost_per_token_priority", "output_cost_per_token_priority", "cache_read_input_token_cost_priority", "cache_creation_input_token_cost", "cache_creation_input_token_cost_priority", "cache_creation_input_token_cost_above_1hr", "input_cost_per_image_token", "output_cost_per_image_token", "cache_read_input_image_token_cost", "output_cost_per_image"} {
+			raw, present := overrideObject[field]
+			regionalOverrides[field] = present && string(raw) != "null"
+		}
 		pricing := &LiteLLMModelPricing{
+			vertexPriceOverrides:        regionalOverrides,
 			LiteLLMProvider:             entry.LiteLLMProvider,
 			PricingOverrideCacheStorage: storageOverride,
 			Mode:                        entry.Mode,
@@ -928,6 +954,9 @@ func (s *PricingService) loadPricingData(filePath string) error {
 
 // Caller holds updateMu, including the startup fallback copy path.
 func (s *PricingService) loadPricingDataLocked(filePath string) error {
+	if err := s.serviceContext().Err(); err != nil {
+		return err
+	}
 	// Do not replace a newer in-memory update with an older disk file after a failed save.
 	if err := s.retryPricingPersistenceLocked(); err != nil {
 		return err
@@ -960,6 +989,11 @@ func (s *PricingService) loadPricingDataLocked(filePath string) error {
 	}
 	if fingerprint != s.customPricingFilesFingerprint() {
 		return fmt.Errorf("custom pricing changed during load")
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return context.Canceled
 	}
 	s.mu.Lock()
 	s.pricingData = pricingData
@@ -1007,6 +1041,9 @@ func (s *PricingService) mergeFallbackPricingData(data map[string]*LiteLLMModelP
 func (s *PricingService) useFallbackPricing() error {
 	s.updateMu.Lock()
 	defer s.updateMu.Unlock()
+	if err := s.serviceContext().Err(); err != nil {
+		return err
+	}
 	fallbackFile := s.cfg.Pricing.FallbackFile
 
 	if _, err := os.Stat(fallbackFile); os.IsNotExist(err) {
@@ -1043,7 +1080,7 @@ func (s *PricingService) fetchRemoteHash() (string, error) {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(s.serviceContext(), 10*time.Second)
 	defer cancel()
 
 	hash, err := s.remoteClient.FetchHashText(ctx, hashURL)
@@ -1230,7 +1267,7 @@ func isAntigravityThinkingTierAlias(model string) bool {
 // the published token rate, so this keeps -high/-low/-medium and -tiered
 // requests on the corresponding base model's price card.
 func normalizeGeminiThinkingTierAlias(model string) string {
-	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"} {
+	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"} {
 		for _, tier := range []string{"-high", "-low", "-medium", "-tiered"} {
 			if model == baseModel+tier {
 				return baseModel

@@ -350,13 +350,35 @@ func (s *PaymentService) invalidateRefundSubscriptionCache(ctx context.Context, 
 }
 
 func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*RefundResult, error) {
-	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)).SetStatus(OrderStatusRefunding).Save(ctx)
+	// Resolve the historical provider before opening the claim transaction so
+	// this read cannot wait for a second pool connection while holding a row lock.
+	inst, err := s.getRefundOrderProviderInstance(ctx, p.Order)
+	if err != nil {
+		return nil, err
+	}
+	// Claim state and persist the immutable gateway identity in one transaction,
+	// before balance changes or any provider call.
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin refund: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	c, err := tx.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)).SetStatus(OrderStatusRefunding).Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lock: %w", err)
 	}
 	if c == 0 {
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
+	if inst != nil && inst.ProviderKey == payment.TypeAlipay && p.Order.PaymentTradeNo != "" {
+		if err := pinAlipayRefundAttempt(ctx, tx, p); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit refund identity: %w", err)
+	}
+
 	if p.DeductionType == payment.DeductionTypeBalance && p.BalanceToDeduct > 0 {
 		// Skip balance deduction on retry if previous attempt already deducted
 		// but failed to roll back (REFUND_ROLLBACK_FAILED in audit log).
@@ -438,11 +460,37 @@ func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.
 		})
 		return nil, err
 	}
+	if p.queryBeforeRefund {
+		query, ok := prov.(payment.RefundQueryProvider)
+		if !ok {
+			return nil, fmt.Errorf("refund retry requires status query")
+		}
+		result, queryErr := query.QueryRefund(ctx, payment.RefundQueryRequest{
+			TradeNo: p.Order.PaymentTradeNo, OrderID: p.Order.OutTradeNo,
+			RefundID: p.gatewayRequestID, Amount: formatGatewayRefundAmount(p.GatewayAmount, p.Order), RequestedAt: p.gatewayRequestedAt,
+		})
+		if queryErr != nil || result == nil {
+			// A query failure never grants permission to send another refund.
+			return &payment.RefundResponse{RefundID: p.gatewayRequestID, Status: payment.ProviderStatusPending}, nil
+		}
+		switch strings.TrimSpace(result.Status) {
+		case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded, payment.ProviderStatusPending:
+			if result.RefundID == "" {
+				result.RefundID = p.gatewayRequestID
+			}
+			return result, nil
+		case payment.ProviderStatusFailed:
+			// Only a definitive failure permits another call with the same key.
+		default:
+			return &payment.RefundResponse{RefundID: p.gatewayRequestID, Status: payment.ProviderStatusPending}, nil
+		}
+	}
 	resp, err := prov.Refund(ctx, payment.RefundRequest{
-		TradeNo: p.Order.PaymentTradeNo,
-		OrderID: p.Order.OutTradeNo,
-		Amount:  formatGatewayRefundAmount(p.GatewayAmount, p.Order),
-		Reason:  p.Reason,
+		RequestID: p.gatewayRequestID,
+		TradeNo:   p.Order.PaymentTradeNo,
+		OrderID:   p.Order.OutTradeNo,
+		Amount:    formatGatewayRefundAmount(p.GatewayAmount, p.Order),
+		Reason:    p.Reason,
 	})
 	if err != nil {
 		if resp != nil && strings.TrimSpace(resp.Status) == payment.ProviderStatusPending {

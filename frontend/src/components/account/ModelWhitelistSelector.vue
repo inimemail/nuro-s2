@@ -263,6 +263,10 @@ const copyModelId = async (model: string) => {
 const addCustom = () => {
   const model = customModel.value.trim()
   if (!model) return
+  if (model.includes('*')) {
+    appStore.showError(t('quotaDisplay.exactModelOnly'))
+    return
+  }
   if (props.modelValue.includes(model)) {
     appStore.showInfo(t('admin.accounts.modelExists'))
     return
@@ -329,7 +333,7 @@ const syncUpstreamModels = async () => {
       ? await accountsAPI.syncUpstreamModels(props.accountId, { signal: controller.signal })
       : await accountsAPI.syncUpstreamModelsPreview(props.syncCredentials as SyncUpstreamPreviewParams, { signal: controller.signal })
     if (generation !== syncGeneration || controller.signal.aborted) return
-    const models = [...new Set(result.models.map(model => model.trim()).filter(Boolean))]
+    const models = [...new Set(result.models.map(model => model.trim()).filter(model => model && !model.includes('*')))]
     if (!models.length) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
     } else if (draft.length !== props.modelValue.length || draft.some((value, index) => value !== props.modelValue[index])) {

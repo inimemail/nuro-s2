@@ -84,9 +84,11 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  const { ref } = await vi.importActual<typeof import('vue')>('vue')
   return {
     ...actual,
     useI18n: () => ({
+      locale: ref('en'),
       t: (key: string) => messages[key] ?? key,
     }),
   }
@@ -164,6 +166,55 @@ describe('user UsageView tooltip', () => {
     await flushPromises()
     return { wrapper, state: (wrapper.vm as any).$?.setupState }
   }
+
+  it('cancels outdated summaries and only accepts the latest filter snapshot', async () => {
+    const { wrapper, state } = await mountExportView()
+    type Snapshot = { stats: { total_requests: number }; trend: never[]; models: never[]; groups: never[] }
+    const pending: Array<{ resolve: (value: Snapshot) => void; reject: (error: unknown) => void; signal: AbortSignal }> = []
+    getDashboardSnapshotV2.mockImplementation((_params, options) => new Promise((resolve, reject) => pending.push({ resolve, reject, signal: options.signal })))
+    const initialListSignal = query.mock.calls.at(-1)?.[1].signal as AbortSignal
+    state.filters.api_key_id = 1
+    const a = state.loadUsageStats()
+    state.filters.api_key_id = 2
+    const b = state.loadUsageStats()
+    state.filters.api_key_id = 3
+    const c = state.loadUsageStats()
+    expect(pending[0].signal.aborted).toBe(true)
+    expect(pending[1].signal.aborted).toBe(true)
+    expect(initialListSignal.aborted).toBe(false)
+    expect(state.usageStats).toBeNull()
+    pending[1].reject(new Error('late failure'))
+    pending[0].resolve({ stats: { total_requests: 1 }, trend: [], models: [], groups: [] })
+    await Promise.all([a, b])
+    expect(state.usageStats).toBeNull()
+    expect(state.chartsLoading).toBe(true)
+    pending[2].resolve({ stats: { total_requests: 3 }, trend: [], models: [], groups: [] })
+    await c
+    expect(state.usageStats.total_requests).toBe(3)
+    expect(showError).not.toHaveBeenCalled()
+    expect(state.chartsLoading).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps same-filter last-good stats on failure and ignores unmounted results', async () => {
+    const { wrapper, state } = await mountExportView()
+    const lastGood = state.usageStats
+    getDashboardSnapshotV2.mockRejectedValueOnce(new Error('refresh failed'))
+    await state.loadUsageStats()
+    expect(state.usageStats).toEqual(lastGood)
+    expect(showError).toHaveBeenCalledTimes(1)
+    showError.mockClear()
+    let reject!: (error: unknown) => void
+    getDashboardSnapshotV2.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    const loading = state.loadUsageStats()
+    const signal = getDashboardSnapshotV2.mock.calls.at(-1)?.[1].signal as AbortSignal
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+    reject(new Error('unmounted'))
+    await loading
+    expect(showError).not.toHaveBeenCalled()
+    expect(state.usageStats).toEqual(lastGood)
+  })
 
   it('bounds CSV 429 retries and never downloads a partial export', async () => {
     exportPage.mockRejectedValue({ status: 429, retryAfter: '999999' })

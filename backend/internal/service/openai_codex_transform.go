@@ -1319,6 +1319,7 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 
 func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []any {
 	filtered := make([]any, 0, len(input))
+	additionalIDs := codexAdditionalToolsIDMappings(input)
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1359,14 +1360,17 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		}
 
 		if typ == "item_reference" {
-			if !opts.PreserveReferences {
+			id, _ := m["id"].(string)
+			if !opts.PreserveReferences && additionalIDs[id] == "" {
 				continue
 			}
 			newItem := make(map[string]any, len(m))
 			for key, value := range m {
 				newItem[key] = value
 			}
-			if id, ok := newItem["id"].(string); ok && strings.HasPrefix(id, "call_") {
+			if id, ok := newItem["id"].(string); ok && additionalIDs[id] != "" {
+				newItem["id"] = additionalIDs[id]
+			} else if id, ok := newItem["id"].(string); ok && strings.HasPrefix(id, "call_") {
 				newItem["id"] = fixCallIDPrefix(id)
 			}
 			filtered = append(filtered, newItem)
@@ -1427,7 +1431,12 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			}
 		}
 
-		if !opts.PreserveReferences {
+		if typ == "additional_tools" {
+			if id, ok := m["id"].(string); ok && additionalIDs[id] != "" {
+				ensureCopy()
+				newItem["id"] = additionalIDs[id]
+			}
+		} else if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
 		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {

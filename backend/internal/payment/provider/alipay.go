@@ -346,7 +346,13 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		return nil, err
 	}
 
-	outRequestNo := fmt.Sprintf("%s%s%d", req.OrderID, alipayRefundRequestSep, time.Now().UnixNano())
+	outRequestNo, err := payment.AlipayRefundRequestID(req.OrderID, req.Amount)
+	if err != nil {
+		return nil, err
+	}
+	if req.RequestID != "" && req.RequestID != outRequestNo {
+		return nil, fmt.Errorf("refund identity does not match order and amount")
+	}
 	result, err := alipayTradeRefund(ctx, client, alipay.TradeRefund{
 		OutTradeNo:   req.OrderID,
 		RefundAmount: req.Amount,
@@ -354,10 +360,10 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		OutRequestNo: outRequestNo,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("alipay TradeRefund: %w", err)
+		return &payment.RefundResponse{RefundID: outRequestNo, Status: payment.ProviderStatusPending}, fmt.Errorf("alipay TradeRefund: %w", err)
 	}
 	if result == nil {
-		return nil, fmt.Errorf("alipay TradeRefund: empty response")
+		return &payment.RefundResponse{RefundID: outRequestNo, Status: payment.ProviderStatusPending}, fmt.Errorf("alipay TradeRefund: empty response")
 	}
 
 	refundStatus := payment.ProviderStatusPending

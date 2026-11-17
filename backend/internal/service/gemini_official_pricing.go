@@ -26,8 +26,12 @@ func gemini36PricingAt(at time.Time, eligible *bool) time.Time {
 
 // Preserve custom stats rules and the channel's explicit use of user prices.
 // Only default model costs share the settlement's time and provider identity.
-func applyGemini36AccountStatsCost(ctx context.Context, log *UsageLog, channels *ChannelService, billing *BillingService, account *Account, groupID int64, model string, tokens UsageTokens, total float64, at time.Time, eligible *bool) {
-	if (!isGemini36FlashPricingModel(model) && !isGeminiArgonPricingModel(model)) || log == nil || billing == nil || account == nil || account.Platform != PlatformGemini {
+func applyGemini36AccountStatsCost(ctx context.Context, log *UsageLog, channels *ChannelService, billing *BillingService, account *Account, groupID int64, model string, tokens UsageTokens, total float64, at time.Time, eligible *bool, cacheLocation ...string) {
+	location := ""
+	if len(cacheLocation) > 0 {
+		location = cacheLocation[0]
+	}
+	if (!isGemini36FlashPricingModel(model) && !isGeminiArgonPricingModel(model) && gemini4BaseModel(model) == "" && VertexUpstreamPriceMultiplier(account, model, location) == 1) || log == nil || billing == nil || account == nil || account.Platform != PlatformGemini {
 		return
 	}
 	if channels != nil {
@@ -51,6 +55,8 @@ func applyGemini36AccountStatsCost(ctx context.Context, log *UsageLog, channels 
 		return
 	}
 	pricing = applyGemini36OfficialPricing(model, pricing, gemini36PricingAt(at, eligible))
+	pricing = applyGemini4OfficialPricing(model, pricing, at)
+	pricing = applyVertexDefaultTokenPricing(pricing, VertexUpstreamPriceMultiplier(account, model, location))
 	cost := billing.computeTokenBreakdown(pricing, tokens, 1, "", true).TotalCost
 	log.AccountStatsCost = &cost
 }
