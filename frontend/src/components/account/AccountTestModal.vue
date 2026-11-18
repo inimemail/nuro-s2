@@ -289,7 +289,7 @@ import { adminAPI } from '@/api/admin'
 import { useGrokAccountTest, type AccountTestModel } from '@/composables/useGrokAccountTest'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import type { Account } from '@/types'
-import { sortAccountTestModels } from '@/utils/accountTestModels'
+import { isOpenAIAccountTestImageModel, sortAccountTestModels } from '@/utils/accountTestModels'
 
 const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
@@ -361,11 +361,9 @@ const supportsGeminiImageTest = computed(() => {
 })
 
 const supportsOpenAIImageTest = computed(() => {
+  if (props.account?.platform !== 'openai') return false
   const model = availableModels.value.find(model => model.id === selectedModelId.value)
-  const modelID = (model?.upstream_model || selectedModelId.value).trim().toLowerCase()
-  if (modelID.startsWith('gemini-') && (modelID.endsWith('-image') || modelID.includes('-image-'))) return props.account?.platform === 'openai' && props.account?.type === 'apikey'
-  if (!modelID.startsWith('gpt-image-')) return false
-  return props.account?.platform === 'openai'
+  return isOpenAIAccountTestImageModel(model?.upstream_model || selectedModelId.value, props.account.type)
 })
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)

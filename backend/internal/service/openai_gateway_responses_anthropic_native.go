@@ -278,6 +278,8 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			mergeAnthropicUsage(&usage, event.Message.Usage)
 		}
 
+		normalizeAnthropicEventUsageForResponses(event, usage)
+		syncAnthropicResponsesUsage(state, usage)
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
 		if clientDisconnected {
 			return nil

@@ -145,6 +145,9 @@ func validateNewModelChatReasoningTools(model, effort string, hasTools bool) err
 	if hasTools && openai.RequiresResponsesForToolCalls(model) {
 		return fmt.Errorf("model %s requires the Responses endpoint for tool calls", model)
 	}
+	if err := openai.ValidateGPT62ModelRequest(model, effort); err != nil {
+		return err
+	}
 	if err := openai.ValidateGPT61SolReasoningEffort(model, effort); err != nil {
 		return err
 	}

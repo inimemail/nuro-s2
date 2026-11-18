@@ -1,0 +1,337 @@
+{
+  "version": "0.2.23-nuro.1",
+  "baseline_commit": "83968b49c7dad83f53c32e682fae3615635851b2",
+  "release_ready": false,
+  "reason": "全量 Go lint 保留基线 551 项；保护阻塞及有条件计时项不启用；未做生产 canary/两副本演练，不宣称零风险",
+  "groups": [
+    {
+      "id": "B01",
+      "title": "6.2 Sol/Astra 模型与客户端",
+      "status": "implemented",
+      "note": "精确身份/别名、请求校验、采样、instructions、APIKey manifest、前端三入口；不扩自动 cache key，不承诺冻结入口新增能力。"
+    },
+    {
+      "id": "B02",
+      "title": "6.2 基础价格",
+      "status": "implemented",
+      "note": "四 bucket、priority/flex/batch、fallback、272000 严格边界、OAuth 官方附加费豁免与 D 快照对齐。"
+    },
+    {
+      "id": "B03",
+      "title": "Ultra 新权益/倍率",
+      "status": "blocked_by_protection",
+      "note": "不改变旧倍率、权益、档位强制、Edge/WAL；不宣称上游新 Ultra 完整支持。"
+    },
+    {
+      "id": "B04",
+      "title": "渠道 Ultra 字段/SQL/UI",
+      "status": "blocked_by_protection",
+      "note": "依赖 B03，未引入列或控件。"
+    },
+    {
+      "id": "B05",
+      "title": "apicompat usage/TTL",
+      "status": "implemented",
+      "note": "presence、有效零优先、部分 TTL、缓存-only 与转换；SignedThinking/tool scope 保留。"
+    },
+    {
+      "id": "B06",
+      "title": "Gateway/Antigravity usage",
+      "status": "implemented",
+      "note": "原始快照先于展示变换；shared patch、TTL override、alias、prompt total、完整用量传递。"
+    },
+    {
+      "id": "B07",
+      "title": "native Anthropic TTL 账务",
+      "status": "implemented",
+      "note": "Messages/Chat/Responses 原有 native 链传递 TTL 到内部 cost/log；内部字段不输出到 OpenAI wire。"
+    },
+    {
+      "id": "B08",
+      "title": "创建余量分桶",
+      "status": "implemented",
+      "note": "保留原归一化，未分类余量归 5m，客户费与账号成本各沿原价格来源。"
+    },
+    {
+      "id": "B09",
+      "title": "精确 idle deadline",
+      "status": "deferred_gate",
+      "note": "不完整 SSE 行原始字节进展、events 背压与慢写未建立安全计时模型；不改 ticker，不新增无输出重放许可。"
+    },
+    {
+      "id": "B10",
+      "title": "raw flush",
+      "status": "excluded_frozen",
+      "note": "冻结 raw Chat 与 Rust 文件不动，也不注入外围 wrapper。"
+    },
+    {
+      "id": "B11",
+      "title": "DeepSeek/Ollama 单遍 JSON",
+      "status": "excluded_not_applicable",
+      "note": "本地无等价链，不导入额外请求行为。"
+    },
+    {
+      "id": "B12",
+      "title": "隔离性能/回归方法",
+      "status": "implemented_method",
+      "note": "复用既有 benchmark 和隔离数据库；不搬上游不存在的 reservation；不放宽旧测试阈值。"
+    },
+    {
+      "id": "B13",
+      "title": "Go/依赖安全历史",
+      "status": "already_present_verified",
+      "note": "Go 1.27.4 / 锁文件保留；当前扫描与产物验证单独记录。"
+    },
+    {
+      "id": "B14",
+      "title": "版本/状态",
+      "status": "implemented",
+      "note": "后端 VERSION 和 frontend package version = 0.2.23-nuro.1；未 commit/push/deploy。"
+    }
+  ],
+  "optimizations": [
+    {
+      "id": "O01",
+      "status": "implemented",
+      "note": "取消 72 字节经验门槛，短合法终态正常取用量"
+    },
+    {
+      "id": "O02",
+      "status": "implemented",
+      "note": "按终态 envelope 与字段 presence 读取，显式合法 0 保留"
+    },
+    {
+      "id": "O03",
+      "status": "implemented_with_limit",
+      "note": "精确整数/范围/checked add；非法用量拒绝收费并返回既有错误路径，保留结果中已确认字段；未新增持久化异常用量/部分扣费系统"
+    },
+    {
+      "id": "O04",
+      "status": "implemented",
+      "note": "统一 aggregate/TTL 余量与既有矛盾归一"
+    },
+    {
+      "id": "O05",
+      "status": "implemented",
+      "note": "两模型身份、启动解析与价格一致性"
+    },
+    {
+      "id": "O06",
+      "status": "implemented",
+      "note": "白名单、快捷映射、OpenCode；12组真实组件视觉/交互检查"
+    },
+    {
+      "id": "O07",
+      "status": "deferred_gate",
+      "note": "见 B09；符合原方案门禁未过不进入发布的要求"
+    },
+    {
+      "id": "O08",
+      "status": "implemented_method",
+      "note": "既有 benchmark、合成 fixture、Go/Rust 新增8例、SHA核对；无线上性能结论"
+    }
+  ],
+  "protected_files": 20,
+  "historical_sql": 286,
+  "old_model_price_records_unchanged": 217,
+  "frontend_tests": {
+    "files": 202,
+    "tests": 1305
+  },
+  "visual_cases": 12,
+  "committed": false,
+  "pushed": false,
+  "deployed": false,
+  "verification": {
+    "go_default": "passed",
+    "go_unit": {
+      "passed": 13698,
+      "skipped": 12
+    },
+    "go_unit_race": {
+      "passed": 11162,
+      "skipped": 8
+    },
+    "go_final_boundary_race": "passed",
+    "go_final_vet": "passed",
+    "integration": {
+      "passed": 9286,
+      "skipped": 3,
+      "required_tests": "passed"
+    },
+    "frontend_build": "passed",
+    "frontend_lint": "passed",
+    "frontend_typecheck": "passed",
+    "rust_shared_new_cases": 8,
+    "full_go_lint": {
+      "baseline": 551,
+      "current": 551,
+      "added": 0,
+      "removed": 0,
+      "passed": false
+    },
+    "source_vulnerabilities": {
+      "reachable": 0,
+      "imported_package": 0,
+      "uncalled_required_module": 7
+    },
+    "pnpm_audit_existing_policy": "passed",
+    "security": {
+      "embed_source": {
+        "reachable": 0,
+        "imported_package": 0,
+        "module_advisory_ids": [
+          "GO-2026-4961",
+          "GO-2026-5061",
+          "GO-2026-5062",
+          "GO-2026-5066",
+          "GO-2026-5158",
+          "GO-2026-5932",
+          "GO-2026-6222"
+        ]
+      },
+      "binary": {
+        "advisory_ids": [
+          "GO-2026-4961",
+          "GO-2026-5061",
+          "GO-2026-5062",
+          "GO-2026-5066",
+          "GO-2026-5158",
+          "GO-2026-5932",
+          "GO-2026-6222"
+        ],
+        "symbol_findings": 23,
+        "note": "Binary mode lacks source callgraph precision; do not claim artifact is free of known vulnerable symbols."
+      }
+    },
+    "benchmark_alternating_ns_op": {
+      "baseline": [
+        2033.0,
+        1953.0,
+        1964.0
+      ],
+      "candidate": [
+        2694.0,
+        1856.0,
+        1853.0
+      ]
+    },
+    "final_review": {
+      "go_unit": {
+        "passed": 13717,
+        "skipped": 12,
+        "failed": 0
+      },
+      "go_unit_race_service_repository_pkg": {
+        "passed": 11171,
+        "skipped": 8,
+        "failed": 0
+      },
+      "subsequent_apicompat_race": "passed",
+      "timing_regressions": {
+        "initial_concurrent_run": "two existing timing assertions failed",
+        "independent_full_race": "passed",
+        "affected_tests_repeat": 5,
+        "affected_tests_repeat_result": "passed",
+        "assertions_unchanged": true
+      },
+      "go_unit_vet": "passed",
+      "embed_web_test": "passed",
+      "embed_build_version": "0.2.23-nuro.1",
+      "go_toolchain": "1.27.4",
+      "integration": {
+        "passed": 9303,
+        "skipped": 3,
+        "failed": 0,
+        "required_tests": "passed",
+        "database": "isolated temporary PostgreSQL",
+        "temporary_database_removed": true
+      },
+      "frontend": {
+        "lint_typecheck_build": "passed",
+        "passed": 1292,
+        "files": 201,
+        "visual": "prior 12 cases; frontend source hashes verified unchanged"
+      },
+      "rust": "fmt/check/debug/release tests/clippy passed",
+      "full_go_lint": {
+        "baseline": 551,
+        "current": 551,
+        "added": 0,
+        "removed": 0,
+        "passed": false
+      },
+      "embed_source_vulnerabilities": {
+        "reachable": 0,
+        "imported_package": 0,
+        "uncalled_required_module": 7
+      },
+      "protected_files": 20,
+      "historical_sql": 286,
+      "old_model_price_records_unchanged": 217,
+      "secret_scan": "passed",
+      "diff_check": "passed",
+      "evidence_directory": "~/.codex/outputs/sub2api-v0223-implementation-20261118/final-review",
+      "no_commit_push_or_deploy": true
+    },
+    "account_test_modal_review": {
+      "model_order": [
+        "gpt-6.2-sol",
+        "gpt-6.2-astra"
+      ],
+      "openai_named_models_before_mapped_aliases": true,
+      "frontend_tests": {
+        "files": 202,
+        "passed": 1301
+      },
+      "frontend_lint": "passed",
+      "frontend_typecheck": "passed",
+      "frontend_build": "passed",
+      "visual_cases": 6,
+      "visual_result": "passed",
+      "embed_build_version": "0.2.23-nuro.1",
+      "regressions": [
+        "late model query after account switch",
+        "cancel",
+        "text timeout and timer cleanup",
+        "mapped image aliases bypass text timeout",
+        "unmount abort",
+        "EOF missing terminal",
+        "account_updated after terminal"
+      ],
+      "backend_source": "unchanged from final-review fingerprints; prior unit/race/integration evidence retained",
+      "protected_files_unchanged": 20,
+      "historical_sql_unchanged": 286,
+      "committed": false,
+      "pushed": false,
+      "deployed": false
+    },
+    "account_test_modal_continued_review": {
+      "date": "2026-11-19",
+      "openai_stream_limit_bytes": 33554432,
+      "openai_output_limit_rows": 2000,
+      "new_regressions": 4,
+      "targeted_tests_passed": 29,
+      "frontend_tests": {
+        "files": 202,
+        "passed": 1305
+      },
+      "frontend_lint": "passed",
+      "frontend_typecheck": "passed",
+      "frontend_build": "passed",
+      "embed_web_test": "passed",
+      "embed_build_version": "0.2.23-nuro.1",
+      "go_toolchain": "1.27.4",
+      "visual": "template/styles unchanged; prior 6 cases retained",
+      "backend_source": "unchanged from previous fingerprints; prior unit/race/integration evidence retained",
+      "protected_files_unchanged": 20,
+      "historical_sql_unchanged": 286,
+      "old_model_price_records_unchanged": 217,
+      "other_platform_media_limits": "unchanged",
+      "evidence_directory": "~/.codex/outputs/sub2api-v0223-implementation-20261118/last-review-20261119",
+      "committed": false,
+      "pushed": false,
+      "deployed": false
+    }
+  }
+}

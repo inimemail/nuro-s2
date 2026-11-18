@@ -23,6 +23,9 @@ func normalizeGPT6ResponsesSampling(body []byte) ([]byte, error) {
 	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()), "disabled") {
 		effort = "none"
 	}
+	if err := openai.ValidateGPT62ModelRequest(model, effort); err != nil {
+		return nil, err
+	}
 	if err := openai.ValidateGPT61TerraModelRequest(model, effort); err != nil {
 		return nil, err
 	}
@@ -31,7 +34,7 @@ func normalizeGPT6ResponsesSampling(body []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if !openai.IsGPT6SolOrLunaModelSpelling(model) && !openai.IsGPT61SolModelSpelling(model) && !openai.IsGPT61TerraModelSpelling(model) || ((openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) && strings.EqualFold(effort, "none")) {
+	if openai.GPT62ModelID(model) == "" && !openai.IsGPT6SolOrLunaModelSpelling(model) && !openai.IsGPT61SolModelSpelling(model) && !openai.IsGPT61TerraModelSpelling(model) || ((openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) && strings.EqualFold(effort, "none")) {
 		return body, nil
 	}
 	out := body

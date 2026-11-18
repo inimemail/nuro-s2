@@ -172,10 +172,10 @@ func TestOpenAIUsageFromGJSON_ParsesCacheWriteAliases(t *testing.T) {
 			wantCreation: 23,
 		},
 		{
-			name:         "zero nested aliases do not hide top-level values",
+			name:         "explicit zero nested counts remain authoritative",
 			body:         `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},"cache_read_input_tokens":31,"cache_creation_input_tokens":24}}`,
-			wantCreation: 24,
-			wantRead:     31,
+			wantCreation: 0,
+			wantRead:     0,
 		},
 		{
 			name: "all cache aliases zero",

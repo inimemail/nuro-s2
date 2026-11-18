@@ -172,3 +172,13 @@ it('uses native Argon ID for Gemini and explicit tier IDs for Antigravity', () =
   expect(getModelsByPlatform('antigravity')).toEqual(expect.arrayContaining(['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low']))
   expect(getModelsByPlatform('antigravity')).not.toContain('gemini-4-argon')
 })
+
+
+it('adds GPT-6.2 after Sol and Terra in models and exact preset mappings', () => {
+  const order = ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6.2-sol', 'gpt-6.2-astra']
+  expect(getModelsByPlatform('openai').slice(0, 4)).toEqual(order)
+  expect(getPresetMappingsByPlatform('openai').slice(0, 4).map(item => item.from)).toEqual(order)
+  for (const model of order.slice(2)) {
+    expect(getPresetMappingsByPlatform('openai')).toContainEqual(expect.objectContaining({ from: model, to: model }))
+  }
+})

@@ -213,6 +213,13 @@
           {{ t('common.close') }}
         </button>
         <button
+          v-if="account?.platform === 'openai' && status === 'connecting'"
+          @click="cancelTest"
+          class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
+        >
+          {{ t('common.cancel') }}
+        </button>
+        <button
           @click="startTest"
           :disabled="status === 'connecting' || loadingModels || !grokCanStart"
           :class="[
@@ -251,7 +258,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -261,7 +268,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { adminAPI } from '@/api/admin'
 import { useGrokAccountTest, type AccountTestModel } from '@/composables/useGrokAccountTest'
 import type { Account } from '@/types'
-import { sortAccountTestModels } from '@/utils/accountTestModels'
+import { isOpenAIAccountTestImageModel, sortAccountTestModels } from '@/utils/accountTestModels'
 
 const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
@@ -310,6 +317,7 @@ const grokTestModeOptions = computed(() => [
   { value: 'stt', label: t('admin.accounts.grokModes.stt') }, { value: 'realtime', label: t('admin.accounts.grokModes.realtime') },
 ])
 const loadingModels = ref(false)
+let modelGeneration = 0
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const generatedVideos = ref<string[]>([])
@@ -323,26 +331,26 @@ const supportsGeminiImageTest = computed(() => {
 })
 
 const supportsOpenAIImageTest = computed(() => {
-  const modelID = selectedModelId.value.toLowerCase()
-  if (!modelID.startsWith('gpt-image-')) return false
-  return props.account?.platform === 'openai'
+  if (props.account?.platform !== 'openai') return false
+  const model = availableModels.value.find(model => model.id === selectedModelId.value)
+  return isOpenAIAccountTestImageModel(model?.upstream_model || selectedModelId.value, props.account.type)
 })
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)
 
-// Load available models when modal opens
 watch(
-  () => props.show,
-  async (newVal, oldVal) => {
-    if (newVal && props.account) {
-      testPrompt.value = ''
-      clearGrokMedia()
-      grokTestMode.value = 'text'
-      resetState()
-      await loadAvailableModels()
-    } else if (oldVal) {
-      abortStream()
-    }
+  () => [props.show, props.account?.id] as const,
+  ([show]) => {
+    modelGeneration++
+    abortStream()
+    availableModels.value = []
+    selectedModelId.value = ''
+    loadingModels.value = false
+    testPrompt.value = ''
+    clearGrokMedia()
+    grokTestMode.value = 'text'
+    resetState()
+    if (show && props.account) void loadAvailableModels()
   },
   { immediate: true }
 )
@@ -354,20 +362,23 @@ watch(selectedModelId, () => {
 })
 
 async function loadAvailableModels() {
-  if (!props.account) return
+  const account = props.account
+  if (!account) return
 
+  const generation = ++modelGeneration
+  const current = () => props.show && props.account?.id === account.id && generation === modelGeneration
   loadingModels.value = true
-  selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    availableModels.value = sortAccountTestModels(models, props.account.platform)
+    const models = await adminAPI.accounts.getAvailableModels(account.id)
+    if (!current()) return
+    availableModels.value = sortAccountTestModels(models, account.platform)
     // Default selection by platform
     if (availableModels.value.length > 0) {
-      if (props.account.platform === 'typesafe') {
+      if (account.platform === 'typesafe') {
         selectedModelId.value = 'jev-latest'
-      } else if (props.account.platform === 'grok') {
+      } else if (account.platform === 'grok') {
         selectedModelId.value = testModelOptions.value[0]?.id || ''
-      } else if (props.account.platform === 'gemini') {
+      } else if (account.platform === 'gemini') {
         selectedModelId.value = availableModels.value[0].id
       } else {
         // Try to select Sonnet as default, otherwise use first model
@@ -376,12 +387,13 @@ async function loadAvailableModels() {
       }
     }
   } catch (error) {
+    if (!current()) return
     console.error('Failed to load available models:', error)
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    loadingModels.value = false
+    if (current()) loadingModels.value = false
   }
 }
 
@@ -397,19 +409,33 @@ function resetState() {
 }
 
 const handleClose = () => {
+  modelGeneration++
   abortStream()
   emit('close')
 }
 
 function abortStream() {
-  if (abortController) {
-    abortController.abort()
-    abortController = null
-  }
+  const controller = abortController
+  abortController = null
+  controller?.abort()
+}
+
+onBeforeUnmount(() => {
+  modelGeneration++
+  abortStream()
+})
+
+function cancelTest() {
+  abortStream()
+  status.value = 'idle'
+  addLine(t('admin.accounts.testCancelled'), 'text-gray-400')
 }
 
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
+  if (props.account?.platform === 'openai' && outputLines.value.length > 2000) {
+    outputLines.value.splice(0, outputLines.value.length - 2000)
+  }
   scrollToBottom()
 }
 
@@ -421,7 +447,8 @@ const scrollToBottom = async () => {
 }
 
 const startTest = async () => {
-  if (!props.account || loadingModels.value || !grokCanStart.value || status.value === 'connecting') return
+  const account = props.account
+  if (!props.show || !account || loadingModels.value || !grokCanStart.value || status.value === 'connecting') return
 
   resetState()
   status.value = 'connecting'
@@ -431,11 +458,23 @@ const startTest = async () => {
 
   abortStream()
 
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
+  const current = () => props.show && props.account?.id === account.id && abortController === controller
+  let timedOut = false
+  // Match the account modal's browser deadline for OpenAI text tests.
+  const timeout = account.platform === 'openai' && !supportsImageTest.value
+    ? setTimeout(() => {
+      if (!current()) return
+      timedOut = true
+      controller.abort()
+    }, 190_000)
+    : undefined
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
   try {
     // Create EventSource for SSE
-    const url = `/api/v1/admin/accounts/${props.account.id}/test`
+    const url = `/api/v1/admin/accounts/${account.id}/test`
 
     // Use fetch with streaming for SSE since EventSource doesn't support POST
     const response = await fetch(url, {
@@ -445,60 +484,84 @@ const startTest = async () => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-              ...grokRequestFields.value,
-              model_id: isGrokAccount.value ? grokRequestModel.value : selectedModelId.value,
-              prompt: props.account?.platform === 'grok' || supportsImageTest.value ? testPrompt.value.trim() : '',
-              mode: props.account?.platform === 'grok' ? grokTestMode.value : 'default'
-            }),
-      signal: abortController.signal
+        ...grokRequestFields.value,
+        model_id: isGrokAccount.value ? grokRequestModel.value : selectedModelId.value,
+        prompt: isGrokAccount.value || supportsImageTest.value ? testPrompt.value.trim() : '',
+        mode: isGrokAccount.value ? grokTestMode.value : 'default'
+      }),
+      signal: controller.signal
     })
 
+    if (!current()) {
+      await response.body?.cancel().catch(() => undefined)
+      return
+    }
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    const reader = response.body?.getReader()
+    reader = response.body?.getReader()
     if (!reader) {
       throw new Error('No response body')
     }
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let receivedBytes = 0
+
+    const consumeLine = (line: string) => {
+      if (!line.startsWith('data:')) return
+      const json = line.slice(5).trim()
+      if (!json) return
+      try {
+        const event = JSON.parse(json)
+        // Successful tests can refresh account state after the result frame.
+        if (status.value === 'connecting' || event?.type === 'account_updated') handleEvent(event)
+      } catch (error) {
+        console.error('Failed to parse SSE event:', error)
+      }
+    }
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (!current()) return
+      if (done) {
+        consumeLine(buffer + decoder.decode())
+        break
+      }
 
+      // Match the ordinary OpenAI modal's budget, including image payloads
+      // and incomplete SSE lines. Leave other platforms' media tests unchanged.
+      receivedBytes += value.byteLength
+      if (account.platform === 'openai' && receivedBytes > 32 * 1024 * 1024) {
+        throw new Error(t('admin.accounts.testStreamTooLarge'))
+      }
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const jsonStr = line.slice(6).trim()
-          if (jsonStr) {
-            try {
-              const event = JSON.parse(jsonStr)
-              handleEvent(event)
-            } catch (e) {
-              console.error('Failed to parse SSE event:', e)
-            }
-          }
-        }
-      }
+      for (const line of lines) consumeLine(line)
     }
-    if (isGrokAccount.value && status.value === 'connecting') {
-      throw new Error(t('admin.accounts.grokTestIncomplete'))
+    if (status.value === 'connecting') {
+      throw new Error(t(isGrokAccount.value ? 'admin.accounts.grokTestIncomplete' : 'admin.accounts.testStreamIncomplete'))
     }
   } catch (error: unknown) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (!current() || status.value !== 'connecting') return
+    if (!timedOut && error instanceof DOMException && error.name === 'AbortError') {
       status.value = 'idle'
       return
     }
     status.value = 'error'
-    const msg = error instanceof Error ? error.message : 'Unknown error'
+    const msg = timedOut ? t('admin.accounts.testTimedOut') : (error instanceof Error ? error.message : 'Unknown error')
     errorMessage.value = msg
     addLine(`Error: ${msg}`, 'text-red-400')
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+    if (current()) abortController = null
+    if (reader) {
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    }
   }
 }
 

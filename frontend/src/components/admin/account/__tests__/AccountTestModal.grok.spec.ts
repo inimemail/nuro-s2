@@ -21,7 +21,7 @@ describe.each([['admin', AdminModal], ['account', AccountModal]] as const)('%s G
       ok: true,
       body: { getReader: () => {
         let done = false
-        return { read: async () => {
+        return { cancel: vi.fn().mockResolvedValue(undefined), releaseLock: vi.fn(), read: async () => {
           if (done) return { done: true }
           done = true
           return { done: false, value: new TextEncoder().encode('data: {"type":"test_complete","success":true}\n\n') }

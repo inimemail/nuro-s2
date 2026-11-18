@@ -38,6 +38,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -683,13 +684,18 @@ type AccountSelectionResult struct {
 
 // ClaudeUsage 表示Claude API返回的usage信息
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
-	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	usageInvalid                        bool
+	promptTotalTokens                   int
+	promptTotalPresent                  bool
+	cacheCreationInputTokensPresent     bool
+	cacheCreationInputTokensFromDetails bool
+	InputTokens                         int `json:"input_tokens"`
+	OutputTokens                        int `json:"output_tokens"`
+	CacheCreationInputTokens            int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens                int `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens               int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation1hTokens               int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	ImageOutputTokens                   int `json:"image_output_tokens,omitempty"`
 }
 
 // ForwardResult 转发结果
@@ -7872,108 +7878,17 @@ func extractAnthropicSSEDataLine(line string) (string, bool) {
 }
 
 func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
-	if usage == nil || data == "" || data == "[DONE]" {
-		return
-	}
-
-	parsed := gjson.Parse(data)
-	switch parsed.Get("type").String() {
-	case "message_start":
-		msgUsage := parsed.Get("message.usage")
-		if msgUsage.Exists() {
-			usage.InputTokens = int(msgUsage.Get("input_tokens").Int())
-			usage.CacheCreationInputTokens = int(msgUsage.Get("cache_creation_input_tokens").Int())
-			usage.CacheReadInputTokens = int(msgUsage.Get("cache_read_input_tokens").Int())
-
-			// 保持与通用解析一致：message_start 允许覆盖 5m/1h 明细（包括 0）。
-			cc5m := msgUsage.Get("cache_creation.ephemeral_5m_input_tokens")
-			cc1h := msgUsage.Get("cache_creation.ephemeral_1h_input_tokens")
-			if cc5m.Exists() || cc1h.Exists() {
-				usage.CacheCreation5mTokens = int(cc5m.Int())
-				usage.CacheCreation1hTokens = int(cc1h.Int())
-			}
-		}
-	case "message_delta":
-		deltaUsage := parsed.Get("usage")
-		if deltaUsage.Exists() {
-			if v := deltaUsage.Get("input_tokens").Int(); v > 0 {
-				usage.InputTokens = int(v)
-			}
-			if v := deltaUsage.Get("output_tokens").Int(); v > 0 {
-				usage.OutputTokens = int(v)
-			}
-			if v := deltaUsage.Get("cache_creation_input_tokens").Int(); v > 0 {
-				usage.CacheCreationInputTokens = int(v)
-			}
-			if v := deltaUsage.Get("cache_read_input_tokens").Int(); v > 0 {
-				usage.CacheReadInputTokens = int(v)
-			}
-
-			cc5m := deltaUsage.Get("cache_creation.ephemeral_5m_input_tokens")
-			cc1h := deltaUsage.Get("cache_creation.ephemeral_1h_input_tokens")
-			if cc5m.Exists() && cc5m.Int() > 0 {
-				usage.CacheCreation5mTokens = int(cc5m.Int())
-			}
-			if cc1h.Exists() && cc1h.Int() > 0 {
-				usage.CacheCreation1hTokens = int(cc1h.Int())
-			}
-		}
-	}
-
-	if usage.CacheReadInputTokens == 0 {
-		if cached := parsed.Get("message.usage.cached_tokens").Int(); cached > 0 {
-			usage.CacheReadInputTokens = int(cached)
-		}
-		if cached := parsed.Get("usage.cached_tokens").Int(); usage.CacheReadInputTokens == 0 && cached > 0 {
-			usage.CacheReadInputTokens = int(cached)
-		}
-	}
-	if usage.CacheCreationInputTokens == 0 {
-		cc5m := parsed.Get("message.usage.cache_creation.ephemeral_5m_input_tokens").Int()
-		cc1h := parsed.Get("message.usage.cache_creation.ephemeral_1h_input_tokens").Int()
-		if cc5m == 0 && cc1h == 0 {
-			cc5m = parsed.Get("usage.cache_creation.ephemeral_5m_input_tokens").Int()
-			cc1h = parsed.Get("usage.cache_creation.ephemeral_1h_input_tokens").Int()
-		}
-		total := cc5m + cc1h
-		if total > 0 {
-			usage.CacheCreationInputTokens = int(total)
-		}
-	}
+	parseSSEUsagePassthrough(data, usage)
 }
 
 func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 	usage := &ClaudeUsage{}
-	if len(body) == 0 {
-		return usage
+	if gjson.ValidBytes(body) {
+		mergeSSEUsagePatch(usage, anthropicUsagePatchFromNode(gjson.GetBytes(body, "usage"), true))
+		imageOutput, _, invalid := usageCount(gjson.GetBytes(body, "usage.image_output_tokens"))
+		usage.ImageOutputTokens = imageOutput
+		usage.usageInvalid = usage.usageInvalid || invalid
 	}
-
-	parsed := gjson.ParseBytes(body)
-	usageNode := parsed.Get("usage")
-	if !usageNode.Exists() {
-		return usage
-	}
-
-	usage.InputTokens = int(usageNode.Get("input_tokens").Int())
-	usage.OutputTokens = int(usageNode.Get("output_tokens").Int())
-	usage.CacheCreationInputTokens = int(usageNode.Get("cache_creation_input_tokens").Int())
-	usage.CacheReadInputTokens = int(usageNode.Get("cache_read_input_tokens").Int())
-
-	cc5m := usageNode.Get("cache_creation.ephemeral_5m_input_tokens").Int()
-	cc1h := usageNode.Get("cache_creation.ephemeral_1h_input_tokens").Int()
-	if cc5m > 0 || cc1h > 0 {
-		usage.CacheCreation5mTokens = int(cc5m)
-		usage.CacheCreation1hTokens = int(cc1h)
-	}
-	if usage.CacheCreationInputTokens == 0 && (cc5m > 0 || cc1h > 0) {
-		usage.CacheCreationInputTokens = int(cc5m + cc1h)
-	}
-	if usage.CacheReadInputTokens == 0 {
-		if cached := usageNode.Get("cached_tokens").Int(); cached > 0 {
-			usage.CacheReadInputTokens = int(cached)
-		}
-	}
-	normalizeAnthropicCompatiblePromptUsage(usageNode, usage)
 	return usage
 }
 
@@ -10248,7 +10163,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		var event map[string]any
-		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(dataLine))
+		decoder.UseNumber()
+		if err := decoder.Decode(&event); err != nil {
 			// JSON 解析失败，直接透传原始数据
 			block := ""
 			if eventName != "" {
@@ -10259,6 +10176,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		eventType, _ := event["type"].(string)
+		usagePatch := s.extractSSEUsagePatch(event)
 		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 			observer.ObserveAnthropic([]byte(dataLine))
 		}
@@ -10342,7 +10260,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			}
 		}
 
-		usagePatch := s.extractSSEUsagePatch(event)
 		if anthropicStreamEventIsTerminal(eventName, dataLine) {
 			sawTerminalEvent = true
 		}
@@ -10443,6 +10360,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					}
 					return nil, err
 				}
+				// Account for the observed upstream frame even if writing this
+				// particular frame is how we discover the client disconnected.
+				mergeSSEUsagePatch(usage, usagePatch)
 
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
@@ -10456,14 +10376,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						lastDataAt = time.Now()
 						resetKeepaliveTimer()
 					}
-					if data != "" {
-						if firstTokenMs == nil && data != "[DONE]" {
-							ms := int(time.Since(startTime).Milliseconds())
-							firstTokenMs = &ms
-						}
-						if usagePatch != nil {
-							mergeSSEUsagePatch(usage, usagePatch)
-						}
+					if firstTokenMs == nil && data != "" && data != "[DONE]" {
+						ms := int(time.Since(startTime).Milliseconds())
+						firstTokenMs = &ms
 					}
 				}
 				continue
@@ -10515,21 +10430,13 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 }
 
 func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
-	if usage == nil {
-		return
-	}
-
-	var event map[string]any
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return
-	}
-
-	if patch := s.extractSSEUsagePatch(event); patch != nil {
-		mergeSSEUsagePatch(usage, patch)
-	}
+	parseSSEUsagePassthrough(data, usage)
 }
 
 type sseUsagePatch struct {
+	invalid                  bool
+	promptTokens             int
+	promptCacheMissTokens    *int
 	inputTokens              int
 	hasInputTokens           bool
 	outputTokens             int
@@ -10545,81 +10452,21 @@ type sseUsagePatch struct {
 }
 
 func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePatch {
-	if len(event) == 0 {
-		return nil
-	}
-
 	eventType, _ := event["type"].(string)
+	var node map[string]any
 	switch eventType {
 	case "message_start":
 		msg, _ := event["message"].(map[string]any)
-		usageObj, _ := msg["usage"].(map[string]any)
-		if len(usageObj) == 0 {
-			return nil
-		}
-
-		patch := &sseUsagePatch{}
-		patch.hasInputTokens = true
-		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok {
-			patch.inputTokens = v
-		}
-		patch.hasCacheCreationInput = true
-		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok {
-			patch.cacheCreationInputTokens = v
-		}
-		patch.hasCacheReadInput = true
-		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok {
-			patch.cacheReadInputTokens = v
-		}
-		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
-			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists {
-				patch.cacheCreation5mTokens = v
-				patch.hasCacheCreation5m = true
-			}
-			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists {
-				patch.cacheCreation1hTokens = v
-				patch.hasCacheCreation1h = true
-			}
-		}
-		return patch
-
+		node, _ = msg["usage"].(map[string]any)
 	case "message_delta":
-		usageObj, _ := event["usage"].(map[string]any)
-		if len(usageObj) == 0 {
-			return nil
-		}
-
-		patch := &sseUsagePatch{}
-		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok && v > 0 {
-			patch.inputTokens = v
-			patch.hasInputTokens = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["output_tokens"]); ok && v > 0 {
-			patch.outputTokens = v
-			patch.hasOutputTokens = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok && v > 0 {
-			patch.cacheCreationInputTokens = v
-			patch.hasCacheCreationInput = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok && v > 0 {
-			patch.cacheReadInputTokens = v
-			patch.hasCacheReadInput = true
-		}
-		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
-			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists && v > 0 {
-				patch.cacheCreation5mTokens = v
-				patch.hasCacheCreation5m = true
-			}
-			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists && v > 0 {
-				patch.cacheCreation1hTokens = v
-				patch.hasCacheCreation1h = true
-			}
-		}
-		return patch
+		node, _ = event["usage"].(map[string]any)
+	default:
+		return nil
 	}
-
-	return nil
+	if len(node) == 0 {
+		return nil
+	}
+	return anthropicUsagePatchFromMap(node, eventType == "message_start")
 }
 
 func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
@@ -10627,13 +10474,16 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 		return
 	}
 
+	usage.usageInvalid = usage.usageInvalid || patch.invalid
 	if patch.hasInputTokens {
 		usage.InputTokens = patch.inputTokens
 	}
-	if patch.hasCacheCreationInput {
+	if patch.hasCacheCreationInput && (patch.cacheCreationInputTokens > 0 || usage.CacheCreationInputTokens <= 0) {
 		usage.CacheCreationInputTokens = patch.cacheCreationInputTokens
+		usage.cacheCreationInputTokensPresent = true
+		usage.cacheCreationInputTokensFromDetails = false
 	}
-	if patch.hasCacheReadInput {
+	if patch.hasCacheReadInput && (patch.cacheReadInputTokens > 0 || usage.CacheReadInputTokens <= 0) {
 		usage.CacheReadInputTokens = patch.cacheReadInputTokens
 	}
 	if patch.hasOutputTokens {
@@ -10645,34 +10495,16 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 	if patch.hasCacheCreation1h {
 		usage.CacheCreation1hTokens = patch.cacheCreation1hTokens
 	}
+	if (!usage.cacheCreationInputTokensPresent || usage.cacheCreationInputTokensFromDetails || usage.CacheCreationInputTokens <= 0) && (patch.hasCacheCreation5m || patch.hasCacheCreation1h) {
+		total, invalid := sumUsageCounts(usage.CacheCreation5mTokens, usage.CacheCreation1hTokens)
+		usage.CacheCreationInputTokens = total
+		usage.usageInvalid = usage.usageInvalid || invalid
+		usage.cacheCreationInputTokensFromDetails = true
+	}
+	normalizeAnthropicPromptTotal(usage, patch.promptTokens, patch.promptCacheMissTokens)
 }
 
-func parseSSEUsageInt(value any) (int, bool) {
-	switch v := value.(type) {
-	case float64:
-		return int(v), true
-	case float32:
-		return int(v), true
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case int32:
-		return int(v), true
-	case json.Number:
-		if i, err := v.Int64(); err == nil {
-			return int(i), true
-		}
-		if f, err := v.Float64(); err == nil {
-			return int(f), true
-		}
-	case string:
-		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return parsed, true
-		}
-	}
-	return 0, false
-}
+func parseSSEUsageInt(value any) (int, bool) { return usagetokens.Parse(value) }
 
 // applyCacheTTLOverride 将所有 cache creation tokens 归入指定的 TTL 类型。
 // target 为 "5m" 或 "1h"。返回 true 表示发生了变更。
@@ -10682,19 +10514,27 @@ func applyCacheTTLOverride(usage *ClaudeUsage, target string) bool {
 		usage.CacheCreation5mTokens = usage.CacheCreationInputTokens
 	}
 
-	total := usage.CacheCreation5mTokens + usage.CacheCreation1hTokens
+	total := usage.CacheCreationInputTokens
+	if total <= 0 {
+		var invalid bool
+		total, invalid = sumUsageCounts(usage.CacheCreation5mTokens, usage.CacheCreation1hTokens)
+		if invalid {
+			usage.usageInvalid = true
+			return false
+		}
+	}
 	if total == 0 {
 		return false
 	}
 	switch target {
 	case "1h":
-		if usage.CacheCreation1hTokens == total {
+		if usage.CacheCreation1hTokens == total && usage.CacheCreation5mTokens == 0 {
 			return false // 已经全是 1h
 		}
 		usage.CacheCreation1hTokens = total
 		usage.CacheCreation5mTokens = 0
 	default: // "5m"
-		if usage.CacheCreation5mTokens == total {
+		if usage.CacheCreation5mTokens == total && usage.CacheCreation1hTokens == 0 {
 			return false // 已经全是 5m
 		}
 		usage.CacheCreation5mTokens = total
@@ -10712,22 +10552,28 @@ func rewriteCacheCreationJSON(usageObj map[string]any, target string) bool {
 	}
 	v5m, _ := parseSSEUsageInt(ccObj["ephemeral_5m_input_tokens"])
 	v1h, _ := parseSSEUsageInt(ccObj["ephemeral_1h_input_tokens"])
-	total := v5m + v1h
+	total, invalid := sumUsageCounts(v5m, v1h)
+	if aggregate, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok && aggregate > 0 {
+		total, invalid = aggregate, false
+	}
+	if invalid {
+		return false
+	}
 	if total == 0 {
 		return false
 	}
 	switch target {
 	case "1h":
-		if v1h == total {
+		if v1h == total && v5m == 0 {
 			return false
 		}
-		ccObj["ephemeral_1h_input_tokens"] = float64(total)
+		ccObj["ephemeral_1h_input_tokens"] = total
 		ccObj["ephemeral_5m_input_tokens"] = float64(0)
 	default: // "5m"
-		if v5m == total {
+		if v5m == total && v1h == 0 {
 			return false
 		}
-		ccObj["ephemeral_5m_input_tokens"] = float64(total)
+		ccObj["ephemeral_5m_input_tokens"] = total
 		ccObj["ephemeral_1h_input_tokens"] = float64(0)
 	}
 	return true
@@ -10761,30 +10607,18 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, mappedModel)
 	}
 
-	// 解析usage
-	var response struct {
-		Usage ClaudeUsage `json:"usage"`
+	if !gjson.ValidBytes(body) {
+		return nil, errors.New("parse response: invalid JSON")
 	}
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+	if node := gjson.GetBytes(body, "usage"); node.Exists() && node.Type != gjson.Null && !node.IsObject() {
+		return nil, errors.New("parse response: invalid usage object")
 	}
-
-	// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
-	cc5m := gjson.GetBytes(body, "usage.cache_creation.ephemeral_5m_input_tokens")
-	cc1h := gjson.GetBytes(body, "usage.cache_creation.ephemeral_1h_input_tokens")
-	if cc5m.Exists() || cc1h.Exists() {
-		response.Usage.CacheCreation5mTokens = int(cc5m.Int())
-		response.Usage.CacheCreation1hTokens = int(cc1h.Int())
-	}
-
-	// 兼容 Kimi cached_tokens → cache_read_input_tokens
-	if response.Usage.CacheReadInputTokens == 0 {
-		cachedTokens := gjson.GetBytes(body, "usage.cached_tokens").Int()
-		if cachedTokens > 0 {
-			response.Usage.CacheReadInputTokens = int(cachedTokens)
-			if newBody, err := sjson.SetBytes(body, "usage.cache_read_input_tokens", cachedTokens); err == nil {
-				body = newBody
-			}
+	response := struct{ Usage ClaudeUsage }{Usage: *parseClaudeUsageFromResponseBody(body)}
+	// Preserve the existing Kimi compatibility rewrite only when the canonical
+	// field is absent; an explicit zero must remain authoritative.
+	if !gjson.GetBytes(body, "usage.cache_read_input_tokens").Exists() && response.Usage.CacheReadInputTokens > 0 {
+		if newBody, err := sjson.SetBytes(body, "usage.cache_read_input_tokens", response.Usage.CacheReadInputTokens); err == nil {
+			body = newBody
 		}
 	}
 
@@ -11468,6 +11302,12 @@ type recordUsageCoreInput struct {
 // - LongContextThreshold > 0 → Token 计费回退走 CalculateCostWithLongContext
 func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsageCoreInput, opts *recordUsageOpts) error {
 	result := input.Result
+	if result.Usage.usageInvalid {
+		return errors.New("invalid provider usage: token count or aggregate overflow")
+	}
+	if _, valid := usagetokens.Add(result.Usage.InputTokens, result.Usage.CacheReadInputTokens, result.Usage.CacheCreationInputTokens, result.Usage.OutputTokens); !valid {
+		return errors.New("invalid provider usage: token count is negative or aggregate overflows")
+	}
 	apiKey := input.APIKey
 	user := input.User
 	account := input.Account
@@ -11487,7 +11327,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
 		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (account=%d)",
 			result.Usage.InputTokens, account.ID)
-		result.Usage.CacheReadInputTokens += result.Usage.InputTokens
+		combined, valid := usagetokens.Add(result.Usage.CacheReadInputTokens, result.Usage.InputTokens)
+		if !valid {
+			return errors.New("invalid provider usage: forced cache token count overflow")
+		}
+		result.Usage.CacheReadInputTokens = combined
 		result.Usage.InputTokens = 0
 	}
 
@@ -11496,7 +11340,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	cacheTTLOverridden := false
 	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
 		applyCacheTTLOverride(&result.Usage, overrideTarget)
-		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
+		cacheTTLOverridden = result.Usage.CacheCreation5mTokens > 0 || result.Usage.CacheCreation1hTokens > 0
 	}
 
 	// 获取费率倍数（优先级：用户专属 > 分组默认 > 系统默认）
@@ -12886,12 +12730,11 @@ func reconcileCachedTokens(usage map[string]any) bool {
 	if usage == nil {
 		return false
 	}
-	cacheRead, _ := usage["cache_read_input_tokens"].(float64)
-	if cacheRead > 0 {
-		return false // 已有标准字段，无需处理
+	if _, valid := parseSSEUsageInt(usage["cache_read_input_tokens"]); valid {
+		return false
 	}
-	cached, _ := usage["cached_tokens"].(float64)
-	if cached <= 0 {
+	cached, valid := parseSSEUsageInt(usage["cached_tokens"])
+	if !valid || cached <= 0 {
 		return false
 	}
 	usage["cache_read_input_tokens"] = cached

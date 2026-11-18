@@ -57,6 +57,9 @@ func canonicalizeOpenAIModelAliasSpelling(model string) string {
 }
 
 func normalizeKnownOpenAICodexModel(model string) string {
+	if id := openai.GPT62ModelID(model); id != "" {
+		return id
+	}
 	if canonical := openai.CanonicalGPT6SolLunaModel(model); canonical != "" {
 		return canonical
 	}

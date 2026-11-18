@@ -31,6 +31,9 @@ func validateGPT61SolRequestBody(body []byte, modelCandidates ...string) error {
 		if strings.TrimSpace(model) == "" {
 			continue
 		}
+		if err := openai.ValidateGPT62ModelRequest(model, effort); err != nil {
+			return err
+		}
 		if err := openai.ValidateGPT61SolModelRequest(model, effort); err != nil {
 			return err
 		}
@@ -42,6 +45,9 @@ func validateGPT61SolRequestBody(body []byte, modelCandidates ...string) error {
 }
 
 func NormalizeOpenAICompatRequestedModel(model string) string {
+	if id := openai.GPT62ModelID(model); id != "" {
+		return id
+	}
 	if openai.IsGPT61TerraModelSpelling(model) {
 		return "gpt-6.1-terra"
 	}
@@ -70,7 +76,7 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 		return
 	}
 
-	if openai.IsGPT61TerraModelSpelling(originalModel) {
+	if openai.GPT62ModelID(originalModel) != "" || openai.IsGPT61TerraModelSpelling(originalModel) {
 		req.Model = NormalizeOpenAICompatRequestedModel(originalModel)
 		if req.OutputConfig == nil || strings.TrimSpace(req.OutputConfig.Effort) == "" {
 			_, effort, ok := splitOpenAICompatReasoningModel(originalModel)
@@ -104,6 +110,10 @@ func applyOpenAICompatModelNormalization(req *apicompat.AnthropicRequest) {
 }
 
 func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reasoningEffort string, ok bool) {
+	if id := openai.GPT62ModelID(model); id != "" {
+		effort := openai.GPT62AliasEffort(model)
+		return id, effort, effort != ""
+	}
 	if openai.IsGPT61TerraModelSpelling(model) {
 		id := canonicalizeOpenAIModelAliasSpelling(model)
 		effort, suffix := strings.CutPrefix(id, "gpt-6.1-terra-")
@@ -192,7 +202,7 @@ func preserveOpenAIMessagesDisabledThinking(out *apicompat.ResponsesRequest, sou
 		return
 	}
 	for _, model := range models {
-		if openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model) {
+		if openai.GPT62ModelID(model) != "" || openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model) {
 			out.Reasoning.Effort = "none"
 			out.Temperature, out.TopP = source.Temperature, source.TopP
 			return

@@ -27,6 +27,8 @@ var DefaultModels = []Model{
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
 	{ID: "gpt-6.1-terra", Object: "model", Created: 1792972800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
 	{ID: "gpt-6.1-sol", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
+	{ID: "gpt-6.2-sol", Object: "model", Created: 1794873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.2 Sol"},
+	{ID: "gpt-6.2-astra", Object: "model", Created: 1794873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.2 Astra"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-6", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 (Astra)"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
@@ -91,6 +93,12 @@ func latestCodexInstructions() string {
 //
 // 任一专用 prompt 意外为空时回退链最终落到 DefaultInstructions，保证返回非空。
 func CodexBaseInstructionsForModel(model string) string {
+	switch GPT62ModelID(model) {
+	case "gpt-6.2-sol":
+		return instructionsGPT62Sol
+	case "gpt-6.2-astra":
+		return instructionsGPT62Astra
+	}
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
 	case strings.Contains(m, "codex"):
@@ -128,7 +136,7 @@ func IsGPT61TerraModelSpelling(model string) bool {
 }
 
 func RequiresResponsesForToolCalls(model string) bool {
-	return IsGPT61TerraModelSpelling(model) || IsGPT61SolModelSpelling(model)
+	return GPT62ModelID(model) != "" || IsGPT61TerraModelSpelling(model) || IsGPT61SolModelSpelling(model)
 }
 
 func IsGPT61SolModelSpelling(model string) bool {

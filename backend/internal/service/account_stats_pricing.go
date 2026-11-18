@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 )
 
 // resolveAccountStatsCost 计算账号统计定价费用。
@@ -230,7 +232,10 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 	p := pricing
 	var inputMultiplier, outputMultiplier, cacheWriteMultiplier, cacheReadMultiplier *float64
 	if len(pricing.Intervals) > 0 {
-		totalTokens := tokens.InputTokens + tokens.OutputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
+		totalTokens, valid := usagetokens.Add(tokens.InputTokens, tokens.OutputTokens, tokens.CacheCreationTokens, tokens.CacheReadTokens)
+		if !valid {
+			return nil
+		}
 		if iv := FindMatchingInterval(pricing.Intervals, totalTokens); iv != nil {
 			p = &ChannelModelPricing{
 				InputPrice:        iv.InputPrice,
@@ -262,10 +267,7 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 	}
 	cacheWritePrice := deref(p.CacheWritePrice)
 	cacheWrite1hPrice := deref(p.CacheWrite1hPrice)
-	cacheCreation5m, cacheCreation1h := tokens.CacheCreation5mTokens, tokens.CacheCreation1hTokens
-	if cacheCreation5m == 0 && cacheCreation1h == 0 && tokens.CacheCreationTokens > 0 {
-		cacheCreation5m = tokens.CacheCreationTokens
-	}
+	cacheCreation5m, cacheCreation1h := normalizeCacheCreationBreakdown(tokens)
 	if p.CacheWritePrice == nil && cacheWriteMultiplier != nil {
 		cacheWritePrice = deref(pricing.CacheWritePrice) * *cacheWriteMultiplier
 	}

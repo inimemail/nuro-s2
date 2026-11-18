@@ -69,7 +69,7 @@ func (s *OpenAIGatewayService) openAICacheCreationPricingForContext(ctx context.
 	if len(upstreamModels) > 0 && strings.TrimSpace(upstreamModels[0]) != "" {
 		upstreamModel = upstreamModels[0]
 	}
-	longEnabled := account.IsOpenAILongContextBillingEnabled() && (group == nil || group.LongContextPricingEnabled) && !(account.IsOpenAIOAuthLike() && openai.IsGPT61SolModelSpelling(upstreamModel))
+	longEnabled := account.IsOpenAILongContextBillingEnabled() && (group == nil || group.LongContextPricingEnabled) && !(account.IsOpenAIOAuthLike() && (openai.GPT62ModelID(upstreamModel) != "" || openai.IsGPT61SolModelSpelling(upstreamModel)))
 	policy := openAICacheCreationPricingSnapshot(resolved.BasePricing, longEnabled && len(resolved.Intervals) == 0)
 	if len(resolved.Intervals) == 0 {
 		return policy

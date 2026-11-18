@@ -143,75 +143,22 @@ func invalidNonStreamingJSONFailoverError(
 // parseSSEUsagePassthrough normalizes native Anthropic fields and the aliases
 // returned by Kimi-compatible endpoints into mutually exclusive buckets.
 func parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
-	if usage == nil || data == "" || data == "[DONE]" {
+	if usage == nil || !gjson.Valid(data) {
 		return
 	}
 	parsed := gjson.Parse(data)
-	usageNode := parsed.Get("usage")
-	if parsed.Get("type").String() == "message_start" {
-		usageNode = parsed.Get("message.usage")
-	}
-	if !usageNode.Exists() {
-		return
-	}
-	if parsed.Get("type").String() == "message_start" {
-		usage.InputTokens = int(usageNode.Get("input_tokens").Int())
-		usage.CacheCreationInputTokens = int(usageNode.Get("cache_creation_input_tokens").Int())
-		usage.CacheReadInputTokens = int(usageNode.Get("cache_read_input_tokens").Int())
-	} else if parsed.Get("type").String() == "message_delta" {
-		if value := usageNode.Get("input_tokens").Int(); value > 0 {
-			usage.InputTokens = int(value)
-		}
-		if value := usageNode.Get("output_tokens").Int(); value > 0 {
-			usage.OutputTokens = int(value)
-		}
-		if value := usageNode.Get("cache_creation_input_tokens").Int(); value > 0 {
-			usage.CacheCreationInputTokens = int(value)
-		}
-		if value := usageNode.Get("cache_read_input_tokens").Int(); value > 0 {
-			usage.CacheReadInputTokens = int(value)
+	switch parsed.Get("type").String() {
+	case "message_start":
+		mergeSSEUsagePatch(usage, anthropicUsagePatchFromNode(parsed.Get("message.usage"), true))
+	case "message_delta":
+		mergeSSEUsagePatch(usage, anthropicUsagePatchFromNode(parsed.Get("usage"), false))
+	default:
+		patch := anthropicUsagePatchFromNode(parsed.Get("usage"), false)
+		if patch != nil {
+			patch.hasInputTokens, patch.hasOutputTokens = false, false
+			mergeSSEUsagePatch(usage, patch)
 		}
 	}
-	cc5m := int(usageNode.Get("cache_creation.ephemeral_5m_input_tokens").Int())
-	cc1h := int(usageNode.Get("cache_creation.ephemeral_1h_input_tokens").Int())
-	if cc5m > 0 || cc1h > 0 {
-		usage.CacheCreation5mTokens = cc5m
-		usage.CacheCreation1hTokens = cc1h
-		if usage.CacheCreationInputTokens == 0 {
-			usage.CacheCreationInputTokens = cc5m + cc1h
-		}
-	}
-	normalizeAnthropicCompatiblePromptUsage(usageNode, usage)
-}
-
-func normalizeAnthropicCompatiblePromptUsage(node gjson.Result, usage *ClaudeUsage) bool {
-	if usage == nil || !node.Exists() {
-		return false
-	}
-	prompt := node.Get("prompt_tokens")
-	hit := node.Get("prompt_cache_hit_tokens")
-	miss := node.Get("prompt_cache_miss_tokens")
-	if (!prompt.Exists() || prompt.Int() <= 0) && !hit.Exists() && !miss.Exists() {
-		return false
-	}
-	cacheRead := usage.CacheReadInputTokens
-	for _, path := range []string{"cache_read_input_tokens", "cached_tokens", "prompt_tokens_details.cached_tokens"} {
-		if value := node.Get(path); cacheRead == 0 && value.Exists() {
-			cacheRead = max(int(value.Int()), 0)
-		}
-	}
-	if cacheRead == 0 && hit.Exists() {
-		cacheRead = max(int(hit.Int()), 0)
-	}
-	cacheCreation := usage.CacheCreationInputTokens
-	if miss.Exists() {
-		usage.InputTokens = max(int(miss.Int()), 0)
-	} else {
-		usage.InputTokens = max(int(prompt.Int())-cacheRead-cacheCreation, 0)
-	}
-	usage.CacheReadInputTokens = cacheRead
-	usage.CacheCreationInputTokens = cacheCreation
-	return true
 }
 
 func buildOpenAIResponsesURLForPlatform(platform string, base string) string {

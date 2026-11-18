@@ -7,6 +7,8 @@ package apicompat
 import (
 	"bytes"
 	"encoding/json"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,12 +153,179 @@ func AnthropicStopReasonPtr(value string) *string {
 	return &value
 }
 
+// AnthropicPromptTokensDetails holds OpenAI-compatible prompt token details
+// occasionally included by Anthropic-compatible providers.
+type AnthropicPromptTokensDetails struct {
+	CachedTokens        int  `json:"cached_tokens,omitempty"`
+	CachedTokensPresent bool `json:"-"`
+	invalid             bool
+}
+
+func (details *AnthropicPromptTokensDetails) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		CachedTokens anthropicUsageCount `json:"cached_tokens"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*details = AnthropicPromptTokensDetails{
+		CachedTokens:        decoded.CachedTokens.value,
+		CachedTokensPresent: decoded.CachedTokens.present,
+		invalid:             decoded.CachedTokens.invalid,
+	}
+	return nil
+}
+
+func (details AnthropicPromptTokensDetails) MarshalJSON() ([]byte, error) {
+	var cachedTokens *int
+	if details.CachedTokensPresent || details.CachedTokens != 0 {
+		cachedTokens = &details.CachedTokens
+	}
+	return json.Marshal(struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+	}{CachedTokens: cachedTokens})
+}
+
+// AnthropicCacheCreation holds Anthropic's cache creation TTL breakdown.
+// Pointers preserve the distinction between an omitted field and an explicit
+// zero in streaming usage events.
+type AnthropicCacheCreation struct {
+	Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens,omitempty"`
+}
+
 // AnthropicUsage holds token counts in Anthropic format.
 type AnthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	InputTokens              int                     `json:"input_tokens"`
+	OutputTokens             int                     `json:"output_tokens"`
+	CacheCreationInputTokens int                     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                     `json:"cache_read_input_tokens"`
+	CacheCreation            *AnthropicCacheCreation `json:"cache_creation,omitempty"`
+	// Anthropic-compatible providers can also expose their native OpenAI-style
+	// total/cache fields. Preserve them so callers can normalize provider totals
+	// into Anthropic's mutually-exclusive billing buckets.
+	PromptTokens          int                           `json:"prompt_tokens,omitempty"`
+	CachedTokens          int                           `json:"cached_tokens,omitempty"`
+	PromptTokensDetails   *AnthropicPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens  *int                          `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int                          `json:"prompt_cache_miss_tokens,omitempty"`
+
+	// Presence distinguishes explicit zero from missing/null; TTL details remain raw.
+	CacheCreationInputTokensPresent bool `json:"-"`
+	CacheReadInputTokensPresent     bool `json:"-"`
+	CachedTokensPresent             bool `json:"-"`
+	UsageInvalid                    bool `json:"-"`
+}
+
+// Decode a provider count independently so malformed usage cannot discard the
+// complete event, including valid counts, content or the stop reason.
+type anthropicUsageCount struct {
+	value   int
+	present bool
+	invalid bool
+}
+
+func (count *anthropicUsageCount) UnmarshalJSON(data []byte) error {
+	*count = anthropicUsageCount{}
+	if bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+	var value any = json.Number(data)
+	if len(data) > 0 && data[0] == '"' {
+		var decoded string
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		value = decoded
+	}
+	count.value, count.present = usagetokens.Parse(value)
+	count.invalid = !count.present
+	if count.invalid {
+		count.value = 0
+	}
+	return nil
+}
+
+func (count anthropicUsageCount) pointer() *int {
+	if !count.present {
+		return nil
+	}
+	return &count.value
+}
+
+func (usage *AnthropicUsage) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		InputTokens              anthropicUsageCount `json:"input_tokens"`
+		OutputTokens             anthropicUsageCount `json:"output_tokens"`
+		CacheCreationInputTokens anthropicUsageCount `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     anthropicUsageCount `json:"cache_read_input_tokens"`
+		CacheCreation            *struct {
+			Ephemeral5mInputTokens anthropicUsageCount `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens anthropicUsageCount `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		PromptTokens          anthropicUsageCount           `json:"prompt_tokens"`
+		CachedTokens          anthropicUsageCount           `json:"cached_tokens"`
+		PromptTokensDetails   *AnthropicPromptTokensDetails `json:"prompt_tokens_details"`
+		PromptCacheHitTokens  anthropicUsageCount           `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens anthropicUsageCount           `json:"prompt_cache_miss_tokens"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*usage = AnthropicUsage{
+		InputTokens:                     decoded.InputTokens.value,
+		OutputTokens:                    decoded.OutputTokens.value,
+		CacheCreationInputTokens:        decoded.CacheCreationInputTokens.value,
+		CacheReadInputTokens:            decoded.CacheReadInputTokens.value,
+		PromptTokens:                    decoded.PromptTokens.value,
+		CachedTokens:                    decoded.CachedTokens.value,
+		PromptTokensDetails:             decoded.PromptTokensDetails,
+		PromptCacheHitTokens:            decoded.PromptCacheHitTokens.pointer(),
+		PromptCacheMissTokens:           decoded.PromptCacheMissTokens.pointer(),
+		CacheCreationInputTokensPresent: decoded.CacheCreationInputTokens.present,
+		CacheReadInputTokensPresent:     decoded.CacheReadInputTokens.present,
+		CachedTokensPresent:             decoded.CachedTokens.present,
+		UsageInvalid: decoded.InputTokens.invalid || decoded.OutputTokens.invalid || decoded.CacheCreationInputTokens.invalid ||
+			decoded.CacheReadInputTokens.invalid || decoded.PromptTokens.invalid || decoded.CachedTokens.invalid ||
+			decoded.PromptCacheHitTokens.invalid || decoded.PromptCacheMissTokens.invalid,
+	}
+	if details := decoded.PromptTokensDetails; details != nil {
+		usage.UsageInvalid = usage.UsageInvalid || details.invalid
+	}
+	if details := decoded.CacheCreation; details != nil {
+		usage.CacheCreation = &AnthropicCacheCreation{
+			Ephemeral5mInputTokens: details.Ephemeral5mInputTokens.pointer(),
+			Ephemeral1hInputTokens: details.Ephemeral1hInputTokens.pointer(),
+		}
+		usage.UsageInvalid = usage.UsageInvalid || details.Ephemeral5mInputTokens.invalid || details.Ephemeral1hInputTokens.invalid
+	}
+	return nil
+}
+
+func (usage AnthropicUsage) HasCacheCreationInputTokens() bool {
+	return usage.CacheCreationInputTokensPresent || usage.CacheCreationInputTokens != 0
+}
+
+// MarshalJSON preserves aggregate presence and raw TTL details without deriving totals.
+func (usage AnthropicUsage) MarshalJSON() ([]byte, error) {
+	type usageAlias AnthropicUsage
+	var aggregate *int
+	if usage.HasCacheCreationInputTokens() {
+		aggregate = &usage.CacheCreationInputTokens
+	}
+	var cacheReadTokens, cachedTokens *int
+	if usage.CacheReadInputTokensPresent || usage.CacheReadInputTokens != 0 {
+		cacheReadTokens = &usage.CacheReadInputTokens
+	}
+	if usage.CachedTokensPresent || usage.CachedTokens != 0 {
+		cachedTokens = &usage.CachedTokens
+	}
+	return json.Marshal(struct {
+		usageAlias
+		CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+		CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+		CachedTokens             *int `json:"cached_tokens,omitempty"`
+	}{usageAlias: usageAlias(usage), CacheCreationInputTokens: aggregate, CacheReadInputTokens: cacheReadTokens, CachedTokens: cachedTokens})
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +1004,46 @@ type ChatTokenDetails struct {
 	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
 	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
 	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+	cacheWriteTokensPresent  bool
+}
+
+func (details *ChatTokenDetails) UnmarshalJSON(data []byte) error {
+	type detailsAlias ChatTokenDetails
+	var decoded struct {
+		detailsAlias
+		CacheWriteTokens *int `json:"cache_write_tokens"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*details = ChatTokenDetails(decoded.detailsAlias)
+	if decoded.CacheWriteTokens != nil {
+		details.CacheWriteTokens = *decoded.CacheWriteTokens
+		details.cacheWriteTokensPresent = true
+	}
+	return nil
+}
+
+func (details ChatTokenDetails) MarshalJSON() ([]byte, error) {
+	type detailsAlias ChatTokenDetails
+	var cacheWriteTokens *int
+	if details.cacheWriteTokensPresent || details.CacheWriteTokens != 0 {
+		cacheWriteTokens = &details.CacheWriteTokens
+	}
+	return json.Marshal(struct {
+		detailsAlias
+		CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+	}{detailsAlias: detailsAlias(details), CacheWriteTokens: cacheWriteTokens})
+}
+
+func (details *ChatTokenDetails) cacheCreationInputTokens() int {
+	if details == nil {
+		return 0
+	}
+	if details.cacheWriteTokensPresent || details.CacheWriteTokens > 0 {
+		return max(details.CacheWriteTokens, 0)
+	}
+	return max(details.CacheCreationTokens, 0)
 }
 
 // ChatCompletionsChunk is a single streaming chunk from POST /v1/chat/completions.

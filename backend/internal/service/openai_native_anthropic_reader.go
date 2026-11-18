@@ -238,6 +238,6 @@ func (s *OpenAIGatewayService) readNativeAnthropicResponse(resp *http.Response) 
 			return nil, usage, errors.New("invalid upstream Anthropic tool arguments")
 		}
 	}
-	result.Usage = apicompat.AnthropicUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens}
+	normalizeAnthropicEventUsageForResponses(&apicompat.AnthropicStreamEvent{Message: result}, usage)
 	return result, usage, nil
 }

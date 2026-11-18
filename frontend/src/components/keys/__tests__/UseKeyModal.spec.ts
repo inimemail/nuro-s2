@@ -256,5 +256,16 @@ goals = true`)
     expect(codeBlock.exists()).toBe(true)
     expect(codeBlock.text()).toContain('"name": "GPT-5.4 Mini"')
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
+    const config = JSON.parse(codeBlock.text())
+    const models = config.provider.openai.models
+    expect(Object.keys(models).slice(0, 4)).toEqual(['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6.2-sol', 'gpt-6.2-astra'])
+    for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
+      expect(models[id].limit).toEqual({ context: 1050000, output: 128000 })
+      expect(models[id].options.store).toBe(false)
+      expect(Object.keys(models[id].variants)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    }
+    models['gpt-6.2-sol'].variants.low.changed = true
+    expect(models['gpt-6.2-astra'].variants.low).toEqual({})
+
   })
 })

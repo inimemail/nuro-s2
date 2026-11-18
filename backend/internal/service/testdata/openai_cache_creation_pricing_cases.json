@@ -666,5 +666,263 @@
       20
     ],
     "applied": false
+  },
+  {
+    "ordinary": 262000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 2000000000,
+        "read": 100000000,
+        "creation": 2500000000,
+        "output": 10000000000
+      },
+      "priority": {
+        "input": 4000000000,
+        "read": 200000000,
+        "creation": 5000000000,
+        "output": 20000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_sol_api_at_threshold",
+    "want": [
+      262000,
+      8000,
+      2000,
+      1000
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 262001,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 2000000000,
+        "read": 100000000,
+        "creation": 2500000000,
+        "output": 10000000000
+      },
+      "priority": {
+        "input": 4000000000,
+        "read": 200000000,
+        "creation": 5000000000,
+        "output": 20000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_sol_api_above_threshold",
+    "want": [
+      264421,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 290000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 2000000000,
+        "read": 100000000,
+        "creation": 2500000000,
+        "output": 10000000000
+      },
+      "priority": {
+        "input": 4000000000,
+        "read": 200000000,
+        "creation": 5000000000,
+        "output": 20000000000
+      }
+    },
+    "name": "gpt62_sol_oauth_above_threshold",
+    "want": [
+      292395,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 290000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "priority",
+    "policy": {
+      "rates": {
+        "input": 2000000000,
+        "read": 100000000,
+        "creation": 2500000000,
+        "output": 10000000000
+      },
+      "priority": {
+        "input": 4000000000,
+        "read": 200000000,
+        "creation": 5000000000,
+        "output": 20000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_sol_api_priority",
+    "want": [
+      292420,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 262000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 8000000000,
+        "read": 400000000,
+        "creation": 10000000000,
+        "output": 40000000000
+      },
+      "priority": {
+        "input": 16000000000,
+        "read": 800000000,
+        "creation": 20000000000,
+        "output": 80000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_astra_api_at_threshold",
+    "want": [
+      262000,
+      8000,
+      2000,
+      1000
+    ],
+    "applied": false
+  },
+  {
+    "ordinary": 262001,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 8000000000,
+        "read": 400000000,
+        "creation": 10000000000,
+        "output": 40000000000
+      },
+      "priority": {
+        "input": 16000000000,
+        "read": 800000000,
+        "creation": 20000000000,
+        "output": 80000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_astra_api_above_threshold",
+    "want": [
+      264421,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 290000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "",
+    "policy": {
+      "rates": {
+        "input": 8000000000,
+        "read": 400000000,
+        "creation": 10000000000,
+        "output": 40000000000
+      },
+      "priority": {
+        "input": 16000000000,
+        "read": 800000000,
+        "creation": 20000000000,
+        "output": 80000000000
+      }
+    },
+    "name": "gpt62_astra_oauth_above_threshold",
+    "want": [
+      292395,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
+  },
+  {
+    "ordinary": 290000,
+    "read": 8000,
+    "creation": 2000,
+    "output": 1000,
+    "allow_output": true,
+    "tier": "priority",
+    "policy": {
+      "rates": {
+        "input": 8000000000,
+        "read": 400000000,
+        "creation": 10000000000,
+        "output": 40000000000
+      },
+      "priority": {
+        "input": 16000000000,
+        "read": 800000000,
+        "creation": 20000000000,
+        "output": 80000000000
+      },
+      "long_context_threshold": 272000,
+      "long_context_input_multiplier": 2000000,
+      "long_context_output_multiplier": 1500000
+    },
+    "name": "gpt62_astra_api_priority",
+    "want": [
+      292420,
+      8100,
+      0,
+      1020
+    ],
+    "applied": true
   }
 ]

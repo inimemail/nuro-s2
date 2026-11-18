@@ -48,6 +48,8 @@ function createStreamResponse(lines: string[]) {
     ok: true,
     body: {
       getReader: () => ({
+        cancel: vi.fn().mockResolvedValue(undefined),
+        releaseLock: vi.fn(),
         read: vi.fn().mockImplementation(async () => {
           if (index < chunks.length) {
             return { done: false, value: chunks[index++] }
@@ -113,6 +115,7 @@ describe('AccountTestModal', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
@@ -146,13 +149,15 @@ describe('AccountTestModal', () => {
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
 
-  it('OpenAI 测试模型将 GPT-6 置顶并默认选择第一项', async () => {
+  it('OpenAI 测试模型将 GPT-6.2 Sol/Astra 置顶并默认选择第一项', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gpt-5.6', display_name: 'GPT-5.6 (Sol)' },
       { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
+      { id: 'gpt-6.2-astra', display_name: 'GPT-6.2 Astra' },
       { id: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra' },
       { id: 'gpt-6-astra', display_name: 'GPT-6 Astra' },
       { id: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol' },
+      { id: 'gpt-6.2-sol', display_name: 'GPT-6.2 Sol' },
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }
     ])
 
@@ -186,6 +191,8 @@ describe('AccountTestModal', () => {
 
     const vm = wrapper.vm as any
     expect(vm.availableModels.map((model: { id: string }) => model.id)).toEqual([
+      'gpt-6.2-sol',
+      'gpt-6.2-astra',
       'gpt-6.1-sol',
       'gpt-6.1-terra',
       'gpt-6-astra',
@@ -193,7 +200,54 @@ describe('AccountTestModal', () => {
       'gpt-5.6',
       'gpt-5.4'
     ])
-    expect(vm.selectedModelId).toBe('gpt-6.1-sol')
+    expect(vm.selectedModelId).toBe('gpt-6.2-sol')
+  })
+
+  it('reads account refresh events that follow the terminal test result', async () => {
+    const updates: unknown[] = []
+    getAvailableModels.mockResolvedValue([{ id: 'gpt-6.2-sol', display_name: 'GPT-6.2 Sol' }])
+    const wrapper = mount(AccountTestModal, {
+      props: { show: false, account: { id: 42, name: 'OpenAI Test', platform: 'openai', type: 'oauth', status: 'active' } as any },
+      attrs: { onAccountUpdated: (account: unknown) => updates.push(account) },
+      global: { stubs: {
+        BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+        Select: { template: '<div class="select-stub"></div>' }, TextArea: true, Icon: true
+      } }
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response([
+      'data: {"type":"test_complete","success":true}',
+      'data: {"type":"account_updated","data":{"id":42,"status":"active"}}'
+    ].join('\n'))))
+    await wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!.trigger('click')
+    await flushPromises()
+    expect(updates).toEqual([{ id: 42, status: 'active' }])
+    expect(wrapper.text()).toContain('admin.accounts.testCompleted')
+    wrapper.unmount()
+  })
+
+  it('allows cancelling an OpenAI text test without reporting an error', async () => {
+    getAvailableModels.mockResolvedValue([{ id: 'gpt-6.2-sol', display_name: 'GPT-6.2 Sol' }])
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    })))
+    const wrapper = mount(AccountTestModal, {
+      props: { show: false, account: { id: 42, name: 'OpenAI Test', platform: 'openai', type: 'oauth', status: 'active' } as any },
+      global: { stubs: {
+        BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+        Select: { template: '<div class="select-stub"></div>' }, TextArea: true, Icon: true
+      } }
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!.trigger('click')
+    expect(wrapper.text()).toContain('admin.accounts.testing')
+    await wrapper.findAll('button').find(button => button.text().includes('common.cancel'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.testCancelled')
+    expect(wrapper.text()).not.toContain('admin.accounts.testTimedOut')
+    wrapper.unmount()
   })
 
   it('Anthropic 测试模型将 Claude Sonnet 5.5 置顶', async () => {

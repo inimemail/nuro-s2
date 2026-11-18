@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 )
 
 const (
@@ -1117,26 +1119,28 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if usage == nil {
 		return nil
 	}
+	total, valid := usagetokens.Add(usage.PromptTokens, usage.CompletionTokens)
+	if !valid || usage.TotalTokens < 0 {
+		return nil
+	}
 	out := &ResponsesUsage{
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
 	}
 	if out.TotalTokens == 0 {
-		out.TotalTokens = out.InputTokens + out.OutputTokens
+		out.TotalTokens = total
 	}
 	if usage.PromptTokensDetails != nil && (usage.PromptTokensDetails.CachedTokens > 0 ||
-		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0) {
+		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0 || usage.PromptTokensDetails.cacheWriteTokensPresent) {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
 			CachedTokens:        usage.PromptTokensDetails.CachedTokens,
 			CacheCreationTokens: usage.PromptTokensDetails.CacheCreationTokens,
 			CacheWriteTokens:    usage.PromptTokensDetails.CacheWriteTokens,
 		}
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheWriteTokens
-		} else {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
-		}
+		out.CacheCreationInputTokens = usage.PromptTokensDetails.cacheCreationInputTokens()
+		out.InputTokensDetails.CacheCreationTokens = out.CacheCreationInputTokens
+		out.InputTokensDetails.CacheWriteTokens = out.CacheCreationInputTokens
 	}
 	return out
 }

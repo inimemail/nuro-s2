@@ -4934,12 +4934,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		Duration:         duration,
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
-		Usage: ClaudeUsage{
-			InputTokens:              usage.InputTokens,
-			OutputTokens:             usage.OutputTokens,
-			CacheReadInputTokens:     usage.CacheReadInputTokens,
-			CacheCreationInputTokens: usage.CacheCreationInputTokens,
-		},
+		Usage:            *usage,
 	}, nil
 }
 
@@ -5171,79 +5166,18 @@ data: {"type":"error","error":{"type":"upstream_error","message":"Upstream reque
 // 仅读取顶层 event.usage 会漏掉 message_start 的输入侧字段，导致流式透传请求落库的
 // usage_logs 记录 input_tokens=0。
 func (s *AntigravityGatewayService) extractSSEUsage(line string, usage *ClaudeUsage) {
-	if !strings.HasPrefix(line, "data: ") {
-		return
-	}
-	dataStr := strings.TrimPrefix(line, "data: ")
-	var event map[string]any
-	if json.Unmarshal([]byte(dataStr), &event) != nil {
-		return
-	}
-	var u map[string]any
-	if eventType, _ := event["type"].(string); eventType == "message_start" {
-		if msg, ok := event["message"].(map[string]any); ok {
-			u, _ = msg["usage"].(map[string]any)
+	if data, ok := extractAnthropicSSEDataLine(line); ok && usage != nil && gjson.Valid(data) {
+		parsed := gjson.Parse(data)
+		node := parsed.Get("usage")
+		if parsed.Get("type").String() == "message_start" {
+			node = parsed.Get("message.usage")
 		}
-	} else {
-		u, _ = event["usage"].(map[string]any)
-	}
-	if u == nil {
-		return
-	}
-	if v, ok := u["input_tokens"].(float64); ok && int(v) > 0 {
-		usage.InputTokens = int(v)
-	}
-	if v, ok := u["output_tokens"].(float64); ok && int(v) > 0 {
-		usage.OutputTokens = int(v)
-	}
-	if v, ok := u["cache_read_input_tokens"].(float64); ok && int(v) > 0 {
-		usage.CacheReadInputTokens = int(v)
-	}
-	if v, ok := u["cache_creation_input_tokens"].(float64); ok && int(v) > 0 {
-		usage.CacheCreationInputTokens = int(v)
-	}
-	// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
-	if cc, ok := u["cache_creation"].(map[string]any); ok {
-		if v, ok := cc["ephemeral_5m_input_tokens"].(float64); ok {
-			usage.CacheCreation5mTokens = int(v)
-		}
-		if v, ok := cc["ephemeral_1h_input_tokens"].(float64); ok {
-			usage.CacheCreation1hTokens = int(v)
-		}
+		mergeSSEUsagePatch(usage, anthropicUsagePatchFromNode(node, parsed.Get("type").String() != "message_delta"))
 	}
 }
 
-// extractClaudeUsage 从非流式 Claude 响应提取 usage
 func (s *AntigravityGatewayService) extractClaudeUsage(body []byte) *ClaudeUsage {
-	usage := &ClaudeUsage{}
-	var resp map[string]any
-	if json.Unmarshal(body, &resp) != nil {
-		return usage
-	}
-	if u, ok := resp["usage"].(map[string]any); ok {
-		if v, ok := u["input_tokens"].(float64); ok {
-			usage.InputTokens = int(v)
-		}
-		if v, ok := u["output_tokens"].(float64); ok {
-			usage.OutputTokens = int(v)
-		}
-		if v, ok := u["cache_read_input_tokens"].(float64); ok {
-			usage.CacheReadInputTokens = int(v)
-		}
-		if v, ok := u["cache_creation_input_tokens"].(float64); ok {
-			usage.CacheCreationInputTokens = int(v)
-		}
-		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
-		if cc, ok := u["cache_creation"].(map[string]any); ok {
-			if v, ok := cc["ephemeral_5m_input_tokens"].(float64); ok {
-				usage.CacheCreation5mTokens = int(v)
-			}
-			if v, ok := cc["ephemeral_1h_input_tokens"].(float64); ok {
-				usage.CacheCreation1hTokens = int(v)
-			}
-		}
-	}
-	return usage
+	return parseClaudeUsageFromResponseBody(body)
 }
 
 func shouldUseAntigravityGeminiTestRequest(_, mappedModel string) bool {

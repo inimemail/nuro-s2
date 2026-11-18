@@ -30,6 +30,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -244,6 +245,9 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
+	usageInvalid             bool
+	CacheCreation5mTokens    int `json:"-"`
+	CacheCreation1hTokens    int `json:"-"`
 	InputTokens              int `json:"input_tokens"`
 	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
 	ImageCacheReadTokens     int `json:"image_cache_read_tokens,omitempty"`
@@ -10383,9 +10387,6 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 		return
 	}
 	// 选择性解析：仅在数据中包含终止事件标识时才进入字段提取。
-	if len(data) < 72 {
-		return
-	}
 	eventType := gjson.GetBytes(data, "type").String()
 	if eventType != "response.completed" && eventType != "response.done" && eventType != "response.failed" &&
 		eventType != "response.incomplete" && eventType != "response.cancelled" && eventType != "response.canceled" {
@@ -10406,6 +10407,14 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		{"response.usage", "response.tool_usage.image_gen"},
 		{"data.usage", "data.tool_usage.image_gen"},
 		{"data.response.usage", "data.response.tool_usage.image_gen"},
+	}
+	// Terminal Responses envelopes carry the authoritative snapshot. Do not
+	// combine it with a stale top-level usage from a compatible gateway.
+	eventType := gjson.GetBytes(body, "type").String()
+	switch eventType {
+	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+		candidates[0], candidates[1] = candidates[1], candidates[0]
+		candidates[2], candidates[3] = candidates[3], candidates[2]
 	}
 	for _, candidate := range candidates {
 		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate[0])); ok {
@@ -10477,44 +10486,34 @@ func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *g
 }
 
 func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
-	if !value.Exists() || !value.IsObject() {
+	if !value.IsObject() {
 		return OpenAIUsage{}, false
 	}
-	inputTokens := value.Get("input_tokens").Int()
-	if inputTokens == 0 {
-		inputTokens = value.Get("prompt_tokens").Int()
+	var usage OpenAIUsage
+	anyPresent := false
+	read := func(paths ...string) int {
+		n, present, invalid := usageAlias(value, paths...)
+		anyPresent = anyPresent || present
+		usage.usageInvalid = usage.usageInvalid || invalid
+		return n
 	}
-	outputTokens := value.Get("output_tokens").Int()
-	if outputTokens == 0 {
-		outputTokens = value.Get("completion_tokens").Int()
+	usage.InputTokens = read("input_tokens", "prompt_tokens")
+	usage.OutputTokens = read("output_tokens", "completion_tokens")
+	reasoning := read("completion_tokens_details.reasoning_tokens", "output_tokens_details.reasoning_tokens")
+	if reasoning > 0 {
+		total := read("total_tokens")
+		// Validate input + output before the xAI compatibility helper computes its gap.
+		if _, ok := usagetokens.Add(usage.InputTokens, usage.OutputTokens); !ok {
+			usage.usageInvalid = true
+		} else {
+			usage.OutputTokens = int(xai.IncludeIndependentReasoningTokens(int64(usage.InputTokens), int64(usage.OutputTokens), int64(total), int64(reasoning)))
+		}
 	}
-	reasoningTokens := firstPositiveGJSONInt(
-		value.Get("completion_tokens_details.reasoning_tokens"),
-		value.Get("output_tokens_details.reasoning_tokens"),
-	)
-	if reasoningTokens > 0 {
-		outputTokens = xai.IncludeIndependentReasoningTokens(
-			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
-		)
-	}
-	cacheReadTokens := openAICacheReadTokensFromUsage(value)
-	cacheCreationTokens := openAICacheCreationTokensFromUsage(value)
-	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
-	if imageOutputTokens == 0 {
-		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
-	}
-	imageInputTokens := firstPositiveGJSONInt(
-		value.Get("input_tokens_details.image_tokens"),
-		value.Get("prompt_tokens_details.image_tokens"),
-	)
-	return OpenAIUsage{
-		InputTokens:              int(inputTokens),
-		ImageInputTokens:         imageInputTokens,
-		OutputTokens:             int(outputTokens),
-		CacheCreationInputTokens: cacheCreationTokens,
-		CacheReadInputTokens:     cacheReadTokens,
-		ImageOutputTokens:        int(imageOutputTokens),
-	}, true
+	usage.CacheReadInputTokens = read("input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens", "cache_read_input_tokens", "cache_read_tokens", "cached_tokens", "prompt_cache_hit_tokens")
+	usage.CacheCreationInputTokens = read("input_tokens_details.cache_creation_input_tokens", "prompt_tokens_details.cache_creation_input_tokens", "input_tokens_details.cache_write_input_tokens", "prompt_tokens_details.cache_write_input_tokens", "input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_creation_tokens", "cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "cache_creation_tokens")
+	usage.ImageOutputTokens = read("output_tokens_details.image_tokens", "completion_tokens_details.image_tokens")
+	usage.ImageInputTokens = read("input_tokens_details.image_tokens", "prompt_tokens_details.image_tokens")
+	return usage, anyPresent || usage.usageInvalid
 }
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
@@ -10529,23 +10528,6 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 		return cachedTokens
 	}
 	return firstPositiveGJSONInt(value.Get("prompt_cache_hit_tokens"))
-}
-
-func openAICacheCreationTokensFromUsage(value gjson.Result) int {
-	return firstPositiveGJSONInt(
-		value.Get("input_tokens_details.cache_creation_input_tokens"),
-		value.Get("prompt_tokens_details.cache_creation_input_tokens"),
-		value.Get("input_tokens_details.cache_write_input_tokens"),
-		value.Get("prompt_tokens_details.cache_write_input_tokens"),
-		value.Get("input_tokens_details.cache_write_tokens"),
-		value.Get("prompt_tokens_details.cache_write_tokens"),
-		value.Get("input_tokens_details.cache_creation_tokens"),
-		value.Get("prompt_tokens_details.cache_creation_tokens"),
-		value.Get("cache_write_tokens"),
-		value.Get("cache_creation_input_tokens"),
-		value.Get("cache_write_input_tokens"),
-		value.Get("cache_creation_tokens"),
-	)
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
@@ -11834,6 +11816,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
+	if result.Usage.usageInvalid {
+		return errors.New("invalid provider usage: token count is not a representable nonnegative integer")
+	}
+	if _, valid := usagetokens.Add(result.Usage.InputTokens, result.Usage.OutputTokens); !valid || result.Usage.CacheReadInputTokens < 0 || result.Usage.CacheCreationInputTokens < 0 {
+		return errors.New("invalid provider usage: token count is negative or aggregate overflows")
+	}
 	// Health probes are real upstream model requests. They must follow the same
 	// usage-log and billing path as normal OpenAI requests so upstream spend is
 	// reflected locally and charged to the API key that initiated the probe.
@@ -11851,10 +11839,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
-	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens - result.Usage.CacheCreationInputTokens
-	if actualInputTokens < 0 {
-		actualInputTokens = 0
-	}
+	actualInputTokens := usagetokens.Remainder(result.Usage.InputTokens, result.Usage.CacheReadInputTokens, result.Usage.CacheCreationInputTokens)
 	if !input.HealthProbe && !input.SkipSuccessSideEffects && result.WebSearchCalls == 0 {
 		s.logOpenAIPromptCacheHitRate(ctx, account, result.Usage)
 		s.recordOpenAIPromptCacheWarmResult(ctx, input)
@@ -11862,13 +11847,15 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// Calculate cost
 	tokens := UsageTokens{
-		InputTokens:          actualInputTokens,
-		ImageInputTokens:     max(0, result.Usage.ImageInputTokens-result.Usage.ImageCacheReadTokens),
-		ImageCacheReadTokens: result.Usage.ImageCacheReadTokens,
-		OutputTokens:         result.Usage.OutputTokens,
-		CacheCreationTokens:  result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:      result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:    result.Usage.ImageOutputTokens,
+		InputTokens:           actualInputTokens,
+		ImageInputTokens:      max(0, result.Usage.ImageInputTokens-result.Usage.ImageCacheReadTokens),
+		ImageCacheReadTokens:  result.Usage.ImageCacheReadTokens,
+		OutputTokens:          result.Usage.OutputTokens,
+		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		ImageOutputTokens:     result.Usage.ImageOutputTokens,
 	}
 
 	// Get rate multiplier
@@ -11918,7 +11905,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 	longContextBillingEnabled := billingAccount.IsOpenAILongContextBillingEnabled()
-	if billingAccount.IsOpenAIOAuthLike() && (openai.IsGPT61SolModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model)) || openai.IsGPT61TerraModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model))) {
+	if billingAccount.IsOpenAIOAuthLike() && (openai.GPT62ModelID(firstNonEmpty(result.UpstreamModel, result.Model)) != "" || openai.IsGPT61SolModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model)) || openai.IsGPT61TerraModelSpelling(firstNonEmpty(result.UpstreamModel, result.Model))) {
 		// Only the official model surcharge is gated here. Custom intervals
 		// and channel/time/reasoning multipliers retain their existing paths.
 		longContextBillingEnabled = false
@@ -12012,6 +11999,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageInputTokens:      result.Usage.ImageInputTokens,
 		OutputTokens:          result.Usage.OutputTokens,
 		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		CacheReadTokens:       result.Usage.CacheReadInputTokens,
 		ImageOutputTokens:     result.Usage.ImageOutputTokens,
 		ImageCount:            result.ImageCount,
@@ -13584,7 +13573,7 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
 	if openai.IsGPT61TerraModelSpelling(model) && strings.EqualFold(strings.TrimSpace(raw), "none") {
 		return "none"
 	}
-	if (openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) || openai.IsGPT61SolModelSpelling(model) {
+	if (openai.GPT62ModelID(model) != "" || openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)) || openai.IsGPT61SolModelSpelling(model) {
 		switch value := strings.ToLower(strings.TrimSpace(raw)); value {
 		case "max":
 			return value

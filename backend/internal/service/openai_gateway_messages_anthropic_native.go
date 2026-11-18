@@ -547,8 +547,12 @@ func claudeUsageToOpenAIUsage(u *ClaudeUsage) OpenAIUsage {
 	if u == nil {
 		return OpenAIUsage{}
 	}
+	total, invalid := sumUsageCounts(u.InputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens)
 	return OpenAIUsage{
-		InputTokens:              u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
+		usageInvalid:             invalid || u.usageInvalid,
+		CacheCreation5mTokens:    u.CacheCreation5mTokens,
+		CacheCreation1hTokens:    u.CacheCreation1hTokens,
+		InputTokens:              total,
 		OutputTokens:             u.OutputTokens,
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
 		CacheReadInputTokens:     u.CacheReadInputTokens,

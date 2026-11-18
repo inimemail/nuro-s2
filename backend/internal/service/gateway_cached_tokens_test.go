@@ -26,16 +26,16 @@ func TestReconcileCachedTokens_AlreadyHasCacheRead(t *testing.T) {
 	assert.Equal(t, float64(100), usage["cache_read_input_tokens"])
 }
 
-func TestReconcileCachedTokens_KimiStyle(t *testing.T) {
-	// Kimi 风格：cache_read_input_tokens=0，cached_tokens>0
+func TestReconcileCachedTokens_ExplicitZeroWinsAlias(t *testing.T) {
+	// 显式 cache_read_input_tokens=0 优先于兼容别名。
 	usage := map[string]any{
 		"input_tokens":                float64(23),
 		"cache_creation_input_tokens": float64(0),
 		"cache_read_input_tokens":     float64(0),
 		"cached_tokens":               float64(23),
 	}
-	assert.True(t, reconcileCachedTokens(usage))
-	assert.Equal(t, float64(23), usage["cache_read_input_tokens"])
+	assert.False(t, reconcileCachedTokens(usage))
+	assert.Equal(t, float64(0), usage["cache_read_input_tokens"])
 }
 
 func TestReconcileCachedTokens_NoCachedTokens(t *testing.T) {
@@ -65,7 +65,7 @@ func TestReconcileCachedTokens_MissingCacheReadField(t *testing.T) {
 		"cached_tokens": float64(42),
 	}
 	assert.True(t, reconcileCachedTokens(usage))
-	assert.Equal(t, float64(42), usage["cache_read_input_tokens"])
+	assert.Equal(t, 42, usage["cache_read_input_tokens"])
 }
 
 // ---------- 流式 message_start 事件 reconcile 测试 ----------
@@ -101,17 +101,17 @@ func TestStreamingReconcile_MessageStart(t *testing.T) {
 		}
 	}
 
-	// 验证 cache_read_input_tokens 已被填充
+	// 验证显式 0 没有被别名覆盖
 	msg, ok := event["message"].(map[string]any)
 	require.True(t, ok)
 	usage, ok := msg["usage"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, float64(23), usage["cache_read_input_tokens"])
+	assert.Equal(t, float64(0), usage["cache_read_input_tokens"])
 
 	// 验证重新序列化后 JSON 也包含正确值
 	data, err := json.Marshal(event)
 	require.NoError(t, err)
-	assert.Equal(t, int64(23), gjson.GetBytes(data, "message.usage.cache_read_input_tokens").Int())
+	assert.Equal(t, int64(0), gjson.GetBytes(data, "message.usage.cache_read_input_tokens").Int())
 }
 
 func TestStreamingReconcile_MessageStart_NativeClaude(t *testing.T) {
@@ -166,7 +166,7 @@ func TestStreamingReconcile_MessageDelta(t *testing.T) {
 	usage, ok := event["usage"].(map[string]any)
 	require.True(t, ok)
 	reconcileCachedTokens(usage)
-	assert.Equal(t, float64(15), usage["cache_read_input_tokens"])
+	assert.Equal(t, float64(0), usage["cache_read_input_tokens"])
 }
 
 func TestStreamingReconcile_MessageDelta_NativeClaude(t *testing.T) {

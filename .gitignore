@@ -175,3 +175,5 @@ __pycache__/
 # Reviewable v0.2.22 selective upgrade evidence.
 !docs/upgrades/v0222-status.json
 !docs/upgrades/v0222-validation.md
+!docs/upgrades/v0223-status.json
+!docs/upgrades/v0223-validation.md

@@ -12,4 +12,9 @@ describe('account test model ordering', () => {
     expect(sortAccountTestModels([model('kimi-k2'), model('custom')], 'kimi').map(m => m.id)).toEqual(['kimi-k2', 'custom'])
     expect(sortAccountTestModels([model('gemini-2.5-pro'), model('gemini-2.5-flash-image')], 'gemini')[0].id).toBe('gemini-2.5-flash-image')
   })
+  it('keeps the two published GPT-6.2 IDs above aliases mapped to them', () => {
+    const models = [model('sol-alias', 'gpt-6.2-sol'), model('astra-alias', 'gpt-6.2-astra'), model('gpt-6.2-astra'), model('openai/gpt-6.2-sol')]
+    expect(sortAccountTestModels(models, 'openai').map(m => m.id)).toEqual(['openai/gpt-6.2-sol', 'gpt-6.2-astra', 'sol-alias', 'astra-alias'])
+    expect(sortAccountTestModels(models, 'anthropic').map(m => m.id)).toEqual(['sol-alias', 'openai/gpt-6.2-sol', 'astra-alias', 'gpt-6.2-astra'])
+  })
 })

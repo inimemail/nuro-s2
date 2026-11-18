@@ -8,11 +8,43 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 )
 
 // ---------------------------------------------------------------------------
 // Non-streaming: AnthropicResponse → ResponsesResponse
 // ---------------------------------------------------------------------------
+
+func anthropicCacheCreationInputTokens(usage AnthropicUsage) (int, bool) {
+	if usage.CacheCreationInputTokens < 0 {
+		return 0, false
+	}
+	if usage.CacheCreation != nil {
+		for _, n := range []*int{usage.CacheCreation.Ephemeral5mInputTokens, usage.CacheCreation.Ephemeral1hInputTokens} {
+			if n != nil && *n < 0 {
+				return 0, false
+			}
+		}
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		return usage.CacheCreationInputTokens, usage.CacheCreationInputTokens >= 0
+	}
+	if usage.CacheCreation != nil && (usage.CacheCreation.Ephemeral5mInputTokens != nil || usage.CacheCreation.Ephemeral1hInputTokens != nil) {
+		cacheCreationTokens := 0
+		if usage.CacheCreation.Ephemeral5mInputTokens != nil {
+			cacheCreationTokens = max(*usage.CacheCreation.Ephemeral5mInputTokens, 0)
+		}
+		if usage.CacheCreation.Ephemeral1hInputTokens != nil {
+			var valid bool
+			cacheCreationTokens, valid = usagetokens.Add(cacheCreationTokens, max(*usage.CacheCreation.Ephemeral1hInputTokens, 0))
+			if !valid {
+				return 0, false
+			}
+		}
+		return cacheCreationTokens, true
+	}
+	return usage.CacheCreationInputTokens, usage.CacheCreationInputTokens >= 0
+}
 
 // AnthropicToResponsesResponse converts an Anthropic Messages response into a
 // Responses API response. This is the reverse of ResponsesToAnthropic and
@@ -118,14 +150,17 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse, scopes ...string) *Re
 	// Anthropic's input_tokens excludes cache_read/cache_creation, while OpenAI
 	// Responses' input_tokens is the total including cached tokens. Add them back
 	// when converting so downstream consumers see OpenAI semantics.
-	totalInputTokens := resp.Usage.InputTokens +
-		resp.Usage.CacheReadInputTokens +
-		resp.Usage.CacheCreationInputTokens
+	cacheCreationTokens, validCreation := anthropicCacheCreationInputTokens(resp.Usage)
+	totalInputTokens, validInput := usagetokens.Add(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens, cacheCreationTokens)
+	totalTokens, validTotal := usagetokens.Add(totalInputTokens, resp.Usage.OutputTokens)
+	if resp.Usage.UsageInvalid || !validCreation || !validInput || !validTotal {
+		return out
+	}
 	out.Usage = &ResponsesUsage{
 		InputTokens:              totalInputTokens,
 		OutputTokens:             resp.Usage.OutputTokens,
-		TotalTokens:              totalInputTokens + resp.Usage.OutputTokens,
-		CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+		TotalTokens:              totalTokens,
+		CacheCreationInputTokens: cacheCreationTokens,
 	}
 	if resp.Usage.CacheReadInputTokens > 0 {
 		out.Usage.InputTokensDetails = &ResponsesInputTokensDetails{
@@ -199,6 +234,11 @@ type AnthropicEventToResponsesState struct {
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+	CacheCreation            AnthropicCacheCreation
+	UsageInvalid             bool
+
+	cacheCreationInputTokensPresent     bool
+	cacheCreationInputTokensFromDetails bool
 
 	StopReason string
 }
@@ -207,6 +247,32 @@ type AnthropicEventToResponsesState struct {
 func NewAnthropicEventToResponsesState() *AnthropicEventToResponsesState {
 	return &AnthropicEventToResponsesState{
 		Created: time.Now().Unix(),
+	}
+}
+
+func (state *AnthropicEventToResponsesState) mergeCacheCreationUsage(usage AnthropicUsage) {
+	_, valid := anthropicCacheCreationInputTokens(usage)
+	state.UsageInvalid = state.UsageInvalid || usage.UsageInvalid || !valid
+	if usage.HasCacheCreationInputTokens() && (usage.CacheCreationInputTokens > 0 || state.CacheCreationInputTokens <= 0) {
+		state.CacheCreationInputTokens = max(usage.CacheCreationInputTokens, 0)
+		state.cacheCreationInputTokensPresent = true
+		state.cacheCreationInputTokensFromDetails = false
+	}
+	if usage.CacheCreation != nil {
+		if usage.CacheCreation.Ephemeral5mInputTokens != nil {
+			tokens := max(*usage.CacheCreation.Ephemeral5mInputTokens, 0)
+			state.CacheCreation.Ephemeral5mInputTokens = &tokens
+		}
+		if usage.CacheCreation.Ephemeral1hInputTokens != nil {
+			tokens := max(*usage.CacheCreation.Ephemeral1hInputTokens, 0)
+			state.CacheCreation.Ephemeral1hInputTokens = &tokens
+		}
+	}
+	if (!state.cacheCreationInputTokensPresent || state.cacheCreationInputTokensFromDetails || state.CacheCreationInputTokens <= 0) && (state.CacheCreation.Ephemeral5mInputTokens != nil || state.CacheCreation.Ephemeral1hInputTokens != nil) {
+		total, valid := anthropicCacheCreationInputTokens(AnthropicUsage{CacheCreation: &state.CacheCreation})
+		state.CacheCreationInputTokens = total
+		state.UsageInvalid = state.UsageInvalid || !valid
+		state.cacheCreationInputTokensFromDetails = true
 	}
 }
 
@@ -276,9 +342,7 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 		if evt.Message.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Message.Usage.CacheReadInputTokens
 		}
-		if evt.Message.Usage.CacheCreationInputTokens > 0 {
-			state.CacheCreationInputTokens = evt.Message.Usage.CacheCreationInputTokens
-		}
+		state.mergeCacheCreationUsage(evt.Message.Usage)
 	}
 
 	if state.CreatedSent {
@@ -504,16 +568,16 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	// Update usage
 	if evt.Usage != nil {
-		state.OutputTokens = evt.Usage.OutputTokens
+		if evt.Usage.OutputTokens > 0 {
+			state.OutputTokens = evt.Usage.OutputTokens
+		}
 		if evt.Usage.InputTokens > 0 {
 			state.InputTokens = evt.Usage.InputTokens
 		}
 		if evt.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Usage.CacheReadInputTokens
 		}
-		if evt.Usage.CacheCreationInputTokens > 0 {
-			state.CacheCreationInputTokens = evt.Usage.CacheCreationInputTokens
-		}
+		state.mergeCacheCreationUsage(*evt.Usage)
 	}
 	if evt.Delta != nil && evt.Delta.StopReason != "" {
 		state.StopReason = evt.Delta.StopReason
@@ -640,11 +704,12 @@ func makeResponsesCompletedEvent(
 
 	// Anthropic's input_tokens excludes cache_read/cache_creation; add them
 	// back to match OpenAI Responses semantics where input_tokens is the total.
-	totalInputTokens := state.InputTokens + state.CacheReadInputTokens + state.CacheCreationInputTokens
+	totalInputTokens, validInput := usagetokens.Add(state.InputTokens, state.CacheReadInputTokens, state.CacheCreationInputTokens)
+	totalTokens, validTotal := usagetokens.Add(totalInputTokens, state.OutputTokens)
 	usage := &ResponsesUsage{
 		InputTokens:              totalInputTokens,
 		OutputTokens:             state.OutputTokens,
-		TotalTokens:              totalInputTokens + state.OutputTokens,
+		TotalTokens:              totalTokens,
 		CacheCreationInputTokens: state.CacheCreationInputTokens,
 	}
 	if state.CacheReadInputTokens > 0 {
@@ -653,6 +718,9 @@ func makeResponsesCompletedEvent(
 		}
 	}
 
+	if state.UsageInvalid || !validInput || !validTotal {
+		usage = nil
+	}
 	eventType := "response.completed"
 	if status == "incomplete" {
 		eventType = "response.incomplete"

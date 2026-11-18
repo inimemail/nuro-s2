@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -82,7 +83,7 @@ func TestParseSSEUsage_DeltaOverwritesWithNonZero(t *testing.T) {
 	require.Equal(t, 60, usage.CacheReadInputTokens)
 }
 
-func TestParseSSEUsage_DeltaDoesNotResetCacheCreationBreakdown(t *testing.T) {
+func TestParseSSEUsage_DeltaPreservesMissingTTLAndUpdatesExplicitZero(t *testing.T) {
 	svc := newMinimalGatewayService()
 	usage := &ClaudeUsage{}
 
@@ -91,10 +92,13 @@ func TestParseSSEUsage_DeltaDoesNotResetCacheCreationBreakdown(t *testing.T) {
 	require.Equal(t, 30, usage.CacheCreation5mTokens)
 	require.Equal(t, 70, usage.CacheCreation1hTokens)
 
-	// 后续 delta 带默认 0，不应覆盖已有非零值
+	// 省略的分桶保持之前快照；明确的 0 更新对应分桶。
+	svc.parseSSEUsage(`{"type":"message_delta","usage":{"output_tokens":11}}`, usage)
+	require.Equal(t, 30, usage.CacheCreation5mTokens)
+	require.Equal(t, 70, usage.CacheCreation1hTokens)
 	svc.parseSSEUsage(`{"type":"message_delta","usage":{"output_tokens":12,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}`, usage)
-	require.Equal(t, 30, usage.CacheCreation5mTokens, "delta 的 0 值不应重置 5m 明细")
-	require.Equal(t, 70, usage.CacheCreation1hTokens, "delta 的 0 值不应重置 1h 明细")
+	require.Zero(t, usage.CacheCreation5mTokens, "明确提供的 5m 0 更新分桶")
+	require.Zero(t, usage.CacheCreation1hTokens, "明确提供的 1h 0 更新分桶")
 	require.Equal(t, 12, usage.OutputTokens)
 }
 
@@ -164,6 +168,23 @@ func TestHandleStreamingResponse_CacheTokens(t *testing.T) {
 	require.Equal(t, 15, result.usage.OutputTokens)
 	require.Equal(t, 20, result.usage.CacheCreationInputTokens)
 	require.Equal(t, 30, result.usage.CacheReadInputTokens)
+}
+
+func TestHandleStreamingResponse_PreservesUsageWhenFirstWriteFails(t *testing.T) {
+	setGinTestMode()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Writer = &failWriteResponseWriter{ResponseWriter: c.Writer}
+	body := `data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":5}}}` + "\n\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":2}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+	result, err := newMinimalGatewayService().handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	require.NoError(t, err)
+	require.True(t, result.clientDisconnect)
+	require.Equal(t, 12, result.usage.InputTokens)
+	require.Equal(t, 5, result.usage.CacheReadInputTokens)
+	require.Equal(t, 2, result.usage.OutputTokens)
 }
 
 func TestHandleStreamingResponse_EmptyStream(t *testing.T) {

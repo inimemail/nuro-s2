@@ -1182,7 +1182,7 @@ func TestGatewayService_ParseSSEUsagePassthrough_MessageStartFallbacks(t *testin
 	svc.parseSSEUsagePassthrough(data, usage)
 
 	require.Equal(t, 12, usage.InputTokens)
-	require.Equal(t, 9, usage.CacheReadInputTokens, "应兼容 cached_tokens 字段")
+	require.Zero(t, usage.CacheReadInputTokens, "显式 0 优先于 cached_tokens 别名")
 	require.Equal(t, 7, usage.CacheCreationInputTokens, "聚合字段为空时应从 5m/1h 明细回填")
 	require.Equal(t, 3, usage.CacheCreation5mTokens)
 	require.Equal(t, 4, usage.CacheCreation1hTokens)
@@ -1202,9 +1202,9 @@ func TestGatewayService_ParseSSEUsagePassthrough_MessageDeltaSelectiveOverwrite(
 	require.Equal(t, 10, usage.InputTokens, "message_delta 中 0 值不应覆盖已有 input_tokens")
 	require.Equal(t, 5, usage.OutputTokens)
 	require.Equal(t, 8, usage.CacheCreationInputTokens)
-	require.Equal(t, 11, usage.CacheReadInputTokens, "cache_read_input_tokens 为空时应回退到 cached_tokens")
+	require.Zero(t, usage.CacheReadInputTokens, "显式 0 不应回退到 cached_tokens")
 	require.Equal(t, 1, usage.CacheCreation5mTokens)
-	require.Equal(t, 6, usage.CacheCreation1hTokens, "message_delta 中 0 值不应覆盖已有 1h 明细")
+	require.Zero(t, usage.CacheCreation1hTokens, "明确提供的 TTL 0 应更新该分桶")
 }
 
 func TestGatewayService_ParseSSEUsagePassthrough_NoopCases(t *testing.T) {
@@ -1251,7 +1251,7 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 		got := parseClaudeUsageFromResponseBody(body)
 		require.Equal(t, 21, got.InputTokens)
 		require.Equal(t, 34, got.OutputTokens)
-		require.Equal(t, 13, got.CacheReadInputTokens, "cache_read_input_tokens 为空时应回退 cached_tokens")
+		require.Zero(t, got.CacheReadInputTokens, "显式 0 优先于 cached_tokens 别名")
 		require.Equal(t, 13, got.CacheCreationInputTokens, "聚合字段为空时应由 5m/1h 回填")
 		require.Equal(t, 5, got.CacheCreation5mTokens)
 		require.Equal(t, 8, got.CacheCreation1hTokens)

@@ -1076,6 +1076,9 @@ func SupportsVerbosity(model string) bool {
 }
 
 func getNormalizedCodexModel(modelID string) string {
+	if id := openai.GPT62ModelID(modelID); id != "" {
+		return id
+	}
 	key := codexModelLookupKey(modelID)
 	if key == "" {
 		return ""

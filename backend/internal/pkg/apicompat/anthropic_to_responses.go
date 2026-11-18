@@ -107,12 +107,15 @@ func anthropicToResponses(req *AnthropicRequest, replayToolThinking bool, minOut
 		Summary: "auto",
 	}
 
-	if openai.IsGPT6SolOrLunaModelSpelling(req.Model) || openai.IsGPT61SolModelSpelling(req.Model) || openai.IsGPT61TerraModelSpelling(req.Model) {
+	if openai.GPT62ModelID(req.Model) != "" || openai.IsGPT6SolOrLunaModelSpelling(req.Model) || openai.IsGPT61SolModelSpelling(req.Model) || openai.IsGPT61TerraModelSpelling(req.Model) {
 		out.Reasoning.Effort = effort
 		if req.Thinking != nil && req.Thinking.Type == "disabled" {
 			out.Reasoning.Effort = "none"
 		}
 		if len(deferValidation) == 0 || !deferValidation[0] {
+			if err := openai.ValidateGPT62ModelRequest(req.Model, out.Reasoning.Effort); err != nil {
+				return nil, err
+			}
 			if err := openai.ValidateGPT61SolModelRequest(req.Model, out.Reasoning.Effort); err != nil {
 				return nil, err
 			}
@@ -545,7 +548,7 @@ func boolPtr(v bool) *bool {
 // All gpt-5.x models are reasoning-only; the Responses API returns
 // "Unsupported parameter: temperature" if these fields are present.
 func isReasoningModel(model string) bool {
-	return strings.HasPrefix(model, "gpt-5") || openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model)
+	return openai.GPT62ModelID(model) != "" || strings.HasPrefix(model, "gpt-5") || openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model)
 }
 
 // normalizeToolParameters ensures the tool parameter schema is valid for

@@ -25,6 +25,9 @@ func ChatCompletionsToResponsesWithMinOutputTokens(req *ChatCompletionsRequest, 
 	if minOutputTokens < 16 {
 		minOutputTokens = DefaultMinMaxOutputTokens
 	}
+	if err := openai.ValidateGPT62ModelRequest(req.Model, req.ReasoningEffort); err != nil {
+		return nil, err
+	}
 	if err := openai.ValidateGPT61SolModelRequest(req.Model, req.ReasoningEffort); err != nil {
 		return nil, err
 	}

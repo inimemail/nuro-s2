@@ -276,6 +276,8 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			return false
 		}
 
+		normalizeAnthropicEventUsageForResponses(event, usage)
+		syncAnthropicResponsesUsage(anthState, usage)
 		responsesEvents := apicompat.AnthropicEventToResponsesEvents(event, anthState)
 		for _, resEvt := range responsesEvents {
 			ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)

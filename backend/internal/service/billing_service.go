@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagetokens"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -518,6 +519,32 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:        1.5,
 	}
 	s.fallbackPrices["gpt-6.1-sol"] = &ModelPricing{
+		InputPricePerToken:                 2e-6,
+		InputPricePerTokenPriority:         4e-6,
+		OutputPricePerToken:                1e-5,
+		OutputPricePerTokenPriority:        2e-5,
+		CacheCreationPricePerToken:         2.5e-6,
+		CacheCreationPricePerTokenPriority: 5e-6,
+		CacheReadPricePerToken:             1e-7,
+		CacheReadPricePerTokenPriority:     2e-7,
+		LongContextInputThreshold:          272000,
+		LongContextInputMultiplier:         2,
+		LongContextOutputMultiplier:        1.5,
+	}
+	s.fallbackPrices["gpt-6.2-astra"] = &ModelPricing{
+		InputPricePerToken:                 8e-6,
+		InputPricePerTokenPriority:         16e-6,
+		OutputPricePerToken:                4e-5,
+		OutputPricePerTokenPriority:        8e-5,
+		CacheCreationPricePerToken:         10e-6,
+		CacheCreationPricePerTokenPriority: 20e-6,
+		CacheReadPricePerToken:             4e-7,
+		CacheReadPricePerTokenPriority:     8e-7,
+		LongContextInputThreshold:          272000,
+		LongContextInputMultiplier:         2,
+		LongContextOutputMultiplier:        1.5,
+	}
+	s.fallbackPrices["gpt-6.2-sol"] = &ModelPricing{
 		InputPricePerToken:                 2e-6,
 		InputPricePerTokenPriority:         4e-6,
 		OutputPricePerToken:                1e-5,
@@ -1066,7 +1093,7 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
-		case "gpt-6.1-terra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna":
+		case "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna":
 			return s.fallbackPrices[normalized]
 		case "gpt-6-astra":
 			return s.fallbackPrices["gpt-6-astra"]
@@ -1283,6 +1310,9 @@ type CostInput struct {
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
 // 使用 ModelPricingResolver 解析定价，然后根据 BillingMode 分发计算。
 func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, error) {
+	if err := validateBillingUsageTokens(input.Tokens); err != nil {
+		return nil, err
+	}
 	if input.Resolver == nil {
 		// 无 Resolver，回退到旧路径
 		applyLongContextBilling := true
@@ -1345,7 +1375,10 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 
 // calculateTokenCost 按 token 区间计费
 func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
-	totalContext := input.Tokens.InputTokens + input.Tokens.CacheCreationTokens + input.Tokens.CacheReadTokens
+	totalContext, validContext := usagetokens.Add(input.Tokens.InputTokens, input.Tokens.CacheCreationTokens, input.Tokens.CacheReadTokens)
+	if !validContext {
+		return nil, fmt.Errorf("invalid usage: input context token count overflow")
+	}
 
 	pricing := input.Resolver.GetIntervalPricing(resolved, totalContext)
 	if pricing == nil {
@@ -1545,7 +1578,7 @@ func normalizeCacheCreationBreakdown(tokens UsageTokens) (int, int) {
 		return a, b
 	}
 	if a <= total && b <= total-a {
-		return a, b
+		return total - b, b
 	}
 	// Convert before summing so contradictory near-MaxInt details cannot wrap
 	// the integer denominator and distort the proportional allocation.
@@ -1582,7 +1615,10 @@ func (s *BillingService) calculatePerRequestCost(resolved *ResolvedPricing, inpu
 	}
 
 	if !matched {
-		totalContext := input.Tokens.InputTokens + input.Tokens.CacheCreationTokens + input.Tokens.CacheReadTokens
+		totalContext, validContext := usagetokens.Add(input.Tokens.InputTokens, input.Tokens.CacheCreationTokens, input.Tokens.CacheReadTokens)
+		if !validContext {
+			return nil, fmt.Errorf("invalid usage: input context token count overflow")
+		}
 		unitPrice, matched = input.Resolver.getRequestTierPriceByContext(resolved, totalContext)
 	}
 
@@ -1635,6 +1671,9 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	longContextBillingEnabled bool,
 	geminiTime ...geminiBillingTime,
 ) (*CostBreakdown, error) {
+	if err := validateBillingUsageTokens(tokens); err != nil {
+		return nil, err
+	}
 	var pricing *ModelPricing
 	var err error
 	if channelPricing != nil {
@@ -1804,6 +1843,9 @@ func (s *BillingService) CalculateCostWithConfig(model string, tokens UsageToken
 // 拆分为：范围内 (200k, 0) + 范围外 (10k, 10k)
 // 范围内正常计费，范围外 × 2 计费
 func (s *BillingService) CalculateCostWithLongContext(model string, tokens UsageTokens, rateMultiplier float64, threshold int, extraMultiplier float64) (*CostBreakdown, error) {
+	if err := validateBillingUsageTokens(tokens); err != nil {
+		return nil, err
+	}
 	// 未启用长上下文计费，直接走正常计费
 	if threshold <= 0 || extraMultiplier <= 1 {
 		return s.CalculateCost(model, tokens, rateMultiplier)

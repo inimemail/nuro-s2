@@ -792,9 +792,9 @@ func TestNormalizeCacheCreationBreakdownClampsContradictoryUsage(t *testing.T) {
 			want1h: 33,
 		},
 		{
-			name:   "negative details are ignored",
+			name:   "negative details are ignored and remainder uses default TTL",
 			tokens: UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: -5, CacheCreation1hTokens: 20},
-			want5m: 0,
+			want5m: 80,
 			want1h: 20,
 		},
 		{

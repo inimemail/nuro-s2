@@ -569,6 +569,8 @@ func codexModelsManifestBodyETag(body []byte) string {
 }
 
 var apiKeyCodexModelsWithoutResponsesLite = map[string]struct{}{
+	"gpt-6.2-sol":   {},
+	"gpt-6.2-astra": {},
 	"gpt-6.1-terra": {},
 	"gpt-6-sol":     {},
 	"gpt-6.1-sol":   {},
@@ -641,6 +643,9 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 		for _, model := range models {
 			var slug string
 			_ = json.Unmarshal(model["slug"], &slug)
+			if fillGPT62CodexCapabilities(model, slug) {
+				changed = true
+			}
 			if fillTerraCodexCapabilities(model, slug) {
 				changed = true
 			}
@@ -678,6 +683,9 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 	for _, entry := range entries {
 		if id := strings.TrimSpace(entry.ID); id != "" {
 			model := map[string]any{"slug": id}
+			for key, value := range gpt62CodexCapabilities(id) {
+				model[key] = value
+			}
 			if openai.IsGPT61TerraModelSpelling(id) {
 				for key, value := range terraCodexCapabilities() {
 					model[key] = value
