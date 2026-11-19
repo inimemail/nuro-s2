@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -64,6 +67,8 @@ type OpenAIEdgeControlSnapshot struct {
 }
 
 type OpenAIEdgePlan struct {
+	StreamExperience *OpenAIStreamExperienceSample `json:"stream_experience,omitempty"`
+
 	TurnHealthEnabled  bool              `json:"turn_health_enabled,omitempty"`
 	OpsCallbackEnabled bool              `json:"ops_callback_enabled,omitempty"`
 	SettlementContext  string            `json:"settlement_context,omitempty"`
@@ -220,6 +225,8 @@ type OpenAIEdgeRetryStageRequest struct {
 }
 
 type OpenAIEdgeCompleteRequest struct {
+	StreamExperience *OpenAIStreamExperienceSample `json:"stream_experience,omitempty"`
+
 	HealthOnly          bool        `json:"health_only,omitempty"`
 	HealthEventID       string      `json:"health_event_id,omitempty"`
 	TurnHealthReported  bool        `json:"turn_health_reported,omitempty"`
@@ -283,4 +290,26 @@ func EncodeOpenAIEdgeRawBody(body []byte) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(body)
+}
+
+// ConfigureOpenAIEdgeStreamExperience sends content-free request metadata. Old
+// edge binaries ignore this optional field and old callbacks remain valid.
+func (s *OpenAIGatewayService) ConfigureOpenAIEdgeStreamExperience(plan *OpenAIEdgePlan) {
+	if plan == nil {
+		return
+	}
+	plan.StreamExperience = nil
+	if !s.OpenAIStreamExperienceEnabled() || plan.ResponseDialect != OpenAIEdgeDialectResponses {
+		return
+	}
+	body := []byte(plan.Body)
+	if plan.BodyRawBase64 != "" {
+		if raw, err := base64.StdEncoding.DecodeString(plan.BodyRawBase64); err == nil {
+			body = raw
+		}
+	}
+	if experienceRoute(WithOpenAIStreamExperienceRequest(context.Background(), body, OpenAIUpstreamTransportAny)) == nil {
+		return
+	}
+	plan.StreamExperience = &OpenAIStreamExperienceSample{Request: experienceRequest(body), Model: gjson.GetBytes(body, "model").String()}
 }

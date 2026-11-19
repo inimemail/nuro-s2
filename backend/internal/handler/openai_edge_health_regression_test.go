@@ -204,3 +204,30 @@ func TestOpenAIEdgeServerFailureIsRetainedAfterClientDisconnect(t *testing.T) {
 		require.False(t, openAIEdgeShouldRecordCircuitOutcome(req, false, false))
 	}
 }
+
+func TestEdgeStreamFailureSegment(t *testing.T) {
+	for class, want := range map[string]string{"upstream_disconnect": "edge_upstream", "upstream_no_progress": "edge_upstream", "upstream_error": "edge_upstream", "client_cancelled": "edge_downstream", "lease_lost": "edge_control", "local_capacity_rejected": "edge_control", "unknown": "unknown"} {
+		require.Equal(t, want, edgeStreamFailureSegment(class))
+	}
+}
+
+func TestOpenAIEdgeTurnExperienceReceiptAndNeutrality(t *testing.T) {
+	gateway := &service.OpenAIGatewayService{}
+	defer gateway.CloseOpenAIWSPool()
+	h := &OpenAIGatewayHandler{cfg: &config.Config{}, gatewayService: gateway}
+	lease := &openAIEdgeLease{leaseID: "experience", edgeRequestID: "experience", inboundEndpoint: "/v1/responses:ws", account: &service.Account{ID: 17, Platform: service.PlatformOpenAI}, apiKey: &service.APIKey{ID: 1}}
+	h.openAIEdgeLeases = map[string]*openAIEdgeLease{lease.leaseID: lease}
+	req := service.OpenAIEdgeCompleteRequest{LeaseID: lease.leaseID, EdgeRequestID: lease.edgeRequestID, AccountID: 17, HealthOnly: true, HealthEventID: "experience:1", Success: true, TerminalEventType: "response.completed", StreamExperience: &service.OpenAIStreamExperienceSample{Model: "gpt-test", Request: service.OpenAIExperienceRequest{Effort: "unspecified", ServiceTier: "unspecified"}, Complete: true, MaxGapMS: 30000, WaitMS: 35000, AtMS: time.Now().UnixMilli()}}
+	for i := 0; i < 2; i++ {
+		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", `{}`, "")
+		h.openAIEdgeTurnHealth(c, req)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	}
+	require.Equal(t, uint64(1), gateway.OpenAIStreamExperienceStats()["samples"])
+	req.HealthEventID = "experience:2"
+	req.ClientDisconnected = true
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", `{}`, "")
+	h.openAIEdgeTurnHealth(c, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, uint64(1), gateway.OpenAIStreamExperienceStats()["samples"], "client cancellation cannot add a healthy sample")
+}

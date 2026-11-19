@@ -1680,6 +1680,9 @@ type TLSProfileConfig struct {
 
 // GatewaySchedulingConfig accounts scheduling configuration.
 type GatewaySchedulingConfig struct {
+	// Nil retains the default: active for the two adaptive OpenAI strategies.
+	StreamExperienceEnabled    *bool `mapstructure:"stream_experience_enabled"`
+	StreamExperienceGapSeconds int   `mapstructure:"stream_experience_gap_seconds"`
 	// 用户并发槽位等待上限。短等待可避免高并发请求长时间占住下游连接。
 	UserSlotWaitTimeout time.Duration `mapstructure:"user_slot_wait_timeout"`
 	// UserSlotWaitTimeoutMS is the explicit millisecond deployment spelling.
@@ -2834,6 +2837,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.sse_max_event_bytes", 0)
 	viper.SetDefault("gateway.sse_max_event_lines", 0)
 	viper.SetDefault("gateway.sse_queue_max_bytes", int64(0))
+	viper.SetDefault("gateway.scheduling.stream_experience_enabled", true)
+	viper.SetDefault("gateway.scheduling.stream_experience_gap_seconds", 20)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout", 100*time.Millisecond)
@@ -3949,6 +3954,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 30 {
 		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-30")
+	}
+	if c.Gateway.Scheduling.StreamExperienceGapSeconds < 0 || c.Gateway.Scheduling.StreamExperienceGapSeconds > 600 {
+		return fmt.Errorf("gateway.scheduling.stream_experience_gap_seconds must be between 0 (default 20) and 600")
 	}
 	if c.Gateway.Scheduling.StickySessionMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.sticky_session_max_waiting must be positive")

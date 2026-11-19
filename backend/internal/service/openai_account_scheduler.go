@@ -46,6 +46,7 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
+	Experience                     *openAIExperienceRoute
 	GroupID                        *int64
 	UserID                         int64
 	UserConcurrency                int
@@ -104,6 +105,7 @@ type OpenAIAccountSchedulerMetricsSnapshot struct {
 	LastLockedPriority        int64
 	SnapshotGeneration        int64
 	ExclusionsByReason        map[string]int64
+	StreamExperience          map[string]uint64
 	SharedHealthReportDrops   int64
 	SharedHealthPersistErrors int64
 	SharedHealthPublishErrors int64
@@ -1034,6 +1036,11 @@ func (s *OpenAIGatewayService) latestOpenAIAccountMatchesGroup(ctx context.Conte
 }
 
 type openAIAccountCandidateScore struct {
+	experience         []OpenAIStreamExperienceSample
+	experienceDegraded bool
+	experienceRecovery bool
+	experienceFloor    int64
+
 	account         *Account
 	loadInfo        *AccountLoadInfo
 	loadInfoMissing bool
@@ -1531,7 +1538,7 @@ func filterOpenAIAdaptiveCandidateScoresToPolicyTierUnpartitioned(ordered []open
 	ordered = freshOpenAIHealthCandidates(ordered, now, policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
 	for i, candidate := range ordered {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
+		profiles[i] = experienceProfile(candidate)
 	}
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), now, policy)
 	allowed := make(map[int64]struct{}, len(indexes))
@@ -1611,9 +1618,10 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 	costBalanced := IsHealthCostBalancedSchedulingStrategy(req.AccountSchedulingStrategy)
 	policy := adaptiveTTFTSwitchPolicyFromValues(req.AdaptiveTTFTSwitchEnabled, req.AdaptiveTTFTThresholdSecs, req.AdaptiveHealthFreshnessMinutes)
 	ordered = freshOpenAIHealthCandidates(ordered, now, policy)
+	s.service.decorateExperience(ordered, req, now, policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(ordered))
 	for i, candidate := range ordered {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
+		profiles[i] = experienceProfile(candidate)
 	}
 	preferredIndexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, costBalanced, now, policy)
 	preferred := make(map[int64]struct{}, len(preferredIndexes))
@@ -1632,6 +1640,10 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			bProfile := adaptiveAccountHealthProfile{account: b.account, errorRate: b.errorRate, errorSamples: b.sampleCount, p50: b.ttft, p90: b.ttftP90, hasTTFT: b.hasTTFT, ttftSamples: b.ttftSampleCount}
 			if less, decided := adaptiveProfileHealthLess(aProfile, bProfile, costBalanced, policy); decided {
 				return less
+			}
+			aExperience, bExperience := experienceGrade(a), experienceGrade(b)
+			if aExperience != bExperience {
+				return aExperience < bExperience
 			}
 			aRate, aRateKnown := accountEffectiveUpstreamMultiplier(a.account, now)
 			bRate, bRateKnown := accountEffectiveUpstreamMultiplier(b.account, now)
@@ -1681,14 +1693,23 @@ func (s *defaultOpenAIAccountScheduler) buildHealthFirstSelectionOrder(pool []op
 			if candidate.account.ID != req.StickyAccountID {
 				continue
 			}
-			if _, ok := preferred[candidate.account.ID]; ok && adaptiveOpenAIStickyCanLead(candidate, ordered, preferred, costBalanced, now, policy) {
+			if _, ok := preferred[candidate.account.ID]; ok && !ordered[0].experienceRecovery && adaptiveOpenAIStickyCanLead(candidate, ordered, preferred, costBalanced, now, policy) {
 				copy(ordered[1:i+1], ordered[:i])
 				ordered[0] = candidate
 			}
 			break
 		}
 	}
-	return prioritizeOpenAIAdaptiveOAuthCandidates(ordered)
+	ordered = prioritizeOpenAIAdaptiveOAuthCandidates(ordered)
+	if len(pool) > 0 && ordered[0].account.ID != pool[0].account.ID {
+		for _, c := range ordered {
+			if c.account.ID == pool[0].account.ID && c.experienceDegraded {
+				s.service.experienceDecision(c.account.ID, req.RequestedModel, "persistent_stream_gap")
+				break
+			}
+		}
+	}
+	return ordered
 }
 
 func selectOpenAIUnknownAdaptiveCandidate(ordered []openAIAccountCandidateScore, preferred map[int64]struct{}, stats *openAIAccountRuntimeStats, now time.Time, groupID, affinityAccountID int64, costBalanced, coverageTurn bool) (int64, bool) {
@@ -1757,6 +1778,16 @@ func adaptiveOpenAIStickyCanLead(sticky openAIAccountCandidateScore, pool []open
 	fresh := freshOpenAIHealthCandidates(append([]openAIAccountCandidateScore{sticky}, pool...), now, policy)
 	sticky = fresh[0]
 	pool = fresh[1:]
+	if sticky.experienceDegraded && !sticky.experienceRecovery {
+		for _, other := range pool {
+			if other.account == nil || other.account.ID == sticky.account.ID {
+				continue
+			}
+			if _, ok := preferred[other.account.ID]; ok && !other.experienceDegraded && experienceWorse(sticky.experience, other.experience, sticky.experienceFloor) {
+				return false
+			}
+		}
+	}
 	if sticky.sampleCount >= accountHealthUnknownMinSamples {
 		for _, other := range pool {
 			if other.account == nil || other.account.ID == sticky.account.ID || other.sampleCount < accountHealthUnknownMinSamples {
@@ -2867,7 +2898,18 @@ func (s *OpenAIGatewayService) SetOpenAIAccountHealthRedisClient(client *redis.C
 	if s == nil {
 		return
 	}
+	s.openaiExperienceMu.Lock()
 	s.openaiAccountHealthRedis = client
+	if x := s.openaiExperience; x != nil && client != nil {
+		x.mu.Lock()
+		if !x.closed && x.backend == nil {
+			x.backend = newOpenAIExperienceBackend(client)
+			x.wg.Add(1)
+			go x.run()
+		}
+		x.mu.Unlock()
+	}
+	s.openaiExperienceMu.Unlock()
 	if s.openaiAccountStats != nil {
 		s.openaiAccountStats.setSharedRedisClient(client)
 	}
@@ -3311,6 +3353,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
 		GroupID:                 groupID,
+		Experience:              experienceRoute(ctx),
 		UserID:                  userID,
 		UserConcurrency:         userConcurrency,
 		SessionHash:             sessionHash,
@@ -3425,7 +3468,9 @@ func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAcc
 	if scheduler == nil {
 		return OpenAIAccountSchedulerMetricsSnapshot{}
 	}
-	return scheduler.SnapshotMetrics()
+	snapshot := scheduler.SnapshotMetrics()
+	snapshot.StreamExperience = s.OpenAIStreamExperienceStats()
+	return snapshot
 }
 
 func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {

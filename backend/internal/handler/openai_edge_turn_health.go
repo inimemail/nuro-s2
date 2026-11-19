@@ -76,5 +76,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeTurnHealth(c *gin.Context, req service.
 			return
 		}
 	}
+	if req.StreamExperience != nil && !neutral {
+		sample := *req.StreamExperience
+		sample.Complete = sample.Complete && success && !req.ClientDisconnected
+		h.gatewayService.RecordOpenAIStreamExperience(lease.account, service.OpenAIUpstreamTransportResponsesWebsocketV2, &sample, req.EdgeRequestID+":"+req.LeaseID+":"+req.HealthEventID+":experience")
+	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
 }

@@ -1455,6 +1455,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
 	plan.TurnHealthEnabled = true
+	h.gatewayService.ConfigureOpenAIEdgeStreamExperience(&plan)
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1626,6 +1627,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 			return service.OpenAIEdgePlan{}, false
 		}
 	}
+	c.Request = c.Request.WithContext(service.WithOpenAIStreamExperienceRequest(c.Request.Context(), forwardBody, service.OpenAIUpstreamTransportHTTPSSE))
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		apiKey.GroupID,
@@ -1693,6 +1695,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
 	plan.TurnHealthEnabled = true
+	h.gatewayService.ConfigureOpenAIEdgeStreamExperience(&plan)
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -1847,6 +1850,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 			return service.OpenAIEdgePlan{}, false
 		}
 	}
+	c.Request = c.Request.WithContext(service.WithOpenAIStreamExperienceRequest(c.Request.Context(), forwardBody, service.OpenAIUpstreamTransportResponsesWebsocketV2))
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		apiKey.GroupID,
@@ -1918,6 +1922,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	plan := prepared.Plan
 	plan.OpsCallbackEnabled = h.opsService != nil
 	plan.TurnHealthEnabled = true
+	h.gatewayService.ConfigureOpenAIEdgeStreamExperience(&plan)
 	if apiKey.Group != nil {
 		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
@@ -2916,6 +2921,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease 
 	if err != nil {
 		return nil, err
 	}
+	h.gatewayService.ConfigureOpenAIEdgeStreamExperience(&plan)
 	plan.EdgeRequestID = lease.edgeRequestID
 	plan.LeaseID = lease.leaseID
 	setOpenAIEdgePlanLeaseWindow(&plan, time.Until(lease.expiresAt), lease.renewGrace)
@@ -3137,7 +3143,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		if detail == "" {
 			detail = req.ErrorMessage
 		}
-		h.recordOpenAIEdgeFailure(lease, "complete", req.ErrorType, detail, req.RequestID, req.ResponseID, req.UpstreamStatusCode)
+		h.recordOpenAIEdgeFailure(lease, "complete", req.ErrorType, detail, req.RequestID, req.ResponseID, req.UpstreamStatusCode, req.FailureClass)
 	}
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
@@ -3190,6 +3196,14 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		}
 		if !restored && successfulTerminal && req.MaxSemanticGapMS != nil && *req.MaxSemanticGapMS > 0 {
 			h.gatewayService.RecordOpenAIStreamSemanticGapSample(lease.account, lease.openAIRoutingModel(), lease.reasoningEffort, *req.MaxSemanticGapMS)
+		}
+		if !req.TurnHealthReported && normalizeOpenAIEdgePath(lease.inboundEndpoint) == "/v1/responses" {
+			sample := req.StreamExperience
+			if sample != nil {
+				copySample := *sample
+				copySample.Complete = copySample.Complete && successfulTerminal && !req.ClientDisconnected && !req.CyberBlocked
+				h.gatewayService.RecordOpenAIStreamExperience(lease.account, service.OpenAIUpstreamTransportHTTPSSE, &copySample, req.EdgeRequestID+":"+req.LeaseID+":experience")
+			}
 		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
 		result := &service.OpenAIForwardResult{
@@ -3436,7 +3450,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	if lease != nil {
 		lease.release()
 		if !req.ClientDisconnected && !req.FallbackToGo {
-			h.recordOpenAIEdgeFailure(lease, "abort", req.FailureClass, req.Reason, "", "", 0)
+			h.recordOpenAIEdgeFailure(lease, "abort", req.FailureClass, req.Reason, "", "", 0, req.FailureClass)
 		}
 		if h.gatewayService != nil && lease.account != nil {
 			actionSuccess := req.ClientDisconnected || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || openAIEdgeAbortReasonIsNeutral(req.Reason)

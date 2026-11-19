@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -558,6 +559,42 @@ func TestOpenAIHealthRedisStallHonorsHealthSocketTimeout(t *testing.T) {
 			require.Less(t, time.Since(started), 2*openAIAccountHealthIOTimeout,
 				"health I/O must not wait for the global Redis socket timeout")
 			require.Equal(t, 10*time.Second, client.Options().ReadTimeout, "billing/scheduling Redis options remain unchanged")
+		})
+	}
+}
+
+func newOpenAIExperienceRedisTestClient(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: 0})
+	t.Cleanup(func() { _ = client.Close() })
+	return mr, client
+}
+
+func TestOpenAIExperienceRedisStallHonorsSocketTimeout(t *testing.T) {
+	for _, report := range []bool{false, true} {
+		t.Run(fmt.Sprintf("report=%v", report), func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() { _ = clientConn.Close(); _ = serverConn.Close() })
+			go func() { _, _ = io.Copy(io.Discard, serverConn) }()
+			client := redis.NewClient(&redis.Options{
+				Dialer:      func(context.Context, string, string) (net.Conn, error) { return clientConn, nil },
+				ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second,
+				MaxRetries: -1, PoolSize: 1, DisableIdentity: true,
+			})
+			t.Cleanup(func() { _ = client.Close() })
+			sample := experienceTestSample(5000)
+			job := openAIExperienceJob{Key: openAIExperienceKey{1, sample.Model, OpenAIUpstreamTransportHTTPSSE, sample.Request}}
+			if report {
+				job.Record = &openAIExperienceRecord{"stalled", sample}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), experienceIOTimeout)
+			defer cancel()
+			started := time.Now()
+			_, err := newOpenAIExperienceBackend(client).apply(ctx, job)
+			require.Error(t, err)
+			require.Less(t, time.Since(started), 4*experienceIOTimeout)
+			require.Equal(t, 10*time.Second, client.Options().ReadTimeout)
 		})
 	}
 }

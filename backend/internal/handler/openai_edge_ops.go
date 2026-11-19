@@ -25,7 +25,7 @@ func (lease *openAIEdgeLease) clearFailureDiagnostic() {
 // The public ingress sees only sanitized stream bytes. Control-plane callbacks
 // own the account/model attribution, including deployments entering Edge directly.
 // Keep this best-effort observation separate from billing and retry decisions.
-func (h *OpenAIGatewayHandler) recordOpenAIEdgeFailure(lease *openAIEdgeLease, stage, kind, detail, upstreamID, responseID string, upstreamStatus int) {
+func (h *OpenAIGatewayHandler) recordOpenAIEdgeFailure(lease *openAIEdgeLease, stage, kind, detail, upstreamID, responseID string, upstreamStatus int, failureClasses ...string) {
 	if h == nil || h.opsService == nil || lease == nil || lease.account == nil || lease.apiKey == nil || !h.opsService.IsMonitoringEnabled(context.Background()) {
 		return
 	}
@@ -44,6 +44,14 @@ func (h *OpenAIGatewayHandler) recordOpenAIEdgeFailure(lease *openAIEdgeLease, s
 	// The internal diagnostic contains only bounded structured fields. Legacy
 	// raw errors are sanitized and never copied into the public response.
 	diagnostic := map[string]any{"stage": stage, "edge_request_id": lease.edgeRequestID, "response_id": boundedEdgeDiagnosticID(responseID)}
+	if len(failureClasses) > 0 {
+		failureClass = failureClasses[0]
+	}
+	diagnostic["failure_class"] = boundedEdgeDiagnosticID(failureClass)
+	diagnostic["connection_segment"] = edgeStreamFailureSegment(failureClass)
+	diagnostic["transport"] = lease.lastPlan.Transport
+	diagnostic["lease_id"] = boundedEdgeDiagnosticID(lease.leaseID)
+
 	var supplied map[string]json.RawMessage
 	if len(detail) <= 8192 && json.Unmarshal([]byte(detail), &supplied) == nil {
 		for _, name := range []string{"event_type", "error_type", "code", "status", "request_id"} {
@@ -238,4 +246,19 @@ func (h *OpenAIGatewayHandler) claimEdgeOpsFailure(key string) bool {
 	}
 	h.edgeOpsSeen[key] = now
 	return true
+}
+
+// Attribution describes the observed hop. An Edge downstream close may be a
+// Go-to-Edge disconnect; it is not proof that the end user canceled.
+func edgeStreamFailureSegment(class string) string {
+	switch class {
+	case "upstream_disconnect", "upstream_no_progress", "upstream_error", "rate_limited", "authentication_error":
+		return "edge_upstream"
+	case "client_cancelled":
+		return "edge_downstream"
+	case "lease_lost", "prepare_failed", "complete_failed", "local_capacity_rejected", "queue_timeout":
+		return "edge_control"
+	default:
+		return "unknown"
+	}
 }

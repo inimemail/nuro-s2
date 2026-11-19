@@ -125,7 +125,7 @@ func TestEdgeStreamRealRustTransportRecovery(t *testing.T) {
 			}))
 			defer upstream.Close()
 			plan := func(requestID string) map[string]any {
-				return map[string]any{"action": "relay", "edge_request_id": requestID, "lease_id": "lease-fixture", "account_id": 1, "account_type": "apikey", "transport": "http2_sse", "response_dialect": "responses", "upstream_url": upstream.URL, "headers": map[string]string{"Content-Type": "application/json"}, "body": map[string]any{"stream": true}, "lease_ttl_ms": 120000, "lease_renew_grace_ms": 120000, "preamble_flush": true}
+				return map[string]any{"action": "relay", "edge_request_id": requestID, "lease_id": "lease-fixture", "account_id": 1, "account_type": "apikey", "transport": "http2_sse", "response_dialect": "responses", "upstream_url": upstream.URL, "headers": map[string]string{"Content-Type": "application/json"}, "body": map[string]any{"stream": true}, "lease_ttl_ms": 120000, "lease_renew_grace_ms": 120000, "preamble_flush": true, "stream_experience": map[string]any{"model": "gpt-test", "request": map[string]any{"effort": "unspecified", "input_bucket": 0, "service_tier": "unspecified"}}}
 			}
 			control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -249,6 +249,8 @@ func TestEdgeStreamRealRustTransportRecovery(t *testing.T) {
 			require.EqualValues(t, 1, preparations.Load())
 			select {
 			case req := <-usage:
+				require.NotNil(t, req.StreamExperience)
+				require.Equal(t, split != -3, req.StreamExperience.Complete)
 				if split == -3 {
 					require.EqualValues(t, 150, req.Usage.InputTokens, "cancellation must preserve both attempts")
 					require.EqualValues(t, 27, req.Usage.OutputTokens)

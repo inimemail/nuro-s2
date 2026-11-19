@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -730,6 +732,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	upstreamFirstMessageSent := false
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
+	if s.OpenAIStreamExperienceEnabled() && account.Platform == PlatformOpenAI {
+		upstreamFrameConn = &openAIExperienceFrameConn{inner: upstreamFrameConn, service: s, account: account}
+	}
+
 	firstWriteErr := upstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
@@ -1092,3 +1098,147 @@ func logOpenAIWSV2Passthrough(format string, args ...any) {
 		append([]any{openaiWSV2PassthroughModeFields}, args...)...,
 	)
 }
+
+// Reads and writes may run concurrently. Never hold mu across provider I/O.
+type openAIExperienceFrameConn struct {
+	inner              openaiwsv2.FrameConn
+	service            *OpenAIGatewayService
+	account            *Account
+	mu                 sync.Mutex
+	tracker            *openAIExperienceTracker
+	sending            *openAIExperienceTracker
+	started            time.Time
+	model              string
+	session            OpenAIExperienceRequest
+	sessionImages      bool
+	sessionImageChoice bool
+	sessionCompaction  bool
+	active             bool
+	overlap            bool
+}
+
+func (c *openAIExperienceFrameConn) WriteFrame(ctx context.Context, kind coderws.MessageType, payload []byte) error {
+	event := gjson.GetBytes(payload, "type").String()
+	var sending *openAIExperienceTracker
+	c.mu.Lock()
+	if event == "session.update" {
+		session := gjson.GetBytes(payload, "session")
+		next := experienceRequest([]byte(session.Raw))
+		if session.Get("reasoning.effort").Exists() || session.Get("reasoning_effort").Exists() {
+			c.session.Effort = next.Effort
+		}
+		if session.Get("service_tier").Exists() {
+			c.session.ServiceTier = next.ServiceTier
+		}
+		if session.Get("tools").Exists() {
+			c.session.HasTools = next.HasTools
+			c.sessionImages = openAIJSONToolsContainNativeImageGeneration(session.Get("tools"))
+		}
+		if session.Get("tool_choice").Exists() {
+			c.sessionImageChoice = openAIJSONToolChoiceSelectsExplicitImageGeneration(session.Get("tool_choice"))
+		}
+		if value := session.Get("context_management"); value.Exists() {
+			c.sessionCompaction = value.Type != gjson.Null
+		}
+		if m := session.Get("model").String(); m != "" {
+			c.model = m
+			if len(m) > 200 {
+				c.model = ""
+			}
+		}
+	}
+	if event == "response.create" {
+		if c.active {
+			c.overlap = true
+			c.tracker = nil
+		}
+		c.active = true
+		if !c.overlap {
+			t := newOpenAIExperienceTracker(payload)
+			if t.sample.Model == "" {
+				t.sample.Model = c.model
+			} else {
+				c.model = t.sample.Model
+				if len(c.model) > 200 {
+					c.model = ""
+				}
+			}
+			if !gjson.GetBytes(payload, "reasoning.effort").Exists() && !gjson.GetBytes(payload, "reasoning_effort").Exists() && c.session.Effort != "" {
+				t.sample.Request.Effort = c.session.Effort
+			}
+			if !gjson.GetBytes(payload, "service_tier").Exists() && c.session.ServiceTier != "" {
+				t.sample.Request.ServiceTier = c.session.ServiceTier
+			}
+			if !gjson.GetBytes(payload, "tools").Exists() {
+				t.sample.Request.HasTools = c.session.HasTools
+			}
+			eligible := (!c.sessionImages || gjson.GetBytes(payload, "tools").Exists()) && (!c.sessionCompaction || gjson.GetBytes(payload, "context_management").Exists())
+			eligible = eligible && (!c.sessionImageChoice || gjson.GetBytes(payload, "tool_choice").Exists())
+			if eligible && t.sample.Model != "" && len(t.sample.Model) <= 200 && !gjson.GetBytes(payload, "context_management").Exists() && !IsExplicitImageGenerationIntent(openAIResponsesEndpoint, t.sample.Model, payload) {
+				c.tracker = t
+				c.sending = t
+				sending = t
+			}
+		}
+	}
+	c.mu.Unlock()
+	err := c.inner.WriteFrame(ctx, kind, payload)
+	if sending != nil {
+		c.mu.Lock()
+		if c.sending == sending {
+			c.sending = nil
+		}
+		if c.tracker == sending {
+			if err != nil {
+				c.tracker = nil
+			} else {
+				// Exclude blocked outbound request writes even if an upstream
+				// read was already pending when this turn started.
+				c.started = time.Now()
+			}
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
+func (c *openAIExperienceFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	readStart := time.Now()
+	kind, payload, err := c.inner.ReadFrame(ctx)
+	finished := time.Now()
+	c.mu.Lock()
+	if err != nil || openAIResponsesTerminalEventType(gjson.GetBytes(payload, "type").String()) != "" {
+		c.active = false
+	}
+	t := c.tracker
+	if t != nil && c.sending == t {
+		// A response raced the request write. Its wait cannot be separated
+		// reliably from outbound backpressure; leave this turn unscored.
+		c.tracker = nil
+		t = nil
+	}
+	var sample *OpenAIStreamExperienceSample
+	if t != nil {
+		if readStart.Before(c.started) {
+			readStart = c.started
+		}
+		t.advance(finished.Sub(readStart))
+		if err == nil {
+			t.observe(payload)
+		}
+		event := gjson.GetBytes(payload, "type").String()
+		if err != nil || openAIResponsesTerminalEventType(event) != "" {
+			v := t.snapshot()
+			if err != nil || ctx.Err() != nil {
+				v.Complete = false
+			}
+			sample = &v
+			c.tracker = nil
+		}
+	}
+	c.mu.Unlock()
+	if sample != nil {
+		c.service.RecordOpenAIStreamExperience(c.account, OpenAIUpstreamTransportResponsesWebsocketV2, sample, "")
+	}
+	return kind, payload, err
+}
+func (c *openAIExperienceFrameConn) Close() error { return c.inner.Close() }

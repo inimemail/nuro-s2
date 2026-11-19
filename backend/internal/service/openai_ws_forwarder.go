@@ -2454,6 +2454,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		)
 	}
 
+	var experienceBody []byte
+	if s.OpenAIStreamExperienceEnabled() && account.Platform == PlatformOpenAI {
+		experienceBody, _ = json.Marshal(payload)
+	}
+	experience, finishExperience := s.startExperienceTurn(ctx, account, experienceBody)
+	defer finishExperience()
+
 	usage := &OpenAIUsage{}
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
@@ -2633,6 +2640,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			case result := <-readResultCh:
 				readResultCh = nil
 				progressGuard.consumedRead(result.wait)
+				experience.advance(result.wait)
 				message, readErr = result.message, result.err
 			case <-firstTokenTimeoutCh:
 				firstTokenTimeoutCh = nil
@@ -2652,6 +2660,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					pendingJSONDocuments = append(pendingJSONDocuments, documents[1:]...)
 				}
 			}
+		}
+		if readErr == nil {
+			experience.observe(message)
 		}
 		if readErr != nil {
 			lease.MarkBroken()
@@ -3832,6 +3843,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
+		experience, finishExperience := s.startExperienceTurn(ctx, account, payload)
+		defer finishExperience()
+
 		var createdAtStamper responsesCreatedAtStamper
 		responseID := ""
 		usage := OpenAIUsage{}
@@ -3868,6 +3882,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			readStarted := time.Now()
 			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
 			progressGuard.consumedRead(time.Since(readStarted))
+			experience.advance(time.Since(readStarted))
+			if readErr == nil {
+				experience.observe(upstreamMessage)
+			}
 			readErr = openAIWSReadError(ctx, readErr, noProgress)
 			if readErr != nil {
 				lease.MarkBroken()

@@ -2173,3 +2173,20 @@ func TestV028SimpleModeDefaultGroupCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamExperienceSchedulingConfig(t *testing.T) {
+	cfg := buildValid(t)
+	require.NotNil(t, cfg.Gateway.Scheduling.StreamExperienceEnabled)
+	require.True(t, *cfg.Gateway.Scheduling.StreamExperienceEnabled)
+	require.Equal(t, 20, cfg.Gateway.Scheduling.StreamExperienceGapSeconds)
+	t.Setenv("GATEWAY_SCHEDULING_STREAM_EXPERIENCE_ENABLED", "false")
+	t.Setenv("GATEWAY_SCHEDULING_STREAM_EXPERIENCE_GAP_SECONDS", "35")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, *cfg.Gateway.Scheduling.StreamExperienceEnabled)
+	require.Equal(t, 35, cfg.Gateway.Scheduling.StreamExperienceGapSeconds)
+	cfg.Gateway.Scheduling.StreamExperienceGapSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "stream_experience_gap_seconds")
+	cfg.Gateway.Scheduling.StreamExperienceGapSeconds = 601
+	require.ErrorContains(t, cfg.Validate(), "stream_experience_gap_seconds")
+}

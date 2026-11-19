@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -144,6 +145,7 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 		resp, err = session.resume(0)
 	}
 	if err != nil {
+		slog.Info("openai edge ingress connection failed", "connection_segment", "go_edge", "connected", connected.Load(), "client_context_canceled", c.Request.Context().Err() != nil)
 		if session == nil && !connected.Load() && c.Request.Context().Err() == nil {
 			// Only a definite connection establishment failure may use Go.
 			var dialErr *net.OpError

@@ -26,7 +26,7 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 	if binary == "" {
 		t.Skip("set NURO_EDGE_TEST_BINARY to run the Rust/Go transport integration")
 	}
-	for _, scenario := range []string{"completed_tcp_close", "completed_idle", "active_tcp_close", "heartbeat_stall", "reasoning_progress", "protection_off", "client_cancel"} {
+	for _, scenario := range []string{"completed_tcp_close", "completed_idle", "active_tcp_close", "heartbeat_stall", "reasoning_progress", "protection_off", "client_cancel", "experience"} {
 		t.Run(scenario, func(t *testing.T) {
 			upstreamClosed := make(chan struct{})
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +64,11 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 						}
 					}
 				}
+				if scenario == "experience" {
+					send(`{"type":"response.output_text.delta","delta":"hello"}`)
+					time.Sleep(40 * time.Millisecond)
+					send(`{"type":"response.output_text.delta","delta":"world"}`)
+				}
 				send(`{"type":"response.completed","response":{"id":"resp-health","status":"completed","usage":{"input_tokens":7,"output_tokens":3}}}`)
 				if scenario == "completed_idle" {
 					time.Sleep(450 * time.Millisecond) // Idle sessions must have no generation watchdog.
@@ -84,6 +89,8 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 						"action": "relay", "edge_request_id": req.EdgeRequestID, "lease_id": "lease-health", "account_id": 1,
 						"transport": "ws_v2", "response_dialect": "responses", "upstream_url": "ws" + strings.TrimPrefix(upstream.URL, "http"),
 						"edge_protection_enabled": scenario != "protection_off", "edge_body_idle_timeout_ms": 200,
+						"turn_health_enabled": scenario == "experience",
+						"stream_experience":   map[string]any{"model": "gpt-test", "request": map[string]any{"effort": "unspecified", "input_bucket": 0, "service_tier": "unspecified"}},
 					})
 				case "/internal/edge/openai/complete":
 					var req service.OpenAIEdgeCompleteRequest
@@ -140,7 +147,28 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 			_ = conn.Close()
 			select {
 			case req := <-completed:
+				if scenario == "experience" {
+					require.True(t, req.HealthOnly)
+					require.NotNil(t, req.StreamExperience)
+					require.True(t, req.StreamExperience.Complete)
+					require.GreaterOrEqual(t, req.StreamExperience.MaxGapMS, int64(25))
+					require.NotNil(t, req.StreamExperience.FirstReadyMS)
+					require.NotNil(t, req.RealFirstTokenMS)
+					require.Equal(t, "gpt-test", req.StreamExperience.Model)
+				}
 				switch scenario {
+				case "experience":
+					require.True(t, req.Success)
+					require.Zero(t, req.Usage.InputTokens, "health-only callbacks never settle billable usage")
+					select {
+					case billed := <-completed:
+						require.False(t, billed.HealthOnly)
+						require.True(t, billed.TurnHealthReported)
+						require.Equal(t, 7, billed.Usage.InputTokens)
+						require.Equal(t, 3, billed.Usage.OutputTokens)
+					case <-time.After(5 * time.Second):
+						t.Fatal("missing independent billing completion")
+					}
 				case "active_tcp_close":
 					require.False(t, req.Success)
 					require.Equal(t, "upstream_disconnect", req.FailureClass)

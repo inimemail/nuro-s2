@@ -164,11 +164,12 @@ type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
 type accountWithLoad struct {
-	account         *Account
-	loadInfo        *AccountLoadInfo
-	loadInfoMissing bool
-	healthScore     float64
-	hasHealthScore  bool
+	openAIExperienceGrade int
+	account               *Account
+	loadInfo              *AccountLoadInfo
+	loadInfoMissing       bool
+	healthScore           float64
+	hasHealthScore        bool
 }
 
 var ForceCacheBillingContextKey = forceCacheBillingKeyType{}

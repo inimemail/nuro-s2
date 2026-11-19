@@ -927,3 +927,56 @@ func openAIAccountHealthEventFromMap(key openAIAccountRuntimeStatsKey, values ma
 		values["ttft_updated_ns"],
 	})
 }
+
+// Redis implementation for the independent, bounded stream experience cache.
+type redisOpenAIExperienceBackend struct{ client *redis.Client }
+
+func newOpenAIExperienceBackend(client *redis.Client) openAIExperienceBackend {
+	if client == nil {
+		return nil
+	}
+	// ContextTimeoutEnabled is off on the shared billing/scheduling client.
+	// Bound this worker's socket I/O without mutating that shared client.
+	return &redisOpenAIExperienceBackend{client.WithTimeout(experienceIOTimeout)}
+}
+
+var experienceReportScript = redis.NewScript(`
+ local rows = redis.call('LRANGE',KEYS[1],0,-1)
+ table.insert(rows,ARGV[1])
+ local records = {}
+ local seen = {}
+ for _,row in ipairs(rows) do
+  local ok,r = pcall(cjson.decode,row)
+  if ok and type(r) == 'table' and type(r.id) == 'string' and type(r.sample) == 'table' and type(r.sample.at_ms) == 'number' and not seen[r.id] then
+   seen[r.id] = true
+   table.insert(records,{row=row,id=r.id,at=r.sample.at_ms})
+  end
+ end
+ table.sort(records,function(a,b)
+  if a.at == b.at then return a.id < b.id end
+  return a.at < b.at
+ end)
+ -- WAL delivery order is not observation order. Retain the latest ten
+ -- observations even when an older, distinct event arrives after them.
+ local kept = {}
+ for i=math.max(1,#records-9),#records do table.insert(kept,records[i].row) end
+ redis.call('DEL',KEYS[1])
+ if #kept > 0 then
+  redis.call('RPUSH',KEYS[1],unpack(kept))
+  redis.call('EXPIRE',KEYS[1],7200)
+ end
+return redis.call('LRANGE',KEYS[1],0,-1)
+`)
+
+func (b *redisOpenAIExperienceBackend) apply(ctx context.Context, j openAIExperienceJob) ([]string, error) {
+	encoded, _ := json.Marshal(j.Key)
+	key := fmt.Sprintf("sub2api:openai:experience:v1:{%x}", sha256.Sum256(encoded))
+	if j.Record == nil {
+		return b.client.LRange(ctx, key, 0, -1).Result()
+	}
+	payload, _ := json.Marshal(j.Record)
+	// IDs in the retained window provide deduplication. Once an event leaves
+	// the window, the timestamp/ID ordering prevents its replay from displacing
+	// newer observations. Per-event receipt keys would grow with request volume.
+	return experienceReportScript.Run(ctx, b.client, []string{key}, payload).StringSlice()
+}

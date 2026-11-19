@@ -35,6 +35,11 @@ const (
 )
 
 type adaptiveAccountHealthProfile struct {
+	experience         []OpenAIStreamExperienceSample
+	experienceDegraded bool
+	experienceRecovery bool
+	experienceFloor    int64
+
 	account      *Account
 	errorRate    float64
 	errorSamples int64
@@ -104,7 +109,8 @@ func adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles []adaptiveAccountHealth
 		}
 	}
 	if costBalanced {
-		return adaptiveLowestUsableCostTierWithTTFTPolicy(profiles, errorQualified, now, policy)
+		selected := adaptiveLowestUsableCostTierWithTTFTPolicy(profiles, errorQualified, now, policy)
+		return adaptiveExperienceCostTier(profiles, selected, errorQualified, now)
 	}
 	return adaptiveHealthFirstIndexesWithTTFTPolicy(profiles, errorQualified, policy)
 }

@@ -2,6 +2,7 @@ mod disk_worker;
 mod http_lane_pool;
 mod relay_queue;
 mod retry_queue;
+mod stream_experience;
 mod stream_session;
 
 use std::{
@@ -1098,6 +1099,8 @@ struct EdgePlan {
     #[serde(default)]
     turn_health_enabled: bool,
     #[serde(default)]
+    stream_experience: Option<stream_experience::Sample>,
+    #[serde(default)]
     ops_callback_enabled: bool,
     settlement_context: Option<String>,
     action: String,
@@ -1797,6 +1800,8 @@ struct CompleteRequest {
     first_token_ms: Option<i64>,
     real_first_token_ms: Option<i64>,
     max_semantic_gap_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stream_experience: Option<stream_experience::Sample>,
     #[serde(skip_serializing_if = "Option::is_none")]
     guard_sample_at_unix_ns: Option<i64>,
     first_client_flush_ms: Option<i64>,
@@ -3008,6 +3013,12 @@ impl ClientDisconnectCompleteGuard {
         }
     }
 
+    fn update_experience(&self, sample: Option<stream_experience::Sample>) {
+        if let Ok(mut request) = self.request.lock() {
+            request.stream_experience = sample;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update_stream_snapshot(
         &self,
@@ -3148,6 +3159,7 @@ fn pending_stream_complete_request(
         real_first_token_ms: None,
         max_semantic_gap_ms: None,
         guard_sample_at_unix_ns: None,
+        stream_experience: None,
         first_client_flush_ms: None,
         edge_prepare_ms,
         edge_queue_wait_ms,
@@ -5052,6 +5064,13 @@ async fn relay_ws_session(
         plan.account_type.as_deref(),
     );
     let mut turn_started_at = started_at;
+    let mut experience_session = stream_experience::Session::default();
+    experience_session.update(last_request_body.as_ref());
+    let mut experience = experience_session.tracker(
+        last_request_body.as_ref(),
+        plan.stream_experience.is_some() && ws_response_active,
+        health_turn_model.as_deref(),
+    );
     let mut downstream_ttft_observed = false;
     let mut first_token_timeout_placeholder_sent = false;
     let mut current_turn_real_first_token_ms: Option<i64> = None;
@@ -5090,9 +5109,11 @@ async fn relay_ws_session(
             &mut ws_body_idle_timer, ws_body_idle_timeout, upstream_wait_finished_at,
         );
         ws_progress_watchdog.exclude_local_time(upstream_wait_finished_at);
+        let experience_wait_started=Instant::now();
         tokio::select! {
             next = client_socket.recv() => {
                 upstream_wait_finished_at = tokio::time::Instant::now();
+                experience.advance(experience_wait_started.elapsed());
                 match next {
                     Some(Ok(msg)) => {
                         if matches!(msg, AxumWsMessage::Close(_)) {
@@ -5140,6 +5161,9 @@ async fn relay_ws_session(
                             markup_turn_model.clone(),
                         );
                         let starts_response = tungstenite_message_is_response_create(&upstream_msg);
+                        if plan.stream_experience.is_some() {
+                            experience_session.update(tungstenite_message_json(&upstream_msg).as_ref());
+                        }
                         if plan.turn_health_enabled {
                             let body = tungstenite_message_json(&upstream_msg);
                             let model = openai_ws_health_request_model(body.as_ref(), &mut health_session_model);
@@ -5148,6 +5172,14 @@ async fn relay_ws_session(
                             }
                         }
                         if starts_response {
+                            if plan.stream_experience.is_some() {
+                                experience = experience_session.begin_turn(
+                                    tungstenite_message_json(&upstream_msg).as_ref(),
+                                    true,
+                                    health_turn_model.as_deref(),
+                                    ws_response_active,
+                                );
+                            }
                             health_turn = health_turn.saturating_add(1);
                             turn_health_reported = false;
                             turn_started_at = Instant::now();
@@ -5222,9 +5254,11 @@ async fn relay_ws_session(
             }
             next = upstream_read.next() => {
                 upstream_wait_finished_at = tokio::time::Instant::now();
+                experience.advance(experience_wait_started.elapsed());
                 match next {
                     Some(Ok(msg)) => {
                         let upstream_json = tungstenite_message_json(&msg);
+                        if let Some(value)=upstream_json.as_ref(){experience.observe(value);}
                         let starts_downstream_ttft = upstream_json
                             .as_ref()
                             .is_some_and(|value| json_starts_downstream_ttft(value, Some("responses")));
@@ -5312,6 +5346,7 @@ async fn relay_ws_session(
                                                             upstream_write = next_write;
                                                             upstream_read = next_read;
                                                             last_request_body = tungstenite_message_json(&next_message);
+                                                            experience=experience_session.tracker(last_request_body.as_ref(),plan.stream_experience.is_some(),health_turn_model.as_deref());
                                                             prompt_cache_creation_optimization_model =
                                                                 next_plan.prompt_cache_creation_optimization_model.clone();
                                                             cache_creation_policy_applied_for_turn =
@@ -5456,6 +5491,7 @@ async fn relay_ws_session(
                                 class,
                                 current_turn_real_first_token_ms,
                                 turn_started_at.elapsed().as_millis() as i64,
+                                experience.snapshot(),
                             )
                             .await
                             {
@@ -5509,6 +5545,7 @@ async fn relay_ws_session(
             }
             _ = wait_optional_sleep(&mut first_token_timeout_timer), if ws_response_active && !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
                 upstream_wait_finished_at = tokio::time::Instant::now();
+                experience.advance(experience_wait_started.elapsed());
                 let placeholder = AxumWsMessage::Text(
                     openai_responses_safe_token_placeholder_json(summary.response_id.as_deref()),
                 );
@@ -5632,6 +5669,7 @@ async fn relay_ws_session(
             class,
             current_turn_real_first_token_ms,
             turn_started_at.elapsed().as_millis() as i64,
+            experience.snapshot(),
         )
         .await
         {
@@ -5685,6 +5723,7 @@ async fn relay_ws_session(
             real_first_token_ms: latest_real_first_token_ms,
             max_semantic_gap_ms: None,
             guard_sample_at_unix_ns: None,
+            stream_experience: None,
             first_client_flush_ms: None,
             edge_prepare_ms: None,
             edge_queue_wait_ms: None,
@@ -8525,6 +8564,7 @@ async fn relay_upstream_direct_core_impl(
                     real_first_token_ms: None,
                     max_semantic_gap_ms: None,
                     guard_sample_at_unix_ns: None,
+                    stream_experience: None,
                     first_client_flush_ms: None,
                     edge_prepare_ms: timing.prepare_ms,
                     edge_queue_wait_ms: timing.queue_wait_ms,
@@ -8724,6 +8764,7 @@ async fn relay_upstream_direct_core_impl(
     complete_guard.update_lease_identity(&initial_plan);
     let body_stream = stream! {
         let mut current_plan = initial_plan;
+        let mut experience=stream_experience::Tracker::new(current_plan.stream_experience.clone());
         let mut current_edge_retry_count = edge_retry_count;
         let mut retry_budget = RequestRetryBudget::new(
             current_plan
@@ -8846,6 +8887,7 @@ async fn relay_upstream_direct_core_impl(
                 &mut body_idle_timer, edge_body_idle_timeout, upstream_wait_finished_at,
             );
             progress_watchdog.exclude_local_time(upstream_wait_finished_at);
+            let experience_wait_started=Instant::now();
             let event = if bootstrap_timer.is_some()
                 || first_token_timeout_timer.is_some()
                 || semantic_progress_timer.is_some()
@@ -8880,6 +8922,7 @@ async fn relay_upstream_direct_core_impl(
                 RelaySelectEvent::Upstream(bytes_stream.next().await)
             };
             upstream_wait_finished_at = tokio::time::Instant::now();
+            experience.advance(experience_wait_started.elapsed());
             let next = match event {
                 RelaySelectEvent::LeaseLost => {
                     success = false;
@@ -9053,6 +9096,8 @@ async fn relay_upstream_direct_core_impl(
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
+                            experience=stream_experience::Tracker::new(current_plan.stream_experience.clone());
+                            guard.update_experience(experience.snapshot());
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
                             preamble_gate = SsePreambleGate::new(
                                 !buffer_attempt_preamble
@@ -9195,6 +9240,8 @@ async fn relay_upstream_direct_core_impl(
                         );
                         summary.request_id = next_request_id;
                         event_parser = SseEventParser::default();
+                            experience=stream_experience::Tracker::new(current_plan.stream_experience.clone());
+                            guard.update_experience(experience.snapshot());
                         sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
                             response_dialect.as_deref(),
                             downstream_cache_usage_mode.as_deref(),
@@ -9280,6 +9327,8 @@ async fn relay_upstream_direct_core_impl(
                         break 'relay;
                     }
                     for chunk in frames {
+                    experience.observe_sse(&chunk);
+                    if let Some(sample)=experience.snapshot(){guard.update_experience(Some(sample));}
                     // Before the first real token this parser also drives
                     // body-level retry, so inspect every frame. After output
                     // has started, avoid reparsing ordinary deltas and only
@@ -9357,6 +9406,8 @@ async fn relay_upstream_direct_core_impl(
                                 );
                                 summary.request_id = next_request_id;
                                 event_parser = SseEventParser::default();
+                            experience=stream_experience::Tracker::new(current_plan.stream_experience.clone());
+                            guard.update_experience(experience.snapshot());
                                 sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
                                     response_dialect.as_deref(),
                                     downstream_cache_usage_mode.as_deref(),
@@ -9673,6 +9724,8 @@ async fn relay_upstream_direct_core_impl(
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
+                            experience=stream_experience::Tracker::new(current_plan.stream_experience.clone());
+                            guard.update_experience(experience.snapshot());
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
                             preamble_gate = SsePreambleGate::new(
                                 !buffer_attempt_preamble
@@ -9873,6 +9926,7 @@ async fn relay_upstream_direct_core_impl(
             real_first_token_ms,
             max_semantic_gap_ms: success.then_some(max_semantic_gap.as_millis() as i64),
             guard_sample_at_unix_ns: None,
+            stream_experience: experience.snapshot(),
             first_client_flush_ms: first_flush_ms,
             edge_prepare_ms,
             edge_queue_wait_ms,
@@ -12921,6 +12975,7 @@ async fn report_ws_turn_health(
     class: Option<&str>,
     real_first_token_ms: Option<i64>,
     duration_ms: i64,
+    stream_experience: Option<stream_experience::Sample>,
 ) -> anyhow::Result<()> {
     if !plan.turn_health_enabled {
         return Ok(());
@@ -12936,6 +12991,7 @@ async fn report_ws_turn_health(
         0,
     );
     request.health_only = true;
+    request.stream_experience = stream_experience;
     request.health_event_id = Some(format!("{}:{}", plan.edge_request_id, turn));
     request.settlement_context = plan.settlement_context.clone();
     request.success = summary.completed_successfully(Some("responses"));
@@ -17699,6 +17755,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     fn early_placeholder_retry_plan_preserves_body_and_disables_duplicate_timer() {
         let mut plan = EdgePlan {
             turn_health_enabled: false,
+            stream_experience: None,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
@@ -18305,6 +18362,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     fn take_request_body_prefers_raw_base64_and_clears_plan_body() {
         let mut plan = EdgePlan {
             turn_health_enabled: false,
+            stream_experience: None,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
@@ -18463,6 +18521,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     fn relay_queue_key_uses_account_proxy_and_host() {
         let plan = EdgePlan {
             turn_health_enabled: false,
+            stream_experience: None,
             ops_callback_enabled: false,
             settlement_context: None,
             action: "relay".to_string(),
@@ -19712,4 +19771,37 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         drop(permit);
         assert!(try_reserve_relay_queue_bytes(semaphore, 8, 8).is_ok());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn stream_experience_old_wal_is_optional_and_ttft_is_independent() {
+    let mut request = pending_stream_complete_request(
+        "experience-wire".into(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+    );
+    request.real_first_token_ms = Some(123);
+    let mut old = serde_json::to_value(&request).unwrap();
+    old.as_object_mut().unwrap().remove("stream_experience");
+    let restored: CompleteRequest = serde_json::from_value(old).unwrap();
+    assert!(restored.stream_experience.is_none());
+    assert_eq!(restored.real_first_token_ms, Some(123));
+    request.stream_experience = Some(stream_experience::Sample {
+        model: "gpt-test".into(),
+        first_ready_ms: Some(456),
+        ..Default::default()
+    });
+    let restored: CompleteRequest =
+        serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+    assert_eq!(restored.real_first_token_ms, Some(123));
+    assert_eq!(
+        restored.stream_experience.unwrap().first_ready_ms,
+        Some(456)
+    );
 }

@@ -461,6 +461,9 @@ type OpenAIGatewayService struct {
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
+	openaiExperienceMu            sync.Mutex
+	openaiExperience              *openAIExperienceStore
+	openaiExperienceClosed        bool
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
 	openaiAccountStatsOnce        sync.Once
@@ -750,6 +753,7 @@ func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s.openaiAccountStats != nil {
 		s.openaiAccountStats.closeSharedHealth()
 	}
+	s.closeExperience()
 	s.openaiFirstTokenTimeoutPlaceholderGuard.stop()
 }
 
@@ -2644,6 +2648,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(s.openAIAccountWithLoadHealthCandidatesWithHistory(items, requestedModel, history), OpenAIAccountScheduleRequest{
 			GroupID:                        groupID,
+			Experience:                     experienceRoute(ctx),
 			StickyAccountID:                stickyAccountID,
 			RequestedModel:                 requestedModel,
 			AccountSchedulingStrategy:      strategy,
@@ -3420,6 +3425,7 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 		scheduler := &defaultOpenAIAccountScheduler{service: s, stats: s.getOpenAIAccountRuntimeStats()}
 		ordered := scheduler.buildHealthFirstSelectionOrder(candidates, OpenAIAccountScheduleRequest{
 			GroupID:                        groupID,
+			Experience:                     experienceRoute(ctx),
 			StickyAccountID:                stickyAccountID,
 			RequestedModel:                 requestedModel,
 			AccountSchedulingStrategy:      strategy,
@@ -3444,6 +3450,7 @@ func (s *OpenAIGatewayService) orderOpenAIAvailableCandidatesForStrategyWithCont
 			}
 			item.healthScore = candidate.healthScore
 			item.hasHealthScore = candidate.hasHealthScore
+			item.openAIExperienceGrade = experienceGrade(candidate)
 			result = append(result, item)
 		}
 		return result
@@ -3564,9 +3571,10 @@ func (s *OpenAIGatewayService) filterOpenAIAvailableToAdaptivePolicyTierUnpartit
 	}
 	history := s.loadAdaptiveOpenAIAccountTTFTHistory(ctx, accountWithLoadPointers(all), policy.sampleFreshness)
 	candidates := s.openAIAccountWithLoadHealthCandidatesWithHistory(all, requestedModel, history)
+	s.decorateExperience(candidates, OpenAIAccountScheduleRequest{RequestedModel: requestedModel, Experience: experienceRoute(ctx)}, time.Now(), policy)
 	profiles := make([]adaptiveAccountHealthProfile, len(candidates))
 	for i, candidate := range candidates {
-		profiles[i] = adaptiveAccountHealthProfile{account: candidate.account, errorRate: candidate.errorRate, errorSamples: candidate.sampleCount, p50: candidate.ttft, p90: candidate.ttftP90, hasTTFT: candidate.hasTTFT, ttftSamples: candidate.ttftSampleCount, errorUpdated: candidate.errorUpdated, ttftUpdated: candidate.ttftUpdated}
+		profiles[i] = experienceProfile(candidate)
 	}
 	indexes := adaptiveAccountPolicyIndexesWithTTFTPolicy(profiles, IsHealthCostBalancedSchedulingStrategy(strategy), time.Now(), policy)
 	allowed := make(map[int64]struct{}, len(indexes))
@@ -5799,6 +5807,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		setOpenAIStreamProgressPolicy(c, reasoningEffort, IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, originalModel, reqBody))
 		serviceTier := extractOpenAIServiceTier(reqBody)
 		attemptCtx = withOpenAICacheCreationServiceTier(attemptCtx, account, openAICacheCreationServiceTier(serviceTier))
+		if experienceRoute(ctx) != nil {
+			attemptCtx = WithOpenAIStreamExperienceRequest(attemptCtx, body, OpenAIUpstreamTransportHTTPSSE)
+		}
 		releaseOpenAIParsedRequestBody(c)
 
 		// Handle normal response
@@ -6282,6 +6293,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 		serviceTier := extractOpenAIServiceTierFromBody(body)
 		ctx = withOpenAICacheCreationServiceTier(ctx, account, openAICacheCreationServiceTier(serviceTier))
+		if experienceRoute(ctx) != nil {
+			ctx = WithOpenAIStreamExperienceRequest(ctx, body, OpenAIUpstreamTransportHTTPSSE)
+		}
 		setOpenAIStreamProgressPolicy(c, reasoningEffort, IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body))
 
 		var usage *OpenAIUsage
@@ -7711,6 +7725,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	mappedModel string,
 	requestFirstTokenPlaceholderSentOpt ...bool,
 ) (*openaiStreamingResultPassthrough, error) {
+	var finishExperience func()
+	resp.Body, finishExperience = s.observeOpenAIExperienceBody(ctx, resp.Body, account, mappedModel)
+	defer finishExperience()
+
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
 	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
@@ -9358,6 +9376,10 @@ type openaiNonStreamingResult struct {
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, requestFirstTokenPlaceholderSentOpt ...bool) (*openaiStreamingResult, error) {
+	var finishExperience func()
+	resp.Body, finishExperience = s.observeOpenAIExperienceBody(ctx, resp.Body, account, mappedModel)
+	defer finishExperience()
+
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
 	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {

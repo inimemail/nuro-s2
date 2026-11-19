@@ -50,11 +50,11 @@ func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, ses
 }
 
 // balanceAdaptiveOpenAIAccountTies preserves load spreading and prompt-cache
-// affinity without allowing either operation to cross an upstream cost tier.
+// affinity without crossing an upstream cost tier or stream experience grade.
 func balanceAdaptiveOpenAIAccountTies(accounts []accountWithLoad, sessionHash string, includeReset bool, now time.Time) {
 	for i := 0; i < len(accounts); {
 		j := i + 1
-		for j < len(accounts) && sameAdaptiveOpenAIUpstreamCostTier(accounts[i].account, accounts[j].account, now) {
+		for j < len(accounts) && accounts[i].openAIExperienceGrade == accounts[j].openAIExperienceGrade && sameAdaptiveOpenAIUpstreamCostTier(accounts[i].account, accounts[j].account, now) {
 			j++
 		}
 		shuffleOpenAIAccountLoadTiesWithReset(accounts[i:j], includeReset)

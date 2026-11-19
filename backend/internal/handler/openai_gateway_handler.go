@@ -634,6 +634,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			forwardBodyForResponses = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 		}
 	}
+	if !isOpenAIRemoteCompactPath(c) && !imageIntent {
+		// Forward keeps HTTP ingress on SSE even when the account enables WS.
+		requestCtx = service.WithOpenAIStreamExperienceRequest(requestCtx, forwardBodyForResponses(channelMapping.Mapped, channelMapping.MappedModel), service.OpenAIUpstreamTransportHTTPSSE)
+		c.Request = c.Request.WithContext(requestCtx)
+	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -2632,12 +2637,23 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	requestCtx := service.WithOpenAIExplicitImageGenerationIntent(ctx, imageIntent)
+	// Resolve channel mapping before capturing the model used for health cohorts.
+	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
+	if !imageIntent {
+		experienceBody := firstMessage
+		if apiKey.Group != nil {
+			if updated, _, err := service.ApplyOpenAIReasoningEffortPolicyWithAction(firstMessage, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit); err == nil {
+				experienceBody = updated
+			}
+		}
+		if channelMappingWS.Mapped {
+			experienceBody = h.gatewayService.ReplaceModelInBody(experienceBody, channelMappingWS.MappedModel)
+		}
+		requestCtx = service.WithOpenAIStreamExperienceRequest(requestCtx, experienceBody, service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress)
+	}
 	if imageIntent {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 	}
-
-	// 解析渠道级模型映射
-	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
 
 	var currentUserRelease func()
 	var currentAccountRelease func()

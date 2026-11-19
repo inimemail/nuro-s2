@@ -600,6 +600,11 @@ gateway:
   # Scheduling configuration
   # 调度配置
   scheduling:
+    # Active by default for the two adaptive OpenAI strategies; false restores old ordering.
+    # 两档健康调度默认启用全程卡顿降权；关闭可回退原有排序。
+    stream_experience_enabled: true
+    # Repeated gaps must also exceed the comparable account by 50% AND 5 seconds.
+    stream_experience_gap_seconds: 20
     # Sticky session max waiting queue size
     # 粘性会话最大排队长度
     sticky_session_max_waiting: 3
