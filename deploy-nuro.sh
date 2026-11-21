@@ -999,7 +999,7 @@ frontend public_api
     acl private_runtime path_beg -i /internal/
     http-request deny deny_status 404 if private_runtime
     acl openai_edge path -i /v1/chat/completions /v1/responses
-    use_backend edge_pool if openai_edge
+    use_backend edge_pool if openai_edge { nbsrv(edge_pool) gt 0 }
     default_backend go_pool
 
 backend edge_pool
@@ -1012,6 +1012,10 @@ backend edge_pool
 
 backend go_pool
     balance leastconn
+    acl openai_edge path -i /v1/chat/completions /v1/responses
+    # Mark requests routed here by HAProxy so Go skips its local Edge proxy.
+    http-request del-header X-Sub2API-Edge-Secret if openai_edge
+    http-request set-header X-Sub2API-Edge-Fallback 1 if openai_edge
     option httpchk GET /readyz
     http-check expect status 200
     server-template go 1-128 app:8080 check resolvers docker init-addr libc,none
@@ -1027,7 +1031,9 @@ EOF
 create_compose_file() {
     local workdir="$1"
 
-    create_haproxy_config "$workdir"
+    if [[ "${2:-true}" == "true" ]]; then
+        create_haproxy_config "$workdir" || return 1
+    fi
 
     cat > "${workdir}/docker-compose.yml" <<EOF
 name: ${COMPOSE_PROJECT_NAME}
@@ -1500,6 +1506,62 @@ compose_build_with_edge_fallback() {
     (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build)
 }
 
+reload_running_haproxy() {
+    local container="$1"
+    local worker_pids old_pids current_pids new_pid
+    worker_pids='ps -o pid,ppid,comm | awk '\''$2 == 1 && $3 == "haproxy" { print $1 }'\'''
+
+    old_pids="$(docker exec "$container" sh -ec "$worker_pids")" || return 1
+    [[ -n "$old_pids" ]] || return 1
+    docker exec "$container" haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg || return 1
+    docker kill --signal=USR2 "$container" >/dev/null || return 1
+    for _ in $(seq 1 10); do
+        current_pids="$(docker exec "$container" sh -ec "$worker_pids")" || return 1
+        new_pid="$(awk '
+            NR == FNR { seen[$1] = 1; next }
+            NF && !seen[$1] { print $1; exit }
+        ' <(printf '%s\n' "$old_pids") - <<< "$current_pids")" || return 1
+        if [[ -n "$new_pid" ]] && docker exec "$container" wget -q -T 2 -O /dev/null http://127.0.0.1:8404/metrics; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+apply_upgrade_haproxy_config() (
+    local workdir="$1"
+    local container=nuro-sub2api-haproxy
+    local live_config="${workdir}/haproxy.cfg"
+    local mounted_config=/usr/local/etc/haproxy/haproxy.cfg
+    local staged_dir
+
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]]; then
+        create_haproxy_config "$workdir"
+        return
+    fi
+
+    staged_dir="$(mktemp -d "${workdir}/.haproxy.XXXXXX")" || return 1
+    trap 'rm -rf -- "$staged_dir"' EXIT
+    create_haproxy_config "$staged_dir" || return 1
+    docker exec -i "$container" haproxy -c -f /dev/stdin < "${staged_dir}/haproxy.cfg" || return 1
+    cp -- "$live_config" "${staged_dir}/previous.cfg" || return 1
+
+    # Update the existing inode so the container's file bind mount sees it.
+    if ! cat "${staged_dir}/haproxy.cfg" > "$live_config" ||
+       ! docker exec "$container" cat "$mounted_config" | cmp -s "$live_config" -; then
+        cat "${staged_dir}/previous.cfg" > "$live_config" || warn "无法恢复 HAProxy 配置文件"
+        return 1
+    fi
+    if reload_running_haproxy "$container"; then
+        return 0
+    fi
+    if ! cat "${staged_dir}/previous.cfg" > "$live_config" || ! reload_running_haproxy "$container"; then
+        warn "无法确认 HAProxy 已恢复旧配置，请检查容器日志"
+    fi
+    return 1
+)
+
 revoke_escrow_node_lease() {
     local node_id="$1"
     local redis_db="$2"
@@ -1821,7 +1883,7 @@ upgrade_service() {
     reenable_auto_disabled_edge_for_upgrade "${workdir}/.env"
     ensure_edge_env_values "${workdir}/.env"
     ensure_scheduler_env_values "${workdir}/.env"
-    create_compose_file "$workdir"
+    create_compose_file "$workdir" false
 
     previous_app_id="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n 1)"
     previous_replicas="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | awk 'NF { count++ } END { print count + 0 }')"
@@ -1845,6 +1907,10 @@ upgrade_service() {
     if ! compose_build_with_edge_fallback "$workdir" "$dc_cmd"; then
         [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
         die "镜像构建失败；旧版本仍在运行"
+    fi
+    if ! apply_upgrade_haproxy_config "$workdir"; then
+        [[ -z "$rollback_image" ]] || docker image rm "$rollback_image" >/dev/null 2>&1 || true
+        die "HAProxy 配置检查或热加载失败；旧应用容器仍在运行"
     fi
     # Keep the user-facing output identical to the historical full Compose
     # display: the fast app-only replacement is an internal transition, while
