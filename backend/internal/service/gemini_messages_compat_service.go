@@ -4063,6 +4063,22 @@ func convertClaudeMessagesToGeminiContents(messages any, toolUseIDToName map[str
 			"parts": parts,
 		})
 	}
+	// Gemini requires the final tool-result turn to end with a function response.
+	if len(out) > 0 {
+		last, _ := out[len(out)-1].(map[string]any)
+		parts, _ := last["parts"].([]any)
+		for i := len(parts) - 1; i >= 0; i-- {
+			part, _ := parts[i].(map[string]any)
+			if _, found := part["functionResponse"]; !found {
+				continue
+			}
+			if i+1 < len(parts) {
+				last["parts"] = parts[:i+1]
+				out = append(out, map[string]any{"role": "user", "parts": parts[i+1:]})
+			}
+			break
+		}
+	}
 	return out, nil
 }
 

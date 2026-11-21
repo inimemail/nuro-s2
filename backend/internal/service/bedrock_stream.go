@@ -162,6 +162,9 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 
 			// 写入标准 SSE 格式
 			if !clientDisconnected {
+				if eventType == "message_start" {
+					sseData = restoreCompositeAnthropicResponseModel(ctx, sseData, true)
+				}
 				var writeErr error
 				if eventType != "" {
 					_, writeErr = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, sseData)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -102,11 +103,56 @@ func (s *forceRefreshAccountRepoStub) Update(_ context.Context, account *Account
 	return nil
 }
 
+func (s *forceRefreshAccountRepoStub) UpdateOpenAIOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxy *int64, replacement map[string]any) (bool, error) {
+	current, err := s.GetByID(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !reflect.DeepEqual(current.Credentials, expected) || !reflect.DeepEqual(current.ProxyID, proxy) {
+		return false, nil
+	}
+	current.Credentials = cloneCredentials(replacement)
+	return true, nil
+}
+
 func (s *forceRefreshAccountRepoStub) SetError(_ context.Context, id int64, errorMsg string) error {
 	s.setErrorCalls++
 	s.setErrorID = id
 	s.setErrorMessage = errorMsg
 	return nil
+}
+
+func TestOpenAITokenProvider_ForceRefreshRejectsChangedAccountType(t *testing.T) {
+	account := &Account{
+		ID: 9101, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "old-token", "refresh_token": "refresh-token"},
+	}
+	current := *account
+	current.Type = AccountTypeAPIKey
+	repo := &forceRefreshAccountRepoStub{accounts: map[int64]*Account{account.ID: &current}}
+	executor := &forceRefreshExecutorStub{}
+	provider := NewOpenAITokenProvider(repo, nil, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil), executor)
+
+	_, token, err := provider.ForceRefresh(t.Context(), account)
+	require.ErrorIs(t, err, errOAuthRefreshAccountStateChanged)
+	require.Empty(t, token)
+	require.Zero(t, executor.refreshCalls)
+}
+
+func TestOpenAIRefreshWithoutRotationPreservesConcurrentSettings(t *testing.T) {
+	account := &Account{ID: 91, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "same", "refresh_token": "same-refresh", "custom_setting": "before"}}
+	attempted := snapshotOAuthRefreshAccount(account)
+	account.Credentials["custom_setting"] = "after"
+	repo := &forceRefreshAccountRepoStub{accounts: map[int64]*Account{account.ID: account}}
+	credentials := cloneCredentials(attempted.Credentials)
+	credentials["expires_at"] = "2030-01-01T00:00:00Z"
+	current, applied, err := persistOpenAIRefreshedCredentials(t.Context(), repo, attempted, credentials)
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Equal(t, "after", current.GetCredential("custom_setting"))
+	require.Equal(t, credentials["expires_at"], current.GetCredential("expires_at"))
 }
 
 func TestOpenAITokenProvider_ForceRefreshLockHeldDoesNotReturnOldToken(t *testing.T) {

@@ -71,11 +71,17 @@ func newUpstreamModelSyncUpstreamError(message string, err error) error {
 	return &UpstreamModelSyncError{Kind: UpstreamModelSyncErrorUpstream, Message: message, Err: err}
 }
 
-// UpstreamModelCatalog exposes fetched capabilities as advisory metadata. It
-// never replaces explicit mappings or introduces scheduler eligibility rules.
+const AnthropicModelContextWindowsExtraKey = "anthropic_model_context_windows"
+
+type anthropicModelCatalogStore interface {
+	SaveAnthropicModelContextWindows(context.Context, int64, time.Time, time.Time, map[string]int) (bool, error)
+}
+
+// UpstreamModelCatalog exposes fetched capabilities as advisory metadata.
 type UpstreamModelCatalog struct {
-	Models   []string                          `json:"models"`
-	Metadata map[string]AntigravityModelDetail `json:"metadata,omitempty"`
+	Models         []string                          `json:"models"`
+	Metadata       map[string]AntigravityModelDetail `json:"metadata,omitempty"`
+	ContextWindows map[string]int                    `json:"context_windows,omitempty"`
 }
 
 func (s *AccountTestService) FetchUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
@@ -83,7 +89,8 @@ func (s *AccountTestService) FetchUpstreamModelCatalog(ctx context.Context, acco
 		return s.fetchAntigravityOAuthModelCatalog(ctx, account)
 	}
 	started := time.Now().UTC()
-	models, err := s.FetchUpstreamSupportedModels(ctx, account)
+	var windows map[string]int
+	models, err := s.fetchUpstreamSupportedModels(ctx, account, &windows)
 	if s != nil && account != nil && account.Platform == PlatformGrok {
 		if persistErr := s.persistGrokCatalog(ctx, account, started, models, err); persistErr != nil && err == nil {
 			return nil, newUpstreamModelSyncUpstreamError("Model catalog could not be saved safely; retry sync", persistErr)
@@ -92,11 +99,24 @@ func (s *AccountTestService) FetchUpstreamModelCatalog(ctx context.Context, acco
 	if err != nil {
 		return nil, err
 	}
-	return &UpstreamModelCatalog{Models: models}, nil
+	if store, ok := s.accountRepo.(anthropicModelCatalogStore); ok && account != nil && account.IsAnthropic() && account.ID > 0 && windows != nil {
+		saved, err := store.SaveAnthropicModelContextWindows(ctx, account.ID, account.UpdatedAt, started, windows)
+		if err != nil {
+			return nil, newUpstreamModelSyncUpstreamError("Model catalog could not be saved safely; retry sync", err)
+		}
+		if !saved {
+			return nil, newUpstreamModelSyncUpstreamError("Account or model catalog changed during sync", nil)
+		}
+	}
+	return &UpstreamModelCatalog{Models: models, ContextWindows: windows}, nil
 }
 
 // FetchUpstreamSupportedModels fetches the live model list from the account's upstream API format.
 func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, account *Account) ([]string, error) {
+	return s.fetchUpstreamSupportedModels(ctx, account, nil)
+}
+
+func (s *AccountTestService) fetchUpstreamSupportedModels(ctx context.Context, account *Account, windows *map[string]int) ([]string, error) {
 	if s == nil {
 		return nil, newUpstreamModelSyncConfigError("Account test service is not configured", nil)
 	}
@@ -155,6 +175,35 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
 
+	if windows != nil && account.IsAnthropic() {
+		var envelope struct {
+			Data []struct {
+				ID             string          `json:"id"`
+				ContextWindow  json.RawMessage `json:"context_window"`
+				MaxInputTokens json.RawMessage `json:"max_input_tokens"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &envelope) == nil {
+			*windows = make(map[string]int)
+			for _, entry := range envelope.Data {
+				if len(*windows) >= 1000 {
+					break
+				}
+				window := 0
+				if len(entry.ContextWindow) > 0 && json.Unmarshal(entry.ContextWindow, &window) != nil {
+					continue
+				}
+				if window <= 0 {
+					if json.Unmarshal(entry.MaxInputTokens, &window) != nil {
+						continue
+					}
+				}
+				if entry.ID != "" && len(entry.ID) <= 256 && window >= 900000 && window <= 100000000 {
+					(*windows)[entry.ID] = window
+				}
+			}
+		}
+	}
 	return models, nil
 }
 
@@ -666,4 +715,24 @@ func dedupeAndSortModelIDs(models []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// Model sync metadata is advisory and is tied to the account endpoint.
+func accountSupportsAnthropicLongContext(account *Account, model string) bool {
+	snapshot, _ := account.Extra[AnthropicModelContextWindowsExtraKey].(map[string]any)
+	revision, _ := snapshot["account_revision"].(string)
+	if revision != account.UpdatedAt.UTC().Format(time.RFC3339Nano) {
+		return false
+	}
+	if windows, ok := snapshot["windows"].(map[string]int); ok {
+		return windows[model] >= 900000 && windows[model] <= 100000000
+	}
+	windows, _ := snapshot["windows"].(map[string]any)
+	switch value := windows[model].(type) {
+	case float64:
+		return value >= 900000 && value <= 100000000
+	case int:
+		return value >= 900000 && value <= 100000000
+	}
+	return false
 }

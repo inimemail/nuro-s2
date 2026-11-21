@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +32,10 @@ type GrokOAuthRefreshSuccessRepository interface {
 	) (bool, error)
 }
 
+type OpenAIOAuthRefreshSuccessRepository interface {
+	UpdateOpenAIOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, credentials map[string]any) (bool, error)
+}
+
 const (
 	defaultRefreshLockTTL            = 60 * time.Second
 	defaultRefreshLockReleaseTimeout = 2 * time.Second
@@ -37,6 +43,7 @@ const (
 )
 
 var (
+	errOpenAIRotationPersistence       = errors.New("OpenAI OAuth rotation persistence failed")
 	errOAuthRefreshAccountRereadFailed = errors.New("oauth refresh account reread failed")
 	errOAuthRefreshAccountStateChanged = errors.New("oauth refresh account state changed")
 )
@@ -159,6 +166,7 @@ func (api *OAuthRefreshAPI) refresh(
 		return nil, errors.New("oauth refresh executor is nil")
 	}
 	cacheKey := executor.CacheKey(account)
+	storedOpenAI := account.IsOpenAIOAuth() && !account.IsCredentialShadow()
 
 	// 0. 获取进程内互斥锁（防止同一进程内的并发刷新竞争）
 	localMu := api.getLocalLock(cacheKey)
@@ -182,13 +190,22 @@ func (api *OAuthRefreshAPI) refresh(
 			return &OAuthRefreshResult{LockHeld: true}, nil
 		} else {
 			defer api.releaseRefreshLock(ctx, cacheKey)
+			if storedOpenAI {
+				budget := api.lockTTL - defaultRefreshPersistenceTimeout - 2*defaultRefreshLockReleaseTimeout
+				if budget <= 0 {
+					return nil, errors.New("OpenAI OAuth refresh lock is too short for credential persistence")
+				}
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, budget)
+				defer cancel()
+			}
 		}
 	}
 
 	// 2. 从 DB 重读最新 account（锁保护下，确保使用最新的 refresh_token）
 	freshAccount, err := api.accountRepo.GetByID(ctx, account.ID)
 	if err != nil {
-		if account.IsGrokOAuth() {
+		if account.IsGrokOAuth() || storedOpenAI {
 			return nil, fmt.Errorf("%w: %v", errOAuthRefreshAccountRereadFailed, err)
 		}
 		slog.Warn("oauth_refresh_db_reread_failed",
@@ -198,16 +215,25 @@ func (api *OAuthRefreshAPI) refresh(
 		// 降级使用传入的 account
 		freshAccount = account
 	} else if freshAccount == nil {
-		if account.IsGrokOAuth() {
+		if account.IsGrokOAuth() || storedOpenAI {
 			return nil, fmt.Errorf("%w: account not found", errOAuthRefreshAccountStateChanged)
 		}
 		freshAccount = account
 	}
-	if freshAccount.IsGrokOAuth() && !executor.CanRefresh(freshAccount) {
+	if storedOpenAI && (!freshAccount.IsOpenAIOAuth() || freshAccount.IsCredentialShadow()) {
+		return &OAuthRefreshResult{Account: freshAccount}, errOAuthRefreshAccountStateChanged
+	}
+	if (account.IsGrokOAuth() || storedOpenAI) && !executor.CanRefresh(freshAccount) {
 		return &OAuthRefreshResult{Account: freshAccount}, fmt.Errorf("%w: account is no longer refreshable", errOAuthRefreshAccountStateChanged)
 	}
 
 	// 3. 二次检查是否仍需刷新（另一条路径可能已刷新）
+	if force && storedOpenAI && account.GetCredential("access_token") != freshAccount.GetCredential("access_token") &&
+		strings.TrimSpace(freshAccount.GetCredential("access_token")) != "" {
+		if expiresAt := freshAccount.GetCredentialAsTime("expires_at"); expiresAt == nil || time.Now().Before(*expiresAt) {
+			return &OAuthRefreshResult{Account: freshAccount}, nil
+		}
+	}
 	if !force && !executor.NeedsRefresh(freshAccount, refreshWindow) {
 		return &OAuthRefreshResult{
 			Account: freshAccount,
@@ -224,7 +250,11 @@ func (api *OAuthRefreshAPI) refresh(
 		// 竞争恢复：invalid_grant 可能是另一个 worker 已消费了旧 refresh_token
 		// 重新读取 DB，如果 refresh_token 已更新则说明是竞争，返回成功
 		if isInvalidGrantError(refreshErr) {
-			if recoveredAccount, recovered := api.tryRecoverFromRefreshRace(ctx, freshAccount); recovered {
+			recoveredAccount, recoveryErr := api.tryRecoverFromRefreshRace(ctx, attemptedAccount)
+			if recoveryErr != nil {
+				return nil, recoveryErr
+			}
+			if recoveredAccount != nil {
 				slog.Info("oauth_refresh_race_recovered",
 					"account_id", freshAccount.ID,
 					"platform", freshAccount.Platform,
@@ -238,6 +268,23 @@ func (api *OAuthRefreshAPI) refresh(
 			return &OAuthRefreshResult{Account: attemptedAccount}, refreshErr
 		}
 		return nil, refreshErr
+	}
+
+	if storedOpenAI && newCredentials != nil {
+		account, applied, err := persistOpenAIRefreshedCredentials(ctx, api.accountRepo, attemptedAccount, newCredentials)
+		if (applied || account != nil) && api.tokenCache != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultRefreshLockReleaseTimeout)
+			_ = api.tokenCache.DeleteAccessToken(cleanupCtx, cacheKey)
+			cancel()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errOpenAIRotationPersistence, err)
+		}
+		result := &OAuthRefreshResult{Refreshed: applied, Account: account}
+		if applied {
+			result.NewCredentials = account.Credentials
+		}
+		return result, nil
 	}
 
 	// 5. 设置版本号 + 更新 DB
@@ -286,6 +333,67 @@ func (api *OAuthRefreshAPI) refresh(
 	}, nil
 }
 
+func persistOpenAIRefreshedCredentials(parent context.Context, repo AccountRepository, attempted *Account, refreshed map[string]any) (*Account, bool, error) {
+	cas, ok := repo.(OpenAIOAuthRefreshSuccessRepository)
+	if !ok {
+		return nil, false, errors.New("OpenAI OAuth credential CAS is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), defaultRefreshPersistenceTimeout)
+	defer cancel()
+	version := time.Now().UnixMilli()
+	if previous := attempted.GetCredentialAsInt64("_token_version"); previous >= version && previous < math.MaxInt64 {
+		version = previous + 1
+	}
+	expected := attempted
+	var lastUpdateErr error
+	for i := 0; i < 3; i++ {
+		replacement := cloneCredentials(expected.Credentials)
+		if replacement == nil {
+			replacement = make(map[string]any)
+		}
+		for key, value := range refreshed {
+			if !reflect.DeepEqual(attempted.Credentials[key], value) {
+				replacement[key] = value
+			}
+		}
+		replacement["_token_version"] = version
+		replacementAccount := Account{Credentials: replacement}
+		if strings.TrimSpace(replacementAccount.GetCredential("access_token")) == "" {
+			return nil, false, errors.New("OpenAI OAuth refresh produced an empty access token")
+		}
+		attemptCtx, endAttempt := context.WithTimeout(ctx, time.Second)
+		applied, updateErr := cas.UpdateOpenAIOAuthCredentialsIfUnchanged(attemptCtx, expected.ID, expected.Credentials, expected.ProxyID, replacement)
+		endAttempt()
+		lastUpdateErr = updateErr
+		current, readErr := repo.GetByID(ctx, attempted.ID)
+		if readErr != nil || current == nil {
+			if updateErr != nil && ctx.Err() == nil {
+				continue
+			}
+			return nil, applied, errOAuthRefreshAccountRereadFailed
+		}
+		if !current.IsOpenAIOAuth() || current.IsCredentialShadow() {
+			return nil, false, errOAuthRefreshAccountStateChanged
+		}
+		if applied || (updateErr != nil &&
+			current.GetCredential("access_token") == replacementAccount.GetCredential("access_token") &&
+			current.GetCredential("refresh_token") == replacementAccount.GetCredential("refresh_token") &&
+			current.GetCredentialAsInt64("_token_version") == version) {
+			return current, true, nil
+		}
+		if current.GetCredential("refresh_token") != attempted.GetCredential("refresh_token") ||
+			current.GetCredential("access_token") != attempted.GetCredential("access_token") ||
+			current.GetCredentialAsInt64("_token_version") != attempted.GetCredentialAsInt64("_token_version") {
+			return current, false, nil
+		}
+		expected = snapshotOAuthRefreshAccount(current)
+	}
+	if lastUpdateErr != nil {
+		return nil, false, fmt.Errorf("OpenAI OAuth credential persistence failed: %w", lastUpdateErr)
+	}
+	return nil, false, errOAuthRefreshAccountStateChanged
+}
+
 func cloneInt64Pointer(value *int64) *int64 {
 	if value == nil {
 		return nil
@@ -309,24 +417,31 @@ func isInvalidGrantError(err error) bool {
 
 // tryRecoverFromRefreshRace 在 invalid_grant 错误后尝试竞争恢复
 // 重新读取 DB，如果 refresh_token 已改变（说明另一个 worker 成功刷新），则返回更新后的 account
-func (api *OAuthRefreshAPI) tryRecoverFromRefreshRace(ctx context.Context, usedAccount *Account) (*Account, bool) {
+func (api *OAuthRefreshAPI) tryRecoverFromRefreshRace(ctx context.Context, usedAccount *Account) (*Account, error) {
 	if api.accountRepo == nil {
-		return nil, false
+		return nil, nil
 	}
 	reReadAccount, err := api.accountRepo.GetByID(ctx, usedAccount.ID)
-	if err != nil || reReadAccount == nil {
-		return nil, false
+	if usedAccount.IsOpenAIOAuth() {
+		if err != nil {
+			return nil, errOAuthRefreshAccountRereadFailed
+		}
+		if reReadAccount == nil || !reReadAccount.IsOpenAIOAuth() || reReadAccount.IsCredentialShadow() {
+			return nil, errOAuthRefreshAccountStateChanged
+		}
+	} else if err != nil || reReadAccount == nil {
+		return nil, nil
 	}
 	usedRT := usedAccount.GetCredential("refresh_token")
 	currentRT := reReadAccount.GetCredential("refresh_token")
 	if usedRT == "" || currentRT == "" {
-		return nil, false
+		return nil, nil
 	}
 	// refresh_token 不同 → 另一个 worker 已成功刷新
 	if usedRT != currentRT {
-		return reReadAccount, true
+		return reReadAccount, nil
 	}
-	return nil, false
+	return nil, nil
 }
 
 // MergeCredentials 将旧 credentials 中不存在于新 map 的字段保留到新 map 中

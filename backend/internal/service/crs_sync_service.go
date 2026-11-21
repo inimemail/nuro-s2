@@ -1335,18 +1335,10 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if s.openaiOAuthService == nil {
 			return nil
 		}
-		tokenInfo, refreshErr := s.openaiOAuthService.RefreshAccountToken(ctx, account)
-		if refreshErr != nil {
-			err = refreshErr
-		} else {
-			newCredentials = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-			// Preserve non-token settings from existing credentials
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
-			}
+		if _, refreshErr := s.openaiOAuthService.RefreshStoredAccount(ctx, account); refreshErr != nil {
+			slog.Warn("crs_sync_openai_oauth_refresh_failed", "account_id", account.ID)
 		}
+		return nil
 	case PlatformGemini:
 		if s.geminiOAuthService == nil {
 			return nil

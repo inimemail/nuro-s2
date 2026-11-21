@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -47,6 +48,19 @@ func (r *tokenRefreshAccountRepo) UpdateCredentials(ctx context.Context, id int6
 	}
 	r.lastAccount = &Account{ID: id, Credentials: cloned}
 	return nil
+}
+
+func (r *tokenRefreshAccountRepo) UpdateOpenAIOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxyID *int64, credentials map[string]any) (bool, error) {
+	account, err := r.GetByID(ctx, id)
+	if err != nil || account == nil {
+		return false, err
+	}
+	if !account.IsOpenAIOAuth() || account.IsCredentialShadow() ||
+		!reflect.DeepEqual(account.Credentials, expected) || !reflect.DeepEqual(account.ProxyID, proxyID) {
+		return false, nil
+	}
+	err = r.UpdateCredentials(ctx, id, credentials)
+	return err == nil, err
 }
 
 func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
@@ -266,7 +280,7 @@ func TestTokenRefreshService_RefreshWithRetry_OtherPlatformOAuth(t *testing.T) {
 	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       10,
-		Platform: PlatformOpenAI, // OpenAI OAuth 账户
+		Platform: PlatformGemini,
 		Type:     AccountTypeOAuth,
 	}
 	refresher := &tokenRefresherStub{
@@ -301,6 +315,7 @@ func TestTokenRefreshService_RefreshWithRetry_UsesCredentialsUpdater(t *testing.
 			"access_token": "old-token",
 		},
 	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
 	refresher := &tokenRefresherStub{
 		credentials: map[string]any{
 			"access_token": "new-token",

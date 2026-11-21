@@ -5469,7 +5469,7 @@
                     {{ t("admin.settings.webSearchEmulation.enabledHint") }}
                   </p>
                 </div>
-                <Toggle v-model="webSearchConfig.enabled" />
+                <Toggle v-model="webSearchConfig.enabled" :disabled="savedWebSearchConfig === null" />
               </div>
 
               <!-- Providers -->
@@ -5503,12 +5503,12 @@
                 >
                   <!-- Collapsible header -->
                   <div
-                    class="flex cursor-pointer items-center justify-between px-4 py-3"
+                    class="flex cursor-pointer items-start justify-between gap-3 px-3 py-3 sm:items-center sm:px-4"
                     @click="toggleProviderExpand(pIdx)"
                   >
-                    <div class="flex items-center gap-3">
+                    <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
                       <svg
-                        class="h-4 w-4 text-gray-400 transition-transform"
+                        class="h-4 w-4 shrink-0 text-gray-400 transition-transform"
                         :class="{ 'rotate-90': expandedProviders[pIdx] }"
                         fill="none"
                         viewBox="0 0 24 24"
@@ -5522,12 +5522,14 @@
                         />
                       </svg>
                       <Select
-                        v-model="provider.type"
+                        :model-value="provider.type"
                         :options="[
                           { value: 'brave', label: 'Brave Search' },
                           { value: 'tavily', label: 'Tavily' },
+                          { value: 'exa', label: 'Exa' },
                         ]"
-                        class="w-36"
+                        class="w-36 max-w-full"
+                        @update:model-value="changeWebSearchProviderType(provider, pIdx, $event)"
                         @click.stop
                       />
                       <!-- Quota summary (always visible) -->
@@ -5581,7 +5583,7 @@
                           :type="apiKeyVisible[pIdx] ? 'text' : 'password'"
                           class="input w-full text-sm"
                           :class="
-                            provider.api_key || provider.api_key_configured
+                            provider.api_key
                               ? 'pr-16'
                               : ''
                           "
@@ -5594,7 +5596,7 @@
                           "
                         />
                         <div
-                          v-if="provider.api_key || provider.api_key_configured"
+                          v-if="provider.api_key"
                           class="absolute inset-y-0 right-0 flex items-center pr-1.5"
                         >
                           <button
@@ -5858,8 +5860,9 @@
                   class="mt-2 border-t border-gray-200 pt-2 first:mt-0 first:border-0 first:pt-0 dark:border-dark-600"
                 >
                   <a
-                    :href="r.url"
+                    :href="webSearchResultURL(r.url)"
                     target="_blank"
+                    rel="noopener noreferrer"
                     class="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
                     >{{ r.title }}</a
                   >
@@ -9497,10 +9500,23 @@ const webSearchConfig = reactive<WebSearchEmulationConfig>({
 
 const expandedProviders = reactive<Record<number, boolean>>({});
 const apiKeyVisible = reactive<Record<number, boolean>>({});
+const savedWebSearchConfig = ref<WebSearchEmulationConfig | null>(null);
 const wsTestQuery = ref("");
 const wsTestLoading = ref(false);
 const wsTestResult = ref<WebSearchTestResult | null>(null);
 const wsTestDialogOpen = ref(false);
+
+function webSearchResultURL(raw: string): string | undefined {
+  try {
+    const url = new URL(raw);
+    if ((url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password) {
+      return url.href;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
 
 function openTestDialog() {
   wsTestResult.value = null;
@@ -9509,6 +9525,31 @@ function openTestDialog() {
 
 function toggleProviderExpand(idx: number) {
   expandedProviders[idx] = !expandedProviders[idx];
+}
+
+function changeWebSearchProviderType(
+  provider: WebSearchProviderConfig,
+  idx: number,
+  value: unknown,
+) {
+  if (value === provider.type || (value !== "brave" && value !== "tavily" && value !== "exa")) return;
+  const saved = savedWebSearchConfig.value?.providers.find((entry) => entry.type === value);
+  provider.type = value;
+  provider.api_key = "";
+  provider.api_key_configured = saved?.api_key_configured ?? false;
+  provider.quota_used = saved?.quota_used ?? 0;
+  apiKeyVisible[idx] = false;
+}
+
+function applySavedWebSearchConfig(config: WebSearchEmulationConfig) {
+  webSearchConfig.enabled = config.enabled;
+  const providers = (config.providers ?? []).map((provider) => ({
+    ...provider,
+    api_key: "",
+  }));
+  savedWebSearchConfig.value = { enabled: config.enabled, providers };
+  webSearchConfig.providers = providers.map((provider) => ({ ...provider }));
+  Object.keys(apiKeyVisible).forEach((key) => delete apiKeyVisible[Number(key)]);
 }
 
 function removeWebSearchProvider(idx: number) {
@@ -9620,20 +9661,23 @@ async function loadWebSearchConfig() {
       adminAPI.proxies.list().catch(() => ({ items: [] as Proxy[] })),
     ]);
     if (resp) {
-      webSearchConfig.enabled = resp.enabled || false;
-      webSearchConfig.providers = resp.providers || [];
+      applySavedWebSearchConfig(resp);
     }
     webSearchProxies.value = proxiesResp.items || [];
   } catch (err: unknown) {
-    // 404 is expected when config hasn't been created yet; show error for other failures
     const status = (err as { status?: number })?.status;
-    if (status !== 404 && status !== undefined) {
+    if (status === 404) {
+      applySavedWebSearchConfig({ enabled: false, providers: [] });
+    } else {
       appStore.showError(extractApiErrorMessage(err, t("common.error")));
     }
   }
 }
 
 async function saveWebSearchConfig(): Promise<boolean> {
+  const previous = savedWebSearchConfig.value;
+  if (!previous) return true;
+
   try {
     for (const p of webSearchConfig.providers) {
       const raw = p.quota_limit;
@@ -9650,10 +9694,28 @@ async function saveWebSearchConfig(): Promise<boolean> {
         quota_limit: Number(p.quota_limit) > 0 ? Number(p.quota_limit) : null,
       }),
     );
-    await adminAPI.settings.updateWebSearchEmulationConfig({
+    if (
+      webSearchConfig.enabled === previous.enabled &&
+      providers.length === previous.providers.length &&
+      providers.every((provider, index) => {
+        const saved = previous.providers[index];
+        return (
+          provider.type === saved.type &&
+          !provider.api_key?.trim() &&
+          (provider.quota_limit ?? 0) === (saved.quota_limit ?? 0) &&
+          (provider.subscribed_at ?? null) === (saved.subscribed_at ?? null) &&
+          (provider.expires_at ?? null) === (saved.expires_at ?? null) &&
+          (provider.proxy_id ?? null) === (saved.proxy_id ?? null)
+        );
+      })
+    ) {
+      return true;
+    }
+    const saved = await adminAPI.settings.updateWebSearchEmulationConfig({
       enabled: webSearchConfig.enabled,
       providers,
     });
+    if (saved) applySavedWebSearchConfig(saved);
     return true;
   } catch (err: unknown) {
     appStore.showError(extractApiErrorMessage(err, t("common.error")));

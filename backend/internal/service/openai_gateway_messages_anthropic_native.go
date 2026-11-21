@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 		billingModel,
 	)
 
+	if account.Platform == PlatformDeepSeek && usesOfficialDeepSeekAnthropicAPI(account) {
+		body = repairDeepSeekThinkingHistory(body)
+	}
+
 	// 与 Anthropic 平台 passthrough 相同的 pre-filter：剥离空文本块与上游
 	// 无法接受的 web-search 历史块（GLM/Kimi/DeepSeek 对 server_tool_use 400）。
 	body = StripEmptyTextBlocks(body)
@@ -127,6 +132,51 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 
 // nativeAnthropicTargetURL 组装国产供应商原生 Anthropic messages 端点。
 // 第三方端点保持朴素路径，不附加 ?beta=true。
+func usesOfficialDeepSeekAnthropicAPI(account *Account) bool {
+	base := strings.TrimSpace(account.GetAnthropicProtocolBaseURL())
+	if base == "" {
+		return true
+	}
+	target, err := url.Parse(base)
+	return err == nil && strings.EqualFold(target.Hostname(), "api.deepseek.com")
+}
+
+// DeepSeek's Anthropic API requires a thinking block in assistant tool
+// history when thinking enabled. Preserve provider-supplied blocks unchanged.
+func repairDeepSeekThinkingHistory(body []byte) []byte {
+	if strings.EqualFold(gjson.GetBytes(body, "thinking.type").String(), "disabled") ||
+		strings.EqualFold(gjson.GetBytes(body, "output_config.effort").String(), "none") {
+		return body
+	}
+	rebuilt := body
+	gjson.GetBytes(body, "messages").ForEach(func(index, message gjson.Result) bool {
+		content := message.Get("content")
+		if message.Get("role").String() != "assistant" || !content.IsArray() {
+			return true
+		}
+		hasTool, hasThinking := false, false
+		content.ForEach(func(_, item gjson.Result) bool {
+			switch item.Get("type").String() {
+			case "tool_use":
+				hasTool = true
+			case "thinking", "redacted_thinking":
+				hasThinking = true
+			}
+			return true
+		})
+		if !hasTool || hasThinking {
+			return true
+		}
+		raw := content.Raw[1:]
+		prefix := `[{"type":"thinking","thinking":" "},`
+		if updated, err := sjson.SetRawBytes(rebuilt, "messages."+index.String()+".content", []byte(prefix+raw)); err == nil {
+			rebuilt = updated
+		}
+		return true
+	})
+	return rebuilt
+}
+
 func (s *OpenAIGatewayService) nativeAnthropicTargetURL(account *Account) (string, error) {
 	baseURL := strings.TrimSpace(account.GetAnthropicProtocolBaseURL())
 	if baseURL == "" {

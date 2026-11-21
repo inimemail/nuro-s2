@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
@@ -803,6 +804,36 @@ func TestGetChannelModelPricing_ReturnsCopy(t *testing.T) {
 }
 
 // --- 4.3 ResolveChannelMapping ---
+
+func TestAnthropicDerivedModelRespectsChannelPolicy(t *testing.T) {
+	group := &Group{ID: 10, Platform: PlatformAnthropic}
+	revision := time.Now().UTC()
+	account := Account{
+		ID: 20, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, UpdatedAt: revision,
+		Extra: map[string]any{AnthropicModelContextWindowsExtraKey: map[string]any{
+			"account_revision": revision.Format(time.RFC3339Nano),
+			"windows":          map[string]int{"claude-fixture": 1_000_000},
+		}},
+	}
+	for _, scenario := range []struct {
+		name       string
+		mapping    map[string]string
+		restricted bool
+		want       bool
+	}{
+		{name: "no channel policy", want: true},
+		{name: "explicit selector mapping", mapping: map[string]string{"claude-fixture[1m]": "other"}},
+		{name: "base model mapping", mapping: map[string]string{"claude-fixture": "other"}},
+		{name: "pricing allowlist", restricted: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			channel := Channel{ID: 1, Status: StatusActive, GroupIDs: []int64{group.ID}, RestrictModels: scenario.restricted,
+				ModelMapping: map[string]map[string]string{PlatformAnthropic: scenario.mapping}}
+			gateway := &GatewayService{channelService: newTestChannelService(makeStandardRepo(channel, map[int64]string{group.ID: PlatformAnthropic}))}
+			require.Equal(t, scenario.want, gateway.supportsAnthropicModelSelector(t.Context(), group, "claude-fixture", []Account{account}))
+		})
+	}
+}
 
 func TestResolveChannelMapping_NoChannel(t *testing.T) {
 	ch := Channel{

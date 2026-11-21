@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"strings"
 	"sync/atomic"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 var compositeResolverRegistry atomic.Pointer[CompositeRouteResolver]
@@ -57,4 +59,26 @@ func restoreCompositeAnthropicResponseModel(ctx context.Context, body []byte, st
 		return body
 	}
 	return out
+}
+
+// normalizeCompositeClaudeRequest translates legacy thinking options before
+// applying the selected target's request policy.
+func normalizeCompositeClaudeRequest(ctx context.Context, body []byte, requested, target string) ([]byte, error) {
+	if _, routed := ResolvedUpstreamModelFromContext(ctx); !routed || requested == target {
+		return normalizeOpus55Request(body, target)
+	}
+	sonnet := claude.IsSonnet55(target)
+	if !sonnet && !claude.IsOpus55(target) && !claude.IsHaiku55(target) {
+		return normalizeOpus55Request(body, target)
+	}
+	switch gjson.GetBytes(body, "thinking.type").String() {
+	case "enabled":
+		body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+		body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+	case "disabled":
+		if sonnet {
+			body, _ = sjson.SetBytes(body, "thinking.type", "between_tools")
+		}
+	}
+	return normalizeClaudeAdaptiveRequest(body, target, sonnet)
 }

@@ -164,6 +164,24 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
 	}
 
+	var token string
+	if account.IsOpenAIOAuth() && !account.IsCredentialShadow() && !account.IsOpenAIAgentIdentity() {
+		for _, tool := range anthropicReq.Tools {
+			if tool.Name != "ToolSearch" || tool.DeferLoading {
+				continue
+			}
+			token, _, err = s.GetAccessToken(ctx, account)
+			if err != nil {
+				return nil, fmt.Errorf("get access token: %w", err)
+			}
+			if token != "" && s.codexToolSearchCache.supports(account.ID, token, upstreamModel, time.Now()) {
+				if err := apicompat.ApplyAnthropicNativeToolSearch(&anthropicReq, responsesReq); err != nil {
+					return nil, fmt.Errorf("convert native tool search: %w", err)
+				}
+			}
+			break
+		}
+	}
 	// Upstream always uses streaming (upstream may not support sync mode).
 	// The client's original preference determines the response format.
 	responsesReq.Stream = true
@@ -228,6 +246,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		logFields = append(logFields, zap.Bool("compat_turn_state_attached", true))
 	}
 	logger.L().Debug("openai messages: model mapping applied", logFields...)
+
+	if account.Platform == PlatformOpenAI {
+		apicompat.IncludeWebSearchSources(responsesReq)
+	}
 
 	// 4. Marshal Responses request body, then apply OAuth codex transform
 	responsesBody, err := json.Marshal(responsesReq)
@@ -394,9 +416,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 5. Get access token
-	token, _, err := s.GetAccessToken(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("get access token: %w", err)
+	if token == "" {
+		token, _, err = s.GetAccessToken(ctx, account)
+		if err != nil {
+			return nil, fmt.Errorf("get access token: %w", err)
+		}
 	}
 
 	// 6. Build upstream request
@@ -725,7 +749,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID, account != nil && account.Platform == PlatformGrok)
+	finalResponse, usage, acc, searchCount, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID, account != nil && account.Platform == PlatformGrok)
 	if err != nil {
 		return nil, err
 	}
@@ -782,6 +806,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
 		ResponseID:                    finalResponse.ID,
+		SearchCount:                   searchCount,
 		Usage:                         usage,
 		Model:                         originalModel,
 		BillingModel:                  billingModel,
@@ -850,13 +875,19 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	resp *http.Response,
 	logPrefix string,
 	requestID string,
-	grok ...bool,
-) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, error) {
+	grok bool,
+) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, int, error) {
 	acc := apicompat.NewBufferedResponseAccumulator()
-	acc.GrokServerSideSearch = len(grok) > 0 && grok[0]
+	var search grokSearchStreamCount
+	processEvent := func(payload string, event *apicompat.ResponsesStreamEvent) {
+		if grok {
+			search.observe([]byte(payload))
+		}
+		acc.ProcessEvent(event)
+	}
 	var usage OpenAIUsage
 	if resp == nil || resp.Body == nil {
-		return nil, usage, acc, errors.New("upstream response body is nil")
+		return nil, usage, acc, search.count, errors.New("upstream response body is nil")
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -937,7 +968,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 					payload := openAICompatPayloadWithEventType(frame.Data, frame.EventType)
 					var event apicompat.ResponsesStreamEvent
 					if err := json.Unmarshal([]byte(payload), &event); err == nil {
-						acc.ProcessEvent(&event)
+						processEvent(payload, &event)
 						if isOpenAICompatResponsesTerminalEvent(event.Type) && event.Response != nil {
 							if event.Usage != nil {
 								usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
@@ -948,11 +979,11 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 							if event.Response.Usage != nil {
 								usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
 							}
-							return event.Response, usage, acc, nil
+							return event.Response, usage, acc, search.count, nil
 						}
 					}
 				}
-				return nil, usage, acc, nil
+				return nil, usage, acc, search.count, nil
 			}
 			resetTimeout()
 			if ev.err != nil {
@@ -962,11 +993,11 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 						zap.String("request_id", requestID),
 					)
 				}
-				return nil, usage, acc, ev.err
+				return nil, usage, acc, search.count, ev.err
 			}
 
 			if isOpenAICompatDoneSentinelLine(ev.line) {
-				return nil, usage, acc, nil
+				return nil, usage, acc, search.count, nil
 			}
 			frame, ok := parser.AddLine(ev.line)
 			if !ok {
@@ -983,7 +1014,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 				continue
 			}
 
-			acc.ProcessEvent(&event)
+			processEvent(payload, &event)
 
 			if isOpenAICompatResponsesTerminalEvent(event.Type) && event.Response != nil {
 				if event.Usage != nil {
@@ -995,7 +1026,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 				if event.Response.Usage != nil {
 					usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
 				}
-				return event.Response, usage, acc, nil
+				return event.Response, usage, acc, search.count, nil
 			}
 
 		case <-timeoutCh:
@@ -1004,7 +1035,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 				zap.String("request_id", requestID),
 				zap.Duration("interval", streamInterval),
 			)
-			return nil, usage, acc, fmt.Errorf("stream data interval timeout")
+			return nil, usage, acc, search.count, fmt.Errorf("stream data interval timeout")
 		}
 	}
 }
@@ -1048,6 +1079,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel, originalModel)
 	var usage OpenAIUsage
+	var search grokSearchStreamCount
+	countGrokSearch := account != nil && account.Platform == PlatformGrok
 	responseID := ""
 	var firstTokenMs *int
 	firstChunk := true
@@ -1084,6 +1117,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		return &OpenAIForwardResult{
 			RequestID:                     requestID,
 			ResponseID:                    responseID,
+			SearchCount:                   search.count,
 			Usage:                         usage,
 			Model:                         originalModel,
 			BillingModel:                  billingModel,
@@ -1109,6 +1143,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			firstTokenMs = &ms
 		}
 
+		if countGrokSearch {
+			search.observe([]byte(payload))
+		}
 		var event apicompat.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("openai messages stream: failed to parse event",

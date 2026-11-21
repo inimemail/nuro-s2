@@ -145,6 +145,20 @@ type antigravityRetryLoopParams struct {
 }
 
 // antigravityRetryLoopResult 重试循环的结果
+const antigravityBare429AccountKey = "antigravity_bare_429_account"
+
+func claimAntigravityBare429(c *gin.Context, account *Account, status int, body []byte) bool {
+	if c == nil || account == nil || status != http.StatusTooManyRequests ||
+		gjson.GetBytes(body, "error.details").Exists() || ParseGeminiRateLimitResetTime(body) != nil {
+		return true
+	}
+	if _, alreadyClaimed := c.Get(antigravityBare429AccountKey); alreadyClaimed {
+		return false
+	}
+	c.Set(antigravityBare429AccountKey, account.ID)
+	return true
+}
+
 type antigravityRetryLoopResult struct {
 	resp *http.Response
 }
@@ -232,7 +246,9 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 
 		resetAt := time.Now().Add(rateLimitDuration)
 		if p.account.IsPoolMode() {
-			p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
+			if claimAntigravityBare429(p.c, p.account, resp.StatusCode, respBody) {
+				p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
+			}
 		} else if !setModelRateLimitByModelName(p.ctx, p.accountRepo, p.account.ID, modelName, p.prefix, resp.StatusCode, resetAt, false) {
 			p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d rate_limited account=%d (no model mapping)", p.prefix, resp.StatusCode, p.account.ID)
@@ -1785,7 +1801,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				}
 			}
 
-			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
+			if claimAntigravityBare429(c, account, resp.StatusCode, respBody) {
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
+			}
 
 			// 精确匹配服务端配置类 400 错误，触发同账号重试 + failover
 			if resp.StatusCode == http.StatusBadRequest {
@@ -2506,7 +2524,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if unwrapErr != nil || len(unwrappedForOps) == 0 {
 			unwrappedForOps = respBody
 		}
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, schedulingModel, 0, "", isStickySession)
+		if claimAntigravityBare429(c, account, resp.StatusCode, respBody) {
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, schedulingModel, 0, "", isStickySession)
+		}
 		upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(unwrappedForOps))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		upstreamDetail := s.getUpstreamErrorDetail(unwrappedForOps)
@@ -3329,7 +3349,8 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		keepaliveInterval = time.Duration(s.settingService.cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
 	var keepaliveTicker *time.Ticker
-	if downstreamRejectsSSEComments(c) {
+	rejectComments := downstreamRejectsSSEComments(c)
+	if rejectComments {
 		keepaliveInterval = 0
 	}
 	if keepaliveInterval > 0 {
@@ -3451,6 +3472,12 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				// The rewritten data frame already emitted its SSE separator.
 				normalizedEventTerminated = false
 				continue
+			}
+			if rejectComments && strings.HasPrefix(trimmed, ":") {
+				continue
+			}
+			if strings.HasPrefix(trimmed, ":") {
+				normalizedEventTerminated = false
 			}
 			if trimmed == "" || strings.HasPrefix(trimmed, ":") || strings.HasPrefix(strings.ToLower(trimmed), "event:") {
 				cw.Fprintf("%s\n", line)
@@ -4857,7 +4884,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 
 		// 429 错误时标记账号限流
 		if resp.StatusCode == http.StatusTooManyRequests && !account.IsPoolMode() {
-			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
+			if claimAntigravityBare429(c, account, resp.StatusCode, respBody) {
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
+			}
 		}
 
 		// Upstream/CDN error bodies can contain private hosts and diagnostic

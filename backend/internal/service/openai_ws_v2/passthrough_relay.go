@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestfields"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	coderws "github.com/coder/websocket"
 	"github.com/tidwall/gjson"
@@ -24,6 +25,18 @@ type FrameConn interface {
 	ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error)
 	WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error
 	Close() error
+}
+
+const ConflictingClientFieldsReason = "Request contains duplicate or ambiguous fields"
+
+type checkedClientFrameConn struct{ FrameConn }
+
+func (c checkedClientFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	kind, payload, err := c.FrameConn.ReadFrame(ctx)
+	if err == nil && (kind == coderws.MessageText || kind == coderws.MessageBinary) && requestfields.HasConflict(payload, "") {
+		return kind, nil, coderws.CloseError{Code: coderws.StatusPolicyViolation, Reason: ConflictingClientFieldsReason}
+	}
+	return kind, payload, err
 }
 
 type Usage struct {
@@ -445,8 +458,9 @@ func runClientToUpstream(
 			return conn.ReadFrame(ctx)
 		}
 	}
+	checked := checkedClientFrameConn{FrameConn: clientConn}
 	for {
-		msgType, payload, err := readClientFrame(ctx, clientConn)
+		msgType, payload, err := readClientFrame(ctx, checked)
 		if err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:     "read_client_failed",

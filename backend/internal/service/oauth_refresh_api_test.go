@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,16 @@ func (r *refreshAPIAccountRepo) UpdateCredentials(ctx context.Context, id int64,
 	}
 	r.account.Credentials = cloneCredentials(credentials)
 	return nil
+}
+
+func (r *refreshAPIAccountRepo) UpdateOpenAIOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxyID *int64, credentials map[string]any) (bool, error) {
+	account := r.account
+	if account == nil || account.ID != id || !account.IsOpenAIOAuth() || account.IsCredentialShadow() ||
+		!reflect.DeepEqual(cloneCredentials(account.Credentials), expected) || !reflect.DeepEqual(account.ProxyID, proxyID) {
+		return false, nil
+	}
+	err := r.UpdateCredentials(ctx, id, credentials)
+	return err == nil, err
 }
 
 // refreshAPIExecutorStub implements OAuthRefreshExecutor for tests.

@@ -4001,6 +4001,9 @@ export default {
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
         oauthPassthrough: 'Auto passthrough (auth only)',
+        passthroughModelFilter: 'Passthrough model filter',
+        passthroughModelFilterUnchanged: 'Keep each account’s setting',
+        passthroughModelFilterDesc: 'When enabled, account selection applies the account’s existing model restrictions. Passthrough forwards the requested model name.',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
         longContextBilling: 'API long-context pricing',
@@ -5790,7 +5793,7 @@ export default {
         table: {
           model: 'Model',
           requestCount: 'Requests',
-          avgTokensPerSec: 'Avg Tokens/sec',
+          avgTokensPerSec: 'Duration-weighted tokens/sec',
           avgFirstTokenMs: 'Avg First Token Latency (ms)',
           totalOutputTokens: 'Total Output Tokens',
           avgDurationMs: 'Avg Duration (ms)',

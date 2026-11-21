@@ -384,6 +384,9 @@ func RequestedReasoningEffortFromContext(ctx context.Context) *string {
 // ExtractOpenAIReasoningEffort returns the explicit client value from OpenAI
 // request shapes or the Anthropic Messages output_config bridge.
 func ExtractOpenAIReasoningEffort(body []byte) string {
+	if effort := latestResponsesRequestedEffort(body); effort != "" {
+		return effort
+	}
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
 		field := gjson.GetBytes(body, path)
 		if field.Exists() && field.Type == gjson.String {

@@ -149,6 +149,16 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it.each(['enabled', 'disabled'] as const)('explicitly updates the OpenAI passthrough filter to %s', async (value) => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth', 'apikey'] })
+    await wrapper.get('#bulk-edit-openai-model-filter').setValue(value)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { openai_passthrough_model_filter: value === 'enabled' }
+    })
+  })
+
   it.each(['off', 'session'])('指纹设置只有明确勾选后才提交：%s', async mode => {
     const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
     await wrapper.get('[data-testid="bulk-fingerprint-enabled"]').setValue(true)

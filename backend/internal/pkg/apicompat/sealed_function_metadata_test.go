@@ -78,10 +78,11 @@ func TestBufferedCustomToolDoneKeepsCompleteInput(t *testing.T) {
 		acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.output_item.done", OutputIndex: 2, Item: &ResponsesOutput{Type: "custom_tool_call", CallID: "call_patch", Name: "apply_patch", Input: "*** Begin Patch\n*** End Patch"}})
 		out := acc.BuildOutput()
 		require.Len(t, out, 1)
-		// Retain the existing compatibility representation used by Chat/Messages.
-		require.Equal(t, "function_call", out[0].Type)
+		require.Equal(t, "custom_tool_call", out[0].Type)
 		require.Equal(t, "call_patch", out[0].CallID)
 		require.Equal(t, "functions", out[0].Namespace)
-		require.Equal(t, "*** Begin Patch\n*** End Patch", out[0].Arguments)
+		require.Equal(t, "*** Begin Patch\n*** End Patch", out[0].Input)
+		completed := ResponsesToChatCompletions(&ResponsesResponse{Output: out}, "public")
+		require.Equal(t, out[0].Input, completed.Choices[0].Message.ToolCalls[0].Function.Arguments)
 	}
 }

@@ -86,10 +86,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformAnthropic {
-		originalEffort := gjson.GetBytes(body, "reasoning.effort").String()
-		if originalEffort == "" {
-			originalEffort = gjson.GetBytes(body, "reasoning_effort").String()
-		}
+		originalEffort := service.ExtractOpenAIReasoningEffort(body)
 		c.Request = c.Request.WithContext(service.WithRequestedReasoningEffort(c.Request.Context(), originalEffort))
 		adjusted, _, policyErr := service.ApplyOpenAIReasoningEffortPolicyWithAction(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings, apiKey.Group.MaxReasoningEffortOverLimit)
 		if policyErr != nil {
@@ -102,7 +99,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	requestCtx := c.Request.Context()
-	if service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body) {
+	// The validated JSON is only rewritten by the reasoning-effort policy.
+	if service.IsExplicitImageGenerationIntentForValidJSON("/v1/responses", reqModel, body) {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 	}
 
@@ -186,7 +184,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Parse request for session hash
-	parsedReq, _ := service.ParseGatewayRequest(body, "responses")
+	parsedReq, _ := service.ParseGatewayRequestForValidJSON(body, "responses")
 	if parsedReq == nil {
 		parsedReq = &service.ParsedRequest{Model: reqModel, Stream: reqStream, Body: body}
 	}

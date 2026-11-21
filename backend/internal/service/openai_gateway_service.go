@@ -246,6 +246,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
 	usageInvalid             bool
+	reportedGrokSearchCount  int
 	CacheCreation5mTokens    int `json:"-"`
 	CacheCreation1hTokens    int `json:"-"`
 	InputTokens              int `json:"input_tokens"`
@@ -527,6 +528,7 @@ type OpenAIGatewayService struct {
 	accountTTFTHistory                           *accountTTFTHistoryCache
 	agentIdentityTaskMu                          sync.Mutex
 	codexModelsManifestCache                     codexModelsManifestCache
+	codexToolSearchCache                         codexToolSearchCache
 }
 
 // loadAdaptiveOpenAIAccountTTFTHistory supplies persisted latency only to the
@@ -1940,10 +1942,37 @@ func isOpenAICompatibleRequestPlatformAccount(account *Account, requestPlatform 
 }
 
 func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) bool {
-	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, "", requestPlatform...)
+	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, requestedModel, openAICompactCheckForRequest(requireCompact), requiredCapability, requiredImageCapability, "", requestPlatform...)
 }
 
-func isOpenAIAccountEligibleForRequestWithCompactFallback(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, compactFallback string, requestPlatform ...string) bool {
+type openAICompactCheck uint8
+
+const (
+	openAINonCompact openAICompactCheck = iota
+	openAIRequireCompact
+	// Resolve the compact model now and check capability after the latest account load.
+	openAIDeferCompactCapability
+)
+
+func openAICompactCheckForRequest(requireCompact bool) openAICompactCheck {
+	if requireCompact {
+		return openAIRequireCompact
+	}
+	return openAINonCompact
+}
+
+func openAICompactCandidateCheck(requireCompact bool) openAICompactCheck {
+	if requireCompact {
+		return openAIDeferCompactCapability
+	}
+	return openAINonCompact
+}
+
+func (s *OpenAIGatewayService) isOpenAIAccountEligibleWithCompactCheck(ctx context.Context, account *Account, model string, compact openAICompactCheck, capability OpenAIEndpointCapability, images OpenAIImagesCapability, platform ...string) bool {
+	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, model, compact, capability, images, s.openAICompactModelFallback(), platform...)
+}
+
+func isOpenAIAccountEligibleForRequestWithCompactFallback(ctx context.Context, account *Account, requestedModel string, compact openAICompactCheck, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, compactFallback string, requestPlatform ...string) bool {
 	platform := PlatformOpenAI
 	if len(requestPlatform) > 0 {
 		platform = requestPlatform[0]
@@ -1970,7 +1999,7 @@ func isOpenAIAccountEligibleForRequestWithCompactFallback(ctx context.Context, a
 	}
 	if !openAITextRequestModelSupported(account, OpenAIAccountScheduleRequest{
 		RequestedModel:          requestedModel,
-		RequireCompact:          requireCompact,
+		RequireCompact:          compact != openAINonCompact,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
 		RequestPlatform:         platform,
@@ -1986,7 +2015,8 @@ func isOpenAIAccountEligibleForRequestWithCompactFallback(ctx context.Context, a
 	if !account.MatchesOpenAIImagePoolRequest(ctx, requestedModel, requiredImageCapability) {
 		return false
 	}
-	if (requireCompact || IsOpenAINativeCompactionV2Context(ctx)) && openAICompactSupportTier(account, !requireCompact && IsOpenAINativeCompactionV2Context(ctx)) == 0 {
+	nativeCompact := compact == openAINonCompact && IsOpenAINativeCompactionV2Context(ctx)
+	if (compact == openAIRequireCompact || nativeCompact) && openAICompactSupportTier(account, nativeCompact) == 0 {
 		return false
 	}
 	return true
@@ -2563,7 +2593,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+	if !s.isOpenAIAccountEligibleWithCompactCheck(ctx, account, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform) {
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(account) {
@@ -2634,7 +2664,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if IsAdaptiveHealthSchedulingStrategy(strategy) && len(accounts) > 1 {
 		items := make([]accountWithLoad, 0, len(accounts))
 		for i := range accounts {
-			candidate := s.resolveFreshSchedulableOpenAIAccount(ctx, &accounts[i], requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...)
+			candidate := s.resolveFreshSchedulableOpenAIAccount(ctx, &accounts[i], requestedModel, openAICompactCheckForRequest(requireCompact), requiredCapability, requiredImageCapability, requestPlatform...)
 			if candidate == nil || s.isNonOpenAIPoolCandidateBlocked(ctx, candidate) {
 				continue
 			}
@@ -2675,14 +2705,14 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform...)
 		if fresh == nil {
 			continue
 		}
 		if s.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
-		fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
+		fresh = s.recheckOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform...)
 		if fresh == nil {
 			continue
 		}
@@ -2961,7 +2991,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					clearSticky = true
 				}
 				if !clearSticky && openAIAccountMatchesLockedPriority(account, lockedPriority) &&
-					s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+					s.isOpenAIAccountEligibleWithCompactCheck(ctx, account, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform) {
 					stickyAccount := account
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 					if account == nil {
@@ -3052,7 +3082,7 @@ openAIGroupGuardFallback:
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
-		if !s.isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+		if !s.isOpenAIAccountEligibleWithCompactCheck(ctx, acc, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform) {
 			continue
 		}
 		if s.isNonOpenAIPoolCandidateBlocked(ctx, acc) {
@@ -3155,7 +3185,7 @@ openAIGroupGuardFallback:
 		selectionOrder = s.orderOpenAIPoolCoolingLoadedAccountsLast(selectionOrder, requestedModel)
 
 		for _, item := range selectionOrder {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
+			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
 				continue
 			}
@@ -3205,7 +3235,7 @@ openAIGroupGuardFallback:
 			ordered = accountWithLoadPointers(items)
 		}
 		for _, acc := range ordered {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
+			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
 				continue
 			}
@@ -3268,7 +3298,7 @@ openAIGroupGuardFallback:
 		}
 	}
 	for _, acc := range candidates {
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform)
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, openAICompactCandidateCheck(requireCompact), requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
 			continue
 		}
@@ -3809,7 +3839,7 @@ func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accoun
 	return s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
 }
 
-func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
+func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.Context, account *Account, requestedModel string, compact openAICompactCheck, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
 	if account == nil {
 		return nil
 	}
@@ -3824,7 +3854,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !s.isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+	if !s.isOpenAIAccountEligibleWithCompactCheck(ctx, fresh, requestedModel, compact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
 	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
@@ -3852,11 +3882,15 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 }
 
 func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
+	return s.recheckOpenAIAccountFromDB(ctx, account, requestedModel, openAICompactCheckForRequest(requireCompact), requiredCapability, requiredImageCapability, requestPlatform...)
+}
+
+func (s *OpenAIGatewayService) recheckOpenAIAccountFromDB(ctx context.Context, account *Account, requestedModel string, compact openAICompactCheck, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
 	if account == nil {
 		return nil
 	}
 	if s.schedulerSnapshot == nil {
-		if !s.isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+		if !s.isOpenAIAccountEligibleWithCompactCheck(ctx, account, requestedModel, compact, requiredCapability, requiredImageCapability, requestPlatform...) {
 			return nil
 		}
 		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -3894,7 +3928,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 			}
 		}
 	}
-	if !s.isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+	if !s.isOpenAIAccountEligibleWithCompactCheck(ctx, latest, requestedModel, compact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
 	copyNonOpenAIPoolProbeToken(account, latest)
@@ -3923,7 +3957,11 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 }
 
 func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountForGroup(ctx context.Context, account *Account, groupID *int64, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
-	latest := s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...)
+	return s.recheckOpenAIAccountForGroup(ctx, account, groupID, requestedModel, openAICompactCheckForRequest(requireCompact), requiredCapability, requiredImageCapability, requestPlatform...)
+}
+
+func (s *OpenAIGatewayService) recheckOpenAIAccountForGroup(ctx context.Context, account *Account, groupID *int64, requestedModel string, compact openAICompactCheck, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
+	latest := s.recheckOpenAIAccountFromDB(ctx, account, requestedModel, compact, requiredCapability, requiredImageCapability, requestPlatform...)
 	if latest == nil || latest.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil
 	}
@@ -4199,7 +4237,7 @@ func (s *OpenAIGatewayService) markOpenAIOAuthReauthorizationRequired(ctx contex
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 402, 403, 429, 529:
+	case 401, 402, 403, http.StatusRequestTimeout, 429, 529:
 		return true
 	default:
 		return statusCode >= 500
@@ -4217,7 +4255,7 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 		return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 	}
 	if statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden ||
-		statusCode == http.StatusTooManyRequests || statusCode == 529 || statusCode >= 500 {
+		statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode == 529 || statusCode >= 500 {
 		return true
 	}
 	return false
@@ -7922,8 +7960,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel, originalModel)
-	searchCounter := 0
-	streamSearchSeen := make(map[string]struct{})
+	var search grokSearchStreamCount
+	countGrokSearch := account != nil && account.IsGrok()
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		resultTerminalType := terminalEventType
 		if sawFailedEvent {
@@ -7939,7 +7977,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			clientDisconnected: clientDisconnected,
 			imageCount:         imageCounter.Count(),
 			imageOutputSizes:   imageCounter.Sizes(),
-			searchCount:        searchCounter,
+			searchCount:        search.count,
 		}
 	}
 
@@ -8054,7 +8092,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
-			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
+			if countGrokSearch {
+				search.observe(dataBytes)
+			}
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 			lineStartsRealOutput := openAIStreamDataStartsRealOutput(trimmedData, eventType)
 			lineStartsDownstreamTTFT := false
@@ -8355,7 +8395,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			responseID: extractOpenAIResponseIDFromJSONBytes(body), terminalEventType: "response.failed",
 		}, errors.New("upstream response failed")
 	}
+	searchCount := 0
 	if account != nil && account.IsGrok() {
+		searchCount = countGrokNativeSearchCallsFromJSONBytes(body)
 		body, err = restoreGrokClientToolPayload(c, body)
 		if err != nil {
 			return nil, fmt.Errorf("restore Grok client tool response: %w", err)
@@ -8435,7 +8477,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		terminalEventType: openAIResponseTerminalEventTypeFromBody(body),
 		imageCount:        countOpenAIResponseImageOutputsFromJSONBytes(body),
 		imageOutputSizes:  collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
-		searchCount:       countGrokNativeSearchCallsFromJSONBytes(body),
+		searchCount:       searchCount,
 	}, nil
 }
 
@@ -8556,6 +8598,10 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 			imageCount: countOpenAIImageOutputsFromSSEBody(bodyText), imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
 		}, fmt.Errorf("upstream response failed: %s", msg)
 	}
+	searchCount := 0
+	if account != nil && account.IsGrok() {
+		searchCount = countGrokNativeSearchCallsFromSSEBody(bodyText)
+	}
 	finalResponse, responseOK := extractOpenAIResponseObjectFromTerminalPayload(terminalPayload)
 	if !responseOK {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream terminal event did not include a response object")
@@ -8629,7 +8675,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 		terminalEventType: terminalType,
 		imageCount:        countOpenAIImageOutputsFromSSEBody(bodyText),
 		imageOutputSizes:  collectOpenAIImageOutputSizesFromSSEBody(bodyText),
-		searchCount:       countGrokNativeSearchCallsFromSSEBody(bodyText),
+		searchCount:       searchCount,
 	}, nil
 }
 
@@ -9609,8 +9655,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	responsesSemanticOutputSeen := false
 	responsesUsageSeen := false
 	responsesErrorSeen := false
-	searchCounter := 0
-	streamSearchSeen := make(map[string]struct{})
+	var search grokSearchStreamCount
+	countGrokSearch := account != nil && account.IsGrok()
 	resultWithUsage := func() *openaiStreamingResult {
 		resultTerminalType := terminalEventType
 		if sawFailedEvent {
@@ -9626,7 +9672,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			clientDisconnected: clientDisconnected,
 			imageCount:         imageCounter.Count(),
 			imageOutputSizes:   imageCounter.Sizes(),
-			searchCount:        searchCounter,
+			searchCount:        search.count,
 		}
 	}
 	finalizeStream := func() (*openaiStreamingResult, error) {
@@ -9849,7 +9895,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
-			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
+			if countGrokSearch {
+				search.observe(dataBytes)
+			}
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
@@ -10535,6 +10583,10 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	usage.CacheCreationInputTokens = read("input_tokens_details.cache_creation_input_tokens", "prompt_tokens_details.cache_creation_input_tokens", "input_tokens_details.cache_write_input_tokens", "prompt_tokens_details.cache_write_input_tokens", "input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_creation_tokens", "cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "cache_creation_tokens")
 	usage.ImageOutputTokens = read("output_tokens_details.image_tokens", "completion_tokens_details.image_tokens")
 	usage.ImageInputTokens = read("input_tokens_details.image_tokens", "prompt_tokens_details.image_tokens")
+	if count, ok := grokSearchCountFromReportedUsage(value); ok {
+		usage.reportedGrokSearchCount = count
+		anyPresent = true
+	}
 	return usage, anyPresent || usage.usageInvalid
 }
 
@@ -10570,6 +10622,10 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// may return SSE even when stream=false was requested.
 	if isEventStreamResponse(resp.Header) {
 		return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
+	}
+	searchCount := 0
+	if account != nil && account.IsGrok() {
+		searchCount = countGrokNativeSearchCallsFromJSONBytes(body)
 	}
 	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
 		body, err = convertGrokResponseToOpenAICompact(body)
@@ -10682,6 +10738,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		terminalEventType: openAIResponseTerminalEventTypeFromBody(body),
 		imageCount:        countOpenAIResponseImageOutputsFromJSONBytes(body),
 		imageOutputSizes:  collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		searchCount:       searchCount,
 	}, nil
 }
 
@@ -10734,6 +10791,10 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 			responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload), terminalEventType: terminalType,
 			imageCount: countOpenAIImageOutputsFromSSEBody(bodyText), imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
 		}, fmt.Errorf("upstream response failed: %s", msg)
+	}
+	searchCount := 0
+	if account != nil && account.IsGrok() {
+		searchCount = countGrokNativeSearchCallsFromSSEBody(bodyText)
 	}
 	finalResponse, responseOK := extractOpenAIResponseObjectFromTerminalPayload(terminalPayload)
 	if !responseOK {
@@ -10807,6 +10868,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 		terminalEventType: terminalType,
 		imageCount:        countOpenAIImageOutputsFromSSEBody(bodyText),
 		imageOutputSizes:  collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		searchCount:       searchCount,
 	}, nil
 }
 
@@ -11324,7 +11386,17 @@ func buildResponsesOutputJSON(acc *apicompat.BufferedResponseAccumulator, imageO
 
 	var output []json.RawMessage
 	if acc != nil && acc.HasContent() {
-		outputJSON, err := json.Marshal(acc.BuildOutput())
+		rebuilt := acc.BuildOutput()
+		// This fallback has historically exposed delta-only custom calls as
+		// function calls. Complete raw items take the separate path above.
+		for i := range rebuilt {
+			if rebuilt[i].Type == "custom_tool_call" {
+				rebuilt[i].Type = "function_call"
+				rebuilt[i].Arguments = rebuilt[i].Input
+				rebuilt[i].Input = ""
+			}
+		}
+		outputJSON, err := json.Marshal(rebuilt)
 		if err == nil {
 			_ = json.Unmarshal(outputJSON, &output)
 		}

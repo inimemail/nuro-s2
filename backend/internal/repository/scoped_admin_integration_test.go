@@ -85,6 +85,64 @@ func TestScopedAdminPostgresTransactions(t *testing.T) {
 		_, e = call(p, "GET", "accounts", hiddenID, "{}", "")
 		require.ErrorIs(t, e, service.ErrScopedAdminNotFound)
 	})
+	t.Run("Anthropic discovery rejects late and stale results", func(t *testing.T) {
+		var id int64
+		require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,extra)
+			VALUES($1,'anthropic','apikey','{"local_flag":true}') RETURNING id`, stamp+"-anthropic").Scan(&id))
+		t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM accounts WHERE id=$1`, id) })
+		account, err := repo.GetByID(ctx, id)
+		require.NoError(t, err)
+		store := repo.(*accountRepository)
+		started := time.Now().UTC()
+		saved, err := store.SaveAnthropicModelContextWindows(ctx, id, account.UpdatedAt, started, map[string]int{"provider": 1_000_000})
+		require.NoError(t, err)
+		require.True(t, saved)
+		saved, err = store.SaveAnthropicModelContextWindows(ctx, id, account.UpdatedAt, started.Add(-time.Second), map[string]int{})
+		require.NoError(t, err)
+		require.False(t, saved)
+		fresh, err := repo.GetByID(ctx, id)
+		require.NoError(t, err)
+		require.True(t, fresh.UpdatedAt.Equal(account.UpdatedAt))
+		require.Equal(t, true, fresh.Extra["local_flag"])
+		require.Contains(t, fresh.Extra, service.AnthropicModelContextWindowsExtraKey)
+		_, err = db.Exec(`UPDATE accounts SET updated_at=updated_at+interval '1 second' WHERE id=$1`, id)
+		require.NoError(t, err)
+		saved, err = store.SaveAnthropicModelContextWindows(ctx, id, account.UpdatedAt, started.Add(time.Second), map[string]int{})
+		require.NoError(t, err)
+		require.False(t, saved)
+	})
+	t.Run("OpenAI OAuth refresh CAS rejects a stale credential revision", func(t *testing.T) {
+		var oauthID int64
+		require.NoError(t, db.QueryRow(`INSERT INTO accounts(name,platform,type,credentials)
+			VALUES($1,'openai','oauth','{"access_token":"fixture-before","refresh_token":"fixture-refresh","model_mapping":{"alias":"gpt-6"}}')
+			RETURNING id`, stamp+"-oauth").Scan(&oauthID))
+		t.Cleanup(func() {
+			_, _ = db.Exec(`DELETE FROM scheduler_outbox WHERE account_id=$1`, oauthID)
+			_, _ = db.Exec(`DELETE FROM accounts WHERE id=$1`, oauthID)
+		})
+		store, ok := repo.(service.OpenAIOAuthRefreshSuccessRepository)
+		require.True(t, ok)
+		before, err := repo.GetByID(ctx, oauthID)
+		require.NoError(t, err)
+		rotated := map[string]any{
+			"access_token": "fixture-after", "refresh_token": "fixture-rotated",
+			"model_mapping": before.Credentials["model_mapping"],
+		}
+		applied, err := store.UpdateOpenAIOAuthCredentialsIfUnchanged(ctx, oauthID, before.Credentials, nil, rotated)
+		require.NoError(t, err)
+		require.True(t, applied)
+		applied, err = store.UpdateOpenAIOAuthCredentialsIfUnchanged(ctx, oauthID, before.Credentials, nil, before.Credentials)
+		require.NoError(t, err)
+		require.False(t, applied)
+		current, err := repo.GetByID(ctx, oauthID)
+		require.NoError(t, err)
+		require.Equal(t, "fixture-rotated", current.GetCredential("refresh_token"))
+		require.Equal(t, "gpt-6", current.GetMappedModel("alias"))
+		var events int
+		require.NoError(t, db.QueryRow(`SELECT count(*) FROM scheduler_outbox WHERE account_id=$1 AND event_type=$2`,
+			oauthID, service.SchedulerOutboxEventAccountChanged).Scan(&events))
+		require.Equal(t, 1, events)
+	})
 	t.Run("managed Grok catalog CAS preserves other fields and credential revision", func(t *testing.T) {
 		store, ok := repo.(service.GrokCatalogStore)
 		require.True(t, ok)

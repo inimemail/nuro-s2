@@ -326,6 +326,29 @@ func responsesRequestNeedsAnthropicToolAdapt(body []byte) bool {
 	return needsAdapt
 }
 
+// Responses configuration updates describe the requested effort for the
+// active turn. Keep them separate from the root effort sent to the provider.
+func latestResponsesRequestedEffort(body []byte) string {
+	if !bytes.Contains(body, []byte("configuration_update")) && bytes.IndexByte(body, '\\') < 0 {
+		return ""
+	}
+	input := gjson.Get(openAIWSPayloadStringView(body), "input")
+	if !input.IsArray() {
+		return ""
+	}
+	var effort string
+	input.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").Str == "configuration_update" {
+			value := normalizeReasoningEffortMappingSource(item.Get("reasoning.effort").Str)
+			if value != "" {
+				effort = value
+			}
+		}
+		return true
+	})
+	return effort
+}
+
 // ExtractResponsesReasoningEffortFromBody reads Responses API reasoning.effort
 // and normalizes it for usage logging.
 func ExtractResponsesReasoningEffortFromBody(body []byte) *string {

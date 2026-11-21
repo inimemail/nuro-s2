@@ -289,6 +289,9 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if !sanitized {
 		upstreamBody = body
 	}
+	if normalized, changed := openai.NormalizeCodexPageContext(upstreamBody); changed {
+		upstreamBody = normalized
+	}
 	if account.IsOpenAIResponsesPassthroughCompatEnabled() {
 		upstreamBody, _, err = normalizeOpenAIResponsesStringInputBody(upstreamBody)
 		if err != nil {

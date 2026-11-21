@@ -56,7 +56,7 @@ class SSEParser:
         return frames
 
 
-def classify(frame):
+def classify(frame, chat_choices=None):
     data = []
     event = ""
     for line in frame:
@@ -84,11 +84,19 @@ def classify(frame):
         return "failed_terminal" if typ != "response.completed" else "terminal"
     if typ == "error" or "error" in item:
         return "failed_terminal"
-    if typ in ("response.output_text.delta", "response.function_call_arguments.delta"):
+    if typ in ("response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"):
         return "visible" if item.get("delta") else "structure"
     if typ in ("response.reasoning_text.delta", "response.reasoning_summary_text.delta"):
         return "reasoning" if item.get("delta") else "structure"
     choices = item.get("choices") or []
+    if chat_choices is not None:
+        for choice in choices:
+            index = choice.get("index", 0)
+            if type(index) is not int or index < 0:
+                raise ValueError("invalid_choice")
+            if chat_choices.get(index) is True:
+                raise ValueError("duplicate_choice_terminal")
+            chat_choices[index] = bool(choice.get("finish_reason"))
     for choice in choices:
         delta = choice.get("delta") or {}
         if delta.get("content") or any((call.get("function") or {}).get("arguments") for call in delta.get("tool_calls") or []):
@@ -96,7 +104,7 @@ def classify(frame):
     if any((choice.get("delta") or {}).get("reasoning_content") for choice in choices):
         return "reasoning"
     if any(choice.get("finish_reason") for choice in choices):
-        return "terminal"
+        return "chat_choice_terminal" if chat_choices is not None else "terminal"
     return "structure"
 
 
@@ -107,6 +115,8 @@ def measure(chunks, clock=time.monotonic, started=None):
                   first_reasoning_ms=None, provider_ttft_ms=None, terminal_ms=None,
                   terminals=0, done_markers=0, failure=None)
     size = 0
+    chat_choices = {}
+    last_chat_terminal_ms = None
     try:
         for chunk in chunks:
             now = (clock() - start) * 1000
@@ -116,7 +126,11 @@ def measure(chunks, clock=time.monotonic, started=None):
             if chunk and result["first_byte_ms"] is None:
                 result["first_byte_ms"] = now
             for frame in parser.feed(chunk):
-                kind = classify(frame)
+                kind = classify(frame, chat_choices)
+                if result["done_markers"] and kind != "done_marker" and any(line.startswith("data:") for line in frame):
+                    raise ValueError("data_after_done")
+                if kind == "chat_choice_terminal" or (chat_choices and all(chat_choices.values()) and kind in ("visible", "reasoning")):
+                    last_chat_terminal_ms = now
                 if kind == "progress" and result["first_progress_ms"] is None:
                     result["first_progress_ms"] = now
                 if kind in ("visible", "reasoning"):
@@ -124,6 +138,8 @@ def measure(chunks, clock=time.monotonic, started=None):
                     if result[key] is None:
                         result[key] = now
                 if kind == "done_marker":
+                    if chat_choices and not all(chat_choices.values()):
+                        raise ValueError("unfinished_chat_choice")
                     result["done_markers"] += 1
                 elif kind in ("terminal", "failed_terminal"):
                     result["terminals"] += 1
@@ -131,8 +147,13 @@ def measure(chunks, clock=time.monotonic, started=None):
                     if kind == "failed_terminal":
                         result["failure"] = "upstream_terminal"
         parser.feed(b"", eof=True)
+        if chat_choices and all(chat_choices.values()):
+            result["terminals"] += 1
+            result["terminal_ms"] = last_chat_terminal_ms
         if result["terminals"] != 1 or result["done_markers"] > 1:
             result["failure"] = "terminal_count"
+        elif chat_choices and result["done_markers"] != 1:
+            result["failure"] = "missing_done_marker"
     except (ValueError, UnicodeError, TypeError, AttributeError):
         result["failure"] = "invalid_or_oversized_stream"
     result["total_ms"] = (clock() - start) * 1000

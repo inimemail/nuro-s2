@@ -814,7 +814,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'v
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
-import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { buildPassiveAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
 import AntigravityQuotaWindows from './AntigravityQuotaWindows.vue'
@@ -1173,7 +1173,7 @@ const refreshCodexInviteUsage = async () => {
   })
 }
 
-const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
+const passiveUsageRefreshKey = computed(() => buildPassiveAccountUsageRefreshKey(props.account))
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   return shouldFetchUsage.value
@@ -2118,14 +2118,13 @@ watch(usageIdentity, () => {
   if (shouldAutoLoadUsageOnMount.value) requestAutoLoad(isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined)
 }, { flush: 'sync' })
 
-watch([openAIUsageRefreshKey, usageIdentity], ([nextKey, identity], [prevKey, previousIdentity]) => {
+watch([passiveUsageRefreshKey, usageIdentity], ([nextKey, identity], [prevKey, previousIdentity]) => {
   if (!prevKey || nextKey === prevKey || identity !== previousIdentity) return
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
+  if (!nextKey || !shouldFetchUsage.value) return
 
   _usageCache.delete(props.account.id)
-  loadUsage({ bypassCache: true }).catch((e) => {
-    console.error('Failed to refresh OpenAI usage after account update:', e)
-  })
+  const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
+  requestAutoLoad(source)
 })
 
 watch(

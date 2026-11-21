@@ -138,7 +138,11 @@ func (s *OpenAIGatewayService) forwardAsCompatibleRawChatCompletions(ctx context
 			return nil, err
 		}
 	}
-	return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	result, err := s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	if result != nil && account != nil && account.IsGrok() {
+		result.SearchCount = result.Usage.reportedGrokSearchCount
+	}
+	return result, err
 }
 
 func validateNewModelChatReasoningTools(model, effort string, hasTools bool) error {

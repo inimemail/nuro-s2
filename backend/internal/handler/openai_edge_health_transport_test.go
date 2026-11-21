@@ -26,7 +26,7 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 	if binary == "" {
 		t.Skip("set NURO_EDGE_TEST_BINARY to run the Rust/Go transport integration")
 	}
-	for _, scenario := range []string{"completed_tcp_close", "completed_idle", "active_tcp_close", "heartbeat_stall", "reasoning_progress", "protection_off", "client_cancel", "experience"} {
+	for _, scenario := range []string{"completed_tcp_close", "completed_idle", "active_tcp_close", "heartbeat_stall", "reasoning_progress", "protection_off", "client_cancel", "experience", "conflicting_followup"} {
 		t.Run(scenario, func(t *testing.T) {
 			upstreamClosed := make(chan struct{})
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +72,12 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 				send(`{"type":"response.completed","response":{"id":"resp-health","status":"completed","usage":{"input_tokens":7,"output_tokens":3}}}`)
 				if scenario == "completed_idle" {
 					time.Sleep(450 * time.Millisecond) // Idle sessions must have no generation watchdog.
+				}
+				if scenario == "conflicting_followup" {
+					_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					if _, _, err := conn.ReadMessage(); err == nil {
+						t.Error("upstream received the rejected follow-up")
+					}
 				}
 			}))
 			defer upstream.Close()
@@ -133,13 +139,34 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 				_ = resp.Body.Close()
 				return resp.StatusCode == http.StatusOK
 			}, 5*time.Second, 20*time.Millisecond)
+			if scenario == "conflicting_followup" {
+				resp, err := http.Post("http://"+addr+"/v1/responses", "application/json",
+					strings.NewReader(`{"model":"gpt-test","MODEL":"gpt-test","input":"example"}`))
+				require.NoError(t, err)
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				require.NoError(t, err)
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+				require.Contains(t, string(body), "Request contains duplicate or ambiguous fields")
+			}
 			conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/v1/responses", nil)
 			require.NoError(t, err)
 			defer conn.Close()
 			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-test","input":"hi"}`)))
 			require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 			for {
-				_, _, err := conn.ReadMessage()
+				_, payload, err := conn.ReadMessage()
+				if scenario == "conflicting_followup" {
+					if err != nil {
+						require.True(t, websocket.IsCloseError(err, websocket.ClosePolicyViolation), "%v", err)
+						break
+					}
+					if bytes.Contains(payload, []byte(`"response.completed"`)) {
+						require.NoError(t, conn.WriteMessage(websocket.BinaryMessage,
+							[]byte(`{"type":"response.create","model":"gpt-test","MODEL":"gpt-test"}`)))
+					}
+					continue
+				}
 				if err != nil || scenario == "client_cancel" {
 					break
 				}
@@ -178,6 +205,9 @@ func TestEdgeWSRealRustHealthSettlement(t *testing.T) {
 				case "client_cancel":
 					require.True(t, req.ClientDisconnected)
 					require.Equal(t, "client_cancelled", req.FailureClass)
+				case "conflicting_followup":
+					require.Equal(t, 7, req.Usage.InputTokens)
+					require.Equal(t, 3, req.Usage.OutputTokens)
 				default:
 					require.True(t, req.Success, "a completed generation must survive an idle TCP close: %+v", req)
 					require.Empty(t, req.FailureClass)

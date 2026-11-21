@@ -133,17 +133,69 @@ func normalizeSessionUserAgentFallback(raw string) string {
 // protocol 指定请求协议格式（domain.PlatformAnthropic / domain.PlatformGemini），
 // 不同协议使用不同的 system/messages 字段名。
 func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
-	// 保持与旧实现一致：请求体必须是合法 JSON。
-	// 注意：gjson.GetBytes 对非法 JSON 不会报错，因此需要显式校验。
 	if !gjson.ValidBytes(body) {
 		return nil, DescribeInvalidJSON(body)
 	}
+	return ParseGatewayRequestForValidJSON(body, protocol)
+}
 
-	// 性能：
-	// - gjson.GetBytes 会把匹配的 Raw/Str 安全复制成 string（对于巨大 messages 会产生额外拷贝）。
-	// - 这里将 body 通过 unsafe 零拷贝视为 string，仅在本函数内使用，且 body 不会被修改。
-	jsonStr := *(*string)(unsafe.Pointer(&body))
+type gatewayRequestRootFields struct {
+	model, stream, metadataUserID, thinkingType, outputEffort, maxTokens, systemParts, contents, system, messages gjson.Result
+}
 
+// ParseGatewayRequestForValidJSON requires a body that has passed JSON validation.
+func ParseGatewayRequestForValidJSON(body []byte, protocol string) (*ParsedRequest, error) {
+	var fields gatewayRequestRootFields
+	root := gjson.Parse(openAIWSPayloadStringView(body))
+	root.ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "model":
+			if !fields.model.Exists() {
+				fields.model = value
+			}
+		case "stream":
+			if !fields.stream.Exists() {
+				fields.stream = value
+			}
+		case "metadata":
+			if !fields.metadataUserID.Exists() {
+				fields.metadataUserID = value.Get("user_id")
+			}
+		case "thinking":
+			if !fields.thinkingType.Exists() {
+				fields.thinkingType = value.Get("type")
+			}
+		case "output_config":
+			if !fields.outputEffort.Exists() {
+				fields.outputEffort = value.Get("effort")
+			}
+		case "max_tokens":
+			if !fields.maxTokens.Exists() {
+				fields.maxTokens = value
+			}
+		case "systemInstruction":
+			if !fields.systemParts.Exists() {
+				fields.systemParts = value.Get("parts")
+			}
+		case "contents":
+			if !fields.contents.Exists() {
+				fields.contents = value
+			}
+		case "system":
+			if !fields.system.Exists() {
+				fields.system = value
+			}
+		case "messages":
+			if !fields.messages.Exists() {
+				fields.messages = value
+			}
+		}
+		return true
+	})
+	return parseGatewayRequestRootFields(body, protocol, fields)
+}
+
+func parseGatewayRequestRootFields(body []byte, protocol string, fields gatewayRequestRootFields) (*ParsedRequest, error) {
 	parsed := &ParsedRequest{
 		Body: body,
 	}
@@ -151,16 +203,16 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	// --- gjson 提取简单字段（避免完整 Unmarshal） ---
 
 	// model: 需要严格类型校验，非 string 返回错误
-	modelResult := gjson.Get(jsonStr, "model")
+	modelResult := fields.model
 	if modelResult.Exists() {
 		if modelResult.Type != gjson.String {
 			return nil, fmt.Errorf("invalid model field type")
 		}
-		parsed.Model = modelResult.String()
+		parsed.Model = strings.Clone(modelResult.String())
 	}
 
 	// stream: 需要严格类型校验，非 bool 返回错误
-	streamResult := gjson.Get(jsonStr, "stream")
+	streamResult := fields.stream
 	if streamResult.Exists() {
 		if streamResult.Type != gjson.True && streamResult.Type != gjson.False {
 			return nil, fmt.Errorf("invalid stream field type")
@@ -169,19 +221,19 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	}
 
 	// metadata.user_id: 直接路径提取，不需要严格类型校验
-	parsed.MetadataUserID = gjson.Get(jsonStr, "metadata.user_id").String()
+	parsed.MetadataUserID = strings.Clone(fields.metadataUserID.String())
 
 	// thinking.type: enabled/adaptive 都视为开启
-	thinkingType := gjson.Get(jsonStr, "thinking.type").String()
+	thinkingType := fields.thinkingType.String()
 	if thinkingType == "enabled" || thinkingType == "adaptive" {
 		parsed.ThinkingEnabled = true
 	}
 
 	// output_config.effort: Claude API 的推理强度控制参数
-	parsed.OutputEffort = strings.TrimSpace(gjson.Get(jsonStr, "output_config.effort").String())
+	parsed.OutputEffort = strings.Clone(strings.TrimSpace(fields.outputEffort.String()))
 
 	// max_tokens: 仅接受整数值
-	maxTokensResult := gjson.Get(jsonStr, "max_tokens")
+	maxTokensResult := fields.maxTokens
 	if maxTokensResult.Exists() && maxTokensResult.Type == gjson.Number {
 		f := maxTokensResult.Float()
 		if !math.IsNaN(f) && !math.IsInf(f, 0) && f == math.Trunc(f) &&
@@ -197,7 +249,7 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	switch protocol {
 	case domain.PlatformGemini:
 		// Gemini 原生格式: systemInstruction.parts / contents
-		if sysParts := gjson.Get(jsonStr, "systemInstruction.parts"); sysParts.Exists() && sysParts.IsArray() {
+		if sysParts := fields.systemParts; sysParts.Exists() && sysParts.IsArray() {
 			var parts []any
 			if err := json.Unmarshal(sliceRawFromBody(body, sysParts), &parts); err != nil {
 				return nil, err
@@ -205,7 +257,7 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 			parsed.System = parts
 		}
 
-		if contents := gjson.Get(jsonStr, "contents"); contents.Exists() && contents.IsArray() {
+		if contents := fields.contents; contents.Exists() && contents.IsArray() {
 			var msgs []any
 			if err := json.Unmarshal(sliceRawFromBody(body, contents), &msgs); err != nil {
 				return nil, err
@@ -216,7 +268,7 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 		// Anthropic / OpenAI 格式: system / messages
 		// system 字段只要存在就视为显式提供（即使为 null），
 		// 以避免客户端传 null 时被默认 system 误注入。
-		if sys := gjson.Get(jsonStr, "system"); sys.Exists() {
+		if sys := fields.system; sys.Exists() {
 			parsed.HasSystem = true
 			switch sys.Type {
 			case gjson.Null:
@@ -233,7 +285,7 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 			}
 		}
 
-		if msgs := gjson.Get(jsonStr, "messages"); msgs.Exists() && msgs.IsArray() {
+		if msgs := fields.messages; msgs.Exists() && msgs.IsArray() {
 			var messages []any
 			if err := json.Unmarshal(sliceRawFromBody(body, msgs), &messages); err != nil {
 				return nil, err

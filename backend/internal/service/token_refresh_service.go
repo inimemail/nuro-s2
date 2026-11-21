@@ -299,8 +299,18 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 			}
 		} else {
 			// 降级：直接调用 refresher（兼容旧路径）
+			attempted := snapshotOAuthRefreshAccount(account)
 			newCredentials, err = refresher.Refresh(ctx, account)
-			if newCredentials != nil {
+			if err == nil && newCredentials != nil && attempted.IsOpenAIOAuth() && !attempted.IsCredentialShadow() {
+				current, applied, persistErr := persistOpenAIRefreshedCredentials(ctx, s.accountRepo, attempted, newCredentials)
+				if persistErr != nil {
+					return persistErr
+				}
+				if !applied {
+					return s.refreshPolicy.handleAlreadyRefreshed()
+				}
+				account = current
+			} else if err == nil && newCredentials != nil {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
 				if saveErr := persistAccountCredentials(ctx, s.accountRepo, account, newCredentials); saveErr != nil {
 					return fmt.Errorf("failed to save credentials: %w", saveErr)
@@ -314,6 +324,10 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		}
 
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
+		if errors.Is(err, errOpenAIRotationPersistence) ||
+			(account.IsOpenAIOAuth() && errors.Is(err, errOAuthRefreshAccountStateChanged)) {
+			return err
+		}
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
@@ -564,11 +578,9 @@ func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *
 		return
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil && s.proxyRepo != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveOpenAIStoredAccountProxy(ctx, s.proxyRepo, account.ProxyID)
+	if err != nil {
+		return
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)

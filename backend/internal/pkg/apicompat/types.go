@@ -114,6 +114,7 @@ type AnthropicImageSource struct {
 
 // AnthropicTool describes a tool available to the model.
 type AnthropicTool struct {
+	DeferLoading bool                   `json:"defer_loading,omitempty"`
 	Type         string                 `json:"type,omitempty"` // e.g. "web_search_20250305" for server tools
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description,omitempty"`
@@ -395,6 +396,7 @@ type ResponsesRequest struct {
 	ServiceTier        string              `json:"service_tier,omitempty"`
 	PromptCacheKey     string              `json:"prompt_cache_key,omitempty"`
 	PreviousResponseID string              `json:"previous_response_id,omitempty"`
+	Stop               json.RawMessage     `json:"stop,omitempty"`
 }
 
 // ResponsesReasoning configures reasoning effort in the Responses API.
@@ -492,6 +494,8 @@ type ResponsesContentPart struct {
 
 // ResponsesTool describes a tool in the Responses API.
 type ResponsesTool struct {
+	Execution                string          `json:"execution,omitempty"`
+	DeferLoading             bool            `json:"defer_loading,omitempty"`
 	Type                     string          `json:"type"` // "function" | "custom" | "web_search" | "local_shell" etc.
 	Name                     string          `json:"name,omitempty"`
 	Description              string          `json:"description,omitempty"`
@@ -570,7 +574,9 @@ type ResponsesIncompleteDetails struct {
 
 // ResponsesOutput is one output item in a Responses API response.
 type ResponsesOutput struct {
-	Type string `json:"type"` // "message" | "reasoning" | "function_call" | "web_search_call"
+	rebuiltFromStream bool
+	Execution         string `json:"-"`
+	Type              string `json:"type"` // "message" | "reasoning" | "function_call" | "web_search_call"
 
 	// type=message
 	ID      string                 `json:"id,omitempty"`
@@ -628,7 +634,8 @@ func (o ResponsesOutput) MarshalJSON() ([]byte, error) {
 func (o *ResponsesOutput) UnmarshalJSON(data []byte) error {
 	type alias ResponsesOutput
 	var kind struct {
-		Type string `json:"type"`
+		Type      string `json:"type"`
+		Execution string `json:"execution"`
 	}
 	if err := json.Unmarshal(data, &kind); err != nil {
 		return err
@@ -656,6 +663,7 @@ func (o *ResponsesOutput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*o = ResponsesOutput(decoded)
+	o.Execution = kind.Execution
 	if len(arguments) == 0 || string(arguments) == "null" {
 		return nil
 	}
@@ -667,8 +675,10 @@ func (o *ResponsesOutput) UnmarshalJSON(data []byte) error {
 
 // WebSearchAction describes the search action in a web_search_call output item.
 type WebSearchAction struct {
-	Type  string `json:"type,omitempty"`  // "search"
-	Query string `json:"query,omitempty"` // primary search query
+	Type    string          `json:"type,omitempty"`  // "search"
+	Query   string          `json:"query,omitempty"` // primary search query
+	URL     json.RawMessage `json:"url,omitempty"`
+	Sources json.RawMessage `json:"sources,omitempty"`
 }
 
 // ResponsesSummary is a summary text block inside a reasoning output.
@@ -833,6 +843,7 @@ type ResponsesStreamEvent struct {
 	ContentIndex int    `json:"content_index,omitempty"`
 	Delta        string `json:"delta,omitempty"`
 	Text         string `json:"text,omitempty"`
+	Refusal      string `json:"refusal,omitempty"`
 	ItemID       string `json:"item_id,omitempty"`
 
 	// response.function_call_arguments.delta / done

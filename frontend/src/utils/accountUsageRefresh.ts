@@ -55,3 +55,21 @@ export const buildUpstreamBillingGuardRefreshKey = (
     ...bindings
   ].map(normalizeUsageRefreshValue).join('|')
 }
+
+export const buildPassiveAccountUsageRefreshKey = (
+  account: Pick<Account, 'id' | 'platform' | 'type' | 'updated_at' | 'last_used_at' | 'rate_limit_reset_at' | 'session_window_start' | 'session_window_end' | 'session_window_status' | 'extra'>
+): string => {
+  if (account.platform === 'openai') return buildOpenAIUsageRefreshKey(account)
+  const claude = account.platform === 'anthropic' && (account.type === 'oauth' || account.type === 'setup-token')
+  if (!claude && account.platform !== 'gemini') return ''
+  const extra = account.extra ?? {}
+  return JSON.stringify([
+    account.id, account.platform, account.type, account.last_used_at, account.rate_limit_reset_at,
+    account.session_window_start, account.session_window_end, account.session_window_status,
+    ...(claude ? [
+      extra.session_window_utilization, extra.passive_usage_sampled_at,
+      extra.passive_usage_7d_utilization, extra.passive_usage_7d_reset,
+      extra.passive_usage_7d_oi_utilization, extra.passive_usage_7d_oi_reset,
+    ] : []),
+  ])
+}

@@ -958,6 +958,7 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	AnthropicClaudeCodeCompactCacheTTL5m bool `mapstructure:"anthropic_claude_code_compact_cache_ttl_5m"`
 	// MinOutputTokens is the floor when translating compatible requests to Responses.
 	MinOutputTokens                  int  `mapstructure:"min_output_tokens"`
 	GeminiExplicitCacheEnabled       bool `mapstructure:"gemini_explicit_cache_enabled"`
@@ -2267,6 +2268,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("security.scoped_admin_api_keys_enabled", false)
 	viper.SetDefault("gateway.min_output_tokens", 128)
+	viper.SetDefault("gateway.anthropic_claude_code_compact_cache_ttl_5m", false)
 	viper.SetDefault("run_mode", RunModeStandard)
 	// Existing installs without this field keep their startup behavior.
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)

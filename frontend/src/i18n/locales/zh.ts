@@ -4153,6 +4153,9 @@ export default {
         baseUrlHint: '留空使用官方 OpenAI API',
         apiKeyHint: '您的 OpenAI API Key',
         oauthPassthrough: '自动透传（仅替换认证）',
+        passthroughModelFilter: '透传模型筛选',
+        passthroughModelFilterUnchanged: '保留各账号的设置',
+        passthroughModelFilterDesc: '开启后，透传选号依据账号已有的模型限制。转发时仍使用请求模型名。',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',
         longContextBilling: 'API 长上下文计费',
@@ -5934,7 +5937,7 @@ export default {
         table: {
           model: '模型',
           requestCount: '请求数',
-          avgTokensPerSec: '平均 Tokens/秒',
+          avgTokensPerSec: 'Tokens/秒（按耗时加权）',
           avgFirstTokenMs: '平均首 Token 延迟(ms)',
           totalOutputTokens: '输出 Token 总数',
           avgDurationMs: '平均时长(ms)',

@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
@@ -176,6 +177,26 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		result, err := decoder.Decode()
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
+	})
+
+	t.Run("restores Composite response model and preserves stream usage", func(t *testing.T) {
+		const start = `{"type":"message_start","message":{"id":"msg_test","model":"provider-model","usage":{"input_tokens":6}}}`
+		const delta = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`
+		chunk := func(event string) []byte {
+			payload := []byte(`{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(event)) + `"}`)
+			return buildFrame("chunk", payload)
+		}
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		response := &http.Response{Body: io.NopCloser(bytes.NewReader(append(chunk(start), chunk(delta)...)))}
+		ctx := context.WithValue(t.Context(), compositeContextKey("public_response_model"), "public-model")
+		result, err := (&GatewayService{cfg: &config.Config{}}).handleBedrockStreamingResponse(ctx, response, c, &Account{ID: 1}, time.Now(), "public-model")
+		require.NoError(t, err)
+		require.Equal(t, 6, result.usage.InputTokens)
+		require.Equal(t, 3, result.usage.OutputTokens)
+		require.Contains(t, rec.Body.String(), `"model":"public-model"`)
+		require.Contains(t, rec.Body.String(), delta)
 	})
 
 	t.Run("resource overflow drains valid late metrics", func(t *testing.T) {

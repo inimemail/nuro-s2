@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestfields"
 	coderws "github.com/coder/websocket"
 )
 
@@ -44,6 +45,9 @@ func ReadOpenAIWSClientMessage(controlCtx context.Context, conn *coderws.Conn, t
 	}
 	select {
 	case result := <-readDone:
+		if result.err == nil && requestfields.HasConflict(result.payload, "") {
+			return 0, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "Request contains duplicate or ambiguous fields", nil)
+		}
 		return result.messageType, result.payload, result.err
 	case <-timeoutCh:
 		return closeAndJoin(timeoutStatus, timeoutReason, context.DeadlineExceeded)

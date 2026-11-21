@@ -77,6 +77,12 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 		}
 		retrySameAccount := openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMessage, respBody)
 		failoverErr := annotateOpenAIAttemptFailover(req, newOpenAIAlphaSearchFailoverErrorForAccount(account, resp.StatusCode, respBody, upstreamMessage, retrySameAccount, false))
+		if account.IsOpenAIOAuthLike() && resp.StatusCode == http.StatusForbidden && s.rateLimitService != nil {
+			switch gjson.GetBytes(respBody, "error.code").String() {
+			case "account_deactivated", "account_disabled", "workspace_deactivated", "workspace_disabled":
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+		}
 		// Alpha Search deliberately bypasses same-account retries; preserve its
 		// endpoint-specific failover contract while retaining Attempt metadata.
 		failoverErr.RetryableOnSameAccount = false

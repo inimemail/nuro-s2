@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -22,12 +23,42 @@ const (
 	maxDecompressedBodySize = 64 << 20
 )
 
+type preReadRequestBody struct {
+	*bytes.Reader
+	data []byte
+}
+
+func (b *preReadRequestBody) Close() error { return nil }
+
+// RestorePreReadRequestBody lets gateway handlers consume the bounded request
+// body without allocating another copy after an ingress policy check.
+func RestorePreReadRequestBody(req *http.Request, data []byte) {
+	req.Body = &preReadRequestBody{Reader: bytes.NewReader(data), data: data}
+	req.ContentLength = int64(len(data))
+	req.Header.Del("Content-Length")
+}
+
 // ReadRequestBodyWithPrealloc reads request body with preallocated buffer based
 // on content length, transparently decoding any Content-Encoding the upstream
 // client used to compress the body (zstd, gzip, deflate).
 func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
+	return ReadBoundedRequestBody(req, 0)
+}
+
+// ReadBoundedRequestBody also limits the decoded body during decompression.
+// A non-positive limit uses the default maximum decoded size.
+func ReadBoundedRequestBody(req *http.Request, maxBytes int64) ([]byte, error) {
 	if req == nil || req.Body == nil {
 		return nil, nil
+	}
+
+	if body, ok := req.Body.(*preReadRequestBody); ok {
+		start := len(body.data) - body.Len()
+		if maxBytes > 0 && int64(body.Len()) > maxBytes {
+			return nil, &http.MaxBytesError{Limit: maxBytes}
+		}
+		_, _ = body.Seek(0, io.SeekEnd)
+		return body.data[start:], nil
 	}
 
 	capHint := requestBodyReadInitCap
@@ -43,9 +74,17 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 	}
 
 	scope := BodyReservationFromContext(req.Context())
-	raw, err := readRequestBodyChunks(req.Body, capHint, scope)
+	var reader io.Reader = req.Body
+	if maxBytes > 0 && maxBytes < math.MaxInt64 {
+		reader = io.LimitReader(reader, maxBytes+1)
+		capHint = int(min(int64(capHint), maxBytes+1))
+	}
+	raw, err := readRequestBodyChunks(reader, capHint, scope)
 	if err != nil {
 		return nil, err
+	}
+	if maxBytes > 0 && int64(len(raw)) > maxBytes {
+		return nil, &http.MaxBytesError{Limit: maxBytes}
 	}
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
@@ -53,7 +92,7 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 		return raw, nil
 	}
 
-	decoded, err := decompressRequestBody(enc, raw, scope)
+	decoded, err := decompressRequestBody(enc, raw, maxBytes, scope)
 	if err != nil {
 		return nil, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
 	}
@@ -150,11 +189,7 @@ func ReadLenientJSONRequestBodyWithPrealloc(req *http.Request, maxNormalizedByte
 	return NormalizeLenientJSONRequestBody(body, maxNormalizedBytes)
 }
 
-func decompressRequestBody(encoding string, raw []byte, scopes ...*BodyReservation) ([]byte, error) {
-	var scope *BodyReservation
-	if len(scopes) > 0 {
-		scope = scopes[0]
-	}
+func decompressRequestBody(encoding string, raw []byte, maxBytes int64, scope *BodyReservation) ([]byte, error) {
 	window := int64(64 << 10)
 	if encoding == "zstd" {
 		window = 8 << 20
@@ -169,43 +204,43 @@ func decompressRequestBody(encoding string, raw []byte, scopes ...*BodyReservati
 			return nil, err
 		}
 		defer dec.Close()
-		return readDecompressedBody(dec, scope)
+		return readDecompressedBody(dec, maxBytes, scope)
 	case "gzip", "x-gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = gr.Close() }()
-		return readDecompressedBody(gr, scope)
+		return readDecompressedBody(gr, maxBytes, scope)
 	case "deflate":
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = zr.Close() }()
-		return readDecompressedBody(zr, scope)
+		return readDecompressedBody(zr, maxBytes, scope)
 	default:
 		return nil, errors.New("unsupported Content-Encoding")
 	}
 }
 
-func readDecompressedBody(r io.Reader, scopes ...*BodyReservation) ([]byte, error) {
-	var scope *BodyReservation
-	if len(scopes) > 0 {
-		scope = scopes[0]
+func readDecompressedBody(r io.Reader, maxBytes int64, scope *BodyReservation) ([]byte, error) {
+	if maxBytes <= 0 || maxBytes > maxDecompressedBodySize {
+		maxBytes = maxDecompressedBodySize
 	}
+	r = io.LimitReader(r, maxBytes+1)
 	var body []byte
 	var err error
 	if scope == nil {
-		body, err = io.ReadAll(io.LimitReader(r, maxDecompressedBodySize+1))
+		body, err = io.ReadAll(r)
 	} else {
-		body, err = readRequestBodyChunks(io.LimitReader(r, maxDecompressedBodySize+1), requestBodyReadInitCap, scope)
+		body, err = readRequestBodyChunks(r, requestBodyReadInitCap, scope)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > maxDecompressedBodySize {
-		return nil, &http.MaxBytesError{Limit: maxDecompressedBodySize}
+	if int64(len(body)) > maxBytes {
+		return nil, &http.MaxBytesError{Limit: maxBytes}
 	}
 	return body, nil
 }

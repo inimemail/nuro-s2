@@ -3,14 +3,19 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"reflect"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
-	"golang.org/x/sync/singleflight"
 )
 
 // WebSearchEmulationConfig holds the global web search emulation configuration.
@@ -19,9 +24,9 @@ type WebSearchEmulationConfig struct {
 	Providers []WebSearchProviderConfig `json:"providers"`
 }
 
-// WebSearchProviderConfig describes a single search provider (Brave or Tavily).
+// WebSearchProviderConfig describes a single search provider.
 type WebSearchProviderConfig struct {
-	Type             string `json:"type"`                    // websearch.ProviderTypeBrave | Tavily
+	Type             string `json:"type"`                    // Brave, Tavily or Exa
 	APIKey           string `json:"api_key,omitempty"`       // secret — omitted in API responses
 	APIKeyConfigured bool   `json:"api_key_configured"`      // read-only mask
 	QuotaLimit       *int64 `json:"quota_limit"`             // nil = unlimited, >0 = limited
@@ -35,9 +40,19 @@ type WebSearchProviderConfig struct {
 
 const maxWebSearchProviders = 10
 
+// Older nodes route unrecognized providers through Brave. Keep Exa credentials
+// in a separate setting that those nodes do not read.
+const settingKeyWebSearchExa = "web_search_emulation_exa"
+
+type webSearchExaSetting struct {
+	Provider WebSearchProviderConfig `json:"provider"`
+	Position int                     `json:"position"`
+}
+
 var validProviderTypes = map[string]bool{
 	websearch.ProviderTypeBrave:  true,
 	websearch.ProviderTypeTavily: true,
+	websearch.ProviderTypeExa:    true,
 }
 
 func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
@@ -65,15 +80,17 @@ func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
 
 // --- In-process cache (same pattern as gateway forwarding settings) ---
 
-const sfKeyWebSearchConfig = "web_search_emulation_config"
-
 type cachedWebSearchEmulationConfig struct {
 	config    *WebSearchEmulationConfig
+	err       error
+	proxyURLs map[int64]string
 	expiresAt int64 // unix nano
 }
 
-var webSearchEmulationCache atomic.Value // *cachedWebSearchEmulationConfig
-var webSearchEmulationSF singleflight.Group
+var webSearchEmulationCache atomic.Pointer[cachedWebSearchEmulationConfig]
+
+// Serialize reads on cache misses, writes and manager publication.
+var webSearchConfigMu sync.Mutex
 
 const (
 	webSearchEmulationCacheTTL  = 60 * time.Second
@@ -81,43 +98,33 @@ const (
 	webSearchEmulationDBTimeout = 5 * time.Second
 )
 
-// GetWebSearchEmulationConfig returns the configuration with in-process cache + singleflight.
+// GetWebSearchEmulationConfig returns the in-process snapshot when it is fresh.
 func (s *SettingService) GetWebSearchEmulationConfig(ctx context.Context) (*WebSearchEmulationConfig, error) {
-	if cached := webSearchEmulationCache.Load(); cached != nil {
-		if c, ok := cached.(*cachedWebSearchEmulationConfig); ok && time.Now().UnixNano() < c.expiresAt {
-			return c.config, nil
-		}
+	if cached := webSearchEmulationCache.Load(); cached != nil && time.Now().UnixNano() < cached.expiresAt {
+		return cached.config, cached.err
 	}
-	result, err, _ := webSearchEmulationSF.Do(sfKeyWebSearchConfig, func() (any, error) {
-		return s.loadWebSearchConfigFromDB()
-	})
-	if err != nil {
-		return &WebSearchEmulationConfig{}, err
-	}
-	if cfg, ok := result.(*WebSearchEmulationConfig); ok {
-		return cfg, nil
-	}
-	return &WebSearchEmulationConfig{}, nil
+	webSearchConfigMu.Lock()
+	defer webSearchConfigMu.Unlock()
+	return s.getWebSearchConfigLocked(ctx)
 }
 
-func (s *SettingService) loadWebSearchConfigFromDB() (*WebSearchEmulationConfig, error) {
-	dbCtx, cancel := context.WithTimeout(context.Background(), webSearchEmulationDBTimeout)
+func (s *SettingService) getWebSearchConfigLocked(ctx context.Context) (*WebSearchEmulationConfig, error) {
+	previous := webSearchEmulationCache.Load()
+	if previous != nil && time.Now().UnixNano() < previous.expiresAt {
+		return previous.config, previous.err
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), webSearchEmulationDBTimeout)
 	defer cancel()
 
-	raw, err := s.settingRepo.GetValue(dbCtx, SettingKeyWebSearchEmulationConfig)
-	if err != nil {
-		webSearchEmulationCache.Store(&cachedWebSearchEmulationConfig{
-			config:    &WebSearchEmulationConfig{},
-			expiresAt: time.Now().Add(webSearchEmulationErrorTTL).UnixNano(),
-		})
-		return &WebSearchEmulationConfig{}, err
+	cfg, err := s.getWebSearchEmulationConfigRaw(dbCtx)
+	if errors.Is(err, ErrSettingNotFound) {
+		cfg, err = &WebSearchEmulationConfig{}, nil
 	}
-	cfg := parseWebSearchConfigJSON(raw)
-	webSearchEmulationCache.Store(&cachedWebSearchEmulationConfig{
-		config:    cfg,
-		expiresAt: time.Now().Add(webSearchEmulationCacheTTL).UnixNano(),
-	})
-	return cfg, nil
+	if err != nil {
+		cfg = &WebSearchEmulationConfig{}
+	}
+	s.publishWebSearchConfig(dbCtx, previous, cfg, err)
+	return cfg, err
 }
 
 func parseWebSearchConfigJSON(raw string) *WebSearchEmulationConfig {
@@ -135,10 +142,22 @@ func parseWebSearchConfigJSON(raw string) *WebSearchEmulationConfig {
 // SaveWebSearchEmulationConfig validates and persists the configuration.
 // Empty API keys in the input are preserved from the existing config.
 func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *WebSearchEmulationConfig) error {
+	if cfg == nil {
+		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", "missing web search configuration")
+	}
 	if err := validateWebSearchConfig(cfg); err != nil {
 		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", err.Error())
 	}
-	s.mergeExistingAPIKeys(ctx, cfg)
+	webSearchConfigMu.Lock()
+	defer webSearchConfigMu.Unlock()
+
+	// Keep the published snapshot independent of the caller's request data.
+	copyConfig := *cfg
+	copyConfig.Providers = slices.Clone(cfg.Providers)
+	cfg = &copyConfig
+	if err := s.mergeExistingAPIKeys(ctx, cfg); err != nil {
+		return fmt.Errorf("websearch: load existing API keys: %w", err)
+	}
 
 	// After merge, validate all enabled providers have API keys
 	if cfg.Enabled {
@@ -150,30 +169,83 @@ func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *
 		}
 	}
 
-	data, err := json.Marshal(cfg)
+	settings, err := marshalWebSearchSettings(cfg)
 	if err != nil {
 		return fmt.Errorf("websearch: marshal config: %w", err)
 	}
-	if err := s.settingRepo.Set(ctx, SettingKeyWebSearchEmulationConfig, string(data)); err != nil {
+	if err := s.settingRepo.SetMultiple(ctx, settings); err != nil {
 		return fmt.Errorf("websearch: save config: %w", err)
 	}
-	// Invalidate: forget singleflight first, then store new value
-	webSearchEmulationSF.Forget(sfKeyWebSearchConfig)
-	webSearchEmulationCache.Store(&cachedWebSearchEmulationConfig{
-		config:    cfg,
-		expiresAt: time.Now().Add(webSearchEmulationCacheTTL).UnixNano(),
-	})
 
-	// Hot-reload: rebuild the global Manager with new config
-	s.rebuildWebSearchManager(ctx)
+	reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), webSearchEmulationDBTimeout)
+	defer cancel()
+	s.publishWebSearchConfig(reloadCtx, webSearchEmulationCache.Load(), cfg, nil)
+
 	return nil
 }
 
+func marshalWebSearchSettings(cfg *WebSearchEmulationConfig) (map[string]string, error) {
+	legacy := *cfg
+	exa := ""
+	for index, provider := range cfg.Providers {
+		if provider.Type != websearch.ProviderTypeExa {
+			continue
+		}
+		body, err := json.Marshal(webSearchExaSetting{Provider: provider, Position: index})
+		if err != nil {
+			return nil, err
+		}
+		exa = string(body)
+		legacy.Providers = slices.Delete(slices.Clone(cfg.Providers), index, index+1)
+		break
+	}
+	body, err := json.Marshal(legacy)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		SettingKeyWebSearchEmulationConfig: string(body),
+		settingKeyWebSearchExa:             exa,
+	}, nil
+}
+
+func webSearchConfigFromSettings(settings map[string]string) (*WebSearchEmulationConfig, error) {
+	cfg := parseWebSearchConfigJSON(settings[SettingKeyWebSearchEmulationConfig])
+	raw := settings[settingKeyWebSearchExa]
+	if raw == "" {
+		return cfg, nil
+	}
+	var exa webSearchExaSetting
+	if err := json.Unmarshal([]byte(raw), &exa); err != nil {
+		return nil, fmt.Errorf("websearch: decode Exa configuration: %w", err)
+	}
+	if exa.Provider.Type != websearch.ProviderTypeExa {
+		return nil, errors.New("websearch: invalid Exa configuration")
+	}
+	cfg.Providers = slices.DeleteFunc(cfg.Providers, func(provider WebSearchProviderConfig) bool {
+		return provider.Type == websearch.ProviderTypeExa
+	})
+	position := min(max(exa.Position, 0), len(cfg.Providers))
+	cfg.Providers = slices.Insert(cfg.Providers, position, exa.Provider)
+	return cfg, nil
+}
+
 // mergeExistingAPIKeys preserves API keys from the current config when incoming value is empty.
-func (s *SettingService) mergeExistingAPIKeys(ctx context.Context, cfg *WebSearchEmulationConfig) {
-	existing, _ := s.getWebSearchEmulationConfigRaw(ctx)
-	if existing == nil || cfg == nil {
-		return
+func (s *SettingService) mergeExistingAPIKeys(ctx context.Context, cfg *WebSearchEmulationConfig) error {
+	needsExisting := false
+	for i := range cfg.Providers {
+		cfg.Providers[i].APIKey = strings.TrimSpace(cfg.Providers[i].APIKey)
+		needsExisting = needsExisting || cfg.Providers[i].APIKey == ""
+	}
+	if !needsExisting {
+		return nil
+	}
+	existing, err := s.getWebSearchEmulationConfigRaw(ctx)
+	if errors.Is(err, ErrSettingNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	existingByType := make(map[string]string, len(existing.Providers))
 	for _, p := range existing.Providers {
@@ -188,14 +260,18 @@ func (s *SettingService) mergeExistingAPIKeys(ctx context.Context, cfg *WebSearc
 			}
 		}
 	}
+	return nil
 }
 
 func (s *SettingService) getWebSearchEmulationConfigRaw(ctx context.Context) (*WebSearchEmulationConfig, error) {
-	raw, err := s.settingRepo.GetValue(ctx, SettingKeyWebSearchEmulationConfig)
+	settings, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyWebSearchEmulationConfig, settingKeyWebSearchExa})
 	if err != nil {
 		return nil, err
 	}
-	return parseWebSearchConfigJSON(raw), nil
+	if len(settings) == 0 {
+		return nil, ErrSettingNotFound
+	}
+	return webSearchConfigFromSettings(settings)
 }
 
 // IsWebSearchEmulationEnabled is a quick check for whether the global switch is on.
@@ -211,28 +287,38 @@ func (s *SettingService) IsWebSearchEmulationEnabled(ctx context.Context) bool {
 // The infra layer (main/wire) provides this builder, keeping redis out of the service layer.
 // Triggers initial build.
 func (s *SettingService) SetWebSearchManagerBuilder(ctx context.Context, builder WebSearchManagerBuilder) {
+	webSearchConfigMu.Lock()
+	defer webSearchConfigMu.Unlock()
 	s.webSearchManagerBuilder = builder
-	s.rebuildWebSearchManager(ctx)
+	// Force a read so the new builder receives the current settings once.
+	webSearchEmulationCache.Store(nil)
+	_, _ = s.getWebSearchConfigLocked(ctx)
 }
 
-// rebuildWebSearchManager reads the current config, resolves proxy URLs, and invokes the builder.
-func (s *SettingService) rebuildWebSearchManager(ctx context.Context) {
-	if s.webSearchManagerBuilder == nil {
-		return
+// publishWebSearchConfig runs under webSearchConfigMu. Proxy rows can change
+// independently of the settings, so refresh them before comparing snapshots.
+func (s *SettingService) publishWebSearchConfig(ctx context.Context, previous *cachedWebSearchEmulationConfig, cfg *WebSearchEmulationConfig, configErr error) {
+	snapshot := &cachedWebSearchEmulationConfig{config: cfg, err: configErr}
+	var proxyErr error
+	if s.webSearchManagerBuilder != nil {
+		snapshot.proxyURLs, proxyErr = s.resolveProviderProxyURLs(ctx, cfg)
+		if previous == nil || !reflect.DeepEqual(previous.config, cfg) ||
+			!maps.Equal(previous.proxyURLs, snapshot.proxyURLs) {
+			s.webSearchManagerBuilder(cfg, snapshot.proxyURLs)
+		}
 	}
-	cfg, err := s.GetWebSearchEmulationConfig(ctx)
-	if err != nil {
-		SetWebSearchManager(nil)
-		return
+	ttl := webSearchEmulationCacheTTL
+	if configErr != nil || proxyErr != nil {
+		ttl = webSearchEmulationErrorTTL
 	}
-	proxyURLs := s.resolveProviderProxyURLs(ctx, cfg)
-	s.webSearchManagerBuilder(cfg, proxyURLs)
+	snapshot.expiresAt = time.Now().Add(ttl).UnixNano()
+	webSearchEmulationCache.Store(snapshot)
 }
 
 // resolveProviderProxyURLs collects proxy IDs from providers and resolves them to URLs.
-func (s *SettingService) resolveProviderProxyURLs(ctx context.Context, cfg *WebSearchEmulationConfig) map[int64]string {
-	if cfg == nil || s.proxyRepo == nil {
-		return nil
+func (s *SettingService) resolveProviderProxyURLs(ctx context.Context, cfg *WebSearchEmulationConfig) (map[int64]string, error) {
+	if cfg == nil || !cfg.Enabled || s.proxyRepo == nil {
+		return nil, nil
 	}
 	var ids []int64
 	for _, p := range cfg.Providers {
@@ -241,18 +327,21 @@ func (s *SettingService) resolveProviderProxyURLs(ctx context.Context, cfg *WebS
 		}
 	}
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 	proxies, err := s.proxyRepo.ListByIDs(ctx, ids)
 	if err != nil {
 		slog.Warn("websearch: failed to resolve proxy URLs", "error", err)
-		return nil
+		return nil, err
 	}
 	result := make(map[int64]string, len(proxies))
+	now := time.Now()
 	for _, px := range proxies {
-		result[px.ID] = px.URL()
+		if px.IsActive() && !px.IsExpired(now) {
+			result[px.ID] = px.URL()
+		}
 	}
-	return result
+	return result, nil
 }
 
 // WebSearchTestResult holds the result of a search test.

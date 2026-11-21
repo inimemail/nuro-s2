@@ -4393,11 +4393,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.CodexCLIOnlyEngineFingerprintSignals = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyEngineFingerprintSignals])
 
 	// Web search emulation: quick enabled check from the JSON config
-	if raw := settings[SettingKeyWebSearchEmulationConfig]; raw != "" {
-		var wsCfg WebSearchEmulationConfig
-		if err := json.Unmarshal([]byte(raw), &wsCfg); err == nil {
-			result.WebSearchEmulationEnabled = wsCfg.Enabled && len(wsCfg.Providers) > 0
-		}
+	if wsCfg, err := webSearchConfigFromSettings(settings); err == nil {
+		result.WebSearchEmulationEnabled = wsCfg.Enabled && len(wsCfg.Providers) > 0
 	}
 	result.PaymentVisibleMethodAlipaySource = NormalizeVisibleMethodSource("alipay", settings[SettingPaymentVisibleMethodAlipaySource])
 	result.PaymentVisibleMethodWxpaySource = NormalizeVisibleMethodSource("wxpay", settings[SettingPaymentVisibleMethodWxpaySource])

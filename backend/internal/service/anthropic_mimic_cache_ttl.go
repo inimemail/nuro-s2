@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -8,6 +10,9 @@ import (
 // Anthropic visits cache breakpoints in tools, system, messages order. Promote
 // preceding short breakpoints only when needed to preserve a later explicit 1h.
 func normalizeMimicCacheControlTTLOrder(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"1h"`)) && bytes.IndexByte(body, '\\') < 0 {
+		return body
+	}
 	_, messages, tools, system := collectCacheControlPaths(body)
 	paths := make([]string, 0, len(messages)+len(tools)+len(system)+1)
 	paths = append(paths, tools...)

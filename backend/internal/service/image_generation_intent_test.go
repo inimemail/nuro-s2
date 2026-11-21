@@ -2,10 +2,30 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestExplicitImageIntentForValidJSONMatchesValidatingEntryPoint(t *testing.T) {
+	for _, test := range []struct {
+		body string
+		want bool
+	}{
+		{`{"input":"text only"}`, false},
+		{`{"tools":[{"type":"image_generation"}]}`, true},
+		{`{"tools":[{"type":"namespace","name":"image_gen"}]}`, false},
+		{`{"tool_choice":{"type":"image_\u0067eneration"}}`, true},
+		{`{"model":"gpt-\u0069mage-2"}`, true},
+	} {
+		body := []byte(test.body)
+		require.True(t, json.Valid(body), test.body)
+		require.Equal(t, test.want, IsExplicitImageGenerationIntent("/v1/responses", "gpt-5.4", body), test.body)
+		require.Equal(t, test.want, IsExplicitImageGenerationIntentForValidJSON("/v1/responses", "gpt-5.4", body), test.body)
+	}
+	require.False(t, IsExplicitImageGenerationIntent("/v1/responses", "gpt-5.4", []byte(`{"tools":[{"type":"image_generation"}]`)))
+}
 
 func TestOpenAIExplicitImageGenerationIntentContextPreservesKnownFalse(t *testing.T) {
 	_, known := OpenAIExplicitImageGenerationIntentFromContext(context.Background())

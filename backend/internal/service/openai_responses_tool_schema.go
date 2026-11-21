@@ -32,12 +32,13 @@ func sanitizeOpenAIResponsesNullParameterTypes(body []byte) ([]byte, bool, error
 	// Avoid a full JSON walk for the overwhelmingly common valid-schema path.
 	// Whitespace and nesting variations are handled by gjson once a candidate
 	// type/null pair is present somewhere in the body.
-	if !bytes.Contains(body, []byte(`"type"`)) || !bytes.Contains(body, []byte("null")) {
+	if !mayContainNullToolSchemaKeyword(body, `"type"`) {
 		return body, false, nil
 	}
 	hits := make([]openAIResponsesToolSchemaNullType, 0, 2)
-	collectOpenAIResponsesToolSchemaNullTypes(body, gjson.GetBytes(body, "tools"), 0, &hits)
-	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+	root := gjson.Parse(openAIWSPayloadStringView(body))
+	collectOpenAIResponsesToolSchemaNullTypes(body, root.Get("tools"), 0, &hits)
+	if input := root.Get("input"); input.IsArray() {
 		input.ForEach(func(_, item gjson.Result) bool {
 			if item.IsObject() {
 				collectOpenAIResponsesToolSchemaNullTypes(body, item.Get("tools"), 0, &hits)

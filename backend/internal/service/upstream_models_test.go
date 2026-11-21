@@ -223,6 +223,30 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
 }
 
+func TestFetchAnthropicModelCatalogIsolatesMalformedContextWindows(t *testing.T) {
+	t.Parallel()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"malformed","context_window":"1000000","max_input_tokens":1000000},
+			{"id":"advertised","context_window":1000000,"max_input_tokens":"unknown"},
+			{"id":"fallback","max_input_tokens":1000000},
+			{"id":"too-short","context_window":200000}
+		]}`)),
+	}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	catalog, err := svc.FetchUpstreamModelCatalog(t.Context(), &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "fixture-key", "base_url": "https://anthropic.example.com",
+		},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"malformed", "advertised", "fallback", "too-short"}, catalog.Models)
+	require.Equal(t, map[string]int{"advertised": 1000000, "fallback": 1000000}, catalog.ContextWindows)
+}
+
 func TestFetchUpstreamSupportedModelsParsesOpenAIOAuthManifest(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -462,4 +463,145 @@ func TestShouldEmulateWebSearchFor_AccountChannelModes(t *testing.T) {
 			}
 		}
 	}
+}
+
+type webSearchSnapshotRepo struct {
+	*mockSettingRepo
+	beforeReturn func()
+	readErr      error
+}
+
+func (r *webSearchSnapshotRepo) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	if r.readErr != nil {
+		return nil, r.readErr
+	}
+	settings, err := r.mockSettingRepo.GetMultiple(ctx, keys)
+	if r.beforeReturn != nil {
+		r.beforeReturn()
+	}
+	return settings, err
+}
+
+func TestWebSearchConfigCacheKeepsReadErrorsAndReloadsAfterRecovery(t *testing.T) {
+	previous := webSearchEmulationCache.Load()
+	clearGlobalWebSearchConfig()
+	t.Cleanup(func() { webSearchEmulationCache.Store(previous) })
+	dbErr := errors.New("database unavailable")
+	repo := &webSearchSnapshotRepo{mockSettingRepo: newMockSettingRepo(), readErr: dbErr}
+	svc := NewSettingService(repo, &config.Config{})
+	for range 2 {
+		_, err := svc.GetWebSearchEmulationConfig(t.Context())
+		require.ErrorIs(t, err, dbErr)
+	}
+
+	repo.readErr = nil
+	clearGlobalWebSearchConfig()
+	cfg, err := svc.GetWebSearchEmulationConfig(t.Context())
+	require.NoError(t, err)
+	require.False(t, cfg.Enabled)
+}
+
+func TestWebSearchConfigPublishesLatestSaveAndReloadsPeerUpdates(t *testing.T) {
+	previous := webSearchEmulationCache.Load()
+	t.Cleanup(func() { webSearchEmulationCache.Store(previous) })
+	repo := &webSearchSnapshotRepo{mockSettingRepo: newMockSettingRepo()}
+	svc := NewSettingService(repo, &config.Config{})
+	old := &WebSearchEmulationConfig{Enabled: true, Providers: []WebSearchProviderConfig{{Type: "exa", APIKey: "old-key"}}}
+	settings, err := marshalWebSearchSettings(old)
+	require.NoError(t, err)
+	require.NoError(t, repo.SetMultiple(t.Context(), settings))
+	var managerKey string
+	svc.SetWebSearchManagerBuilder(t.Context(), func(cfg *WebSearchEmulationConfig, _ map[int64]string) {
+		managerKey = cfg.Providers[0].APIKey
+	})
+	require.Equal(t, "old-key", managerKey)
+
+	clearGlobalWebSearchConfig()
+	readStarted := make(chan struct{})
+	finishRead := make(chan struct{})
+	repo.beforeReturn = func() {
+		close(readStarted)
+		<-finishRead
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := svc.GetWebSearchEmulationConfig(t.Context())
+		readDone <- err
+	}()
+	<-readStarted
+	edit := &WebSearchEmulationConfig{Enabled: true, Providers: []WebSearchProviderConfig{{Type: "exa", APIKey: "new-key"}}}
+	saveDone := make(chan error, 1)
+	go func() { saveDone <- svc.SaveWebSearchEmulationConfig(t.Context(), edit) }()
+	close(finishRead)
+	require.NoError(t, <-readDone)
+	require.NoError(t, <-saveDone)
+	repo.beforeReturn = nil
+
+	cfg, err := svc.GetWebSearchEmulationConfig(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "new-key", cfg.Providers[0].APIKey)
+	require.Equal(t, "new-key", managerKey)
+
+	// A different replica writes to the same database. The next cache
+	// refresh must replace both settings and the local manager.
+	edit.Providers[0].APIKey = "peer-key"
+	settings, err = marshalWebSearchSettings(edit)
+	require.NoError(t, err)
+	require.NoError(t, repo.SetMultiple(t.Context(), settings))
+	webSearchEmulationCache.Store(&cachedWebSearchEmulationConfig{config: cfg})
+	cfg, err = svc.GetWebSearchEmulationConfig(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "peer-key", cfg.Providers[0].APIKey)
+	require.Equal(t, "peer-key", managerKey)
+}
+
+type webSearchProxySnapshotRepo struct {
+	ProxyRepository
+	proxy Proxy
+	err   error
+}
+
+func (r *webSearchProxySnapshotRepo) ListByIDs(_ context.Context, ids []int64) ([]Proxy, error) {
+	if len(ids) == 1 && r.proxy.ID == ids[0] {
+		return []Proxy{r.proxy}, r.err
+	}
+	return nil, r.err
+}
+
+func TestWebSearchConfigRefreshesProviderProxyChanges(t *testing.T) {
+	previous := webSearchEmulationCache.Load()
+	t.Cleanup(func() { webSearchEmulationCache.Store(previous) })
+	repo := newMockSettingRepo()
+	svc := NewSettingService(repo, &config.Config{})
+	proxy := &webSearchProxySnapshotRepo{proxy: Proxy{ID: 7, Protocol: "http", Host: "first.example", Port: 8080, Status: StatusActive}}
+	svc.proxyRepo = proxy
+	proxyID := proxy.proxy.ID
+	cfg := &WebSearchEmulationConfig{Enabled: true, Providers: []WebSearchProviderConfig{{Type: "exa", APIKey: "fixture", ProxyID: &proxyID}}}
+	settings, err := marshalWebSearchSettings(cfg)
+	require.NoError(t, err)
+	require.NoError(t, repo.SetMultiple(t.Context(), settings))
+
+	var published []string
+	svc.SetWebSearchManagerBuilder(t.Context(), func(_ *WebSearchEmulationConfig, urls map[int64]string) {
+		published = append(published, urls[proxyID])
+	})
+	refresh := func() {
+		expired := *webSearchEmulationCache.Load()
+		expired.expiresAt = 0
+		webSearchEmulationCache.Store(&expired)
+		_, err := svc.GetWebSearchEmulationConfig(t.Context())
+		require.NoError(t, err)
+	}
+	refresh()
+	require.Equal(t, []string{"http://first.example:8080"}, published)
+
+	proxy.proxy.Host = "second.example"
+	refresh()
+	proxy.err = errors.New("proxy read unavailable")
+	refresh()
+	proxy.err = nil
+	refresh()
+	proxy.proxy.ExpiresAt = new(time.Now().Add(-time.Minute))
+	refresh()
+	require.Equal(t, []string{"http://first.example:8080", "http://second.example:8080", "", "http://second.example:8080", ""}, published)
 }

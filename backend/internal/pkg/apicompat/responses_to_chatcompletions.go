@@ -48,13 +48,20 @@ func ResponsesToChatCompletions(resp *ResponsesResponse, model string, grok ...b
 					refusalText += part.Refusal
 				}
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call":
+			arguments := item.Arguments
+			if item.Type == "custom_tool_call" {
+				if !item.rebuiltFromStream {
+					continue
+				}
+				arguments = item.Input
+			}
 			toolCalls = append(toolCalls, ChatToolCall{
 				ID:   item.CallID,
 				Type: "function",
 				Function: ChatFunctionCall{
 					Name:      item.Name,
-					Arguments: item.Arguments,
+					Arguments: arguments,
 				},
 			})
 		case "reasoning":
@@ -171,6 +178,12 @@ func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEvent
 		state.SawRefusal = true
 		refusal := evt.Delta
 		return []ChatCompletionsChunk{makeChatDeltaChunk(state, ChatDelta{Refusal: &refusal})}
+	case "response.refusal.done":
+		if state.SawRefusal || evt.Refusal == "" {
+			return nil
+		}
+		state.SawRefusal = true
+		return []ChatCompletionsChunk{makeChatDeltaChunk(state, ChatDelta{Refusal: &evt.Refusal})}
 	case "response.output_item.added":
 		return resToChatHandleOutputItemAdded(evt, state)
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
@@ -502,165 +515,3 @@ func generateChatCmplID() string {
 // BufferedResponseAccumulator: accumulates SSE delta events for non-streaming
 // paths where the terminal event may have empty output.
 // ---------------------------------------------------------------------------
-
-type bufferedFuncCall struct {
-	ServerSideSearch      bool
-	CallID                string
-	Name                  string
-	Namespace             string
-	EncryptedFunctionArgs json.RawMessage
-	EncryptedContent      string
-	Args                  strings.Builder
-}
-
-// BufferedResponseAccumulator collects content from Responses SSE delta events
-// so that non-streaming handlers can reconstruct output when the terminal event
-// (response.completed / response.done) carries an empty output array.
-type BufferedResponseAccumulator struct {
-	GrokServerSideSearch bool
-	text                 strings.Builder
-	refusal              strings.Builder
-	reasoning            strings.Builder
-	rawReasoning         strings.Builder
-	funcCalls            []*bufferedFuncCall
-	outputIndexToFuncIdx map[int]int
-}
-
-// NewBufferedResponseAccumulator returns an initialised accumulator.
-func NewBufferedResponseAccumulator() *BufferedResponseAccumulator {
-	return &BufferedResponseAccumulator{
-		outputIndexToFuncIdx: make(map[int]int),
-	}
-}
-
-// ProcessEvent inspects a single Responses SSE event and accumulates any
-// content it carries. Only delta events that contribute to the final output
-// are handled; all other event types are silently ignored.
-func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) {
-	switch event.Type {
-	case "response.refusal.delta":
-		_, _ = a.refusal.WriteString(event.Delta)
-	case "response.output_text.delta":
-		if event.Delta != "" {
-			_, _ = a.text.WriteString(event.Delta)
-		}
-	case "response.output_item.added", "response.output_item.done":
-		if event.Item != nil && (event.Item.Type == "function_call" || event.Item.Type == "custom_tool_call") {
-			idx, exists := a.outputIndexToFuncIdx[event.OutputIndex]
-			if !exists {
-				idx = len(a.funcCalls)
-				a.outputIndexToFuncIdx[event.OutputIndex] = idx
-				// Builders must stay at a stable address when this slice grows.
-				a.funcCalls = append(a.funcCalls, &bufferedFuncCall{})
-			}
-			call := a.funcCalls[idx]
-			if event.Item.CallID != "" {
-				call.CallID = event.Item.CallID
-			}
-			// Sparse done items may omit the call ID already supplied by added.
-			call.ServerSideSearch = a.GrokServerSideSearch && IsServerSideSearchCall(event.Item.Type, call.CallID)
-			if event.Item.Name != "" {
-				call.Name = event.Item.Name
-			}
-			if event.Item.Namespace != "" {
-				call.Namespace = event.Item.Namespace
-			}
-			if event.Item.EncryptedContent != "" {
-				call.EncryptedContent = event.Item.EncryptedContent
-			}
-			if event.Item.EncryptedFunctionArgs != nil {
-				call.EncryptedFunctionArgs = append(json.RawMessage(nil), event.Item.EncryptedFunctionArgs...)
-			}
-			// The done item is authoritative and may be the only arguments source.
-			arguments := event.Item.Arguments
-			if event.Item.Type == "custom_tool_call" {
-				arguments = event.Item.Input
-			}
-			if arguments != "" || (event.Type == "response.output_item.done" && event.Item.Type == "custom_tool_call") {
-				call.Args.Reset()
-				_, _ = call.Args.WriteString(arguments)
-			}
-		}
-	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
-		if event.Delta != "" {
-			if idx, ok := a.outputIndexToFuncIdx[event.OutputIndex]; ok {
-				_, _ = a.funcCalls[idx].Args.WriteString(event.Delta)
-			}
-		}
-	case "response.reasoning_summary_text.delta":
-		_, _ = a.reasoning.WriteString(event.Delta)
-	case "response.reasoning_text.delta":
-		_, _ = a.rawReasoning.WriteString(event.Delta)
-	}
-}
-
-// HasContent reports whether any content has been accumulated.
-func (a *BufferedResponseAccumulator) HasContent() bool {
-	return a.text.Len() > 0 || a.refusal.Len() > 0 || len(a.funcCalls) > 0 || a.reasoning.Len() > 0 || a.rawReasoning.Len() > 0
-}
-
-// BuildOutput constructs a []ResponsesOutput from the accumulated delta
-// content. The order matches what ResponsesToChatCompletions expects:
-// reasoning → message → function_calls.
-func (a *BufferedResponseAccumulator) BuildOutput() []ResponsesOutput {
-	var out []ResponsesOutput
-	if a.refusal.Len() > 0 {
-		out = append(out, ResponsesOutput{Type: "message", Role: "assistant", Content: []ResponsesContentPart{{Type: "refusal", Refusal: a.refusal.String()}}})
-	}
-
-	reasoning := a.reasoning.String()
-	if reasoning == "" {
-		reasoning = a.rawReasoning.String()
-	}
-	if reasoning != "" {
-		out = append(out, ResponsesOutput{
-			Type: "reasoning",
-			Summary: []ResponsesSummary{{
-				Type: "summary_text",
-				Text: reasoning,
-			}},
-		})
-	}
-
-	if a.text.Len() > 0 {
-		out = append(out, ResponsesOutput{
-			Type: "message",
-			Role: "assistant",
-			Content: []ResponsesContentPart{{
-				Type: "output_text",
-				Text: a.text.String(),
-			}},
-		})
-	}
-
-	for i := range a.funcCalls {
-		typ := "function_call"
-		if a.funcCalls[i].ServerSideSearch {
-			typ = "custom_tool_call"
-		}
-		out = append(out, ResponsesOutput{
-			Type:                  typ,
-			Namespace:             a.funcCalls[i].Namespace,
-			EncryptedFunctionArgs: a.funcCalls[i].EncryptedFunctionArgs,
-			EncryptedContent:      a.funcCalls[i].EncryptedContent,
-			CallID:                a.funcCalls[i].CallID,
-			Name:                  a.funcCalls[i].Name,
-			Arguments:             a.funcCalls[i].Args.String(),
-		})
-	}
-
-	return out
-}
-
-// SupplementResponseOutput fills resp.Output from accumulated delta content
-// when the terminal event delivered an empty output array. If resp.Output is
-// already populated, this is a no-op (preserves backward compatibility).
-func (a *BufferedResponseAccumulator) SupplementResponseOutput(resp *ResponsesResponse) {
-	if resp == nil || len(resp.Output) > 0 {
-		return
-	}
-	if !a.HasContent() {
-		return
-	}
-	resp.Output = a.BuildOutput()
-}

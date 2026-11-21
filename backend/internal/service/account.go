@@ -2884,6 +2884,13 @@ func (a *Account) IsOveragesEnabled() bool {
 	return false
 }
 
+// IsOpenAIPassthroughModelFilterEnabled applies model restrictions to independent text passthrough accounts.
+func (a *Account) IsOpenAIPassthroughModelFilterEnabled() bool {
+	return a != nil && (a.IsOpenAIOAuthLike() || a.IsOpenAIApiKey()) &&
+		!a.IsShadow() && !a.IsImagePoolMode() && a.IsOpenAIPassthroughEnabled() &&
+		a.Extra["openai_passthrough_model_filter"] == true
+}
+
 // IsOpenAIPassthroughEnabled 返回 OpenAI 账号是否启用"自动透传（仅替换认证）"。
 //
 // 新字段：accounts.extra.openai_passthrough。

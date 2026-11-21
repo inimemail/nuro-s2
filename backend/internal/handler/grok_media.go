@@ -101,6 +101,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid multipart upload or upload exceeds the size limit")
 		return
 	}
+	if err := service.ValidateGrokMediaInput(endpoint, requestInfo); err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Image edits accept at most five source images")
+		return
+	}
 	requestModel := requestInfo.Model
 	routingModel := requestModel
 	if upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok {

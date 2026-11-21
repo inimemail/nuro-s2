@@ -21,6 +21,45 @@ type settingHandlerRepoStub struct {
 	lastUpdates map[string]string
 }
 
+func TestWebSearchSettingsRoundTripMasksKeys(t *testing.T) {
+	repo := &settingHandlerRepoStub{values: map[string]string{}}
+	handler := &SettingHandler{settingService: service.NewSettingService(repo, &config.Config{})}
+	server := gin.New()
+	server.GET("/web-search", handler.GetWebSearchEmulationConfig)
+	server.PUT("/web-search", handler.UpdateWebSearchEmulationConfig)
+
+	for _, payload := range []string{
+		`{"enabled":true,"providers":[{"type":"tavily","api_key":"fixture-tavily"},{"type":"exa","api_key":"fixture-secret"},{"type":"brave","api_key":"fixture-brave"}]}`,
+		`{"enabled":true,"providers":[{"type":"tavily"},{"type":"exa","quota_limit":12},{"type":"brave"}]}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/web-search", bytes.NewBufferString(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NotContains(t, rec.Body.String(), "fixture-secret")
+		require.Contains(t, rec.Body.String(), `"api_key_configured":true`)
+	}
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/web-search", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), "fixture-secret")
+	require.Contains(t, rec.Body.String(), `"api_key_configured":true`)
+	legacy := repo.values[service.SettingKeyWebSearchEmulationConfig]
+	require.Contains(t, legacy, "fixture-tavily")
+	require.Contains(t, legacy, "fixture-brave")
+	require.NotContains(t, legacy, `"type":"exa"`)
+	require.NotContains(t, legacy, "fixture-secret")
+	for key, value := range repo.values {
+		if key != service.SettingKeyWebSearchEmulationConfig {
+			require.Contains(t, value, "fixture-secret")
+			require.Contains(t, value, `"quota_limit":12`)
+		}
+	}
+	// Restore the process-wide cached settings for other tests.
+	require.NoError(t, handler.settingService.SaveWebSearchEmulationConfig(t.Context(), &service.WebSearchEmulationConfig{}))
+}
+
 func (s *settingHandlerRepoStub) Get(ctx context.Context, key string) (*service.Setting, error) {
 	panic("unexpected Get call")
 }

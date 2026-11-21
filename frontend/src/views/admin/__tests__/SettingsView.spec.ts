@@ -992,6 +992,60 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(wrapper.text()).not.toContain("OpenAI 高级调度器");
   });
 
+  it.each(["fails to load", "is unchanged"])("skips saving the web search section when it %s", async (scenario) => {
+    if (scenario === "fails to load") {
+      getWebSearchEmulationConfig.mockRejectedValue({ status: 503 });
+    } else {
+      getWebSearchEmulationConfig.mockResolvedValue({
+        enabled: true,
+        providers: [{ type: "exa", api_key: "", api_key_configured: true, quota_limit: 10 }],
+      });
+    }
+    const wrapper = mountView();
+    await flushPromises();
+    await openPaymentTab(wrapper);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledOnce();
+    expect(updateWebSearchEmulationConfig).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("clears the current key when switching web search providers", async () => {
+    getWebSearchEmulationConfig.mockResolvedValue({
+      enabled: true,
+      providers: [{
+        type: "brave",
+        api_key: "",
+        api_key_configured: true,
+        quota_limit: 1000,
+        quota_used: 12,
+      }],
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const provider = wrapper.findAll("select").find((select) => select.find('option[value="exa"]').exists());
+    expect(provider).toBeDefined();
+    provider?.element.parentElement?.parentElement?.click();
+    await flushPromises();
+    const keyInput = wrapper.get('input[placeholder="••••••••"]');
+    await keyInput.setValue("new-fixture-key");
+    await provider?.setValue("exa");
+    expect((keyInput.element as HTMLInputElement).value).toBe("");
+    expect(keyInput.attributes("placeholder")).not.toBe("••••••••");
+    await provider?.setValue("brave");
+    expect(keyInput.attributes("placeholder")).toBe("••••••••");
+    await keyInput.setValue("replacement-fixture-key");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateWebSearchEmulationConfig).toHaveBeenCalledWith({
+      enabled: true,
+      providers: [expect.objectContaining({ type: "brave", api_key: "replacement-fixture-key" })],
+    });
+    wrapper.unmount();
+  });
+
   it("passes translated upload and remove labels to the payment help image uploader", async () => {
     const wrapper = mountView();
 

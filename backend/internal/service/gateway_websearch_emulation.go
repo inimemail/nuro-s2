@@ -49,7 +49,7 @@ func getWebSearchManager() *websearch.Manager {
 
 // shouldEmulateWebSearch checks whether a request should be intercepted.
 //
-// Judgment chain: manager exists → only web_search tool → global enabled → account/channel enabled.
+// Judgment chain: only web_search tool → global enabled → manager exists → account/channel enabled.
 // Account-level mode: "enabled" (force on), "disabled" (force off), "default" (follow channel).
 func (s *GatewayService) shouldEmulateWebSearch(ctx context.Context, account *Account, groupID *int64, body []byte) bool {
 	return shouldEmulateWebSearchFor(ctx, s.settingService, s.channelService, account, groupID, body)
@@ -61,7 +61,7 @@ func shouldEmulateWebSearchFor(
 	ctx context.Context, settingService *SettingService, channelService *ChannelService,
 	account *Account, groupID *int64, body []byte,
 ) bool {
-	if getWebSearchManager() == nil || account == nil || settingService == nil {
+	if account == nil || settingService == nil {
 		return false
 	}
 	if account.Platform != PlatformAnthropic && account.Platform != PlatformOpenAI {
@@ -72,42 +72,48 @@ func shouldEmulateWebSearchFor(
 	if account.Platform == PlatformOpenAI && account.Type != AccountTypeAPIKey {
 		return false
 	}
+	mode := account.GetWebSearchEmulationMode()
+	if mode == WebSearchModeDisabled || (mode != WebSearchModeEnabled && (groupID == nil || channelService == nil)) {
+		return false
+	}
+	if getWebSearchManager() == nil {
+		// Fresh disabled settings need no request scan. On expiry, a search
+		// request can still pick up a configuration saved on another replica.
+		cached := webSearchEmulationCache.Load()
+		if cached != nil && time.Now().UnixNano() < cached.expiresAt {
+			return false
+		}
+	}
 	if !isOnlyWebSearchToolInBody(body) {
 		return false
 	}
-	if !settingService.IsWebSearchEmulationEnabled(ctx) {
+	if !settingService.IsWebSearchEmulationEnabled(ctx) || getWebSearchManager() == nil {
 		return false
 	}
 
-	mode := account.GetWebSearchEmulationMode()
-	switch mode {
-	case WebSearchModeEnabled:
+	if mode == WebSearchModeEnabled {
 		return true
-	case WebSearchModeDisabled:
-		return false
-	default: // "default" → follow channel config
-		if groupID == nil || channelService == nil {
-			return false
-		}
-		ch, err := channelService.GetChannelForGroup(ctx, *groupID)
-		if err != nil || ch == nil {
-			return false
-		}
-		return ch.IsWebSearchEmulationEnabled(account.Platform)
 	}
+	ch, err := channelService.GetChannelForGroup(ctx, *groupID)
+	if err != nil || ch == nil {
+		return false
+	}
+	return ch.IsWebSearchEmulationEnabled(account.Platform)
 }
 
 // isOnlyWebSearchToolInBody checks if the body contains exactly one web_search tool.
 func isOnlyWebSearchToolInBody(body []byte) bool {
-	tools := gjson.GetBytes(body, "tools")
+	tools := gjson.Get(openAIWSPayloadStringView(body), "tools")
 	if !tools.IsArray() {
 		return false
 	}
-	arr := tools.Array()
-	if len(arr) != 1 {
-		return false
-	}
-	return isWebSearchToolJSON(arr[0])
+	count, search := 0, false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		count++
+		search = count == 1 && isWebSearchToolJSON(tool)
+		return search
+	})
+	return search
 }
 
 func isWebSearchToolJSON(tool gjson.Result) bool {
@@ -176,7 +182,7 @@ func writeEmulatedWebSearch(ctx context.Context, c *gin.Context, account *Accoun
 	}
 
 	slog.Info("web search emulation: executing search",
-		"account_id", account.ID, "account_name", account.Name, "query", query)
+		"account_id", account.ID)
 
 	resp, providerName, err := doWebSearch(ctx, account, query)
 	if err != nil {
@@ -205,6 +211,9 @@ func writeEmulatedWebSearch(ctx context.Context, c *gin.Context, account *Accoun
 
 func doWebSearch(ctx context.Context, account *Account, query string) (*websearch.SearchResponse, string, error) {
 	proxyURL := resolveAccountProxyURL(account)
+	if account.ProxyID != nil && proxyURL == "" {
+		return nil, "", websearch.ErrProxyUnavailable
+	}
 	mgr := getWebSearchManager()
 	if mgr == nil {
 		return nil, "", fmt.Errorf("web search emulation: manager not initialized")

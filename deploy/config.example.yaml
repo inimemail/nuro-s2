@@ -178,6 +178,9 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Enable after comparing real Claude Code compaction cache reads and writes.
+  # Applies to the existing 1h injection path for verified Claude Code clients.
+  anthropic_claude_code_compact_cache_ttl_5m: false
   # Compatibility conversion max_output_tokens floor (minimum 16); default keeps existing behavior.
   min_output_tokens: 128
   # Timeout for waiting upstream response headers (seconds)

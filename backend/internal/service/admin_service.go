@@ -677,6 +677,7 @@ type adminServiceImpl struct {
 	affiliateService        AffiliateRebateAccruer
 	defaultSubAssigner      DefaultSubscriptionAssigner
 	userSubRepo             UserSubscriptionRepository
+	userPlatformQuotaRepo   UserPlatformQuotaRepository
 	privacyClientFactory    PrivacyClientFactory
 	runtimeBlocker          AccountRuntimeBlocker
 	channelCacheInvalidator ChannelCacheInvalidator
@@ -762,8 +763,9 @@ func ProvideAdminService(
 	privacyClientFactory PrivacyClientFactory,
 	runtimeBlocker *CompositeAccountRuntimeBlocker,
 	channelCacheInvalidator ChannelCacheInvalidator,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
 ) AdminService {
-	return NewAdminService(
+	admin := NewAdminService(
 		userRepo,
 		groupRepo,
 		accountRepo,
@@ -785,6 +787,8 @@ func ProvideAdminService(
 		runtimeBlocker,
 		channelCacheInvalidator,
 	)
+	admin.(*adminServiceImpl).userPlatformQuotaRepo = userPlatformQuotaRepo
+	return admin
 }
 
 func SetAdminServiceRuntimeBlocker(adminService AdminService, runtimeBlocker AccountRuntimeBlocker) {
@@ -935,6 +939,27 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 	if user.Role == RoleAdmin {
 		logger.LegacyPrintf("service.admin", "audit: admin user created actor_admin_id=%d target_user_id=%d",
 			input.ActorAdminID, user.ID)
+	}
+	if s.settingService != nil && s.userPlatformQuotaRepo != nil {
+		quotas, err := s.settingService.GetDefaultPlatformQuotas(ctx)
+		if err == nil {
+			records := make([]UserPlatformQuotaRecord, 0, len(quotas))
+			for platform, quota := range quotas {
+				if quota == nil || (quota.DailyLimitUSD == nil && quota.WeeklyLimitUSD == nil && quota.MonthlyLimitUSD == nil) {
+					continue
+				}
+				records = append(records, UserPlatformQuotaRecord{
+					UserID: user.ID, Platform: platform,
+					DailyLimitUSD: quota.DailyLimitUSD, WeeklyLimitUSD: quota.WeeklyLimitUSD, MonthlyLimitUSD: quota.MonthlyLimitUSD,
+				})
+			}
+			if len(records) != 0 {
+				err = s.userPlatformQuotaRepo.BulkInsertInitial(ctx, records)
+			}
+		}
+		if err != nil {
+			logger.LegacyPrintf("service.admin", "default platform quota snapshot failed for user %d: %v", user.ID, err)
+		}
 	}
 	s.assignDefaultSubscriptions(ctx, user.ID)
 	return user, nil
@@ -3878,6 +3903,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		delete(accountExtra, GrokBillingSnapshotExtraKey)
 		delete(accountExtra, GrokQuotaSnapshotExtraKey)
 		delete(accountExtra, GrokModelCatalogExtraKey)
+		delete(accountExtra, AnthropicModelContextWindowsExtraKey)
 		delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
 		delete(accountExtra, UpstreamBillingProbeExtraKey)
@@ -4202,6 +4228,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if !adaptiveFactorOnlyExtraUpdate {
 			clearRuntimeBlock = true
 		}
+		delete(normalizedExtra, AnthropicModelContextWindowsExtraKey)
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{
 			"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start",
@@ -4932,13 +4959,19 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
+	modelFilter, hasModelFilterUpdate := input.Extra["openai_passthrough_model_filter"]
+	if hasModelFilterUpdate {
+		if _, ok := modelFilter.(bool); !ok {
+			return nil, infraerrors.BadRequest("INVALID_OPENAI_PASSTHROUGH_MODEL_FILTER", "model filter must be a boolean")
+		}
+	}
 	probeDisableRequested := input.ProbeEnabled != nil && !*input.ProbeEnabled
 	hasCNConfigUpdate := hasCNProviderStoredConfigUpdate(input.Extra, input.Credentials, input.ExtraRemoveKeys)
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
 	var cachedTargets []*Account
-	if needMixedChannelCheck || hasLongContextBillingUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || hasOAuthFirstTokenTimeoutUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil || hasCNConfigUpdate {
+	if needMixedChannelCheck || hasLongContextBillingUpdate || hasModelFilterUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || hasOAuthFirstTokenTimeoutUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil || hasCNConfigUpdate {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -4947,6 +4980,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		for _, account := range accounts {
 			if account != nil {
 				platformByID[account.ID] = account.Platform
+				if hasModelFilterUpdate && (!(account.IsOpenAIOAuthLike() || account.IsOpenAIApiKey()) || account.IsShadow() || account.IsImagePoolMode()) {
+					return nil, infraerrors.BadRequest("INVALID_OPENAI_PASSTHROUGH_MODEL_FILTER", "model filtering requires an independent OpenAI text account")
+				}
 				if hasAPIKeyFirstTokenTimeoutValueUpdate && (account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey || account.IsImagePoolMode() || account.IsCredentialShadow()) {
 					return nil, infraerrors.BadRequest(
 						"INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES",
@@ -6313,11 +6349,9 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveOpenAIStoredAccountProxy(ctx, s.proxyRepo, account.ProxyID)
+	if err != nil {
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
@@ -6343,11 +6377,9 @@ func (s *adminServiceImpl) ForceOpenAIPrivacy(ctx context.Context, account *Acco
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveOpenAIStoredAccountProxy(ctx, s.proxyRepo, account.ProxyID)
+	if err != nil {
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)

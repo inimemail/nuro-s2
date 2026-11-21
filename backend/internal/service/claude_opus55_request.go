@@ -2,12 +2,17 @@ package service
 
 import (
 	"fmt"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 func normalizeOpus55Request(body []byte, model string) ([]byte, error) {
+	return normalizeClaudeAdaptiveRequest(body, model, false)
+}
+
+func normalizeClaudeAdaptiveRequest(body []byte, model string, allowSonnetBetweenTools bool) ([]byte, error) {
 	if claude.IsClaude52(model) {
 		return normalizeClaude52Request(body, model)
 	}
@@ -17,7 +22,8 @@ func normalizeOpus55Request(body []byte, model string) ([]byte, error) {
 	if !claude.IsAdaptiveThinkingModel(model) {
 		return body, nil
 	}
-	if thinking := gjson.GetBytes(body, "thinking.type").String(); thinking != "" && thinking != "adaptive" {
+	thinking := gjson.GetBytes(body, "thinking.type").String()
+	if thinking != "" && thinking != "adaptive" && !(thinking == "between_tools" && allowSonnetBetweenTools && claude.IsSonnet55(model)) {
 		return nil, fmt.Errorf("%s requires adaptive thinking", model)
 	}
 	if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {

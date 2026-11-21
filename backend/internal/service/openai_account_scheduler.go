@@ -2218,11 +2218,11 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 	compactBlocked := false
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh = s.service.recheckOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -2284,11 +2284,11 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 		for selectionIndex < len(selectionOrder) && len(candidates) < maxCandidates {
 			candidate := selectionOrder[selectionIndex]
 			selectionIndex++
-			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
-			fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+			fresh = s.service.recheckOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
@@ -2582,11 +2582,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh = s.service.recheckOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, openAICompactCandidateCheck(req.RequireCompact), req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -2679,20 +2679,21 @@ func openAITextRequestModelSupported(account *Account, req OpenAIAccountSchedule
 		openAITextPlatform &&
 		req.RequiredImageCapability == "" &&
 		req.RequiredCapability == OpenAIEndpointCapabilityChatCompletions
-	if textPassthrough {
-		// Ordinary Responses passthrough sends the client model unchanged and
-		// intentionally ignores ordinary account mappings. Retirement is checked
-		// again against the final payload immediately before upstream I/O.
-		if !req.RequireCompact {
-			return !isRetiredOpenAISubscriptionModel(account, req.RequestedModel)
-		}
-		if isRetiredOpenAISubscriptionModel(account, resolveOpenAICompactForwardModelWithFallback(account, req.RequestedModel, fallback)) {
-			return false
-		}
-		return true
+	target := req.RequestedModel
+	if textPassthrough && req.RequireCompact {
+		target = resolveOpenAICompactForwardModelWithFallback(account, req.RequestedModel, fallback)
+	} else if !textPassthrough {
+		target = resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, req.RequireCompact, fallback)
 	}
-	if isRetiredOpenAISubscriptionModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, req.RequireCompact, fallback)) {
+	if isRetiredOpenAISubscriptionModel(account, target) {
 		return false
+	}
+	if openAITextPlatform && account.IsOpenAIOAuthLike() && !account.IsShadow() &&
+		!account.IsImagePoolMode() && req.RequiredImageCapability == "" && isClearlyForeignOpenAIOAuthTarget(target) {
+		return false
+	}
+	if textPassthrough && !account.IsOpenAIPassthroughModelFilterEnabled() {
+		return true
 	}
 	return account.IsModelSupported(req.RequestedModel)
 }

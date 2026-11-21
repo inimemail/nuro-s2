@@ -22,6 +22,7 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -534,7 +535,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
-	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body)
+	// The body passed JSON validation. The Codex normalizers preserve validity.
+	imageIntent := service.IsExplicitImageGenerationIntentForValidJSON("/v1/responses", reqModel, body)
 	if imageIntent && !service.GroupAllowsImageGenerationForRequest(c.Request.Context(), apiKey.Group, "/v1/responses", reqModel, body) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -1907,7 +1909,7 @@ func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
 }
 
 func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool, allowHistoricalContext bool) ([]byte, bool) {
-	if !hasUniqueJSONMembers(body) {
+	if !openai.HasUniqueJSONMembers(body) {
 		return body, false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -1975,59 +1977,6 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 		return body, false
 	}
 	return normalized, true
-}
-
-func hasUniqueJSONMembers(body []byte) bool {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	if !consumeUniqueJSONValue(decoder) {
-		return false
-	}
-	_, err := decoder.Token()
-	return err == io.EOF
-}
-
-func consumeUniqueJSONValue(decoder *json.Decoder) bool {
-	token, err := decoder.Token()
-	if err != nil {
-		return false
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return true
-	}
-	switch delim {
-	case '{':
-		members := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return false
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return false
-			}
-			if _, exists := members[key]; exists {
-				return false
-			}
-			members[key] = struct{}{}
-			if !consumeUniqueJSONValue(decoder) {
-				return false
-			}
-		}
-		end, err := decoder.Token()
-		return err == nil && end == json.Delim('}')
-	case '[':
-		for decoder.More() {
-			if !consumeUniqueJSONValue(decoder) {
-				return false
-			}
-		}
-		end, err := decoder.Token()
-		return err == nil && end == json.Delim(']')
-	default:
-		return false
-	}
 }
 
 func isResponsesCallOutputType(typ string) bool {
@@ -2631,7 +2580,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	imageIntent := service.IsExplicitImageGenerationIntentForValidJSON("/v1/responses", reqModel, firstMessage)
 	if imageIntent && !service.GroupAllowsImageGenerationForRequest(ctx, apiKey.Group, "/v1/responses", reqModel, firstMessage) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
@@ -2941,7 +2890,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if model == "" {
 					model = reqModel
 				}
-				currentTurnImageIntent = service.IsExplicitImageGenerationIntent("/v1/responses", model, payload)
+				currentTurnImageIntent = service.IsExplicitImageGenerationIntentForValidJSON("/v1/responses", model, payload)
 				if currentTurnImageIntent && !service.GroupAllowsImageGenerationForRequest(ctx, apiKey.Group, "/v1/responses", model, payload) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage(), nil)
 				}

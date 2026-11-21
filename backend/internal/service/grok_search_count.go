@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,11 @@ func countGrokNativeSearchCallsFromJSONBytes(body []byte) int {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return 0
 	}
+	for _, path := range []string{"response.usage", "usage"} {
+		if count, ok := grokSearchCountFromReportedUsage(gjson.GetBytes(body, path)); ok {
+			return count
+		}
+	}
 	// Responses envelopes normally expose either top-level output (JSON mode)
 	// or response.output (terminal SSE payload). Compatibility layers can retain
 	// both copies; counting both would bill the same search twice. Prefer the
@@ -30,76 +36,93 @@ func countGrokNativeSearchCallsFromSSEBody(body string) int {
 	if strings.TrimSpace(body) == "" {
 		return 0
 	}
-	seen := make(map[string]struct{})
-	total := 0
+	var search grokSearchStreamCount
 	forEachOpenAISSEDataPayload(body, func(data []byte) {
-		total += countGrokNativeSearchCallsInSSEDataDedup(data, seen)
+		search.observe(data)
 	})
-	return total
+	return search.count
 }
 
-// countGrokNativeSearchCallsInSSEData counts search tool calls in one SSE
-// payload without cross-event dedup. Prefer countGrokNativeSearchCallsInSSEDataDedup
-// for live streams so item.done + response.completed do not double-bill.
-func countGrokNativeSearchCallsInSSEData(data []byte) int {
-	n, _ := countGrokNativeSearchCallsInSSEDataWithKeys(data)
-	return n
+// xAI reports successfully completed searches in the final usage envelope.
+func grokSearchCountFromReportedUsage(usage gjson.Result) (int, bool) {
+	details := usage.Get("server_side_tool_usage_details")
+	if !details.IsObject() {
+		return 0, false
+	}
+	total := 0
+	reported := false
+	for _, name := range []string{"web_search_calls", "x_search_calls", "document_search_calls"} {
+		value := details.Get(name)
+		if !value.Exists() {
+			continue
+		}
+		if value.Type != gjson.Number {
+			return 0, false
+		}
+		count, err := strconv.ParseUint(value.Raw, 10, strconv.IntSize)
+		if err != nil || count > uint64(math.MaxInt-total) {
+			return 0, false
+		}
+		reported = true
+		total += int(count)
+	}
+	return total, reported
 }
 
-// countGrokNativeSearchCallsInSSEDataDedup increments only unseen call ids.
-// Callers must reuse the same seen map for the full stream lifetime.
-//
-// When call_id/id is missing, a synthetic key is built from item type + name so
-// item.done + response.completed for the same tool still count once (never fall
-// back to raw multi-event n, which ~2× overbills).
+type grokSearchStreamCount struct {
+	count    int
+	reported bool
+	seen     map[string]struct{}
+}
+
+func (s *grokSearchStreamCount) observe(payload []byte) {
+	if s.reported {
+		return
+	}
+	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
+	case "response.completed", "response.incomplete", "response.done":
+		for _, path := range []string{"response.usage", "usage"} {
+			if count, ok := grokSearchCountFromReportedUsage(gjson.GetBytes(payload, path)); ok && gjson.ValidBytes(payload) {
+				s.count = count
+				s.reported = true
+				return
+			}
+		}
+	case "response.output_item.done", "":
+	default:
+		return
+	}
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	s.count += countGrokNativeSearchCallsInSSEDataDedup(payload, s.seen)
+}
+
+// countGrokNativeSearchCallsInSSEDataDedup accounts for completed output
+// items once across item.done and the terminal copy.
 func countGrokNativeSearchCallsInSSEDataDedup(data []byte, seen map[string]struct{}) int {
-	if seen == nil {
-		return countGrokNativeSearchCallsInSSEData(data)
-	}
-	n, keys := countGrokNativeSearchCallsInSSEDataWithKeys(data)
-	if n <= 0 {
-		return 0
-	}
-	// Prefer stable ids; fill gaps with synthetic keys so we never raw-add n.
-	if len(keys) < n {
-		// Rebuild keys for every item so unkeyed items still get a fingerprint.
-		keys = collectGrokNativeSearchCallKeys(data)
-	}
+	keys := collectGrokNativeSearchCallKeys(data)
 	if len(keys) == 0 {
-		// True empty — should not happen when n>0; fail-closed to 0 extra bill.
 		return 0
 	}
 	added := 0
-	local := make(map[string]struct{}, len(keys))
 	isItemDone := strings.TrimSpace(gjson.GetBytes(data, "type").String()) == "response.output_item.done"
-	for _, k := range keys {
-		if k == "" {
-			continue
-		}
-		if _, ok := local[k]; ok {
-			continue
-		}
-		local[k] = struct{}{}
-		if _, ok := seen[k]; ok {
-			if !isItemDone || !strings.HasPrefix(k, "synth:") {
+	for _, key := range keys {
+		if _, exists := seen[key]; exists {
+			if !isItemDone || !strings.HasPrefix(key, "synth:") {
 				continue
 			}
-			// Each id-less item.done is a distinct completed invocation. Advance
-			// its ordinal so interrupted streams remain accurately billable.
-			separator := strings.LastIndexByte(k, ':')
-			if separator < 0 {
-				continue
-			}
-			base := k[:separator]
+			// Legacy item.done events without a call ID are counted in order.
+			base := key[:strings.LastIndexByte(key, ':')]
 			for ordinal := 2; ; ordinal++ {
 				candidate := base + ":" + strconv.Itoa(ordinal)
-				if _, exists := seen[candidate]; !exists {
-					k = candidate
+				if _, used := seen[candidate]; !used {
+					key = candidate
 					break
 				}
 			}
 		}
-		seen[k] = struct{}{}
+		seen[key] = struct{}{}
 		added++
 	}
 	return added
@@ -112,7 +135,7 @@ func collectGrokNativeSearchCallKeys(data []byte) []string {
 	// An empty type means a bare item object without an SSE envelope; anything
 	// else that is not a completion event carries no billable call.
 	switch strings.TrimSpace(gjson.GetBytes(data, "type").String()) {
-	case "response.output_item.done", "response.completed", "response.done", "":
+	case "response.output_item.done", "response.completed", "response.incomplete", "response.done", "":
 	default:
 		return nil
 	}
@@ -122,12 +145,7 @@ func collectGrokNativeSearchCallKeys(data []byte) []string {
 		if !isGrokNativeSearchOutputItem(item) {
 			return
 		}
-		key := firstNonEmpty(
-			strings.TrimSpace(item.Get("call_id").String()),
-			strings.TrimSpace(item.Get("id").String()),
-			strings.TrimSpace(item.Get("item.call_id").String()),
-			strings.TrimSpace(item.Get("item.id").String()),
-		)
+		key := grokSearchCallID(item)
 		if key == "" {
 			// Include the ordinal among same-kind calls. A plain type:name key
 			// collapses two id-less web searches in one completed response into
@@ -137,70 +155,36 @@ func collectGrokNativeSearchCallKeys(data []byte) []string {
 				":" + strings.ToLower(strings.TrimSpace(item.Get("name").String()))
 			syntheticOrdinals[base]++
 			key = base + ":" + strconv.Itoa(syntheticOrdinals[base])
+		} else {
+			key = "id:" + key
 		}
 		keys = append(keys, key)
 	}
 	if item := gjson.GetBytes(data, "item"); item.Exists() {
 		consider(item)
-	}
-	gjson.GetBytes(data, "response.output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	gjson.GetBytes(data, "output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	if len(keys) == 0 && isGrokNativeSearchOutputItem(gjson.ParseBytes(data)) {
+	} else if output := gjson.GetBytes(data, "response.output"); output.IsArray() {
+		output.ForEach(func(_, item gjson.Result) bool {
+			consider(item)
+			return true
+		})
+	} else if output := gjson.GetBytes(data, "output"); output.IsArray() {
+		output.ForEach(func(_, item gjson.Result) bool {
+			consider(item)
+			return true
+		})
+	} else {
 		consider(gjson.ParseBytes(data))
 	}
 	return keys
 }
 
-func countGrokNativeSearchCallsInSSEDataWithKeys(data []byte) (int, []string) {
-	if len(data) == 0 || !gjson.ValidBytes(data) {
-		return 0, nil
-	}
-	// Count once on item completion / completed response, not on every delta.
-	// An empty type is a bare item object without an SSE envelope.
-	switch strings.TrimSpace(gjson.GetBytes(data, "type").String()) {
-	case "response.output_item.done", "response.completed", "response.done", "":
-	default:
-		return 0, nil
-	}
-	var keys []string
-	n := 0
-	consider := func(item gjson.Result) {
-		if !isGrokNativeSearchOutputItem(item) {
-			return
-		}
-		n++
-		key := firstNonEmpty(
-			strings.TrimSpace(item.Get("call_id").String()),
-			strings.TrimSpace(item.Get("id").String()),
-			strings.TrimSpace(item.Get("item.call_id").String()),
-			strings.TrimSpace(item.Get("item.id").String()),
-		)
-		if key != "" {
-			keys = append(keys, key)
-		}
-	}
-	if item := gjson.GetBytes(data, "item"); item.Exists() {
-		consider(item)
-	}
-	gjson.GetBytes(data, "response.output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	gjson.GetBytes(data, "output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	// Bare output item event without nested item key.
-	if n == 0 && isGrokNativeSearchOutputItem(gjson.ParseBytes(data)) {
-		consider(gjson.ParseBytes(data))
-	}
-	return n, keys
+func grokSearchCallID(item gjson.Result) string {
+	return firstNonEmpty(
+		strings.TrimSpace(item.Get("call_id").String()),
+		strings.TrimSpace(item.Get("id").String()),
+		strings.TrimSpace(item.Get("item.call_id").String()),
+		strings.TrimSpace(item.Get("item.id").String()),
+	)
 }
 
 func countGrokNativeSearchCallsInOutputArray(output gjson.Result) int {
@@ -208,10 +192,21 @@ func countGrokNativeSearchCallsInOutputArray(output gjson.Result) int {
 		return 0
 	}
 	count := 0
+	var seen map[string]struct{}
 	output.ForEach(func(_, item gjson.Result) bool {
-		if isGrokNativeSearchOutputItem(item) {
-			count++
+		if !isGrokNativeSearchOutputItem(item) {
+			return true
 		}
+		if id := grokSearchCallID(item); id != "" {
+			if _, exists := seen[id]; exists {
+				return true
+			}
+			if seen == nil {
+				seen = make(map[string]struct{})
+			}
+			seen[id] = struct{}{}
+		}
+		count++
 		return true
 	})
 	return count
@@ -219,6 +214,10 @@ func countGrokNativeSearchCallsInOutputArray(output gjson.Result) int {
 
 func isGrokNativeSearchOutputItem(item gjson.Result) bool {
 	if !item.Exists() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Get("status").String())) {
+	case "in_progress", "searching", "queued", "pending", "failed", "incomplete", "cancelled", "canceled":
 		return false
 	}
 	itemType := strings.ToLower(strings.TrimSpace(item.Get("type").String()))

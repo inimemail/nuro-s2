@@ -19,8 +19,8 @@ func RegisterOpenAIEdgeRoutes(r *gin.Engine, h *handler.Handlers, cfg *config.Co
 	edge := r.Group("/internal/edge/openai")
 	{
 		edge.GET("/v2/control", h.OpenAIGateway.OpenAIEdgeControlSnapshot)
-		edge.POST("/v2/claim", h.OpenAIGateway.OpenAIEdgeClaim)
-		edge.POST("/prepare", h.OpenAIGateway.OpenAIEdgePrepare)
+		edge.POST("/v2/claim", h.OpenAIGateway.ValidateOpenAIEdgePrepareFields, h.OpenAIGateway.OpenAIEdgeClaim)
+		edge.POST("/prepare", h.OpenAIGateway.ValidateOpenAIEdgePrepareFields, h.OpenAIGateway.OpenAIEdgePrepare)
 		edge.POST("/retry", h.OpenAIGateway.OpenAIEdgeRetry)
 		edge.POST("/retry-stage", h.OpenAIGateway.OpenAIEdgeRetryStage)
 		edge.POST("/commit", h.OpenAIGateway.OpenAIEdgeCommit)

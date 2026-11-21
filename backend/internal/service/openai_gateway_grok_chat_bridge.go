@@ -243,7 +243,11 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 	cacheIdentity := resolveGrokCacheIdentity(c, body, promptCacheKey, upstreamModel)
 	hasImageInput := openAIJSONValueMayContainImageInput(gjson.GetBytes(body, "messages"))
 	if !grokChatResponsesRuntimeEligible(upstreamModel, cacheIdentity) && !(hasImageInput && strings.TrimSpace(upstreamModel) == "grok-4.5") {
-		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+		result, err := s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+		if result != nil {
+			result.SearchCount = result.Usage.reportedGrokSearchCount
+		}
+		return result, err
 	}
 	responsesReq, err := chatCompletionsToResponses(s.cfg, &chatReq)
 	if err != nil {

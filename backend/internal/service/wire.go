@@ -111,6 +111,12 @@ func ProvideClaudeTokenProvider(
 	return p
 }
 
+func ProvideOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient, refreshAPI *OAuthRefreshAPI) *OpenAIOAuthService {
+	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
+	svc.refreshAPI = refreshAPI
+	return svc
+}
+
 // ProvideOpenAITokenProvider creates OpenAITokenProvider with OAuthRefreshAPI injection
 func ProvideOpenAITokenProvider(
 	accountRepo AccountRepository,
@@ -745,7 +751,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayService,
 	NewCompositeAccountRuntimeBlocker,
 	NewOAuthService,
-	NewOpenAIOAuthService,
+	ProvideOpenAIOAuthService,
 	NewGrokOAuthService,
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,

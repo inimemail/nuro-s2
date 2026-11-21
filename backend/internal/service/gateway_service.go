@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -5529,8 +5530,11 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		_, ok := ResolveBedrockModelID(account, requestedModel)
 		return ok
 	}
-	// OpenAI 透传模式：仅替换认证，允许所有模型
+	// Passthrough preserves the submitted model and may opt into account restrictions.
 	if account.Platform == PlatformOpenAI && account.IsOpenAIPassthroughEnabled() {
+		if account.IsOpenAIPassthroughModelFilterEnabled() {
+			return account.IsModelSupported(requestedModel)
+		}
 		return true
 	}
 	// OAuth/SetupToken 账号使用 Anthropic 标准映射（短ID → 长ID）
@@ -6391,6 +6395,30 @@ func injectAnthropicCacheControlTTL1h(body []byte) []byte {
 	return forceEphemeralCacheControlTTL(body, cacheTTLTarget1h)
 }
 
+const claudeCodeCompactPreamble = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n"
+
+func isClaudeCodeCompactionRequest(body []byte) bool {
+	var content gjson.Result
+	gjson.GetBytes(body, "messages").ForEach(func(_, message gjson.Result) bool {
+		if message.Get("role").Str == "user" {
+			content = message.Get("content")
+		}
+		return true
+	})
+	if content.Type == gjson.String {
+		return strings.HasPrefix(content.Str, claudeCodeCompactPreamble)
+	}
+	if !content.IsArray() {
+		return false
+	}
+	matched := false
+	content.ForEach(func(_, block gjson.Result) bool {
+		matched = block.Get("type").Str == "text" && strings.HasPrefix(block.Get("text").Str, claudeCodeCompactPreamble)
+		return !matched
+	})
+	return matched
+}
+
 func forceEphemeralCacheControlTTL(body []byte, ttl string) []byte {
 	if len(body) == 0 || ttl == "" {
 		return body
@@ -6537,7 +6565,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			}
 		}
 		var capabilityErr error
-		passthroughBody, capabilityErr = normalizeOpus55Request(passthroughBody, passthroughModel)
+		passthroughBody, capabilityErr = normalizeCompositeClaudeRequest(ctx, passthroughBody, parsed.Model, passthroughModel)
 		if capabilityErr != nil {
 			writeAnthropicErrorJSON(c, http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
 			return nil, capabilityErr
@@ -6690,13 +6718,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	var capabilityErr error
-	body, capabilityErr = normalizeOpus55Request(body, reqModel)
+	body, capabilityErr = normalizeCompositeClaudeRequest(ctx, body, originalModel, reqModel)
 	if capabilityErr != nil {
 		writeAnthropicErrorJSON(c, http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": capabilityErr.Error()}})
 		return nil, capabilityErr
 	}
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
-		body = injectAnthropicCacheControlTTL1h(body)
+		if s.cfg != nil && s.cfg.Gateway.AnthropicClaudeCodeCompactCacheTTL5m &&
+			c != nil && isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID) && isClaudeCodeCompactionRequest(body) {
+			body = forceEphemeralCacheControlTTL(body, cacheTTLTarget5m)
+		} else {
+			body = injectAnthropicCacheControlTTL1h(body)
+		}
 	}
 
 	// 获取凭证
@@ -8002,17 +8035,22 @@ func (s *GatewayService) forwardBedrock(
 	reqStream := parsed.Stream
 	body := parsed.Body
 
+	target := reqModel
+	if resolved, ok := ResolvedUpstreamModelFromContext(ctx); ok && resolved != reqModel {
+		target = resolved
+		ctx = context.WithValue(ctx, compositeContextKey("public_response_model"), reqModel)
+	}
 	region := bedrockRuntimeRegion(account)
-	mappedModel, ok := ResolveBedrockModelID(account, reqModel)
+	mappedModel, ok := ResolveBedrockModelID(account, target)
 	if !ok {
-		return nil, fmt.Errorf("unsupported bedrock model: %s", reqModel)
+		return nil, fmt.Errorf("unsupported bedrock model: %s", target)
 	}
 	if mappedModel != reqModel {
 		logger.LegacyPrintf("service.gateway", "[Bedrock] Model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 	}
 
 	var capabilityErr error
-	body, capabilityErr = normalizeOpus55Request(body, mappedModel)
+	body, capabilityErr = normalizeCompositeClaudeRequest(ctx, body, reqModel, mappedModel)
 	if capabilityErr != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", capabilityErr.Error())
 		return nil, capabilityErr
@@ -8405,6 +8443,7 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	body = transformBedrockInvocationMetrics(body)
 
 	usage := parseClaudeUsageFromResponseBody(body)
+	body = restoreCompositeAnthropicResponseModel(ctx, body, false)
 
 	c.Header("Content-Type", "application/json")
 	if v := responseheaders.PublicRequestID(resp.Header.Get("x-amzn-requestid")); v != "" {
@@ -12561,6 +12600,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		return nil
 	}
 
+	groupAccounts := accounts
 	// Filter by platform if specified
 	if platform != "" {
 		filtered := make([]Account, 0)
@@ -12578,11 +12618,45 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 	for _, acc := range accounts {
 		mapping := acc.GetModelMapping()
+		if acc.IsOpenAIPassthroughModelFilterEnabled() {
+			for _, model := range openai.DefaultModelIDs() {
+				if openAITextRequestModelSupported(&acc, OpenAIAccountScheduleRequest{
+					RequestedModel: model, RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+				}) {
+					modelSet[model] = struct{}{}
+				}
+			}
+		}
 		if len(mapping) > 0 {
 			hasAnyMapping = true
 			for model := range mapping {
+				if acc.IsOpenAIPassthroughModelFilterEnabled() &&
+					(strings.Contains(model, "*") || (acc.IsOpenAIOAuthLike() && isClearlyForeignOpenAIOAuthTarget(model))) {
+					continue
+				}
 				modelSet[model] = struct{}{}
 			}
+		}
+	}
+
+	if platform == PlatformAnthropic && groupID != nil {
+		group, _ := groupFromRoutingContext(ctx)
+		if group != nil && group.ID == *groupID {
+			if !hasAnyMapping {
+				for _, model := range claude.DefaultModelIDs() {
+					modelSet[model] = struct{}{}
+				}
+			}
+			var selectors []string
+			for model := range modelSet {
+				if s.supportsAnthropicModelSelector(ctx, group, model, groupAccounts) {
+					selectors = append(selectors, model+"[1m]")
+				}
+			}
+			for _, selector := range selectors {
+				modelSet[selector] = struct{}{}
+			}
+			hasAnyMapping = hasAnyMapping || len(selectors) > 0
 		}
 	}
 
@@ -12618,6 +12692,78 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		modelsListCacheStoreTotal.Add(1)
 	}
 	return cloneStringSlice(models)
+}
+
+// ResolveAnthropicModelSelector resolves catalog-generated selectors for the
+// authenticated group. Account configuration is checked before rewriting.
+func (s *GatewayService) ResolveAnthropicModelSelector(ctx context.Context, group *Group, model string) string {
+	base, suffix := strings.CutSuffix(model, "[1m]")
+	if !suffix || s == nil || s.accountRepo == nil || group == nil || group.Platform != PlatformAnthropic {
+		return model
+	}
+	if group.CustomModelsListEnabled() && !groupModelAllowed(group.ModelsListConfig.Models, model) {
+		return model
+	}
+	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, group.ID)
+	if err == nil && s.supportsAnthropicModelSelector(ctx, group, base, accounts) {
+		return base
+	}
+	return model
+}
+
+func (s *GatewayService) supportsAnthropicModelSelector(ctx context.Context, group *Group, model string, accounts []Account) bool {
+	if model == "" || strings.Contains(model, "*") || strings.HasSuffix(strings.ToLower(model), "[1m]") {
+		return false
+	}
+	// Fallback groups resolve the same request body against a different catalog.
+	if group.FallbackGroupIDOnInvalidRequest != nil || (group.ClaudeCodeOnly && group.FallbackGroupID != nil) {
+		return false
+	}
+	selector := model + "[1m]"
+	if s.channelService != nil {
+		channel, err := s.channelService.lookupGroupChannel(ctx, group.ID)
+		if err != nil {
+			return false
+		}
+		// Preserve channel mapping and price restrictions on the submitted ID.
+		if channel != nil && (channel.channel.RestrictModels ||
+			resolveMapping(channel, group.ID, selector).Mapped || resolveMapping(channel, group.ID, model).Mapped) {
+			return false
+		}
+	}
+	ids := group.GetRoutingAccountIDs(model)
+	if route := group.GetRoutingAccountIDs(selector); len(route) > 0 && !slices.Equal(ids, route) {
+		return false
+	}
+
+	// Every candidate for the base model must support it, and any configured
+	// selector (including a wildcard match) keeps its existing routing.
+	candidate := false
+	for i := range accounts {
+		account := &accounts[i]
+		if account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() {
+			return false
+		}
+		if !account.IsAnthropic() {
+			continue
+		}
+		if _, explicit := account.ResolveMappedModel(selector); explicit {
+			return false
+		}
+		// Preferred routes can fail over to the rest of the group.
+		if !account.IsModelSupported(model) {
+			continue
+		}
+		candidate = true
+		target := account.GetMappedModel(model)
+		if account.Type != AccountTypeAPIKey {
+			target = claude.NormalizeModelID(target)
+		}
+		if !accountSupportsAnthropicLongContext(account, target) {
+			return false
+		}
+	}
+	return candidate
 }
 
 func (s *GatewayService) GetCompositeCatalogModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool) []string {

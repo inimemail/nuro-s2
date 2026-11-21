@@ -71,6 +71,13 @@ func isOpenAIOAuthServableModel(requestedModel string) bool {
 	return true
 }
 
+// Eligibility checks the actual mapped target. Generic model discovery also
+// sees public Claude aliases used by the Messages compatibility endpoint.
+func isClearlyForeignOpenAIOAuthTarget(model string) bool {
+	return strings.HasPrefix(strings.ToLower(lastOpenAIModelSegment(model)), "claude-") ||
+		!isOpenAIOAuthServableModel(model)
+}
+
 // resolveOpenAICompactForwardModel determines the compact-only upstream model
 // for /responses/compact requests. It never affects normal /responses traffic.
 // When no compact-specific mapping matches, the input model is returned as-is.

@@ -16,12 +16,13 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 // ProviderConfig holds the configuration for a single search provider.
 type ProviderConfig struct {
-	Type         string `json:"type"`                    // ProviderTypeBrave | ProviderTypeTavily
+	Type         string `json:"type"`                    // ProviderTypeBrave | ProviderTypeTavily | ProviderTypeExa
 	APIKey       string `json:"api_key"`                 // secret
 	QuotaLimit   int64  `json:"quota_limit"`             // 0 = unlimited
 	SubscribedAt *int64 `json:"subscribed_at,omitempty"` // subscription start (unix seconds); quota resets monthly from this date
@@ -58,18 +59,42 @@ const (
 // Callers may use this to trigger account switching instead of direct fallback.
 var ErrProxyUnavailable = errors.New("websearch: proxy unavailable")
 
-// quotaIncrScript atomically increments the counter and sets TTL on first creation.
-var quotaIncrScript = redis.NewScript(`
-local val = redis.call('INCR', KEYS[1])
-if val == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-else
-  local ttl = redis.call('TTL', KEYS[1])
-  if ttl == -1 then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
-  end
+// Reserve only below the limit and tie the reservation to the current counter.
+var quotaReserveScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+local used = tonumber(current or '0')
+if used >= tonumber(ARGV[2]) then
+  return ''
 end
-return val
+local generation = false
+if current then
+  generation = redis.call('GET', KEYS[2])
+end
+if not generation then
+  generation = ARGV[3]
+end
+if used < 0 then
+  redis.call('SET', KEYS[1], 0, 'KEEPTTL')
+end
+redis.call('INCR', KEYS[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+  ttl = tonumber(ARGV[1])
+  redis.call('PEXPIRE', KEYS[1], ttl)
+end
+redis.call('SET', KEYS[2], generation, 'PX', math.max(ttl, 1))
+return generation
+`)
+
+var quotaRollbackScript = redis.NewScript(`
+if redis.call('GET', KEYS[2]) ~= ARGV[1] then
+  return 0
+end
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+if used > 0 then
+  return redis.call('DECR', KEYS[1])
+end
+return 0
 `)
 
 // NewManager creates a Manager with the given provider configs and Redis client.
@@ -100,16 +125,22 @@ func (m *Manager) SearchWithBestProvider(ctx context.Context, req SearchRequest)
 	selected := m.selectByQuotaWeight(ctx, candidates)
 
 	for _, cfg := range selected {
-		allowed, incremented := m.tryReserveQuota(ctx, cfg)
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		allowed, reservation := m.tryReserveQuota(ctx, cfg)
 		if !allowed {
 			continue
 		}
 		resp, err := m.executeSearch(ctx, cfg, req)
 		if err != nil {
-			if incremented {
-				m.rollbackQuota(ctx, cfg)
+			if reservation != "" {
+				m.rollbackQuota(ctx, cfg, reservation)
 			}
-			if isProxyError(err) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, "", ctxErr
+			}
+			if errors.Is(err, ErrProxyUnavailable) || isProxyError(err) {
 				m.markProxyUnavailable(ctx, cfg, req.ProxyURL)
 				if req.ProxyURL != "" {
 					// Account-level proxy is shared by all providers — no point
@@ -228,6 +259,11 @@ func mergeWeightedResults(withQuota, withoutQuota []weighted, capacity int) []Pr
 }
 
 func (m *Manager) isProviderAvailable(cfg ProviderConfig) bool {
+	switch cfg.Type {
+	case braveProviderName, tavilyProviderName, ProviderTypeExa:
+	default:
+		return false
+	}
 	if cfg.APIKey == "" {
 		return false
 	}
@@ -308,40 +344,35 @@ func isProxyError(err error) bool {
 
 // --- Quota management ---
 
-func (m *Manager) tryReserveQuota(ctx context.Context, cfg ProviderConfig) (bool, bool) {
+func (m *Manager) tryReserveQuota(ctx context.Context, cfg ProviderConfig) (bool, string) {
 	if cfg.QuotaLimit <= 0 {
-		return true, false
+		return true, ""
 	}
 	if m.redis == nil {
 		slog.Warn("websearch: Redis unavailable, quota check skipped", "provider", cfg.Type)
-		return true, false
+		return true, ""
 	}
 	key := quotaRedisKey(cfg.Type)
-	ttlSec := int(quotaTTLFromSubscription(cfg.SubscribedAt).Seconds())
-	newVal, err := quotaIncrScript.Run(ctx, m.redis, []string{key}, ttlSec).Int64()
+	ttl := quotaTTLFromSubscription(cfg.SubscribedAt).Milliseconds()
+	reservation, err := quotaReserveScript.Run(ctx, m.redis, []string{key, key + ":generation"}, ttl, cfg.QuotaLimit, uuid.NewString()).Text()
 	if err != nil {
 		slog.Warn("websearch: quota Lua INCR failed, allowing request",
 			"provider", cfg.Type, "error", err)
-		return true, false
+		return true, ""
 	}
-	if newVal > cfg.QuotaLimit {
-		if decrErr := m.redis.Decr(ctx, key).Err(); decrErr != nil {
-			slog.Warn("websearch: quota over-limit DECR failed",
-				"provider", cfg.Type, "error", decrErr)
-		}
+	if reservation == "" {
 		slog.Info("websearch: provider quota exhausted",
-			"provider", cfg.Type, "used", newVal, "limit", cfg.QuotaLimit)
-		return false, false
+			"provider", cfg.Type, "limit", cfg.QuotaLimit)
+		return false, ""
 	}
-	return true, true
+	return true, reservation
 }
 
-func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
-	if cfg.QuotaLimit <= 0 || m.redis == nil {
-		return
-	}
+func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig, reservation string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proxyDialTimeout)
+	defer cancel()
 	key := quotaRedisKey(cfg.Type)
-	if err := m.redis.Decr(ctx, key).Err(); err != nil {
+	if err := quotaRollbackScript.Run(ctx, m.redis, []string{key, key + ":generation"}, reservation).Err(); err != nil {
 		slog.Warn("websearch: quota rollback DECR failed",
 			"provider", cfg.Type, "error", err)
 	}
@@ -378,6 +409,9 @@ func (m *Manager) executeSearch(ctx context.Context, cfg ProviderConfig, req Sea
 		return nil, fmt.Errorf("websearch: %w", err)
 	}
 	provider := m.buildProvider(cfg, client)
+	if provider == nil {
+		return nil, errors.New("websearch: unsupported provider type")
+	}
 	return provider.Search(ctx, req)
 }
 
@@ -453,7 +487,7 @@ func (m *Manager) ResetUsage(ctx context.Context, providerType string) error {
 		return nil
 	}
 	key := quotaRedisKey(providerType)
-	return m.redis.Del(ctx, key).Err()
+	return m.redis.Del(ctx, key, key+":generation").Err()
 }
 
 // --- Provider factory ---
@@ -464,10 +498,10 @@ func (m *Manager) buildProvider(cfg ProviderConfig, client *http.Client) Provide
 		return NewBraveProvider(cfg.APIKey, client)
 	case tavilyProviderName:
 		return NewTavilyProvider(cfg.APIKey, client)
+	case ProviderTypeExa:
+		return NewExaProvider(cfg.APIKey, client)
 	default:
-		slog.Warn("websearch: unknown provider type, falling back to brave",
-			"type", cfg.Type)
-		return NewBraveProvider(cfg.APIKey, client)
+		return nil
 	}
 }
 

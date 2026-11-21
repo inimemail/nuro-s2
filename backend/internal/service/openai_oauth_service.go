@@ -17,6 +17,7 @@ type OpenAIOAuthService struct {
 	sessionStore         *openai.SessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
+	refreshAPI           *OAuthRefreshAPI
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
 }
 
@@ -409,6 +410,29 @@ func shouldApplyChatGPTAccountInfoPlanType(current, candidate string) bool {
 	return strings.TrimSpace(candidate) != "" && strings.TrimSpace(current) == ""
 }
 
+// RefreshStoredAccount shares the gateway and background refresher's lock and
+// credential update for account-managed refreshes.
+func (s *OpenAIOAuthService) RefreshStoredAccount(ctx context.Context, account *Account) (*Account, error) {
+	if account == nil || !account.IsOpenAIOAuth() || account.IsCredentialShadow() {
+		return nil, infraerrors.BadRequest("OPENAI_OAUTH_INVALID_ACCOUNT", "account is not eligible for managed OAuth refresh")
+	}
+	if s.refreshAPI == nil {
+		return nil, infraerrors.ServiceUnavailable("OPENAI_OAUTH_REFRESH_UNAVAILABLE", "managed OAuth refresh is unavailable")
+	}
+	executor := NewOpenAITokenRefresher(s, s.refreshAPI.accountRepo)
+	result, err := s.refreshAPI.RefreshNow(ctx, account, executor)
+	if err != nil {
+		return nil, err
+	}
+	if result.LockHeld {
+		return nil, infraerrors.Conflict("OPENAI_OAUTH_REFRESH_IN_PROGRESS", "account credentials are already being refreshed")
+	}
+	if result.Account == nil || !executor.CanRefresh(result.Account) {
+		return nil, infraerrors.Conflict("OPENAI_OAUTH_ACCOUNT_CHANGED", "account credentials changed during refresh")
+	}
+	return result.Account, nil
+}
+
 // RefreshAccountToken refreshes token for an OpenAI OAuth account
 func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *Account) (*OpenAITokenInfo, error) {
 	if account.Platform != PlatformOpenAI {
@@ -417,12 +441,9 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	if account.Type != AccountTypeOAuth {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
-	var proxyURL string
-	if account.ProxyID != nil && s.proxyRepo != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := resolveOpenAIStoredAccountProxy(ctx, s.proxyRepo, account.ProxyID)
+	if err != nil {
+		return nil, err
 	}
 
 	refreshToken := account.GetCredential("refresh_token")
@@ -503,6 +524,23 @@ func (s *OpenAIOAuthService) Stop() {
 
 func normalizeOpenAIOAuthPlatform(platform string) string {
 	return openai.OAuthPlatformOpenAI
+}
+
+// A stored account with a configured proxy must use it for credential operations.
+func resolveOpenAIStoredAccountProxy(ctx context.Context, repo ProxyRepository, proxyID *int64) (string, error) {
+	if proxyID == nil {
+		return "", nil
+	}
+	if repo != nil {
+		proxy, err := repo.GetByID(ctx, *proxyID)
+		if err == nil && proxy != nil {
+			return proxy.URL(), nil
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+	}
+	return "", infraerrors.ServiceUnavailable("OPENAI_OAUTH_PROXY_UNAVAILABLE", "account proxy is unavailable")
 }
 
 func (s *OpenAIOAuthService) resolveProxyURL(ctx context.Context, proxyID *int64) (string, error) {

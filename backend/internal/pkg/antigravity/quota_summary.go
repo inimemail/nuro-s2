@@ -33,6 +33,14 @@ func (e *QuotaSummaryHTTPError) Error() string {
 // This read-only endpoint is used only by explicit/background account usage
 // refresh. Its caller supplies the existing shared deadline, not a new budget.
 func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, projectID string) (*QuotaSummaryResponse, error) {
+	return c.retrieveUserQuotaSummary(ctx, BaseURLs, accessToken, projectID)
+}
+
+func (c *Client) RetrieveUserQuotaSummaryFromURL(ctx context.Context, baseURL, accessToken, projectID string) (*QuotaSummaryResponse, error) {
+	return c.retrieveUserQuotaSummary(ctx, []string{baseURL}, accessToken, projectID)
+}
+
+func (c *Client) retrieveUserQuotaSummary(ctx context.Context, endpoints []string, accessToken, projectID string) (*QuotaSummaryResponse, error) {
 	if c == nil || c.httpClient == nil {
 		return nil, fmt.Errorf("antigravity client is not configured")
 	}
@@ -41,7 +49,7 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, proj
 		return nil, err
 	}
 	var lastErr error
-	for i, baseURL := range BaseURLs {
+	for i, baseURL := range endpoints {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -52,7 +60,7 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, proj
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
-			if i+1 < len(BaseURLs) && shouldFallbackToNextURL(err, 0) {
+			if i+1 < len(endpoints) && shouldFallbackToNextURL(err, 0) {
 				continue
 			}
 			return nil, err
@@ -68,7 +76,7 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, accessToken, proj
 		}
 		if resp.StatusCode != http.StatusOK {
 			lastErr = &QuotaSummaryHTTPError{StatusCode: resp.StatusCode}
-			if i+1 < len(BaseURLs) && shouldFallbackToNextURL(nil, resp.StatusCode) {
+			if i+1 < len(endpoints) && shouldFallbackToNextURL(nil, resp.StatusCode) {
 				continue
 			}
 			return nil, lastErr

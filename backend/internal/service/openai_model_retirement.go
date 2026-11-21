@@ -175,5 +175,5 @@ func FilterRetiredOpenAIAccountModels(account *Account, models []openai.Model) [
 // Keep legacy selection and fresh-account rechecks aligned with the advanced
 // scheduler when a server-wide compact fallback supplies the upstream model.
 func (s *OpenAIGatewayService) isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, model string, compact bool, capability OpenAIEndpointCapability, images OpenAIImagesCapability, platform ...string) bool {
-	return isOpenAIAccountEligibleForRequestWithCompactFallback(ctx, account, model, compact, capability, images, s.openAICompactModelFallback(), platform...)
+	return s.isOpenAIAccountEligibleWithCompactCheck(ctx, account, model, openAICompactCheckForRequest(compact), capability, images, platform...)
 }

@@ -234,3 +234,46 @@ func TestOpenAICompactSupportTier(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIOAuthCompactAliasSurvivesCandidateRechecks(t *testing.T) {
+	const alias = "claude-sonnet-4-6"
+	groupID := int64(91005)
+	account := Account{
+		ID: 71040, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID},
+		Credentials: map[string]any{"compact_model_mapping": map[string]any{alias: "gpt-5.4"}},
+		Extra:       map[string]any{"openai_compact_supported": true, "openai_passthrough": true},
+	}
+	for _, test := range []struct {
+		name      string
+		advanced  bool
+		loadBatch bool
+	}{{name: "legacy"}, {name: "legacy_batch", loadBatch: true}, {name: "advanced", advanced: true, loadBatch: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			resetOpenAIAdvancedSchedulerSettingCacheForTest()
+			t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+			cfg := &config.Config{}
+			cfg.Gateway.Scheduling.LoadBatchEnabled = test.loadBatch
+			svc := &OpenAIGatewayService{
+				accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+				cache:       &schedulerTestGatewayCache{}, cfg: cfg,
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+			if test.advanced {
+				svc.rateLimitService = newOpenAIAdvancedSchedulerRateLimitService("true")
+			}
+			chosen, _, err := svc.SelectAccountWithSchedulerForCapability(
+				t.Context(), &groupID, "", "", alias, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, true,
+			)
+			require.NoError(t, err)
+			require.Equal(t, account.ID, chosen.Account.ID)
+			if chosen.ReleaseFunc != nil {
+				chosen.ReleaseFunc()
+			}
+			_, _, err = svc.SelectAccountWithSchedulerForCapability(
+				t.Context(), &groupID, "", "", alias, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false,
+			)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		})
+	}
+}

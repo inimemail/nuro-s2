@@ -57,10 +57,10 @@ func TestBodyBudgetExhaustionBeforeAllocationAndRecovery(t *testing.T) {
 }
 func TestDecompressedBodyRejectsOversizeInsteadOfTruncating(t *testing.T) {
 	// The source produces bytes without holding a 64 MiB input buffer.
-	_, err := readDecompressedBody(io.LimitReader(zeroReader{}, maxDecompressedBodySize+1))
+	_, err := readDecompressedBody(io.LimitReader(zeroReader{}, maxDecompressedBodySize+1), 0, nil)
 	var tooLarge *http.MaxBytesError
 	require.ErrorAs(t, err, &tooLarge)
-	body, err := readDecompressedBody(bytes.NewReader([]byte("{}")))
+	body, err := readDecompressedBody(bytes.NewReader([]byte("{}")), 0, nil)
 	require.NoError(t, err)
 	require.Equal(t, "{}", string(body))
 	var compressed bytes.Buffer
@@ -70,7 +70,7 @@ func TestDecompressedBodyRejectsOversizeInsteadOfTruncating(t *testing.T) {
 	require.NoError(t, gz.Close())
 	scope := NewBodyBudget(128 << 10).Scope()
 	defer scope.Release()
-	_, err = decompressRequestBody("gzip", compressed.Bytes(), scope)
+	_, err = decompressRequestBody("gzip", compressed.Bytes(), 0, scope)
 	require.ErrorIs(t, err, ErrBodyBudgetExceeded)
 }
 

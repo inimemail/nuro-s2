@@ -24,10 +24,7 @@ type TavilyProvider struct {
 // NewTavilyProvider creates a Tavily Search provider.
 // The caller is responsible for configuring the http.Client with proxy/timeouts.
 func NewTavilyProvider(apiKey string, httpClient *http.Client) *TavilyProvider {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	return &TavilyProvider{apiKey: apiKey, httpClient: httpClient}
+	return &TavilyProvider{apiKey: apiKey, httpClient: searchProviderClient(httpClient)}
 }
 
 func (t *TavilyProvider) Name() string { return tavilyProviderName }

@@ -56,6 +56,21 @@ class StreamTimingTest(unittest.TestCase):
         self.assertIsNone(no_progress["first_progress_ms"])
         self.assertEqual(classify([]), "structure")
 
+    def test_chat_choices_share_one_terminal(self):
+        chunks = [
+            b'data: {"choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[{"index":1,"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[],"usage":{"completion_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        result = measure(chunks)
+        self.assertEqual(result["terminals"], 1)
+        self.assertEqual(result["done_markers"], 1)
+        self.assertIsNone(result["failure"])
+        self.assertIsNotNone(measure([chunks[0], *chunks])["failure"])
+        self.assertEqual(measure(chunks[:-1])["failure"], "missing_done_marker")
+        self.assertIsNotNone(measure([*chunks, chunks[2]])["failure"])
+
     def test_summary_keeps_missing_timings_out_of_percentiles_and_counts_failures(self):
         rows = [dict(first_visible_ms=10, failure=None, terminals=1, first_byte_ms=2, headers_ms=1,
                      terminal_ms=20, total_ms=21),

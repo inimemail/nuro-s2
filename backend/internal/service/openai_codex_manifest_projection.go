@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 )
 
 func projectCodexManifestForAccount(body []byte, account *Account) ([]byte, error) {
@@ -22,7 +24,8 @@ func projectCodexManifestForAccount(body []byte, account *Account) ([]byte, erro
 		return nil, err
 	}
 	mapping := account.GetModelMapping()
-	if account.IsOpenAIPassthroughEnabled() {
+	passthrough := account.IsOpenAIPassthroughEnabled()
+	if passthrough {
 		mapping = nil
 	}
 	byID := make(map[string]json.RawMessage, len(models))
@@ -56,6 +59,13 @@ func projectCodexManifestForAccount(body []byte, account *Account) ([]byte, erro
 		if seen[id] || strings.Contains(id, "*") {
 			continue
 		}
+		if account.IsOpenAIPassthroughModelFilterEnabled() && !account.IsModelSupported(id) {
+			continue
+		}
+		if passthrough && account.IsOpenAIOAuthLike() && !account.IsShadow() &&
+			!account.IsImagePoolMode() && isClearlyForeignOpenAIOAuthTarget(id) {
+			continue
+		}
 		target := id
 		if len(mapping) > 0 {
 			var matched bool
@@ -75,6 +85,14 @@ func projectCodexManifestForAccount(body []byte, account *Account) ([]byte, erro
 		for _, field := range []string{"supports_search_tool", "use_responses_lite"} {
 			if value, exists := item[field]; exists && !bytes.Equal(bytes.TrimSpace(value), []byte("true")) && !bytes.Equal(bytes.TrimSpace(value), []byte("false")) {
 				item[field] = json.RawMessage(`false`)
+				changed = true
+			}
+		}
+		if account.IsOpenAIApiKey() && (!account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses) ||
+			!openai_compat.ShouldUseResponsesAPI(account.Extra)) {
+			modalities, removed := removeCodexAudioModality(item["input_modalities"])
+			if removed {
+				item["input_modalities"], _ = json.Marshal(modalities)
 				changed = true
 			}
 		}
@@ -168,8 +186,23 @@ func intersectCodexManifestCapabilities(first, next json.RawMessage) (json.RawMe
 			changed = true
 		}
 	}
+	var nextModalities []string
+	if json.Unmarshal(b["input_modalities"], &nextModalities) != nil || !slices.Contains(nextModalities, "audio") {
+		if modalities, removed := removeCodexAudioModality(a["input_modalities"]); removed {
+			a["input_modalities"], _ = json.Marshal(modalities)
+			changed = true
+		}
+	}
 	if !changed {
 		return first, nil
 	}
 	return json.Marshal(a)
+}
+
+func removeCodexAudioModality(raw json.RawMessage) ([]string, bool) {
+	var modalities []string
+	if json.Unmarshal(raw, &modalities) != nil || !slices.Contains(modalities, "audio") {
+		return nil, false
+	}
+	return slices.DeleteFunc(modalities, func(modality string) bool { return modality == "audio" }), true
 }

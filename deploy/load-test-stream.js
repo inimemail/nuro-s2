@@ -13,6 +13,7 @@ export const options = {
       gracefulStop: "2m",
     },
   },
+  summaryTrendStats: ["avg", "med", "p(95)", "p(99)", "max"],
   noConnectionReuse: false,
   userAgent: "sub2api-capacity-validation/1.0",
 };

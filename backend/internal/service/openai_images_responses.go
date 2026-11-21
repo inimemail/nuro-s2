@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -336,8 +337,11 @@ func buildOpenAIImagesStreamCompletedPayload(
 	if img.Model != "" {
 		payload, _ = sjson.SetBytes(payload, "model", img.Model)
 	}
-	if len(usageRaw) > 0 && gjson.ValidBytes(usageRaw) {
-		payload, _ = sjson.SetRawBytes(payload, "usage", usageRaw)
+	if len(usageRaw) > 0 {
+		var compact bytes.Buffer
+		if json.Compact(&compact, usageRaw) == nil {
+			payload, _ = sjson.SetRawBytes(payload, "usage", compact.Bytes())
+		}
 	}
 	return payload
 }

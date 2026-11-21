@@ -51,14 +51,28 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string, grok ...bool) *
 					})
 				}
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call":
+			arguments := item.Arguments
+			if item.Type == "custom_tool_call" {
+				if !item.rebuiltFromStream {
+					continue
+				}
+				arguments = item.Input
+			}
 			blocks = append(blocks, AnthropicContentBlock{
 				Type:  "tool_use",
 				ID:    fromResponsesCallID(item.CallID),
 				Name:  item.Name,
-				Input: sanitizeAnthropicToolUseInput(item.Name, item.Arguments),
+				Input: sanitizeAnthropicToolUseInput(item.Name, arguments),
 			})
+		case "tool_search_call":
+			if item.Execution == "client" && item.CallID != "" && item.Status == "completed" {
+				blocks = append(blocks, anthropicToolSearchUse(&item))
+			}
 		case "web_search_call":
+			if item.Status != "completed" && item.Status != "" {
+				continue
+			}
 			toolUseID := "srvtoolu_" + item.ID
 			query := ""
 			if item.Action != nil {
@@ -71,11 +85,10 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string, grok ...bool) *
 				Name:  "web_search",
 				Input: inputJSON,
 			})
-			emptyResults, _ := json.Marshal([]struct{}{})
 			blocks = append(blocks, AnthropicContentBlock{
 				Type:      "web_search_tool_result",
 				ToolUseID: toolUseID,
-				Content:   emptyResults,
+				Content:   webSearchCallResults(&item),
 			})
 		}
 	}
@@ -587,6 +600,21 @@ func resToAnthHandleOutputItemDone(evt *ResponsesStreamEvent, state *ResponsesEv
 		return append(events, closeCurrentBlock(state)...)
 	}
 
+	if evt.Item.Type == "tool_search_call" && evt.Item.Execution == "client" &&
+		evt.Item.CallID != "" && evt.Item.Status == "completed" {
+		events := closeCurrentBlock(state)
+		block := anthropicToolSearchUse(evt.Item)
+		input := block.Input
+		block.Input = json.RawMessage("{}")
+		index := state.ContentBlockIndex
+		state.ContentBlockIndex++
+		state.HasToolCall = true
+		return append(events,
+			AnthropicStreamEvent{Type: "content_block_start", Index: &index, ContentBlock: &block},
+			AnthropicStreamEvent{Type: "content_block_delta", Index: &index, Delta: &AnthropicDelta{Type: "input_json_delta", PartialJSON: string(input)}},
+			AnthropicStreamEvent{Type: "content_block_stop", Index: &index},
+		)
+	}
 	// Handle web_search_call → synthesize server_tool_use + web_search_tool_result blocks.
 	if evt.Item.Type == "web_search_call" && evt.Item.Status == "completed" {
 		return resToAnthHandleWebSearchDone(evt, state)
@@ -636,9 +664,6 @@ func resToAnthHandleWebSearchDone(evt *ResponsesStreamEvent, state *ResponsesEve
 	state.ContentBlockIndex++
 
 	// Emit web_search_tool_result block (start + stop).
-	// Content is empty because OpenAI does not expose individual search results;
-	// the model consumes them internally and produces text output.
-	emptyResults, _ := json.Marshal([]struct{}{})
 	idx2 := state.ContentBlockIndex
 	events = append(events, AnthropicStreamEvent{
 		Type:  "content_block_start",
@@ -646,7 +671,7 @@ func resToAnthHandleWebSearchDone(evt *ResponsesStreamEvent, state *ResponsesEve
 		ContentBlock: &AnthropicContentBlock{
 			Type:      "web_search_tool_result",
 			ToolUseID: toolUseID,
-			Content:   emptyResults,
+			Content:   webSearchCallResults(evt.Item),
 		},
 	})
 	events = append(events, AnthropicStreamEvent{

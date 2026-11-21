@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -758,13 +759,28 @@ func sanitizeGrokMediaUnsuccessfulTerminalResponse(body []byte, status string) [
 	return out
 }
 
+const grokImageEditSourceLimit = 5
+
+func ValidateGrokMediaInput(endpoint GrokMediaEndpoint, request GrokMediaRequestInfo) error {
+	if endpoint == GrokMediaEndpointImagesEdits && len(request.InputImageURLs)+len(request.Uploads) > grokImageEditSourceLimit {
+		return infraerrors.BadRequest("GROK_IMAGE_EDIT_SOURCE_LIMIT", "Image edits accept at most five source images")
+	}
+	return nil
+}
+
 func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
-	if endpoint != GrokMediaEndpointImagesEdits || gjson.ValidBytes(body) {
+	if endpoint != GrokMediaEndpointImagesEdits {
 		return body, contentType, nil
 	}
 	info := ParseGrokMediaRequest(contentType, body)
 	if info.ParseError != nil {
 		return nil, "", info.ParseError
+	}
+	if err := ValidateGrokMediaInput(endpoint, info); err != nil {
+		return nil, "", err
+	}
+	if gjson.ValidBytes(body) {
+		return body, contentType, nil
 	}
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {

@@ -135,14 +135,16 @@ func (h *GatewayHandler) SystemOne(c *gin.Context) {
 		return
 	}
 	h.reportAccountScheduleResult(account, true, nil)
-	parsed := &service.ParsedRequest{Body: body, Model: model, GroupID: apiKey.GroupID}
+	parsed := &service.ParsedRequest{Model: model, GroupID: apiKey.GroupID}
 	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	payloadHash := service.HashUsageRequestPayload(body)
+	userAgent, clientIP := c.GetHeader("User-Agent"), ip.GetClientIP(c)
 	h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		_ = h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 			Result: result, ParsedRequest: parsed, APIKey: apiKey, User: apiKey.User, Account: account,
 			InboundEndpoint: EndpointSystemOne, UpstreamEndpoint: EndpointSystemOne,
-			UserAgent: c.GetHeader("User-Agent"), IPAddress: ip.GetClientIP(c),
-			RequestPayloadHash: service.HashUsageRequestPayload(body), APIKeyService: h.apiKeyService,
+			UserAgent: userAgent, IPAddress: clientIP,
+			RequestPayloadHash: payloadHash, APIKeyService: h.apiKeyService,
 			QuotaPlatform: quotaPlatform,
 		})
 	})

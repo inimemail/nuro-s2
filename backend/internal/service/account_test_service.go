@@ -30,6 +30,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // sseDataPrefix matches SSE data lines with optional whitespace after colon.
@@ -190,8 +191,10 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		"temperature": 1,
 		"stream":      true,
 	}
-	if claude.IsAdaptiveThinkingModel(modelID) {
+	if claude.IsAdaptiveThinkingModel(modelID) || claude.RejectsTemperature(modelID) {
 		delete(payload, "temperature")
+	}
+	if claude.IsAdaptiveThinkingModel(modelID) {
 		payload["thinking"] = map[string]any{"type": "adaptive"}
 	}
 	return payload, nil
@@ -296,6 +299,12 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: validated})
+	if mapped := account.GetMappedModel(typesafe.JevLatestModel); mapped != "" && mapped != typesafe.JevLatestModel {
+		body, err = sjson.SetBytes(body, "model", mapped)
+		if err != nil {
+			return s.sendErrorAndEnd(c, "Failed to map TypeSafe model")
+		}
+	}
 	req, err := typesafe.NewSystemOneRequest(c.Request.Context(), account.GetTypeSafeBaseURL(), key, body)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create TypeSafe request")

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 // ForwardSystemOne forwards a native TypeSafe System One request without
@@ -24,6 +25,17 @@ func (s *GatewayService) ForwardSystemOne(ctx context.Context, account *Account,
 	key := account.GetTypeSafeAPIKey()
 	if key == "" {
 		return nil, nil, http.StatusUnauthorized, errors.New("typesafe API key is missing")
+	}
+	upstreamModel := account.GetMappedModel(typesafe.JevLatestModel)
+	if upstreamModel == "" {
+		upstreamModel = typesafe.JevLatestModel
+	}
+	if upstreamModel != typesafe.JevLatestModel {
+		mapped, err := sjson.SetBytes(body, "model", upstreamModel)
+		if err != nil {
+			return nil, nil, http.StatusBadRequest, errors.New("could not map System One model")
+		}
+		body = mapped
 	}
 	req, err := typesafe.NewSystemOneRequest(ctx, account.GetTypeSafeBaseURL(), key, body)
 	if err != nil {
@@ -55,7 +67,7 @@ func (s *GatewayService) ForwardSystemOne(ctx context.Context, account *Account,
 	if err != nil {
 		return nil, nil, http.StatusBadGateway, err
 	}
-	result := &ForwardResult{Model: typesafe.JevLatestModel, UpstreamModel: typesafe.JevLatestModel, UpstreamResponseModel: strings.TrimSpace(decoded.Model), Duration: time.Since(started), Usage: ClaudeUsage{InputTokens: decoded.Usage.InputTokens, OutputTokens: decoded.Usage.OutputTokens}}
+	result := &ForwardResult{Model: typesafe.JevLatestModel, UpstreamModel: upstreamModel, UpstreamResponseModel: strings.TrimSpace(decoded.Model), Duration: time.Since(started), Usage: ClaudeUsage{InputTokens: decoded.Usage.InputTokens, OutputTokens: decoded.Usage.OutputTokens}}
 	return result, decoded.Body, resp.StatusCode, nil
 }
 

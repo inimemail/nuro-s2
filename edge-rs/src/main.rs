@@ -1,6 +1,7 @@
 mod disk_worker;
 mod http_lane_pool;
 mod relay_queue;
+mod request_fields;
 mod retry_queue;
 mod stream_experience;
 mod stream_session;
@@ -27,7 +28,7 @@ use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::any,
     Router,
 };
@@ -4219,6 +4220,20 @@ async fn handle_openai_edge(
         Err(StatusCode::SERVICE_UNAVAILABLE) => return overload_response(&state),
         Err(status) => return text_response(status, "failed to read request body"),
     };
+    if request_fields::has_conflict(&body_bytes) {
+        state
+            .metrics
+            .rejected_requests
+            .fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": {
+                "type": "invalid_request_error",
+                "message": request_fields::CONFLICT_REASON
+            }})),
+        )
+            .into_response();
+    }
     let raw_prepare_body = openai_prepare_raw_body(&state, &body_bytes);
     let (stream, prepare_body) = if raw_prepare_body.is_some() {
         let stream = serde_json::from_slice::<StreamOnlyRequest>(&body_bytes)
@@ -4812,7 +4827,12 @@ async fn relay_ws_session(
                 })?,
         )
     };
+    if request_fields::has_conflict(first_text.as_bytes()) {
+        reject_conflicting_ws_frame(&state, &mut client_socket).await;
+        return Ok(());
+    }
     let first_json: Value = serde_json::from_str(&first_text)?;
+    let first_requested_effort = request_fields::requested_effort(&first_json);
     let prepare = PrepareRequest {
         cache_creation_policy_version: 1,
         edge_request_id: edge_request_id.clone(),
@@ -4987,6 +5007,9 @@ async fn relay_ws_session(
     let (mut upstream_write, mut upstream_read) = upstream_socket.split();
     let first_upstream_msg = edge_plan_ws_first_message(&plan, first_msg)?;
     let ws_response_active = tungstenite_message_is_response_create(&first_upstream_msg);
+    if ws_response_active {
+        debug!(%edge_request_id, turn = 1, requested_reasoning_effort = first_requested_effort, "edge websocket request");
+    }
     let last_request_body = tungstenite_message_json(&first_upstream_msg);
     if let Err(first_error) = upstream_write.send(first_upstream_msg.clone()).await {
         if !reused_idle {
@@ -5122,6 +5145,24 @@ async fn relay_ws_session(
                             let _ = upstream_write.send(TungsteniteMessage::Close(None)).await;
                             break;
                         }
+                        let client_bytes = match &msg {
+                            AxumWsMessage::Text(text) => Some(text.as_bytes()),
+                            AxumWsMessage::Binary(bytes) => Some(bytes.as_slice()),
+                            _ => None,
+                        };
+                        if client_bytes.is_some_and(request_fields::has_conflict) {
+                            reject_conflicting_ws_frame(&state, &mut client_socket).await;
+                            success = false;
+                            client_disconnected = true;
+                            break;
+                        }
+                        let requested_effort = client_bytes
+                            .filter(|body| tracing::enabled!(tracing::Level::DEBUG)
+                                && (body.windows(b"effort".len()).any(|part| part == b"effort")
+                                    || body.contains(&b'\\')))
+                            .and_then(|body| serde_json::from_slice::<Value>(body).ok())
+                            .as_ref()
+                            .and_then(request_fields::requested_effort);
                         let upstream_msg = match axum_to_tungstenite_message(msg) {
                             Ok(msg) => msg,
                             Err(err) => {
@@ -5181,6 +5222,7 @@ async fn relay_ws_session(
                                 );
                             }
                             health_turn = health_turn.saturating_add(1);
+                            debug!(%edge_request_id, turn = health_turn, requested_reasoning_effort = requested_effort, "edge websocket request");
                             turn_health_reported = false;
                             turn_started_at = Instant::now();
                             downstream_ttft_observed = false;
@@ -5748,6 +5790,22 @@ async fn relay_ws_session(
     .await?;
     guard.mark_done();
     Ok(())
+}
+
+async fn reject_conflicting_ws_frame(state: &AppState, client: &mut WebSocket) {
+    state
+        .metrics
+        .rejected_requests
+        .fetch_add(1, Ordering::Relaxed);
+    let frame = axum::extract::ws::CloseFrame {
+        code: axum::extract::ws::close_code::POLICY,
+        reason: request_fields::CONFLICT_REASON.into(),
+    };
+    let _ = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.send(AxumWsMessage::Close(Some(frame))),
+    )
+    .await;
 }
 
 async fn proxy_ws_to_go(

@@ -28,10 +28,7 @@ type BraveProvider struct {
 // NewBraveProvider creates a Brave Search provider.
 // The caller is responsible for configuring the http.Client with proxy/timeouts.
 func NewBraveProvider(apiKey string, httpClient *http.Client) *BraveProvider {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	return &BraveProvider{apiKey: apiKey, httpClient: httpClient}
+	return &BraveProvider{apiKey: apiKey, httpClient: searchProviderClient(httpClient)}
 }
 
 func (b *BraveProvider) Name() string { return braveProviderName }

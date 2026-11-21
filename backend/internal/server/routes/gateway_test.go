@@ -17,6 +17,8 @@ import (
 func newGatewayRoutesTestRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	cfg := &config.Config{}
+	cfg.Gateway.MaxBodySize = 1 << 20
 
 	RegisterGatewayRoutes(
 		router,
@@ -36,7 +38,7 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 		nil,
 		nil,
 		nil,
-		&config.Config{},
+		cfg,
 	)
 
 	return router

@@ -762,6 +762,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"anthropic_passthrough",
 		"web_search_emulation",
 		"openai_passthrough",
+		"openai_passthrough_model_filter",
 		"openai_oauth_passthrough",
 		"openai_oauth_responses_websockets_v2_enabled",
 		"openai_oauth_responses_websockets_v2_mode",

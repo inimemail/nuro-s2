@@ -196,20 +196,21 @@ func TestQuotaRedisKey_Format(t *testing.T) {
 
 func TestIsProviderAvailable_EmptyAPIKey(t *testing.T) {
 	m := NewManager(nil, nil)
-	require.False(t, m.isProviderAvailable(ProviderConfig{APIKey: ""}))
+	require.False(t, m.isProviderAvailable(ProviderConfig{Type: ProviderTypeBrave}))
 }
 
 func TestIsProviderAvailable_Expired(t *testing.T) {
 	m := NewManager(nil, nil)
 	past := time.Now().Add(-1 * time.Hour).Unix()
-	require.False(t, m.isProviderAvailable(ProviderConfig{APIKey: "k", ExpiresAt: &past}))
+	require.False(t, m.isProviderAvailable(ProviderConfig{Type: ProviderTypeTavily, APIKey: "k", ExpiresAt: &past}))
 }
 
 func TestIsProviderAvailable_Valid(t *testing.T) {
 	m := NewManager(nil, nil)
 	future := time.Now().Add(1 * time.Hour).Unix()
-	require.True(t, m.isProviderAvailable(ProviderConfig{APIKey: "k", ExpiresAt: &future}))
-	require.True(t, m.isProviderAvailable(ProviderConfig{APIKey: "k"})) // no expiry
+	require.True(t, m.isProviderAvailable(ProviderConfig{Type: ProviderTypeBrave, APIKey: "k", ExpiresAt: &future}))
+	require.True(t, m.isProviderAvailable(ProviderConfig{Type: ProviderTypeExa, APIKey: "k"}))
+	require.False(t, m.isProviderAvailable(ProviderConfig{Type: "unrecognized", APIKey: "k"}))
 }
 
 // --- resolveProxyID ---

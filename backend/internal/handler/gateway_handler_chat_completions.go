@@ -182,7 +182,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	// Parse request for session hash
-	parsedReq, _ := service.ParseGatewayRequest(body, "chat_completions")
+	parsedReq, _ := service.ParseGatewayRequestForValidJSON(body, "chat_completions")
 	if parsedReq == nil {
 		parsedReq = &service.ParsedRequest{Model: reqModel, Stream: reqStream, Body: body}
 	}

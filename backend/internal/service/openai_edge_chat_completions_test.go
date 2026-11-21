@@ -306,6 +306,28 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 	}
 }
 
+func TestRawResponsesEdgePlanNormalizesStandaloneIDEContext(t *testing.T) {
+	setGinTestMode()
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	fixture := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call_output","namespace":"agent","name":"ide_context","output":"active file: example.go"},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"tool result"}]}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	account := &Account{
+		ID: 456, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "fixture-key"},
+		Extra:       map[string]any{"openai_passthrough": true, openai_compat.ExtraKeyResponsesSupported: true},
+	}
+	prepared, err := svc.BuildRawResponsesEdgePlan(t.Context(), c, account, fixture)
+	require.NoError(t, err)
+	decoded, err := base64.StdEncoding.DecodeString(prepared.Plan.BodyRawBase64)
+	require.NoError(t, err)
+	require.Equal(t, "user", gjson.GetBytes(decoded, "input.0.role").String())
+	require.Equal(t, "<external_ide_context>active file: example.go</external_ide_context>", gjson.GetBytes(decoded, "input.0.content.0.text").String())
+	require.Equal(t, "call_1", gjson.GetBytes(decoded, "input.1.call_id").String())
+	require.Equal(t, "call_1", gjson.GetBytes(decoded, "input.2.call_id").String())
+	require.Equal(t, "tool result", gjson.GetBytes(decoded, "input.2.output").String())
+}
+
 func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
 	setGinTestMode()
 	w := httptest.NewRecorder()

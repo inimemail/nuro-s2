@@ -1226,6 +1226,27 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	expectedProxyID *int64,
 	credentials map[string]any,
 ) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(ctx, id, service.PlatformGrok, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *accountRepository) UpdateOpenAIOAuthCredentialsIfUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(ctx, id, service.PlatformOpenAI, expectedCredentials, expectedProxyID, credentials)
+}
+
+func (r *accountRepository) updateOAuthCredentialsIfUnchanged(
+	ctx context.Context,
+	id int64,
+	platform string,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
 	if r == nil || r.sql == nil {
 		return false, errors.New("account repository SQL executor is not configured")
 	}
@@ -1245,6 +1266,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 				AND a.deleted_at IS NULL
 				AND a.platform = $3
 				AND a.type = $4
+				AND ($3 <> 'openai' OR a.parent_account_id IS NULL)
 				AND a.credentials = $5::jsonb
 				AND a.proxy_id IS NOT DISTINCT FROM $6
 			RETURNING a.id
@@ -1252,7 +1274,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
 		SELECT $7, updated.id, NULL, NULL FROM updated
 	`,
-		string(credentialsJSON), id, service.PlatformGrok, service.AccountTypeOAuth,
+		string(credentialsJSON), id, platform, service.AccountTypeOAuth,
 		string(expectedJSON), expectedProxyID, service.SchedulerOutboxEventAccountChanged,
 	)
 	if err != nil {
@@ -2843,6 +2865,31 @@ func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now ti
 		}
 	}
 	return int64(len(accountIDs)), nil
+}
+
+// SaveAnthropicModelContextWindows publishes discovery metadata for the account
+// revision that issued the request. Discovery never advances that revision.
+func (r *accountRepository) SaveAnthropicModelContextWindows(ctx context.Context, id int64, revision, started time.Time, windows map[string]int) (bool, error) {
+	snapshot, err := json.Marshal(map[string]any{
+		"account_revision": revision.UTC().Format(time.RFC3339Nano),
+		"observed_at_ns":   started.UnixNano(),
+		"windows":          windows,
+	})
+	if err != nil {
+		return false, err
+	}
+	result, err := sqlExecutorFromContext(ctx, r.sql).ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb)
+		WHERE id = $3 AND deleted_at IS NULL AND platform = $4 AND updated_at = $5
+			AND ((extra->$1::text->'observed_at_ns') IS NULL
+				OR (extra->$1::text->'observed_at_ns') < to_jsonb($6::bigint))
+	`, service.AnthropicModelContextWindowsExtraKey, string(snapshot), id, service.PlatformAnthropic, revision, started.UnixNano())
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }
 
 func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {

@@ -2,15 +2,16 @@ package service
 
 import (
 	"bytes"
-	"github.com/tidwall/gjson"
 	"sort"
+
+	"github.com/tidwall/gjson"
 )
 
 // Normalize only schema-keyword required:null, not properties named "required" or tool data.
 // [] is the standard equivalent of an omitted required list. A single bounded copy
 // preserves all unrelated request bytes, including signed thinking and prompt prefixes.
 func sanitizeToolSchemaRequired(body []byte) ([]byte, bool) {
-	if !bytes.Contains(body, []byte(`"required"`)) || !bytes.Contains(body, []byte("null")) {
+	if !mayContainNullToolSchemaKeyword(body, `"required"`) {
 		return body, false
 	}
 	var offsets []int
@@ -51,7 +52,7 @@ func sanitizeToolSchemaRequired(body []byte) ([]byte, bool) {
 			return true
 		})
 	}
-	root := gjson.ParseBytes(body)
+	root := gjson.Parse(openAIWSPayloadStringView(body))
 	tools(root.Get("tools"), 0)
 	root.Get("input").ForEach(func(_, item gjson.Result) bool { tools(item.Get("tools"), 0); return true })
 	if len(offsets) == 0 {
@@ -69,4 +70,14 @@ func sanitizeToolSchemaRequired(body []byte) ([]byte, bool) {
 		cursor = offset + 4
 	}
 	return append(out, body[cursor:]...), true
+}
+
+func mayContainNullToolSchemaKeyword(body []byte, keyword string) bool {
+	if !bytes.Contains(body, []byte("null")) {
+		return false
+	}
+	if bytes.IndexByte(body, '\\') >= 0 {
+		return true
+	}
+	return bytes.Contains(body, []byte(`"tools"`)) && bytes.Contains(body, []byte(keyword))
 }

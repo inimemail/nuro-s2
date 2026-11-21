@@ -84,6 +84,34 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('defers passive refresh until a mobile account row enters the viewport', async () => {
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn()
+    } as unknown as MediaQueryList)
+    let enterViewport: IntersectionObserverCallback | undefined
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { enterViewport = callback }
+      observe() {}
+      disconnect() {}
+    })
+    getUsage.mockResolvedValue({})
+    const account = makeAccount({ id: 2391, platform: 'anthropic', type: 'oauth' })
+    const wrapper = mount(AccountUsageCell, { props: { account } })
+    try {
+      await wrapper.setProps({ account: { ...account, extra: { passive_usage_sampled_at: '2026-11-20T12:00:00Z' } } })
+      await flushPromises()
+      expect(getUsage).not.toHaveBeenCalled()
+      expect(enterViewport).toBeDefined()
+      enterViewport?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+      await flushPromises()
+      expect(getUsage).toHaveBeenCalledOnce()
+      expect(getUsage).toHaveBeenCalledWith(account.id, 'passive')
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('Vertex 配额与本地今日统计同时显示，非 Gemini service account 不误用配额', async () => {
     getUsage.mockResolvedValue({})
     const wrapper = mount(AccountUsageCell, {

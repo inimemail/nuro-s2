@@ -287,7 +287,10 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
 		if err != nil {
-			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn ||
+				errors.Is(err, errOAuthRefreshAccountStateChanged) ||
+				errors.Is(err, errOAuthRefreshAccountRereadFailed) ||
+				errors.Is(err, errOpenAIRotationPersistence) {
 				return "", err
 			}
 			slog.Warn("openai_token_refresh_failed", "account_id", account.ID, "request_account_id", requestAccountID, "error", err)

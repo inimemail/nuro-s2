@@ -57,6 +57,56 @@ func openAICompatEventStartsRealChatOutput(event *apicompat.ResponsesStreamEvent
 	}
 }
 
+// Only the Kimi compatibility path carries new function declarations
+// inside system messages.
+func parseChatRequestForBridge(body []byte, platform string, req *apicompat.ChatCompletionsRequest) error {
+	if platform != PlatformKimi {
+		return json.Unmarshal(body, req)
+	}
+	var request struct {
+		*apicompat.ChatCompletionsRequest
+		Messages []struct {
+			apicompat.ChatMessage
+			Tools json.RawMessage `json:"tools"`
+		} `json:"messages"`
+	}
+	request.ChatCompletionsRequest = req
+	if err := json.Unmarshal(body, &request); err != nil {
+		return err
+	}
+	req.Messages = make([]apicompat.ChatMessage, 0, len(request.Messages))
+	names := make(map[string]struct{})
+	for _, tool := range req.Tools {
+		if tool.Function != nil {
+			names[tool.Function.Name] = struct{}{}
+		}
+	}
+	for _, message := range request.Messages {
+		if message.Role != "system" || len(message.Tools) == 0 {
+			req.Messages = append(req.Messages, message.ChatMessage)
+			continue
+		}
+		if len(message.Content) != 0 {
+			return fmt.Errorf("Kimi system tool declarations cannot include message content")
+		}
+		var tools []apicompat.ChatTool
+		if err := json.Unmarshal(message.Tools, &tools); err != nil {
+			return fmt.Errorf("invalid Kimi system tool declarations")
+		}
+		for _, tool := range tools {
+			if tool.Type != "function" || tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
+				return fmt.Errorf("Kimi system tools must be named functions")
+			}
+			if _, exists := names[tool.Function.Name]; exists {
+				return fmt.Errorf("duplicate Kimi function declaration")
+			}
+			names[tool.Function.Name] = struct{}{}
+			req.Tools = append(req.Tools, tool)
+		}
+	}
+	return nil
+}
+
 // ForwardAsChatCompletions accepts a Chat Completions request body, converts it
 // to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
 // the response back to Chat Completions format.
@@ -124,7 +174,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// 1. Parse Chat Completions request
 	var chatReq apicompat.ChatCompletionsRequest
-	if err := json.Unmarshal(body, &chatReq); err != nil {
+	if err := parseChatRequestForBridge(body, account.Platform, &chatReq); err != nil {
 		return nil, fmt.Errorf("parse chat completions request: %w", err)
 	}
 	originalModel := chatReq.Model
@@ -669,7 +719,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID, account != nil && account.Platform == PlatformGrok)
+	finalResponse, usage, acc, searchCount, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID, account != nil && account.Platform == PlatformGrok)
 	if err != nil {
 		return nil, err
 	}
@@ -728,6 +778,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
+		SearchCount:                   searchCount,
 		Usage:                         usage,
 		Model:                         originalModel,
 		BillingModel:                  billingModel,
@@ -811,6 +862,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	state.IncludeUsage = true
 
 	var usage OpenAIUsage
+	var search grokSearchStreamCount
+	countGrokSearch := account != nil && account.Platform == PlatformGrok
 	var firstTokenMs *int
 	downstreamTTFTObserved := false
 	clientDisconnected := false
@@ -958,6 +1011,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                     requestID,
+			SearchCount:                   search.count,
 			Usage:                         usage,
 			Model:                         originalModel,
 			BillingModel:                  billingModel,
@@ -975,6 +1029,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	processDataLine := func(payload string) bool {
 		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 			observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
+		}
+		if countGrokSearch {
+			search.observe([]byte(payload))
 		}
 		var event apicompat.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {

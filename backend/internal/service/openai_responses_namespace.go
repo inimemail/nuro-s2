@@ -86,7 +86,7 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 	if hasNamespaceTool(gjson.GetBytes(body, "tools")) {
 		return true
 	}
-	input := gjson.GetBytes(body, "input")
+	input := gjson.Get(openAIWSPayloadStringView(body), "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -140,7 +140,7 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepNamespaces ...bool) ([
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil
 	}
-	input := gjson.GetBytes(body, "input")
+	input := gjson.Get(openAIWSPayloadStringView(body), "input")
 	if !input.IsArray() {
 		return body, nil
 	}

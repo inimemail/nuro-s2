@@ -59,7 +59,6 @@ func TestV0222BufferedGrokSearchSurvivesSparseDone(t *testing.T) {
 	for _, grok := range []bool{false, true} {
 		for _, searchID := range []string{"xs_search", "as_search"} {
 			acc := NewBufferedResponseAccumulator()
-			acc.GrokServerSideSearch = grok
 			acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.output_item.added", OutputIndex: 0, Item: &ResponsesOutput{
 				Type: "custom_tool_call", CallID: searchID, Name: "search",
 			}})
@@ -83,8 +82,6 @@ func TestV0222BufferedGrokSearchSurvivesSparseDone(t *testing.T) {
 				require.Len(t, message.Content, 1)
 				require.Equal(t, "xs_client", message.Content[0].ID)
 			} else {
-				// Preserve the accumulator's legacy custom-to-function behavior
-				// when the caller has not explicitly enabled Grok filtering.
 				require.Len(t, calls, 2)
 				require.Equal(t, searchID, calls[0].ID)
 			}

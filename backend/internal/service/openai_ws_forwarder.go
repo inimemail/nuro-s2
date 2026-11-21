@@ -13,12 +13,15 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestfields"
+	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -3032,6 +3035,46 @@ func openAIWSShouldFailoverFailedEventForPlaceholderCoordination(c *gin.Context,
 	return openAIStreamFailedEventShouldFailover(payload, extractOpenAISSEErrorMessage(payload))
 }
 
+func withPassthroughRequestChecks(hooks *OpenAIWSIngressHooks, first []byte) *OpenAIWSIngressHooks {
+	var wrapped OpenAIWSIngressHooks
+	if hooks != nil {
+		wrapped = *hooks
+	}
+	before, after := wrapped.BeforeRequest, wrapped.AfterTurn
+	var requested sync.Map
+	if after != nil {
+		if effort := ExtractOpenAIReasoningEffort(first); effort != "" {
+			requested.Store(1, effort)
+		}
+	}
+	wrapped.BeforeRequest = func(turn int, payload []byte, model string) error {
+		if requestfields.HasConflict(payload, "") {
+			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openaiwsv2.ConflictingClientFieldsReason, nil)
+		}
+		if before != nil {
+			if err := before(turn, payload, model); err != nil {
+				return err
+			}
+		}
+		if after != nil {
+			if effort := ExtractOpenAIReasoningEffort(payload); effort != "" {
+				requested.Store(turn, effort)
+			}
+		}
+		return nil
+	}
+	if after != nil {
+		wrapped.AfterTurn = func(turn int, result *OpenAIForwardResult, err error) {
+			if value, exists := requested.LoadAndDelete(turn); exists && result != nil {
+				effort := value.(string)
+				result.RequestedReasoningEffort = &effort
+			}
+			after(turn, result, err)
+		}
+	}
+	return &wrapped
+}
+
 // ProxyResponsesWebSocketFromClient 处理客户端入站 WebSocket（OpenAI Responses WS Mode）并转发到上游。
 // 当前实现按“单请求 -> 终止事件 -> 下一请求”的顺序代理，适配 Codex CLI 的 turn 模式。
 func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -3100,16 +3143,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 				return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 			}
-			return s.proxyResponsesWebSocketV2Passthrough(
+			err := s.proxyResponsesWebSocketV2Passthrough(
 				ctx,
 				c,
 				clientConn,
 				account,
 				token,
 				firstClientMessage,
-				hooks,
+				withPassthroughRequestChecks(hooks, firstClientMessage),
 				wsDecision,
 			)
+			var closeErr coderws.CloseError
+			if errors.As(err, &closeErr) && closeErr.Code == coderws.StatusPolicyViolation &&
+				closeErr.Reason == openaiwsv2.ConflictingClientFieldsReason {
+				return NewOpenAIWSClientCloseError(closeErr.Code, closeErr.Reason, err)
+			}
+			return err
 		case OpenAIWSIngressModeHTTPBridge:
 			forceHTTPBridge = true
 		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -74,6 +75,21 @@ func GroupAllowsImageGenerationForRequest(ctx context.Context, group *Group, end
 	}
 }
 
+func mayContainOpenAIImageIntent(body []byte) bool {
+	// Escapes may hide any part of a model ID or tool declaration. The
+	// ASCII case folding also covers the existing case-insensitive models.
+	if bytes.IndexByte(body, '\\') >= 0 {
+		return true
+	}
+	const prefix = "ima"
+	for i := 0; i+len(prefix) <= len(body); i++ {
+		if (body[i]|0x20) == prefix[0] && (body[i+1]|0x20) == prefix[1] && (body[i+2]|0x20) == prefix[2] {
+			return true
+		}
+	}
+	return false
+}
+
 // IsImageGenerationIntent classifies requests that can produce generated images.
 func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
 	if IsImageGenerationEndpoint(endpoint) {
@@ -82,7 +98,7 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 	if isOpenAIImageGenerationModel(requestedModel) {
 		return true
 	}
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if !mayContainOpenAIImageIntent(body) || !gjson.ValidBytes(body) {
 		return false
 	}
 	if model := strings.TrimSpace(gjson.GetBytes(body, "model").String()); isOpenAIImageGenerationModel(model) {
@@ -102,22 +118,33 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 // catalogs are intentionally ignored so ordinary Codex requests do not consume
 // image concurrency, require Responses capability, or bypass cache policy.
 func IsExplicitImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
+	return isExplicitImageGenerationIntent(endpoint, requestedModel, body, true)
+}
+
+// IsExplicitImageGenerationIntentForValidJSON requires the caller to have
+// validated the JSON body and to have preserved validity in any later rewrite.
+func IsExplicitImageGenerationIntentForValidJSON(endpoint, requestedModel string, body []byte) bool {
+	return isExplicitImageGenerationIntent(endpoint, requestedModel, body, false)
+}
+
+func isExplicitImageGenerationIntent(endpoint, requestedModel string, body []byte, validate bool) bool {
 	if IsImageGenerationEndpoint(endpoint) || isOpenAIImageGenerationModel(requestedModel) {
 		return true
 	}
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if !mayContainOpenAIImageIntent(body) || (validate && !gjson.ValidBytes(body)) {
 		return false
 	}
-	if isOpenAIImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) {
+	root := gjson.Parse(openAIWSPayloadStringView(body))
+	if isOpenAIImageGenerationModel(strings.TrimSpace(root.Get("model").String())) {
 		return true
 	}
-	if openAIJSONToolsContainNativeImageGeneration(gjson.GetBytes(body, "tools")) {
+	if openAIJSONToolsContainNativeImageGeneration(root.Get("tools")) {
 		return true
 	}
-	if openAIJSONToolChoiceSelectsExplicitImageGeneration(gjson.GetBytes(body, "tool_choice")) {
+	if openAIJSONToolChoiceSelectsExplicitImageGeneration(root.Get("tool_choice")) {
 		return true
 	}
-	return openAIJSONInputContainsExplicitImageToolCall(gjson.GetBytes(body, "input"))
+	return openAIJSONInputContainsExplicitImageToolCall(root.Get("input"))
 }
 
 // IsImageGenerationIntentForPlatform applies platform-specific intent rules.
@@ -131,7 +158,7 @@ func IsImageGenerationIntentForPlatform(endpoint, requestedModel string, body []
 	if IsImageGenerationEndpoint(endpoint) || isOpenAIImageGenerationModel(requestedModel) {
 		return true
 	}
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if !mayContainOpenAIImageIntent(body) || !gjson.ValidBytes(body) {
 		return false
 	}
 	if isOpenAIImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) {
@@ -395,7 +422,7 @@ func openAIJSONInputContainsImageGenTool(input gjson.Result) bool {
 }
 
 func openAIRequestBodyHasImageGenerationDeclaration(body []byte) bool {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if !mayContainOpenAIImageIntent(body) || !gjson.ValidBytes(body) {
 		return false
 	}
 	return openAIJSONToolsContainImageGeneration(gjson.GetBytes(body, "tools")) ||

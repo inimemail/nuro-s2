@@ -375,9 +375,12 @@ func (s *OpenAIGatewayService) fetchRawCodexModelsManifest(ctx context.Context, 
 	headers.Set("Version", clientVersion)
 	headers.Set("User-Agent", codexCLIUserAgent)
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	proxyURL := resolveAccountProxyURL(account)
+	if account.ProxyID != nil && proxyURL == "" {
+		return nil, &codexModelsManifestUpstreamError{
+			err:       infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_PROXY_UNAVAILABLE", "account proxy is unavailable"),
+			retryable: true,
+		}
 	}
 	request := codexModelsManifestRequest{
 		url: requestURL.String(), headers: headers, proxyURL: proxyURL,
@@ -389,6 +392,9 @@ func (s *OpenAIGatewayService) fetchRawCodexModelsManifest(ctx context.Context, 
 		return s.fetchCachedAPIKeyCodexModelsManifest(ctx, request, ifNoneMatch)
 	}
 	manifest, fetchErr := s.fetchCodexModelsManifestUpstream(ctx, request, ifNoneMatch)
+	if fetchErr == nil && account.IsOpenAIOAuth() && !account.IsCredentialShadow() && !account.IsOpenAIAgentIdentity() && authToken != "" {
+		s.codexToolSearchCache.store(account.ID, authToken, manifest, time.Now())
+	}
 	var upstreamErr *codexModelsManifestUpstreamError
 	if errors.As(fetchErr, &upstreamErr) && upstreamErr.statusCode == http.StatusUnauthorized && !credAccount.IsOpenAIAgentIdentity() {
 		s.handleOpenAIAccountUpstreamError(ctx, account, upstreamErr.statusCode, upstreamErr.headers, upstreamErr.body)
@@ -402,6 +408,80 @@ func (s *OpenAIGatewayService) fetchRawCodexModelsManifest(ctx context.Context, 
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_AUTH_FAILED", "Agent Identity task recovery failed")
 	}
 	return s.fetchRawCodexModelsManifest(markAgentIdentityTaskRecoveryTried(ctx), account, clientVersion, ifNoneMatch)
+}
+
+type codexToolSearchKey struct {
+	accountID int64
+	tokenHash [sha256.Size]byte
+}
+
+type codexToolSearchEntry struct {
+	models    map[string]bool
+	expiresAt time.Time
+}
+
+// OAuth capability discovery has its own capacity so it cannot evict API-key
+// manifests or cause the Messages path to parse the same catalog on each turn.
+type codexToolSearchCache struct {
+	mu      sync.Mutex
+	entries map[codexToolSearchKey]codexToolSearchEntry
+}
+
+func (c *codexToolSearchCache) store(accountID int64, accessToken string, manifest *CodexModelsManifest, now time.Time) {
+	if manifest == nil || manifest.NotModified {
+		return
+	}
+	var models map[string]bool
+	var catalog struct {
+		Models []struct {
+			Slug           string `json:"slug"`
+			SupportsSearch bool   `json:"supports_search_tool"`
+		} `json:"models"`
+	}
+	if len(manifest.Body) <= codexModelsManifestCacheBodyLimit && json.Unmarshal(manifest.Body, &catalog) == nil {
+		models = make(map[string]bool, len(catalog.Models))
+		for _, entry := range catalog.Models {
+			if _, exists := models[entry.Slug]; !exists {
+				models[entry.Slug] = entry.SupportsSearch
+			}
+		}
+	}
+	key := codexToolSearchKey{accountID, sha256.Sum256([]byte(accessToken))}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(models) == 0 {
+		delete(c.entries, key)
+		return
+	}
+	if c.entries == nil {
+		c.entries = make(map[codexToolSearchKey]codexToolSearchEntry)
+	}
+	if _, exists := c.entries[key]; !exists && len(c.entries) >= codexModelsManifestCacheMaxEntries {
+		var oldest codexToolSearchKey
+		var expiry time.Time
+		for candidate, entry := range c.entries {
+			if expiry.IsZero() || entry.expiresAt.Before(expiry) {
+				oldest, expiry = candidate, entry.expiresAt
+			}
+		}
+		delete(c.entries, oldest)
+	}
+	c.entries[key] = codexToolSearchEntry{models: models, expiresAt: now.Add(codexModelsManifestCacheTTL)}
+}
+
+func (c *codexToolSearchCache) supports(accountID int64, accessToken, model string, now time.Time) bool {
+	key := codexToolSearchKey{accountID, sha256.Sum256([]byte(accessToken))}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return false
+	}
+	if !now.Before(entry.expiresAt) {
+		delete(c.entries, key)
+		return false
+	}
+	return entry.models[model]
 }
 
 func (s *OpenAIGatewayService) fetchCachedAPIKeyCodexModelsManifest(ctx context.Context, request codexModelsManifestRequest, ifNoneMatch string) (*CodexModelsManifest, error) {
@@ -673,8 +753,9 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 		return body
 	}
 	var entries []struct {
-		ID            string `json:"id"`
-		ContextWindow *int   `json:"context_window"`
+		ID              string          `json:"id"`
+		ContextWindow   *int            `json:"context_window"`
+		InputModalities json.RawMessage `json:"input_modalities"`
 	}
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return body
@@ -689,6 +770,24 @@ func convertOpenAIModelListToCodexManifest(body []byte) []byte {
 			if openai.IsGPT61TerraModelSpelling(id) {
 				for key, value := range terraCodexCapabilities() {
 					model[key] = value
+				}
+			}
+			var inputModalities []string
+			if json.Unmarshal(entry.InputModalities, &inputModalities) == nil && len(inputModalities) > 0 {
+				modalities := make([]string, 0, len(inputModalities))
+				seen := make(map[string]struct{})
+				for _, modality := range inputModalities {
+					modality = strings.ToLower(strings.TrimSpace(modality))
+					if modality != "text" && modality != "image" && modality != "audio" {
+						continue
+					}
+					if _, exists := seen[modality]; !exists {
+						modalities = append(modalities, modality)
+						seen[modality] = struct{}{}
+					}
+				}
+				if len(modalities) > 0 {
+					model["input_modalities"] = modalities
 				}
 			}
 			if entry.ContextWindow != nil {

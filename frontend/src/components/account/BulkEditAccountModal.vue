@@ -91,6 +91,20 @@
         </div>
       </div>
 
+      <div v-if="allOpenAIModelFilterCapable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label for="bulk-edit-openai-model-filter" class="input-label">
+          {{ t('admin.accounts.openai.passthroughModelFilter') }}
+        </label>
+        <select id="bulk-edit-openai-model-filter" v-model="openaiPassthroughModelFilter" class="input mt-1">
+          <option value="unchanged">{{ t('admin.accounts.openai.passthroughModelFilterUnchanged') }}</option>
+          <option value="enabled">{{ t('common.enabled') }}</option>
+          <option value="disabled">{{ t('common.disabled') }}</option>
+        </select>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.openai.passthroughModelFilterDesc') }}
+        </p>
+      </div>
+
       <!-- OpenAI Codex image-generation bridge -->
       <div
         v-if="allOpenAIPassthroughCapable"
@@ -1991,6 +2005,9 @@ const allOpenAIPassthroughCapable = computed(() => {
     targetSelectedTypes.value.every(t => t === 'oauth' || t === 'apikey')
   )
 })
+const allOpenAIModelFilterCapable = computed(
+  () => allOpenAIPassthroughCapable.value && !targetSelectedImagePoolModes.value.includes(true)
+)
 
 const allOpenAIOAuth = computed(() => {
   return (
@@ -2181,6 +2198,7 @@ const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
 const openaiPassthroughEnabled = ref(false)
+const openaiPassthroughModelFilter = ref<'unchanged' | 'enabled' | 'disabled'>('unchanged')
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
@@ -2268,7 +2286,8 @@ const isOpenAIModelRestrictionDisabled = computed(
   () =>
     allOpenAIPassthroughCapable.value &&
     enableOpenAIPassthrough.value &&
-    openaiPassthroughEnabled.value
+    openaiPassthroughEnabled.value &&
+    openaiPassthroughModelFilter.value !== 'enabled'
 )
 
 const openAIWSModeOptions = computed(() => [
@@ -2524,6 +2543,9 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     if (!openaiPassthroughEnabled.value) {
       extra.openai_oauth_passthrough = false
     }
+  }
+  if (allOpenAIModelFilterCapable.value && openaiPassthroughModelFilter.value !== 'unchanged') {
+    ensureExtra().openai_passthrough_model_filter = openaiPassthroughModelFilter.value === 'enabled'
   }
 
   if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value) {
@@ -2856,6 +2878,7 @@ const handleSubmit = async () => {
   const hasAnyFieldEnabled =
     enableBaseUrl.value ||
     enableOpenAIPassthrough.value ||
+    (allOpenAIModelFilterCapable.value && openaiPassthroughModelFilter.value !== 'unchanged') ||
     enableModelRestriction.value ||
     enableCustomErrorCodes.value ||
     enableInterceptWarmup.value ||
@@ -3037,6 +3060,7 @@ watch(
       // Reset all values
       baseUrl.value = ''
       openaiPassthroughEnabled.value = false
+      openaiPassthroughModelFilter.value = 'unchanged'
       modelRestrictionMode.value = 'whitelist'
       allowedModels.value = []
       modelMappings.value = []
