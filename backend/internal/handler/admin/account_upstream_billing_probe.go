@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -162,4 +165,27 @@ func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {
 		ids = append(ids, id)
 	}
 	response.Success(c, gin.H{"results": h.upstreamBillingProbe.ProbeAccounts(c.Request.Context(), ids)})
+}
+
+func (h *AccountHandler) PreviewUpstreamGroup(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if h.upstreamBillingProbe == nil {
+		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
+		return
+	}
+	var req struct {
+		AccountID int64 `json:"account_id"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || req.AccountID <= 0 || decoder.Decode(new(json.RawMessage)) != io.EOF {
+		response.BadRequest(c, "Expected a saved account ID")
+		return
+	}
+	group, err := h.upstreamBillingProbe.PreviewGroup(c.Request.Context(), req.AccountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, group)
 }

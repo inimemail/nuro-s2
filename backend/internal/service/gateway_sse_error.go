@@ -18,13 +18,9 @@ func WriteGatewayCommittedError(c *gin.Context, dialect, code, message string) b
 	if queueSSE != true && !strings.HasPrefix(strings.ToLower(c.Writer.Header().Get("Content-Type")), "text/event-stream") {
 		return false
 	}
-	if c.Request != nil && c.Request.Context().Err() != nil {
+	if !claimGatewayErrorTerminal(c) {
 		return true
 	}
-	if sent, _ := c.Get("gateway_error_terminal_sent"); sent == true {
-		return true
-	}
-	c.Set("gateway_error_terminal_sent", true)
 	errorBody := gin.H{"type": code, "message": message}
 	switch dialect {
 	case "responses":
@@ -37,6 +33,24 @@ func WriteGatewayCommittedError(c *gin.Context, dialect, code, message string) b
 		_, _ = c.Writer.Write([]byte(buildAnthropicStreamErrorSSE(code, message)))
 	}
 	c.Writer.Flush()
+	return true
+}
+
+// GatewayErrorTerminalSent reports whether the gateway has taken ownership of
+// the terminal write. A partial write still counts, since appending a second
+// terminal can corrupt the already committed stream.
+func GatewayErrorTerminalSent(c *gin.Context) bool {
+	return c != nil && c.GetBool("gateway_error_terminal_sent")
+}
+
+func claimGatewayErrorTerminal(c *gin.Context) bool {
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return false
+	}
+	if GatewayErrorTerminalSent(c) {
+		return false
+	}
+	c.Set("gateway_error_terminal_sent", true)
 	return true
 }
 

@@ -155,7 +155,17 @@ func (s *ErrorPassthroughService) Delete(ctx context.Context, id int64) error {
 // MatchRule 匹配透传规则
 // 返回第一个匹配的规则，如果没有匹配则返回 nil
 func (s *ErrorPassthroughService) MatchRule(platform string, statusCode int, body []byte) *model.ErrorPassthroughRule {
-	rules := s.getCachedRules()
+	return s.matchRules(s.getCachedRules(), platform, statusCode, body)
+}
+
+func (s *ErrorPassthroughService) matchLocalRule(platform string, statusCode int, body []byte) *model.ErrorPassthroughRule {
+	s.localCacheMu.RLock()
+	rules := s.localCache
+	s.localCacheMu.RUnlock()
+	return s.matchRules(rules, platform, statusCode, body)
+}
+
+func (s *ErrorPassthroughService) matchRules(rules []*cachedPassthroughRule, platform string, statusCode int, body []byte) *model.ErrorPassthroughRule {
 	if len(rules) == 0 {
 		return nil
 	}

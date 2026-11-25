@@ -3583,6 +3583,11 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
+	openAIResponses := false
+	if c.Request != nil && inboundIsResponses(c) {
+		apiKey, _ := middleware2.GetAPIKeyFromContext(c)
+		openAIResponses = openAICompatibleRequestPlatform(c.Request.Context(), apiKey) == service.PlatformOpenAI
+	}
 	if service.IsOpenAIResponsesHealthProbe(c) && service.IsOpenAIHealthProbeEmptyErrorBody(responseBody) {
 		message := service.OpenAIHealthProbeClientMessage()
 		service.SetOpsUpstreamError(c, statusCode, message, "")
@@ -3625,6 +3630,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
 
+			if openAIResponses && service.WriteOpenAICompactCapacityFailure(c, respCode, statusCode, responseBody, "upstream_error", requestModel(c)) {
+				return
+			}
 			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
 			return
 		}
@@ -3635,6 +3643,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
+	if openAIResponses && service.WriteOpenAICompactCapacityFailure(c, status, statusCode, responseBody, errType, requestModel(c)) {
+		return
+	}
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
@@ -3709,6 +3720,9 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 	if c == nil || c.Writer == nil {
 		return false
 	}
+	if inboundIsResponses(c) && service.GatewayErrorTerminalSent(c) {
+		return false
+	}
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}
@@ -3744,6 +3758,9 @@ func shouldLogOpenAIForwardFailureAsWarn(c *gin.Context, wroteFallback bool) boo
 func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForward int, err error) bool {
 	if c == nil || c.Writer == nil || err == nil {
 		return false
+	}
+	if inboundIsResponses(c) && service.GatewayErrorTerminalSent(c) {
+		return true
 	}
 	if service.OpenAIRequestPlaceholderWritten(c) && !service.OpenAIRequestUpstreamCommitted(c) {
 		return false

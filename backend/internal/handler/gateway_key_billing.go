@@ -2,11 +2,13 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,6 +27,7 @@ type keyBillingInfoResponse struct {
 	EffectiveRateMultiplier float64   `json:"effective_rate_multiplier"`
 	Timezone                *string   `json:"timezone,omitempty"`
 	ObservedAt              time.Time `json:"observed_at"`
+	*service.BillingGroupInfo
 }
 
 // KeyBillingInfo exposes billing configuration for observation and upstream
@@ -66,6 +69,21 @@ func (h *GatewayHandler) KeyBillingInfo(c *gin.Context) {
 		tz := timezone.Location().String()
 		result.Timezone = &tz
 	}
+	for _, include := range c.QueryArray("include") {
+		if billingIncludesGroup(include) {
+			result.BillingGroupInfo = h.apiKeyService.GetBillingGroupInfo(c.Request.Context(), *apiKey.GroupID, c.GetHeader("Accept-Language"))
+			break
+		}
+	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, result)
+}
+
+func billingIncludesGroup(include string) bool {
+	for item := range strings.SplitSeq(include, ",") {
+		if strings.TrimSpace(item) == "group" {
+			return true
+		}
+	}
+	return false
 }

@@ -1046,6 +1046,27 @@ func (s *APIKeyService) IncrementUsage(ctx context.Context, keyID int64) error {
 	return nil
 }
 
+type BillingGroupInfo struct {
+	Name        string `json:"group_name"`
+	Description string `json:"group_description"`
+}
+
+// GetBillingGroupInfo reads display text for the API key's bound group.
+// It is used only by the opt-in billing response.
+func (s *APIKeyService) GetBillingGroupInfo(ctx context.Context, groupID int64, language string) *BillingGroupInfo {
+	if s == nil || s.groupRepo == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil || group == nil || !group.IsActive() {
+		return nil
+	}
+	name, description := group.I18n.Localize(language, group.Name, group.Description)
+	return &BillingGroupInfo{Name: name, Description: description}
+}
+
 // GetAvailableGroups 获取用户有权限绑定的分组列表
 // 返回用户可以选择的分组：
 // - 标准类型分组：公开的（非专属）或用户被明确允许的

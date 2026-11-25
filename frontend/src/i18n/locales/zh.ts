@@ -3675,6 +3675,20 @@ export default {
         actions: '操作'
       },
       upstreamBilling: {
+        groupPreview: {
+          title: '上游分组',
+          read: '读取分组',
+          loading: '正在读取上游分组…',
+          groupName: '分组名称',
+          groupDescription: '分组描述',
+          fillName: '填入名称',
+          fillNotes: '填入备注',
+          matches: '与当前值相同',
+          empty: '该上游未提供分组名称或描述。',
+          failed: '读取失败，请稍后重试。',
+          busy: '当前读取请求较多，请稍后重试。',
+          saveHint: '填入后，保存账号即可应用。'
+        },
         autoProbeSettings: '上游倍率自动探测',
         intervalSeconds: '探测周期（秒）',
         intervalMinutes: '探测周期（分钟）',

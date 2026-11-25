@@ -6271,7 +6271,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					Kind:               "http_error",
 					Message:            upstreamMsg,
 				})
-				writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, reqModel, "upstream_error", safeUpstreamErrorMessage)
+				if account.IsOpenAI() {
+					writeOpenAIHTTPPassthroughError(c, account, resp.StatusCode, respBody, reqModel)
+				} else {
+					writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, reqModel, "upstream_error", safeUpstreamErrorMessage)
+				}
 				return &OpenAIForwardResult{
 					RequestID:                  resp.Header.Get("x-request-id"),
 					AttemptID:                  attempt.ID,
@@ -6324,7 +6328,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				}
 				return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body)
 			}
-			return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
+			return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body, respBody)
 		}
 
 		defer func() { _ = resp.Body.Close() }()
@@ -6703,9 +6707,8 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	c *gin.Context,
 	account *Account,
 	requestBody []byte,
+	body []byte,
 ) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	upstreamDetail := ""
@@ -6748,13 +6751,17 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	// error page may disclose the configured upstream hostname, URL, provider,
 	// or request diagnostics. Successful passthrough responses remain opaque;
 	// error responses are always normalized to our protocol-safe JSON shape.
-	MarkResponseCommitted(c)
-	writeOpenAIErrorJSON(c, resp.StatusCode, gin.H{
-		"error": gin.H{
-			"type":    "upstream_error",
-			"message": safeUpstreamErrorMessage,
-		},
-	})
+	if account.IsOpenAI() {
+		writeOpenAIHTTPPassthroughError(c, account, resp.StatusCode, body, "")
+	} else {
+		MarkResponseCommitted(c)
+		writeOpenAIErrorJSON(c, resp.StatusCode, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": safeUpstreamErrorMessage,
+			},
+		})
+	}
 
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", resp.StatusCode)

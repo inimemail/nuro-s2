@@ -25,6 +25,15 @@
         ></textarea>
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
+      <UpstreamGroupPreviewControl
+        v-if="show && account.type === 'apikey' && !isSparkShadowAccount && !isImagePoolModeAccount(account)"
+        :key="getUpstreamGroupPreviewKey(account)"
+        :account-id="account.id"
+        :name="form.name"
+        :notes="form.notes"
+        :disabled="upstreamGroupPreviewDisabled"
+        @fill="(field, value) => { if (!upstreamGroupPreviewDisabled) form[field] = value }"
+      />
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
@@ -3972,6 +3981,8 @@ import {
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { resolveOpenAICompactState } from '@/utils/openaiCompact'
 import { manualMultiplierFromValue } from '@/utils/upstreamBilling'
+import { isImagePoolModeAccount } from '@/utils/accountPoolMode'
+import UpstreamGroupPreviewControl from './UpstreamGroupPreviewControl.vue'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
@@ -4463,12 +4474,15 @@ const antigravityModelMetadata = ref<Record<string, UpstreamModelMetadata>>({})
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
+const getUpstreamGroupPreviewKey = createStableObjectKeyResolver<Account>('upstream-group-preview')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-openai-compact-model-mapping')
 const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-antigravity-model-mapping')
 const getHeaderOverrideRowKey = createStableObjectKeyResolver<HeaderOverrideRow>('edit-header-override-row')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('edit-temp-unsched-rule')
 
 const showMixedChannelWarning = ref(false)
+const checkingMixedChannelRisk = ref(false)
+const upstreamGroupPreviewDisabled = computed(() => submitting.value || checkingMixedChannelRisk.value || showMixedChannelWarning.value)
 const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: string; otherPlatform: string } | null>(
   null
 )
@@ -6653,6 +6667,7 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
     return false
   }
 
+  checkingMixedChannelRisk.value = true
   try {
     const result = await adminAPI.accounts.checkMixedChannelRisk({
       platform: props.account.platform,
@@ -6673,6 +6688,8 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
   } catch (error: any) {
     appStore.showError(error.message || t('admin.accounts.failedToUpdate'))
     return false
+  } finally {
+    checkingMixedChannelRisk.value = false
   }
 }
 

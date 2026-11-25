@@ -3656,6 +3656,20 @@ export default {
         actions: 'Actions'
       },
       upstreamBilling: {
+        groupPreview: {
+          title: 'Upstream group',
+          read: 'Read group',
+          loading: 'Reading upstream group…',
+          groupName: 'Group name',
+          groupDescription: 'Group description',
+          fillName: 'Fill name',
+          fillNotes: 'Fill notes',
+          matches: 'Matches current value',
+          empty: 'This upstream did not provide a group name or description.',
+          failed: 'Could not read the group. Try again shortly.',
+          busy: 'Too many previews are running. Try again shortly.',
+          saveHint: 'Save the account to keep any values you fill in.'
+        },
         autoProbeSettings: 'Upstream rate auto probe',
         intervalSeconds: 'Probe interval (seconds)',
         intervalMinutes: 'Probe interval (minutes)',

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -74,36 +75,90 @@ func writeOpenAICompactSSEBridge(c *gin.Context, statusCode int, finalResponse [
 }
 
 func writeOpenAICompactSSEFailure(c *gin.Context, statusCode int, errorBody []byte) {
-	_ = errorBody
-	writeOpenAICompactSSEFailureMessage(c, statusCode, "upstream_error", safeUpstreamErrorMessage)
+	code, _, _ := openAIHTTPErrorMetadata(statusCode, errorBody)
+	writeOpenAIResponsesFailureSSE(c, statusCode, "upstream_error", firstNonEmptyString(code, "upstream_error"), safeUpstreamErrorMessage, "", "")
 }
 
 func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType, message string) {
-	if c == nil {
+	writeOpenAIResponsesFailureSSE(c, statusCode, errType, errType, message, "", "")
+}
+
+func writeOpenAIResponsesFailureSSE(c *gin.Context, statusCode int, errType, code, message, responseID, model string) {
+	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+		writeOpenAIResponsesFailureSSELocked(c, writer, statusCode, errType, code, message, responseID, model)
+	})
+}
+
+// The request's writer lock covers format selection, framing and the terminal
+// write so the placeholder timer cannot commit a different response in between.
+func writeOpenAIResponsesFailureSSELocked(c *gin.Context, writer gin.ResponseWriter, statusCode int, errType, code, message, responseID, model string) {
+	if OpenAIRequestResponsesTerminalWritten(c) || !claimGatewayErrorTerminal(c) {
 		return
 	}
-	MarkOpsStreamError(c, statusCode, errType, message)
-	payload, err := json.Marshal(map[string]any{
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	frame := ""
+	needsFailure := true
+	if coordinator != nil && !coordinator.sseAtEventBoundary {
+		frame = "\n\n"
+		// Finishing a pending event may already deliver an upstream terminal.
+		needsFailure = !pendingOpenAIResponsesEventIsTerminal(coordinator.ssePending)
+	}
+	if needsFailure {
+		MarkOpsStreamError(c, statusCode, errType, message)
+		frame += buildOpenAIResponsesFailureSSEFrame(code, message, responseID, model)
+	}
+	n, _ := writer.WriteString(frame)
+	if coordinator != nil {
+		coordinator.mu.Lock()
+		if n > 0 {
+			coordinator.markWriteLocked([]byte(frame[:min(n, len(frame))]))
+		}
+		// A short write still owns the terminal. Stop the placeholder timer
+		// without recording a complete Responses terminal that did not arrive.
+		coordinator.placeholderOutputStarted = true
+		coordinator.pendingTimeoutFrame = nil
+		coordinator.stopOnce.Do(func() { close(coordinator.stop) })
+		coordinator.mu.Unlock()
+	}
+	MarkResponseCommitted(c)
+	writer.Flush()
+}
+
+func pendingOpenAIResponsesEventIsTerminal(pending []byte) bool {
+	var parser openAICompatSSEFrameParser
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(pending), "\n"), "\n") {
+		parser.AddLine(strings.TrimSuffix(line, "\r"))
+	}
+	frame, ok := parser.Finish()
+	if !ok || !gjson.Valid(frame.Data) {
+		return false
+	}
+	payload := gjson.Parse(frame.Data)
+	eventType := firstNonEmptyString(payload.Get("type").Str, frame.EventType)
+	return payload.IsObject() && (openAIResponsesTerminalEventType(eventType) != "" || eventType == "error" || payload.Get("error").IsObject())
+}
+
+func buildOpenAIResponsesFailureSSEFrame(code, message, responseID, model string) string {
+	if responseID == "" {
+		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
+	response := map[string]any{
+		"id":     responseID,
+		"object": "response",
+		"status": "failed",
+		"output": []any{},
+		"error":  map[string]any{"code": code, "message": message},
+	}
+	if model != "" {
+		response["model"] = model
+		response["created_at"] = time.Now().Unix()
+	}
+	payload, _ := json.Marshal(map[string]any{
 		"type":            "response.failed",
 		"sequence_number": 0,
-		"response": map[string]any{
-			"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-			"object": "response",
-			"status": "failed",
-			"output": []any{},
-			"error": map[string]any{
-				"code":    errType,
-				"message": message,
-			},
-		},
+		"response":        response,
 	})
-	if err != nil {
-		return
-	}
-	_, _ = c.Writer.Write([]byte("event: response.failed\ndata: "))
-	_, _ = c.Writer.Write(payload)
-	_, _ = c.Writer.Write([]byte("\n\n"))
-	c.Writer.Flush()
+	return "event: response.failed\ndata: " + string(payload) + "\n\n"
 }
 
 func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {

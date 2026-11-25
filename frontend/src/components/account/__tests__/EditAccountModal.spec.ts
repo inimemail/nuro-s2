@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authStoreMock, syncUpstreamModelsMock, webSearchConfigMock } = vi.hoisted(() => ({
+const { updateAccountMock, previewUpstreamGroupMock, checkMixedChannelRiskMock, authStoreMock, syncUpstreamModelsMock, webSearchConfigMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
+  previewUpstreamGroupMock: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
   webSearchConfigMock: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
   checkMixedChannelRiskMock: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      previewUpstreamGroup: previewUpstreamGroupMock,
       syncUpstreamModels: syncUpstreamModelsMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
@@ -370,6 +372,82 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('fills only confirmed upstream group fields and preserves the existing save payload', async () => {
+    const account = buildAccount()
+    account.notes = 'Keep my existing note'
+    account.credentials.base_url = 'https://relay.example/v1'
+    updateAccountMock.mockClear().mockResolvedValue(account)
+    previewUpstreamGroupMock.mockReset().mockResolvedValue({ group_name: 'Relay group', group_description: 'Remote description' })
+
+    const baseline = mountModal(account)
+    await baseline.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const baselinePayload = updateAccountMock.mock.lastCall?.[1]
+    baseline.unmount()
+    updateAccountMock.mockClear()
+
+    const wrapper = mountModal(account)
+    const button = (key: string) => wrapper.findAll('button').find(candidate => candidate.text() === `admin.accounts.upstreamBilling.groupPreview.${key}`)!
+    await button('read').trigger('click')
+    await flushPromises()
+    expect(previewUpstreamGroupMock).toHaveBeenCalledWith(account.id, expect.any(AbortSignal))
+    expect(wrapper.get<HTMLInputElement>('[data-tour="edit-account-form-name"]').element.value).toBe(account.name)
+    expect(updateAccountMock).not.toHaveBeenCalled()
+
+    await button('fillName').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[data-tour="edit-account-form-name"]').element.value).toBe('Relay group')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledWith(account.id, { ...baselinePayload, name: 'Relay group' })
+    wrapper.unmount()
+  })
+
+  it('cancels a pending group preview when switching accounts', async () => {
+    let finishPreview!: (info: { group_name: string; group_description: string }) => void
+    previewUpstreamGroupMock.mockReset().mockImplementation(() => new Promise(resolve => { finishPreview = resolve }))
+    const account = buildAccount()
+    const wrapper = mountModal(account)
+    const read = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.upstreamBilling.groupPreview.read')!
+    await read.trigger('click')
+    const signal = previewUpstreamGroupMock.mock.lastCall?.[1] as AbortSignal
+    expect(signal.aborted).toBe(false)
+    await wrapper.setProps({ account: { ...account, id: 99, name: 'Next account' } })
+    expect(signal.aborted).toBe(true)
+    finishPreview({ group_name: 'Late response', group_description: '' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Late response')
+    expect(wrapper.get<HTMLInputElement>('[data-tour="edit-account-form-name"]').element.value).toBe('Next account')
+    wrapper.unmount()
+  })
+
+  it('disables reading and filling during the save risk check and update', async () => {
+    const account = buildAnthropicAPIKeyAccount()
+    let finishCheck!: (result: { has_risk: boolean }) => void
+    let finishUpdate!: (result: typeof account) => void
+    checkMixedChannelRiskMock.mockReset().mockImplementation(() => new Promise(resolve => { finishCheck = resolve }))
+    updateAccountMock.mockReset().mockImplementation(() => new Promise(resolve => { finishUpdate = resolve }))
+    previewUpstreamGroupMock.mockReset().mockResolvedValue({ group_name: 'Relay group', group_description: 'Remote description' })
+    const wrapper = mountModal(account)
+    const button = (key: string) => wrapper.findAll('button').find(candidate => candidate.text() === `admin.accounts.upstreamBilling.groupPreview.${key}`)!
+    await button('read').trigger('click')
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledOnce()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    for (const key of ['read', 'fillName', 'fillNotes']) {
+      expect(button(key).element.disabled).toBe(true)
+      await button(key).trigger('click')
+    }
+    finishCheck({ has_risk: false })
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({ name: account.name, notes: account.notes }))
+    for (const key of ['read', 'fillName', 'fillNotes']) expect(button(key).element.disabled).toBe(true)
+    expect(previewUpstreamGroupMock).toHaveBeenCalledOnce()
+    finishUpdate(account)
+    await flushPromises()
+    wrapper.unmount()
+  })
+
   it.each([undefined, null, '', ' '])('leaves missing manual multiplier %s blank when editing and saving', async (value) => {
     const account = buildAccount()
     account.extra = {

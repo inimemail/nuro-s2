@@ -12,6 +12,7 @@ vi.mock('@/api/client', () => ({
 
 import {
   getUpstreamBillingProbeSettings,
+  previewUpstreamGroup,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
@@ -49,6 +50,15 @@ describe('admin account upstream billing probe API', () => {
     expect(put).toHaveBeenCalledWith('/admin/accounts/7/upstream-billing-probe', { enabled: true })
     expect(post).toHaveBeenNthCalledWith(1, '/admin/accounts/7/upstream-billing-probe')
     expect(post).toHaveBeenNthCalledWith(2, '/admin/accounts/upstream-billing-probe/batch', { account_ids: [7] })
+  })
+
+  it('previews a saved account with a cancellable request', async () => {
+    const { signal } = new AbortController()
+    const data = { group_name: 'Relay group', group_description: 'Example description' }
+    post.mockResolvedValueOnce({ data })
+
+    await expect(previewUpstreamGroup(7, signal)).resolves.toEqual(data)
+    expect(post).toHaveBeenCalledWith('/admin/accounts/upstream-billing-probe/group-preview', { account_id: 7 }, { signal })
   })
 
 	it('updates account billing guard settings through the dedicated endpoint', async () => {

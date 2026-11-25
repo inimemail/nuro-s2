@@ -155,6 +155,51 @@ func TestOpenAIFailoverExhausted_PoolModelRoutingErrorIsSanitized(t *testing.T) 
 	require.NotContains(t, w.Body.String(), "not supported by any configured account")
 }
 
+type compactKeepaliveRecorder struct {
+	*httptest.ResponseRecorder
+	flushed chan struct{}
+	once    sync.Once
+}
+
+func (w *compactKeepaliveRecorder) Flush() {
+	w.ResponseRecorder.Flush()
+	w.once.Do(func() { close(w.flushed) })
+}
+
+func TestOpenAIFailoverExhaustedCompactCapacityPreservesModelAndOpsType(t *testing.T) {
+	w := &compactKeepaliveRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: make(chan struct{})}
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	c.Set(opsModelKey, "client-model")
+	service.MarkOpenAICompactClientStream(c)
+	stop := service.StartOpenAICompactSSEKeepalive(c, time.Millisecond)
+	defer stop()
+	select {
+	case <-w.flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("compact keepalive did not flush")
+	}
+
+	h := &OpenAIGatewayHandler{}
+	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode:   http.StatusTooManyRequests,
+		ResponseBody: []byte(`{"error":{"code":"slow_down","message":"provider diagnostics"}}`),
+	}, false)
+
+	body := w.Body.String()
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, strings.Count(body, "event: response.failed\n"))
+	_, data, ok := strings.Cut(body, "data: ")
+	require.True(t, ok)
+	require.Equal(t, "client-model", gjson.Get(data, "response.model").String())
+	require.Equal(t, "server_error", gjson.Get(data, "response.error.code").String())
+	require.NotContains(t, body, "provider diagnostics")
+	ops, ok := service.GetOpsStreamError(c)
+	require.True(t, ok)
+	require.Equal(t, "rate_limit_error", ops.ErrType)
+	require.Equal(t, http.StatusTooManyRequests, ops.IntendedStatus)
+}
+
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 
@@ -320,6 +365,18 @@ func TestOpenAIForwardErrorAlreadyCommunicated_SSEStillNeedsFallback(t *testing.
 	_, _ = c.Writer.WriteString(":\n\n")
 
 	require.False(t, openAIForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
+}
+
+func TestOpenAIForwardErrorAlreadyCommunicated_TerminalClaimPreventsFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set("gateway_error_terminal_sent", true)
+	h := &OpenAIGatewayHandler{}
+	require.True(t, openAIForwardErrorAlreadyCommunicated(c, -1, assert.AnError))
+	require.False(t, h.ensureForwardErrorResponse(c, true))
+	require.Empty(t, w.Body.String())
 }
 
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {

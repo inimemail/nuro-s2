@@ -43,7 +43,12 @@ func (h *slogZapHandler) Enabled(_ context.Context, level slog.Level) bool {
 func (h *slogZapHandler) Handle(_ context.Context, record slog.Record) error {
 	fields := make([]zap.Field, 0, len(h.attrs)+record.NumAttrs()+3)
 	fields = append(fields, slogAttrsToZapFields(h.groups, h.attrs)...)
+	upstreamProxyLog := strings.HasPrefix(record.Message, "tls_fingerprint_") ||
+		record.Message == "openai_http2_proxy_fallback_activated"
 	record.Attrs(func(attr slog.Attr) bool {
+		if upstreamProxyLog {
+			attr = redactUpstreamProxyAttr(attr)
+		}
 		fields = append(fields, slogAttrToZapField(h.groups, attr))
 		return true
 	})
@@ -59,6 +64,28 @@ func (h *slogZapHandler) Handle(_ context.Context, record slog.Record) error {
 		h.logger.Info(record.Message, fields...)
 	}
 	return nil
+}
+
+func redactUpstreamProxyAttr(attr slog.Attr) slog.Attr {
+	// A client cache key can contain the full proxy URL, including userinfo.
+	switch attr.Key {
+	case "proxy", "cache_key":
+		if attr.Value.Kind() == slog.KindString && strings.Contains(attr.Value.String(), "@") {
+			attr.Value = slog.StringValue("[REDACTED]")
+		}
+	case "status":
+		// CONNECT logs already carry status_code. The reason phrase is proxy text.
+		attr.Value = slog.StringValue("[REDACTED]")
+	case "error":
+		if err, ok := attr.Value.Any().(error); ok {
+			message := err.Error()
+			if strings.Contains(message, "proxy CONNECT failed:") ||
+				(strings.Contains(message, "://") && strings.Contains(message, "@")) {
+				attr.Value = slog.StringValue("[REDACTED]")
+			}
+		}
+	}
+	return attr
 }
 
 func (h *slogZapHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

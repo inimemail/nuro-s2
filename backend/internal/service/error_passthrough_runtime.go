@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -60,6 +61,11 @@ func applyErrorPassthroughRule(
 		return status, errType, errMsg, false
 	}
 
+	status, errMsg = projectErrorPassthroughRule(c, rule, upstreamStatus, defaultErrMsg)
+	return status, "upstream_error", errMsg, true
+}
+
+func projectErrorPassthroughRule(c *gin.Context, rule *model.ErrorPassthroughRule, upstreamStatus int, defaultErrMsg string) (status int, errMsg string) {
 	status = upstreamStatus
 	if !rule.PassthroughCode && rule.ResponseCode != nil {
 		status = *rule.ResponseCode
@@ -82,9 +88,7 @@ func applyErrorPassthroughRule(
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 
-	// 与现有 failover 场景保持一致：命中规则时统一返回 upstream_error。
-	errType = "upstream_error"
-	return status, errType, errMsg, true
+	return status, errMsg
 }
 
 type errorPassthroughRequestKey struct{}

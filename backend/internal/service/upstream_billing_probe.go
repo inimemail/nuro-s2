@@ -183,6 +183,7 @@ type UpstreamBillingProbeService struct {
 	cycleMu            sync.Mutex
 	probeGroup         singleflight.Group
 	probeSlots         chan struct{}
+	groupPreviewSlots  chan struct{}
 	now                func() time.Time
 }
 
@@ -191,7 +192,9 @@ func NewUpstreamBillingProbeService(repo AccountRepository, tests *AccountTestSe
 	return &UpstreamBillingProbeService{
 		accountRepo: repo, accountTestService: tests, settingService: settings,
 		parentCtx: ctx, parentCancel: cancel, wakeCh: make(chan struct{}, 1),
-		probeSlots: make(chan struct{}, upstreamBillingProbeConcurrency), now: time.Now,
+		probeSlots:        make(chan struct{}, upstreamBillingProbeConcurrency),
+		groupPreviewSlots: make(chan struct{}, upstreamBillingGroupPreviewConcurrency),
+		now:               time.Now,
 	}
 }
 
@@ -582,14 +585,19 @@ func (s *UpstreamBillingProbeService) ProbeAccounts(ctx context.Context, ids []i
 	return out
 }
 
-func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Account, intervalSeconds int) (*UpstreamBillingProbeSnapshot, error) {
-	now := s.currentTime().UTC()
+type upstreamBillingReply struct {
+	body   []byte
+	status int
+}
+
+func (s *UpstreamBillingProbeService) fetchBilling(ctx context.Context, account *Account, includeGroup bool) (upstreamBillingReply, error) {
+	var reply upstreamBillingReply
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "transport_unavailable")
+		return reply, errors.New("transport_unavailable")
 	}
 	apiKey := account.GetCredential("api_key")
 	if apiKey == "" {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "missing_api_key")
+		return reply, errors.New("missing_api_key")
 	}
 	baseURL := account.GetCredential("base_url")
 	if account.Platform == PlatformOpenAI {
@@ -599,16 +607,16 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	} else if upstreamBillingProbeTargetIsOfficialAPI(baseURL) {
 		// Official provider APIs do not expose the sub2api billing convention.
 		// Avoid periodically sending a real API key to a guaranteed 404 path.
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "unsupported")
+		return reply, errUpstreamBillingUnsupported
 	}
 	normalized, err := s.accountTestService.validateUpstreamBaseURL(baseURL)
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "invalid_base_url")
+		return reply, errors.New("invalid_base_url")
 	}
 	proxyURL := ""
 	if account.ProxyID != nil {
 		if account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
-			return nil, ErrUpstreamBillingProbeIdentityChanged
+			return reply, ErrUpstreamBillingProbeIdentityChanged
 		}
 		proxyURL = account.Proxy.URL()
 	}
@@ -616,10 +624,15 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, buildOpenAIEndpointURL(normalized, "/v1/sub2api/billing"), bytes.NewReader(nil))
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "request_build_failed")
+		return reply, errors.New("request_build_failed")
+	}
+	if includeGroup {
+		query := req.URL.Query()
+		query.Set("include", "group")
+		req.URL.RawQuery = query.Encode()
 	}
 	profile := HTTPUpstreamProfileDefault
-	if account.Platform == PlatformOpenAI {
+	if includeGroup || account.Platform == PlatformOpenAI {
 		profile = HTTPUpstreamProfileBillingProbe
 	}
 	reqCtx := WithHTTPUpstreamProfile(req.Context(), profile)
@@ -631,31 +644,63 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	if resolver := s.accountTestService.tlsFPProfileService; resolver != nil {
 		tlsProfile = resolver.ResolveTLSProfile(account)
 	}
+	if includeGroup {
+		if err := req.Context().Err(); err != nil {
+			return reply, err
+		}
+	}
 	resp, err := s.accountTestService.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "request_failed")
+		return reply, errors.New("request_failed")
 	}
 	if resp == nil || resp.Body == nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "empty_response")
+		return reply, errors.New("empty_response")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamBillingProbeMaxBodyBytes+1))
-	if err != nil || len(body) > upstreamBillingProbeMaxBodyBytes {
-		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "response_read_failed")
+	if includeGroup {
+		if err := req.Context().Err(); err != nil {
+			return reply, err
+		}
 	}
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "unsupported")
+	reply.status = resp.StatusCode
+	unsupported := resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed
+	httpError := resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices
+	var body []byte
+	// Preview needs only the status for failures. Avoid waiting for error
+	// bodies while preserving how periodic probes classify read failures.
+	if !includeGroup || !httpError {
+		var readErr error
+		body, readErr = io.ReadAll(io.LimitReader(resp.Body, upstreamBillingProbeMaxBodyBytes+1))
+		if readErr != nil || len(body) > upstreamBillingProbeMaxBodyBytes {
+			return reply, errors.New("response_read_failed")
+		}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "http_error")
+	if unsupported {
+		return reply, errUpstreamBillingUnsupported
 	}
-	data, err := parseUpstreamBillingProbeResponse(body)
+	if httpError {
+		return reply, errors.New("http_error")
+	}
+	reply.body = body
+	return reply, nil
+}
+
+func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Account, intervalSeconds int) (*UpstreamBillingProbeSnapshot, error) {
+	now := s.currentTime().UTC()
+	reply, err := s.fetchBilling(ctx, account, false)
+	if errors.Is(err, ErrUpstreamBillingProbeIdentityChanged) {
+		return nil, err
+	}
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "invalid_response")
+		return s.persistFailure(ctx, account, intervalSeconds, now, reply.status, err.Error())
+	}
+	data, err := parseUpstreamBillingProbeResponse(reply.body)
+	if err != nil {
+		return s.persistFailure(ctx, account, intervalSeconds, now, reply.status, "invalid_response")
 	}
 	observedMultiplier, ok := billingMultiplierFromProbeData(data)
 	if !ok {
-		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "invalid_response")
+		return s.persistFailure(ctx, account, intervalSeconds, now, reply.status, "invalid_response")
 	}
 	receivedAt := now
 	freshWindow := 3 * time.Duration(intervalSeconds) * time.Second
@@ -665,7 +710,7 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	freshUntil := now.Add(freshWindow)
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status: "ok", Data: data, ReceivedAt: &receivedAt, FreshUntil: &freshUntil,
-		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalSeconds) * time.Second), HTTPStatus: resp.StatusCode,
+		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalSeconds) * time.Second), HTTPStatus: reply.status,
 	}
 	var syncRate *float64
 	previousRate := account.BillingRateMultiplier()

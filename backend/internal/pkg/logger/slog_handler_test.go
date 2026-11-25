@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -84,5 +85,40 @@ func TestSlogZapHandler_Handle_DoesNotAppendTimeField(t *testing.T) {
 	}
 	if !hasComponent {
 		t.Fatalf("component field should be preserved")
+	}
+}
+
+func TestSlogZapHandlerRedactsUpstreamProxyCredentials(t *testing.T) {
+	core := newCaptureCore()
+	logger := slog.New(newSlogZapHandler(zap.New(core)))
+	const proxyURL = "http://example-user:example-password@relay.example:8080"
+	logger.Debug("tls_fingerprint_creating_new_client",
+		"proxy", proxyURL, "cache_key", "tls:profile:billing_probe:proxy:"+proxyURL, "account_id", 17)
+	logger.Debug("tls_fingerprint_request_failed", "error", errors.New("connection to "+proxyURL+" failed"))
+	logger.Debug("tls_fingerprint_enabled", "proxy", "relay.example:8080", "target", "api.example")
+	logger.Warn("openai_http2_proxy_fallback_activated", "proxy", proxyURL, "fallback_until", "2026-11-25T12:00:00Z")
+	logger.Debug("tls_fingerprint_http_proxy_connect_failed_status", "status_code", 407, "status", "407 private proxy diagnostics")
+	logger.Debug("tls_fingerprint_request_failed", "error", errors.New("proxy CONNECT failed: 407 private proxy diagnostics"))
+
+	if len(core.state.writes) != 6 {
+		t.Fatalf("write calls = %d, want 6", len(core.state.writes))
+	}
+	for i, expected := range [][]zap.Field{
+		{zap.String("proxy", "[REDACTED]"), zap.String("cache_key", "[REDACTED]"), zap.Int64("account_id", 17)},
+		{zap.String("error", "[REDACTED]")},
+		{zap.String("proxy", "relay.example:8080"), zap.String("target", "api.example")},
+		{zap.String("proxy", "[REDACTED]"), zap.String("fallback_until", "2026-11-25T12:00:00Z")},
+		{zap.Int64("status_code", 407), zap.String("status", "[REDACTED]")},
+		{zap.String("error", "[REDACTED]")},
+	} {
+		actual := core.state.writes[i].fields
+		if len(actual) != len(expected) {
+			t.Fatalf("write %d contains %d fields, want %d", i, len(actual), len(expected))
+		}
+		for fieldIndex, field := range expected {
+			if !actual[fieldIndex].Equals(field) {
+				t.Errorf("write %d field %q did not match the expected sanitized field", i, field.Key)
+			}
+		}
 	}
 }
